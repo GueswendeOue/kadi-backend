@@ -4,20 +4,13 @@ const bodyParser = require("body-parser");
 const axios = require("axios");
 
 const app = express();
+app.use(bodyParser.json());
 
-/* ==========================
-   CONFIG
-========================== */
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const GRAPH_VERSION = process.env.GRAPH_VERSION || "v22.0";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const GRAPH_VERSION = "v22.0";
-
-/* ==========================
-   MIDDLEWARE
-========================== */
-app.use(bodyParser.json());
 
 /* ==========================
    HEALTH CHECK
@@ -37,64 +30,58 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
-
-/* ==========================
-   SEND MESSAGE FUNCTION
-========================== */
-async function sendMessage(to, text) {
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-
-  await axios.post(
-    url,
-    {
-      messaging_product: "whatsapp",
-      to,
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-}
 
 /* ==========================
    WEBHOOK RECEIVER
 ========================== */
 app.post("/webhook", async (req, res) => {
-  const entry = req.body.entry?.[0];
-  const change = entry?.changes?.[0];
-  const value = change?.value;
-  const message = value?.messages?.[0];
-
-  if (!message) {
-    return res.sendStatus(200);
-  }
-
-  const from = message.from;
-  const text = message.text?.body?.toLowerCase();
-
-  console.log("📩 Message reçu :", text);
-
   try {
-    if (text === "menu") {
-      await sendMessage(
-        from,
-        "👋 Salut !\n\n1️⃣ Devis\n2️⃣ Facture\n3️⃣ Reçu\n\nRéponds par un numéro."
-      );
-    } else {
-      await sendMessage(from, "🤖 Kadi est en ligne. Tape *menu*.");
-    }
-  } catch (err) {
-    console.error("❌ Erreur envoi message", err.response?.data || err.message);
-  }
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
 
-  res.sendStatus(200);
+    if (!message) return res.sendStatus(200);
+
+    const from = message.from;
+    const text = message.text?.body?.toLowerCase();
+
+    console.log("📩 Message reçu :", text);
+
+    let reply = "👋 Salut, je suis Kadi.";
+
+    if (text === "menu") {
+      reply =
+        "📋 *Menu Kadi*\n" +
+        "1️⃣ Devis\n" +
+        "2️⃣ Facture\n" +
+        "3️⃣ Reçu\n\n" +
+        "Écris le numéro de ton choix.";
+    }
+
+    await axios.post(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: from,
+        text: { body: reply },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("✅ Réponse envoyée");
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Erreur :", err.response?.data || err.message);
+    res.sendStatus(500);
+  }
 });
 
 /* ==========================
