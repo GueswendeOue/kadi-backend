@@ -4,31 +4,26 @@ const axios = require("axios");
 
 const app = express();
 
-// ✅ Remplace body-parser
-app.use(express.json());
+// IMPORTANT: plus besoin de body-parser
+app.use(express.json({ limit: "5mb" }));
 
-/* ==========================
-   CONFIG
-========================== */
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-
 const GRAPH_VERSION = process.env.GRAPH_VERSION || "v22.0";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-
-// ⚠️ Assure-toi que le nom EXACT correspond à Render
-// Dans tes variables Render tu as: WHATSAPP_PHONE_NUMBER_ID
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+// ---- Petit helper pour logs safe
+function mask(v) {
+  if (!v) return "❌ missing";
+  return "✅ set";
+}
 
 /* ==========================
    HEALTH CHECK
 ========================== */
 app.get("/", (req, res) => {
   res.status(200).send("✅ Kadi backend is running");
-});
-
-app.get("/health", (req, res) => {
-  res.status(200).json({ ok: true });
 });
 
 /* ==========================
@@ -39,14 +34,13 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  console.log("🔎 Webhook verification:", { mode, token, challenge });
+  console.log("🔎 Verify webhook:", { mode, token, challenge });
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified successfully");
+    console.log("✅ Webhook verified");
     return res.status(200).send(challenge);
   }
-
-  console.log("❌ Webhook verification failed");
+  console.log("❌ Webhook verify failed");
   return res.sendStatus(403);
 });
 
@@ -54,64 +48,67 @@ app.get("/webhook", (req, res) => {
    WEBHOOK RECEIVER (POST)
 ========================== */
 app.post("/webhook", async (req, res) => {
-  // ✅ Répondre vite à Meta
+  // Répondre vite à Meta (sinon ils peuvent retry)
   res.sendStatus(200);
 
   try {
+    // LOG brut minimal
+    console.log("📦 Incoming webhook body keys:", Object.keys(req.body || {}));
+
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
 
-    // On ignore les events non-message
     const message = value?.messages?.[0];
-    if (!message) return;
+    const contact = value?.contacts?.[0];
 
-    const from = message.from;
-    const text = message.text?.body?.trim().toLowerCase();
+    if (!message) {
+      console.log("ℹ️ No message in webhook (maybe status update).");
+      return;
+    }
 
-    console.log("📩 Incoming message:", { from, type: message.type, text });
+    const from = message.from; // numéro utilisateur (celui qui t’écrit)
+    const text = message.text?.body?.trim() || "";
+    const lower = text.toLowerCase();
 
-    let reply = "👋 Salut, je suis Kadi. Écris *menu* pour voir les options.";
+    console.log("👤 From:", from);
+    console.log("🧾 Contact name:", contact?.profile?.name);
+    console.log("📩 Text:", text);
 
-    if (text === "menu") {
+    let reply = "👋 Salut, je suis Kadi.";
+
+    if (lower === "menu") {
       reply =
         "📋 *Menu Kadi*\n" +
         "1️⃣ Devis\n" +
         "2️⃣ Facture\n" +
         "3️⃣ Reçu\n\n" +
-        "Réponds avec le numéro de ton choix.";
+        "Écris le numéro de ton choix.";
     }
 
-    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-      console.log("❌ Missing env vars:", {
-        WHATSAPP_TOKEN: !!WHATSAPP_TOKEN,
-        PHONE_NUMBER_ID: !!PHONE_NUMBER_ID,
-      });
-      return;
-    }
-
+    // Envoi réponse WhatsApp
     const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
 
-    const resp = await axios.post(
-      url,
-      {
-        messaging_product: "whatsapp",
-        to: from,
-        type: "text",
-        text: { body: reply },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 15000,
-      }
-    );
+    const payload = {
+      messaging_product: "whatsapp",
+      to: from,
+      type: "text",
+      text: { body: reply },
+    };
 
-    console.log("✅ Reply sent:", resp.data);
+    console.log("➡️ Sending reply via:", url);
+    const r = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    });
+
+    console.log("✅ Reply sent:", r.data);
   } catch (err) {
-    console.error("❌ Error sending reply:", err.response?.data || err.message);
+    console.error("❌ Webhook handler error:");
+    console.error(err.response?.data || err.message);
   }
 });
 
@@ -120,11 +117,8 @@ app.post("/webhook", async (req, res) => {
 ========================== */
 app.listen(PORT, () => {
   console.log("🚀 Kadi backend running on port:", PORT);
-  console.log("VERIFY_TOKEN:", VERIFY_TOKEN ? "✅ set" : "❌ missing");
-  console.log("WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "✅ set" : "❌ missing");
-  console.log(
-    "WHATSAPP_PHONE_NUMBER_ID:",
-    PHONE_NUMBER_ID ? `✅ set (${PHONE_NUMBER_ID})` : "❌ missing"
-  );
+  console.log("VERIFY_TOKEN:", mask(VERIFY_TOKEN));
+  console.log("WHATSAPP_TOKEN:", mask(WHATSAPP_TOKEN));
+  console.log("WHATSAPP_PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? `✅ set (${PHONE_NUMBER_ID})` : "❌ missing");
   console.log("GRAPH_VERSION:", GRAPH_VERSION);
 });
