@@ -1,177 +1,151 @@
-require("dotenv").config();
 const express = require("express");
-const axios = require("axios");
+const dotenv = require("dotenv");
+const { getSession, setMode, resetSession } = require("./kadiState");
+const { sendTextMessage } = require("./whatsapp");
+
+dotenv.config();
 
 const app = express();
+
+// IMPORTANT: Meta envoie du JSON en POST webhook
 app.use(express.json({ limit: "5mb" }));
 
-const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const GRAPH_VERSION = process.env.GRAPH_VERSION || "v24.0"; // <= plus safe
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-function mask(v) {
-  if (!v) return "❌ missing";
-  return `✅ set (${String(v).slice(0, 6)}...${String(v).slice(-4)})`;
-}
-
+// Petit ping
 app.get("/", (req, res) => {
-  res.status(200).send("✅ Kadi backend is running");
+  res.status(200).send("Kadi backend is running ✅");
 });
 
-// Petit debug safe (sans exposer les secrets)
+/**
+ * DEBUG ENV (ne montre pas les secrets, juste si c'est présent)
+ * Tu l'as déjà, je le garde, mais en version safe.
+ */
 app.get("/debug-env", (req, res) => {
+  const safe = (v) => (v ? "set" : "missing");
   res.json({
-    VERIFY_TOKEN: VERIFY_TOKEN ? "✅ set" : "❌ missing",
-    WHATSAPP_TOKEN: WHATSAPP_TOKEN ? "✅ set" : "❌ missing",
-    WHATSAPP_PHONE_NUMBER_ID: PHONE_NUMBER_ID || "❌ missing",
-    GRAPH_VERSION,
+    NODE_ENV: process.env.NODE_ENV || "unknown",
+    VERIFY_TOKEN: safe(process.env.VERIFY_TOKEN),
+    WHATSAPP_TOKEN: safe(process.env.WHATSAPP_TOKEN),
+    WHATSAPP_PHONE_NUMBER_ID: process.env.WHATSAPP_PHONE_NUMBER_ID || "missing",
+    WHATSAPP_WABA_ID: safe(process.env.WHATSAPP_WABA_ID),
+    GRAPH_VERSION: process.env.GRAPH_VERSION || "v22.0",
   });
 });
 
-/* ==========================
-   WEBHOOK VERIFICATION (GET)
-========================== */
+/**
+ * WEBHOOK VERIFY (Meta -> GET)
+ * Meta envoie: hub.mode, hub.verify_token, hub.challenge
+ */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  // Quand tu ouvres /webhook dans le navigateur => mode/token/challenge seront undefined (normal)
-  console.log("🔎 GET /webhook verify params:", { mode, token: token ? "present" : "missing", challenge });
+  const ok =
+    mode === "subscribe" && token && token === process.env.VERIFY_TOKEN;
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified (Meta)");
+  console.log("[GET /webhook] verify:", {
+    mode,
+    token_ok: !!token && token === process.env.VERIFY_TOKEN,
+  });
+
+  if (ok) {
+    console.log("✅ Webhook verified");
     return res.status(200).send(challenge);
   }
 
-  console.log("❌ Webhook verify failed (not Meta verify call or bad token)");
+  console.log("❌ Webhook verify failed");
   return res.sendStatus(403);
 });
 
-/* ==========================
-   WEBHOOK RECEIVER (POST)
-========================== */
+/**
+ * WEBHOOK EVENTS (Meta -> POST)
+ * Ici tu reçois les messages entrants et statuts.
+ */
 app.post("/webhook", async (req, res) => {
-  // Répondre vite à Meta
-  res.sendStatus(200);
-
   try {
-    console.log("📩 POST /webhook received");
+    // Toujours répondre 200 vite, sinon Meta va retry
+    res.sendStatus(200);
+
+    console.log("📩 Incoming webhook:", JSON.stringify(req.body, null, 2));
 
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
 
-    const message = value?.messages?.[0];
-    const contact = value?.contacts?.[0];
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const messages = value?.messages || [];
+    const message = messages[0];
 
-    if (!message) {
-      console.log("ℹ️ No message in webhook (status update maybe). field=", change?.field);
+    // Si pas un message entrant, on ignore (ex: status updates)
+    if (!message) return;
+
+    const from = message.from; // wa_id expéditeur
+    const text = message?.text?.body?.trim();
+
+    console.log("💬 Message reçu:", { from, text, phoneNumberId });
+
+    if (!text) return;
+
+    // --- LOGIQUE KADI SIMPLE ---
+    // Exemple : si l'utilisateur écrit "Menu", on répond.
+    if (text.toLowerCase() === "menu") {
+      await sendTextMessage(from, `✅ Kadi est en ligne.\nChoisis:\n1) Devis\n2) Facture\n3) Reçu\nTape 1, 2 ou 3.`);
       return;
     }
 
-    const from = message.from;
-    const text = message.text?.body?.trim() || "";
-    const lower = text.toLowerCase();
-
-    console.log("👤 From:", from);
-    console.log("🧾 Contact name:", contact?.profile?.name);
-    console.log("📩 Text:", text);
-    console.log("📌 phone_number_id in payload:", value?.metadata?.phone_number_id);
-
-    let reply = "👋 Salut, je suis Kadi.";
-
-    if (lower === "menu") {
-      reply =
-        "📋 *Menu Kadi*\n" +
-        "1️⃣ Devis\n" +
-        "2️⃣ Facture\n" +
-        "3️⃣ Reçu\n\n" +
-        "Écris le numéro de ton choix.";
+    if (text === "1") {
+      setMode(from, "devis");
+      await sendTextMessage(from, "🧾 Mode DEVIS activé. Dis-moi: Nom client + montant + description.");
+      return;
     }
 
-    // Envoi réponse WhatsApp
-    const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+    if (text === "2") {
+      setMode(from, "facture");
+      await sendTextMessage(from, "🧾 Mode FACTURE activé. Dis-moi: Nom client + montant + description.");
+      return;
+    }
 
-    const payload = {
-      messaging_product: "whatsapp",
-      to: from,
-      type: "text",
-      text: { body: reply },
-    };
+    if (text === "3") {
+      setMode(from, "recu");
+      await sendTextMessage(from, "🧾 Mode REÇU activé. Dis-moi: Nom client + montant + motif.");
+      return;
+    }
 
-    console.log("➡️ Sending reply via:", url);
-    console.log("➡️ Using PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
-    console.log("➡️ Token:", WHATSAPP_TOKEN ? "present" : "missing");
+    if (text.toLowerCase() === "reset") {
+      resetSession(from);
+      await sendTextMessage(from, "🔄 Session réinitialisée. Tape Menu.");
+      return;
+    }
 
-    const r = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    });
-
-    console.log("✅ Reply sent:", r.data);
+    // Fallback
+    await sendTextMessage(from, `Je n’ai pas compris. Tape "Menu" (ou "reset").`);
   } catch (err) {
-    console.error("❌ Webhook handler error");
-    console.error("Message:", err.message);
-    if (err.response) {
-      console.error("Status:", err.response.status);
-      console.error("Data:", JSON.stringify(err.response.data, null, 2));
-    }
+    // Ici Meta a déjà eu 200, donc c'est juste pour toi
+    console.error("❌ Error in POST /webhook:", err);
   }
 });
 
-/* ==========================
-   SEND TEST (sans webhook)
-   Exemple:
-   /send-test?to=22670626055&text=Hello
-========================== */
+/**
+ * Endpoint de test pour envoyer un message (tu l'utilises déjà)
+ * /send-test?to=22670626055&text=TEST_KADI_OK
+ */
 app.get("/send-test", async (req, res) => {
   try {
-    const to = (req.query.to || "").trim();
-    const text = (req.query.text || "Hello from Kadi").trim();
+    const to = (req.query.to || "").toString().trim();
+    const text = (req.query.text || "TEST").toString();
 
-    if (!to) return res.status(400).json({ error: "Missing ?to= (wa_id)" });
+    if (!to) return res.status(400).json({ ok: false, error: "Missing ?to=" });
 
-    const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    };
-
-    const r = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    });
-
-    return res.json({ ok: true, data: r.data });
+    const data = await sendTextMessage(to, text);
+    return res.json({ ok: true, data });
   } catch (err) {
-    const out = {
-      ok: false,
-      message: err.message,
-      status: err.response?.status,
-      data: err.response?.data,
-    };
-    return res.status(500).json(out);
+    console.error("❌ Error /send-test:", err?.response?.data || err);
+    return res.status(500).json({ ok: false, error: "send failed" });
   }
 });
 
-/* ==========================
-   START SERVER
-========================== */
+// Render: PORT obligatoire
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("🚀 Kadi backend running on port:", PORT);
-  console.log("VERIFY_TOKEN:", VERIFY_TOKEN ? "✅ set" : "❌ missing");
-  console.log("WHATSAPP_TOKEN:", mask(WHATSAPP_TOKEN));
-  console.log("WHATSAPP_PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? `✅ set (${PHONE_NUMBER_ID})` : "❌ missing");
-  console.log("GRAPH_VERSION:", GRAPH_VERSION);
+  console.log(`✅ Server running on port ${PORT}`);
 });
