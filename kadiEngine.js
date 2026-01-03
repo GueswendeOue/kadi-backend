@@ -1,7 +1,10 @@
 // kadiEngine.js
 // ==========================================
 // KADI Engine (items structurés + TVA/remise/acompte + statut payé)
+// + WhatsApp handler (menu -> reply)
 // ==========================================
+
+const axios = require("axios");
 
 function formatDateISO(d = new Date()) {
   const yyyy = d.getFullYear();
@@ -30,7 +33,7 @@ function parseItemLine(line) {
   if (!raw) return null;
 
   const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
-  const numbers = nums.map(cleanNumber).filter(v => typeof v === "number");
+  const numbers = nums.map(cleanNumber).filter((v) => typeof v === "number");
 
   let qty = null;
   const xMatch = raw.match(/x\s*(\d+)/i);
@@ -61,11 +64,12 @@ function parseItemLine(line) {
   qty = qty || 1;
   unitPrice = unitPrice ?? null;
 
-  const label = raw
-    .replace(/x\s*\d+/ig, "")
-    .replace(/(\d[\d\s.,]*)/g, "")
-    .replace(/[-:]+/g, " ")
-    .trim() || raw;
+  const label =
+    raw
+      .replace(/x\s*\d+/gi, "")
+      .replace(/(\d[\d\s.,]*)/g, "")
+      .replace(/[-:]+/g, " ")
+      .trim() || raw;
 
   const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : null;
 
@@ -146,16 +150,15 @@ function normalizeDoc(doc) {
   doc.date = doc.date || formatDateISO();
 
   // champs pro
-  doc.vatRate = doc.vatRate ?? null;          // % (ex: 18)
+  doc.vatRate = doc.vatRate ?? null; // % (ex: 18)
   doc.discountType = doc.discountType ?? null; // "percent" | "amount"
   doc.discountValue = doc.discountValue ?? null;
   doc.deposit = typeof doc.deposit === "number" ? doc.deposit : null;
 
-  doc.paid = typeof doc.paid === "boolean" ? doc.paid : null; // pour facture/reçu
-  doc.paymentMethod = doc.paymentMethod || null;              // cash/orange money etc.
-  doc.motif = doc.motif || null;                              // utile reçu
+  doc.paid = typeof doc.paid === "boolean" ? doc.paid : null;
+  doc.paymentMethod = doc.paymentMethod || null;
+  doc.motif = doc.motif || null;
 
-  // recalc
   doc.finance = computeFinance(doc);
   return doc;
 }
@@ -164,7 +167,7 @@ function money(v) {
   if (v == null) return "—";
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
-  return String(Math.round(n)); // MVP: arrondi
+  return String(Math.round(n));
 }
 
 function buildPreview(doc) {
@@ -172,11 +175,13 @@ function buildPreview(doc) {
   const items = Array.isArray(doc.items) ? doc.items : [];
 
   const lines = items.length
-    ? items.map((it, idx) => {
-        const pu = it.unitPrice != null ? it.unitPrice : "—";
-        const amt = it.amount != null ? it.amount : "—";
-        return `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${pu} | Montant:${amt}`;
-      }).join("\n")
+    ? items
+        .map((it, idx) => {
+          const pu = it.unitPrice != null ? it.unitPrice : "—";
+          const amt = it.amount != null ? it.amount : "—";
+          return `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${pu} | Montant:${amt}`;
+        })
+        .join("\n")
     : "—";
 
   const f = doc.finance || computeFinance(doc);
@@ -187,9 +192,11 @@ function buildPreview(doc) {
     doc.discountType === "amount" ? `Remise : ${money(doc.discountValue)}` : null,
     doc.deposit ? `Acompte : ${money(doc.deposit)}` : null,
     doc.paymentMethod ? `Mode : ${doc.paymentMethod}` : null,
-    doc.paid === true ? "Statut : PAYÉ" : (doc.paid === false ? "Statut : NON PAYÉ" : null),
+    doc.paid === true ? "Statut : PAYÉ" : doc.paid === false ? "Statut : NON PAYÉ" : null,
     doc.motif ? `Motif : ${doc.motif}` : null,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const numLine = doc.docNumber ? `\nNuméro : ${doc.docNumber}` : "";
 
@@ -217,7 +224,7 @@ async function generateDocumentFromText({ userId, mode, text }) {
 
     const lines = String(text || "")
       .split("\n")
-      .map(l => l.trim())
+      .map((l) => l.trim())
       .filter(Boolean);
 
     const doc = normalizeDoc({
@@ -229,7 +236,6 @@ async function generateDocumentFromText({ userId, mode, text }) {
       raw_text: text,
       questions: [],
 
-      // pro
       vatRate: null,
       discountType: null,
       discountValue: null,
@@ -274,7 +280,7 @@ function applyAnswerToDraft({ draft, question, answer }) {
   if (/nom du client/i.test(question)) {
     draft.client = a;
   } else if (/prestations|produits|éléments/i.test(question)) {
-    const parts = a.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    const parts = a.split(/\n|,/).map((s) => s.trim()).filter(Boolean);
     for (const p of parts) {
       const it = parseItemLine(p);
       if (it) draft.items.push(it);
@@ -291,7 +297,6 @@ function applyAnswerToDraft({ draft, question, answer }) {
   return { ok: true, draft, preview: buildPreview(draft), questions: draft.questions };
 }
 
-// ✅ applique commande sur draft
 function applyCommandToDraft(draft, cmd) {
   if (!draft) return { ok: false, error: "DRAFT_MISSING" };
   draft.items = Array.isArray(draft.items) ? draft.items : [];
@@ -300,61 +305,49 @@ function applyCommandToDraft(draft, cmd) {
     case "set_client":
       draft.client = cmd.value || draft.client;
       break;
-
     case "set_date":
       draft.date = cmd.value || draft.date;
       break;
-
     case "add_lines":
-      for (const l of (cmd.lines || [])) {
+      for (const l of cmd.lines || []) {
         const it = parseItemLine(l);
         if (it) draft.items.push(it);
       }
       break;
-
     case "delete_item":
       if (cmd.index >= 1 && cmd.index <= draft.items.length) {
         draft.items.splice(cmd.index - 1, 1);
       }
       break;
-
     case "replace_item":
       if (cmd.index >= 1 && cmd.index <= draft.items.length) {
         const it = parseItemLine(cmd.line);
         if (it) draft.items[cmd.index - 1] = it;
       }
       break;
-
     case "set_vat_rate":
       draft.vatRate = clampPercent(cmd.value);
       break;
-
     case "set_discount_percent":
       draft.discountType = "percent";
       draft.discountValue = clampPercent(cmd.value);
       break;
-
     case "set_discount_amount":
       draft.discountType = "amount";
       draft.discountValue = Number(cmd.value);
       break;
-
     case "set_deposit":
       draft.deposit = Number(cmd.value);
       break;
-
     case "set_paid":
       draft.paid = Boolean(cmd.value);
       break;
-
     case "set_payment_method":
       draft.paymentMethod = cmd.value || null;
       break;
-
     case "set_motif":
       draft.motif = cmd.value || null;
       break;
-
     default:
       return { ok: false, error: "UNKNOWN_COMMAND" };
   }
@@ -368,10 +361,72 @@ function applyCommandToDraft(draft, cmd) {
   return { ok: true, draft, preview: buildPreview(draft), questions: draft.questions };
 }
 
+/* ============================================================
+   ✅ WHATSAPP IO (AJOUT)
+   - envoie réponse via Cloud API
+   - handleIncomingMessage(value) appelé par index.js
+============================================================ */
+
+async function sendText(to, text) {
+  const GRAPH_VERSION = process.env.GRAPH_VERSION || "v22.0";
+  const TOKEN = process.env.WHATSAPP_TOKEN;
+  const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!TOKEN || !PHONE_NUMBER_ID) {
+    console.log("⚠️ Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID");
+    return;
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  };
+
+  const resp = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 15000,
+  });
+
+  return resp.data;
+}
+
+async function handleIncomingMessage(value) {
+  const msg = value?.messages?.[0];
+  if (!msg) return;
+
+  const from = msg.from;
+  const text = msg.text?.body?.trim() || "";
+  const lower = text.toLowerCase();
+
+  console.log("📩 Incoming:", { from, lower });
+
+  // ✅ test minimum: répondre à "menu"
+  if (lower === "menu") {
+    await sendText(
+      from,
+      "📋 *Menu Kadi*\n1️⃣ Devis\n2️⃣ Facture\n3️⃣ Reçu\n\nÉcris 1, 2 ou 3."
+    );
+    return;
+  }
+
+  // fallback
+  await sendText(from, `✅ Reçu: "${text}"\nTape *menu*.`);
+}
+
 module.exports = {
   generateDocumentFromText,
   applyAnswerToDraft,
   applyCommandToDraft,
   buildPreview,
   cleanNumber,
+
+  // ✅ export WhatsApp handler
+  handleIncomingMessage,
 };
