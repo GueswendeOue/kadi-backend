@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const app = express();
 
-// 📌 MIDDLEWARE CRITIQUE
+// 📌 MIDDLEWARE CRITIQUE : Parse JSON et conserve le corps brut
 app.use(express.json({ 
   limit: "2mb",
   verify: (req, res, buf) => {
@@ -11,12 +11,13 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 
+// Import du moteur de traitement
 const { handleIncomingMessage } = require("./kadiEngine");
 
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-// ✅ Routes de santé
+// ✅ Route de santé
 app.get("/", (req, res) => {
   console.log("✅ GET / appelé");
   res.status(200).send("✅ Kadi backend is running");
@@ -27,11 +28,12 @@ app.get("/health", (req, res) => {
   res.status(200).json({ 
     ok: true, 
     service: "kadi-backend",
-    webhook: "https://kadi-backend-1gqg.onrender.com/webhook"
+    webhook: "https://kadi-backend-1gqg.onrender.com/webhook",
+    timestamp: new Date().toISOString()
   });
 });
 
-// ✅ Webhook verification (GET - Meta)
+// ✅ Webhook verification (GET) - Pour Meta
 app.get("/webhook", (req, res) => {
   console.log("\n🔍 === META VALIDATION REQUEST ===");
   console.log("🔍 Query params:", req.query);
@@ -56,7 +58,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ✅ Webhook receive (POST - Meta messages)
+// ✅ Webhook receive (POST) - Pour les messages Meta
 app.post("/webhook", async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
   console.log(`\n📩 === POST WEBHOOK [${requestId}] ===`);
@@ -76,7 +78,7 @@ app.post("/webhook", async (req, res) => {
     
     // Log du body brut
     console.log(`📩 Raw Body (${req.rawBody?.length || 0} chars):`, 
-      req.rawBody?.substring(0, 300) || "VIDE");
+      req.rawBody?.substring(0, 500) || "VIDE");
     
     // Parse le JSON
     const body = req.body || {};
@@ -87,7 +89,7 @@ app.post("/webhook", async (req, res) => {
     const value = change?.value;
     
     if (!value) {
-      console.log("⚠️  Aucun 'value' dans le payload");
+      console.log("⚠️  Aucun 'value' trouvé dans le payload");
       console.log("⚠️  Structure complète:", JSON.stringify(body, null, 2));
       return;
     }
@@ -97,6 +99,7 @@ app.post("/webhook", async (req, res) => {
     // Appel asynchrone au moteur de traitement
     handleIncomingMessage(value).catch(err => {
       console.error(`💥 Erreur dans handleIncomingMessage:`, err.message);
+      console.error("Stack:", err.stack);
     });
     
   } catch (error) {
@@ -107,17 +110,99 @@ app.post("/webhook", async (req, res) => {
   console.log(`📩 === FIN WEBHOOK [${requestId}] ===\n`);
 });
 
+// ==========================================
+// ✅ ROUTE DE TEST MANUEL (SIMULATION META)
+// ==========================================
+app.post("/test-meta", async (req, res) => {
+  console.log("\n🧪 === TEST MANUEL - SIMULATION META ===");
+  
+  // Crée un payload IDENTIQUE à ce que Meta envoie
+  const testPayload = {
+    object: "whatsapp_business_account",
+    entry: [{
+      id: "1391377726000371",
+      changes: [{
+        value: {
+          messaging_product: "whatsapp",
+          metadata: {
+            display_phone_number: "15551845266",
+            phone_number_id: process.env.PHONE_NUMBER_ID || "878545622015226"
+          },
+          contacts: [{
+            profile: { name: "Test" },
+            wa_id: "22670626055"
+          }],
+          messages: [{
+            from: "22670626055",
+            id: "wamid.test.123",
+            timestamp: "1767479215",
+            text: { body: "Menu" },
+            type: "text"
+          }]
+        },
+        field: "messages"
+      }]
+    }]
+  };
+  
+  try {
+    console.log("🧪 Envoi du payload au moteur...");
+    await handleIncomingMessage(testPayload.entry[0].changes[0].value);
+    console.log("🧪 Test RÉUSSI ! Le code fonctionne correctement.");
+    res.json({ 
+      ok: true, 
+      message: "Test exécuté avec succès",
+      conclusion: "✅ Ton code fonctionne. Le problème est dans la config Meta."
+    });
+  } catch (error) {
+    console.error("🧪 ERREUR dans le test:", error.message);
+    console.error("Stack:", error.stack);
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message,
+      conclusion: "❌ Ton code a un bug. Vérifie kadiEngine.js"
+    });
+  }
+  
+  console.log("🧪 === FIN TEST MANUEL ===\n");
+});
+
+// ==========================================
+// ✅ ROUTE DE TEST SIMPLE (CURL)
+// ==========================================
+app.post("/test-simple", (req, res) => {
+  console.log("\n🔧 === TEST SIMPLE ===");
+  console.log("🔧 Body reçu:", req.body);
+  console.log("🔧 Headers:", req.headers);
+  res.json({ 
+    ok: true, 
+    message: "Test simple réussi",
+    received: req.body,
+    timestamp: new Date().toISOString()
+  });
+  console.log("🔧 === FIN TEST SIMPLE ===\n");
+});
+
 // 🚀 Démarrage du serveur
 app.listen(PORT, () => {
-  console.log(`\n🚀 ==========================================`);
-  console.log(`🚀 Serveur Kadi démarré sur le port ${PORT}`);
-  console.log(`🚀 URL: https://kadi-backend-1gqg.onrender.com`);
-  console.log(`🚀 Webhook: https://kadi-backend-1gqg.onrender.com/webhook`);
-  console.log(`🚀 Health: https://kadi-backend-1gqg.onrender.com/health`);
-  console.log(`🚀 ==========================================\n`);
+  const baseUrl = "https://kadi-backend-1gqg.onrender.com";
   
-  // Log des variables critiques (sans les valeurs)
-  console.log("🔧 Configuration chargée:");
-  console.log(`🔧 VERIFY_TOKEN: ${VERIFY_TOKEN ? "PRÉSENT" : "MANQUANT"}`);
-  console.log(`🔧 PORT: ${PORT}`);
+  console.log("\n" + "=".repeat(50));
+  console.log("🚀 SERVEUR KADI DÉMARRÉ");
+  console.log("=".repeat(50));
+  console.log(`📌 Port: ${PORT}`);
+  console.log(`🌐 URL: ${baseUrl}`);
+  console.log(`🔗 Webhook: ${baseUrl}/webhook`);
+  console.log(`🏥 Health: ${baseUrl}/health`);
+  console.log(`🧪 Test Meta: ${baseUrl}/test-meta`);
+  console.log(`🔧 Test Simple: ${baseUrl}/test-simple`);
+  console.log("=".repeat(50));
+  console.log("\n🔍 Configuration:");
+  console.log(`   VERIFY_TOKEN: ${VERIFY_TOKEN ? "✅ PRÉSENT" : "❌ MANQUANT"}`);
+  console.log(`   PORT: ${PORT}`);
+  console.log("\n⚠️  IMPORTANT: Vérifie que Meta Webhooks est configuré avec:");
+  console.log(`   URL: ${baseUrl}/webhook`);
+  console.log(`   Token: ${VERIFY_TOKEN}`);
+  console.log(`   Abonnement: "messages" ✅`);
+  console.log("=".repeat(50) + "\n");
 });
