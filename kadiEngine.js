@@ -1,11 +1,67 @@
-// kadiEngine.js
-// ==========================================
-// KADI Engine (items structurés + TVA/remise/acompte + statut payé)
-// + WhatsApp handler (menu -> reply)
-// ==========================================
-
+require("dotenv").config();
 const axios = require("axios");
 
+// 🔧 CONFIGURATION WHATSAPP
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+
+console.log("\n🔧 ===== CHARGEMENT KADI ENGINE =====");
+console.log("🔧 WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "✓ PRÉSENT" : "✗ MANQUANT");
+console.log("🔧 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "✗ MANQUANT");
+console.log("🔧 =================================\n");
+
+// 🚨 Vérification critique des variables
+if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+  console.error("❌ VARIABLES MANQUANTES DANS .env:");
+  console.error("   - WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "OK" : "MANQUANT");
+  console.error("   - PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? "OK" : "MANQUANT");
+  throw new Error("Variables WhatsApp manquantes. Vérifie ton fichier .env sur Render.");
+}
+
+// 📤 Fonction d'envoi de message WhatsApp
+async function sendWhatsAppMessage(to, text) {
+  console.log(`\n📤 === ENVOI WHATSAPP ===`);
+  console.log(`📤 À: ${to}`);
+  console.log(`📤 Message: ${text.substring(0, 100)}...`);
+  
+  try {
+    const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
+    
+    const payload = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: to,
+      type: "text",
+      text: { body: text }
+    };
+    
+    console.log("📤 URL:", url);
+    console.log("📤 Payload:", JSON.stringify(payload, null, 2));
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 10000
+    });
+    
+    console.log("✅ Message envoyé avec succès!");
+    console.log("✅ Réponse API:", JSON.stringify(response.data, null, 2));
+    
+    return response.data;
+  } catch (error) {
+    console.error("❌ ERREUR WhatsApp API:");
+    console.error("   Status:", error.response?.status);
+    console.error("   Data:", error.response?.data);
+    console.error("   Message:", error.message);
+    throw error;
+  }
+}
+
+// ==========================================
+// FONCTIONS EXISTANTES DE KADI (inchangées)
+// ==========================================
 function formatDateISO(d = new Date()) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -31,7 +87,7 @@ function clampPercent(p) {
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
-
+  // ... (code existant inchangé)
   const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
   const numbers = nums.map(cleanNumber).filter((v) => typeof v === "number");
 
@@ -88,22 +144,12 @@ function sumItems(items) {
   return hasAny ? sum : 0;
 }
 
-/**
- * Calcul financier:
- * subtotal = somme(items)
- * discount = remise (montant ou %)
- * net = subtotal - discount
- * vat = net * tva%
- * gross = net + vat
- * due = gross - acompte
- */
 function computeFinance(doc) {
   const items = Array.isArray(doc.items) ? doc.items : [];
   const subtotal = sumItems(items);
 
-  // Remise
   let discount = 0;
-  const discountType = doc.discountType; // "percent" | "amount" | null
+  const discountType = doc.discountType;
   const discountValue = doc.discountValue;
 
   if (discountType === "percent") {
@@ -118,14 +164,12 @@ function computeFinance(doc) {
 
   const net = subtotal - discount;
 
-  // TVA
   let vat = 0;
   const vatRate = clampPercent(doc.vatRate);
   if (vatRate != null && vatRate > 0) vat = net * (vatRate / 100);
 
   const gross = net + vat;
 
-  // Acompte
   let deposit = 0;
   if (typeof doc.deposit === "number" && Number.isFinite(doc.deposit) && doc.deposit > 0) {
     deposit = doc.deposit;
@@ -149,9 +193,8 @@ function normalizeDoc(doc) {
   doc.items = Array.isArray(doc.items) ? doc.items : [];
   doc.date = doc.date || formatDateISO();
 
-  // champs pro
-  doc.vatRate = doc.vatRate ?? null; // % (ex: 18)
-  doc.discountType = doc.discountType ?? null; // "percent" | "amount"
+  doc.vatRate = doc.vatRate ?? null;
+  doc.discountType = doc.discountType ?? null;
   doc.discountValue = doc.discountValue ?? null;
   doc.deposit = typeof doc.deposit === "number" ? doc.deposit : null;
 
@@ -361,72 +404,84 @@ function applyCommandToDraft(draft, cmd) {
   return { ok: true, draft, preview: buildPreview(draft), questions: draft.questions };
 }
 
-/* ============================================================
-   ✅ WHATSAPP IO (AJOUT)
-   - envoie réponse via Cloud API
-   - handleIncomingMessage(value) appelé par index.js
-============================================================ */
-
-async function sendText(to, text) {
-  const GRAPH_VERSION = process.env.GRAPH_VERSION || "v22.0";
-  const TOKEN = process.env.WHATSAPP_TOKEN;
-  const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-  if (!TOKEN || !PHONE_NUMBER_ID) {
-    console.log("⚠️ Missing WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID");
-    return;
-  }
-
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  };
-
-  const resp = await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 15000,
-  });
-
-  return resp.data;
-}
-
+// ✅ FONCTION PRINCIPALE DE TRAITEMENT WHATSAPP
 async function handleIncomingMessage(value) {
-  const msg = value?.messages?.[0];
-  if (!msg) return;
+  console.log("\n🔧 === KADI ENGINE - TRAITEMENT ====");
+  
+  try {
+    // 1. Vérifier si c'est un message texte
+    if (value.messages && value.messages[0]) {
+      const message = value.messages[0];
+      const from = message.from;
+      const text = message.text?.body?.trim() || "";
+      
+      console.log(`📱 Message reçu de ${from}: "${text}"`);
+      console.log(`📱 Type: ${message.type}, ID: ${message.id}`);
+      
+      // 2. Traiter la commande "Menu"
+      if (text.toLowerCase() === "menu") {
+        console.log("✅ Commande 'Menu' détectée!");
+        
+        const menuResponse = `✅ *KADI BOT EST EN LIGNE !*\n
+📋 *MENU PRINCIPAL*
+1️⃣ - Créer un devis
+2️⃣ - Créer une facture
+3️⃣ - Voir mes documents
+4️⃣ - Support technique
+5️⃣ - Informations compte
 
-  const from = msg.from;
-  const text = msg.text?.body?.trim() || "";
-  const lower = text.toLowerCase();
-
-  console.log("📩 Incoming:", { from, lower });
-
-  // ✅ test minimum: répondre à "menu"
-  if (lower === "menu") {
-    await sendText(
-      from,
-      "📋 *Menu Kadi*\n1️⃣ Devis\n2️⃣ Facture\n3️⃣ Reçu\n\nÉcris 1, 2 ou 3."
-    );
-    return;
+👉 *Tapez le numéro correspondant (1, 2, 3...)*`;
+        
+        console.log("📤 Envoi réponse Menu...");
+        await sendWhatsAppMessage(from, menuResponse);
+        console.log("🎯 Réponse Menu envoyée avec succès!");
+      }
+      // 3. Traiter d'autres commandes numériques
+      else if (["1", "2", "3", "4", "5"].includes(text)) {
+        const responses = {
+          "1": "📝 *CRÉATION DE DEVIS*\nEnvoyez les détails sous la forme:\nClient: [Nom]\nProduit1 x 2 5000\nProduit2 x 1 3000",
+          "2": "🧾 *CRÉATION DE FACTURE*\nEnvoyez les détails sous la forme:\nClient: [Nom]\nService1 x 3 7500\nService2 x 1 12000",
+          "3": "📂 *MES DOCUMENTS*\nFonctionnalité en développement...",
+          "4": "🔧 *SUPPORT TECHNIQUE*\nContact: support@kadi.com\nTél: +226 XX XX XX XX",
+          "5": "👤 *INFORMATIONS COMPTE*\nVous êtes connecté avec le numéro: " + from
+        };
+        
+        console.log(`📤 Réponse à la commande ${text}`);
+        await sendWhatsAppMessage(from, responses[text]);
+      }
+      // 4. Réponse par défaut
+      else if (text) {
+        console.log(`⚠️ Message non reconnu: "${text}"`);
+        await sendWhatsAppMessage(from, 
+          `📝 J'ai reçu votre message: "${text}"\n\n` +
+          `Tapez *MENU* pour voir les options disponibles.`
+        );
+      }
+    }
+    // 5. Vérifier les statuts de message
+    else if (value.statuses && value.statuses[0]) {
+      const status = value.statuses[0];
+      console.log(`📊 Statut message ${status.id}: ${status.status}`);
+    }
+    else {
+      console.log("⚠️ Format de payload inattendu:", JSON.stringify(value, null, 2));
+    }
+    
+  } catch (error) {
+    console.error("💥 ERREUR dans handleIncomingMessage:", error.message);
+    console.error("Stack:", error.stack);
   }
-
-  // fallback
-  await sendText(from, `✅ Reçu: "${text}"\nTape *menu*.`);
+  
+  console.log("🔧 === FIN TRAITEMENT ====\n");
 }
 
+// Export des fonctions
 module.exports = {
   generateDocumentFromText,
   applyAnswerToDraft,
   applyCommandToDraft,
   buildPreview,
   cleanNumber,
-
-  // ✅ export WhatsApp handler
   handleIncomingMessage,
+  sendWhatsAppMessage  // Exporté pour les tests
 };
