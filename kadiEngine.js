@@ -1,487 +1,246 @@
-require("dotenv").config();
-const axios = require("axios");
+"use strict";
 
-// 🔧 CONFIGURATION WHATSAPP
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const { getSession } = require("./kadiState");
+const { getOrCreateProfile, updateProfile } = require("./store");
+const { uploadLogoBuffer } = require("./supabaseStorage");
+const { sendText, sendButtons, getMediaInfo, downloadMediaToBuffer } = require("./whatsappApi");
 
-console.log("\n🔧 ===== CHARGEMENT KADI ENGINE =====");
-console.log("🔧 WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "✓ PRÉSENT" : "✗ MANQUANT");
-console.log("🔧 PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "✗ MANQUANT");
-console.log("🔧 =================================\n");
-
-// 🚨 Vérification critique des variables
-if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-  console.error("❌ VARIABLES MANQUANTES DANS .env:");
-  console.error("   - WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "OK" : "MANQUANT");
-  console.error("   - PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? "OK" : "MANQUANT");
-  throw new Error("Variables WhatsApp manquantes. Vérifie ton fichier .env sur Render.");
+function norm(s) {
+  return String(s || "").trim();
 }
 
-// 📤 Fonction d'envoi de message WhatsApp
-async function sendWhatsAppMessage(to, text) {
-  console.log(`\n📤 === ENVOI WHATSAPP ===`);
-  console.log(`📤 À: ${to}`);
-  console.log(`📤 Message: ${text.substring(0, 100)}...`);
-  
-  try {
-    const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
-    
-    const payload = {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: to,
-      type: "text",
-      text: { body: text }
-    };
-    
-    console.log("📤 URL:", url);
-    console.log("📤 Payload:", JSON.stringify(payload, null, 2));
-    
-    const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 10000
-    });
-    
-    console.log("✅ Message envoyé avec succès!");
-    console.log("✅ Réponse API:", JSON.stringify(response.data, null, 2));
-    
-    return response.data;
-  } catch (error) {
-    console.error("❌ ERREUR WhatsApp API:");
-    console.error("   Status:", error.response?.status);
-    console.error("   Data:", error.response?.data);
-    console.error("   Message:", error.message);
-    throw error;
+async function sendMainMenu(to) {
+  // WhatsApp buttons max = 3
+  return sendButtons(
+    to,
+    "📋 *Menu KADI*\nChoisis une action :",
+    [
+      { id: "MENU_DEVIS", title: "Créer un devis" },
+      { id: "MENU_FACTURE", title: "Créer une facture" },
+      { id: "MENU_PROFIL", title: "Profil entreprise" }
+    ]
+  );
+}
+
+async function sendDocMenu(to) {
+  return sendButtons(
+    to,
+    "📄 *Type de document*\nChoisis :",
+    [
+      { id: "DOC_DEVIS", title: "Devis" },
+      { id: "DOC_FACTURE", title: "Facture" },
+      { id: "DOC_RECU", title: "Reçu" }
+    ]
+  );
+}
+
+async function startProfileFlow(from) {
+  const s = getSession(from);
+  s.step = "profile";
+  s.profileStep = "business_name";
+
+  await getOrCreateProfile(from);
+
+  await sendText(
+    from,
+    "🏢 *Profil entreprise*\n\n1/7 — Quel est le *nom* de ton entreprise ?\nEx: Kadi SARL"
+  );
+}
+
+async function handleProfileAnswer(from, text) {
+  const s = getSession(from);
+  const t = norm(text);
+
+  if (s.step !== "profile" || !s.profileStep) return false;
+
+  const step = s.profileStep;
+
+  if (step === "business_name") {
+    await updateProfile(from, { business_name: t });
+    s.profileStep = "address";
+    await sendText(from, "2/7 — Quelle est ton *adresse* ?\nEx: Ouaga, Karpala, Secteur 05");
+    return true;
   }
-}
 
-// ==========================================
-// FONCTIONS EXISTANTES DE KADI (inchangées)
-// ==========================================
-function formatDateISO(d = new Date()) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
+  if (step === "address") {
+    await updateProfile(from, { address: t });
+    s.profileStep = "phone";
+    await sendText(from, "3/7 — Ton *téléphone* pro ?\nEx: +226 70 62 60 55");
+    return true;
+  }
 
-function cleanNumber(str) {
-  const s = String(str).replace(/\s/g, "").replace(/,/g, ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
+  if (step === "phone") {
+    await updateProfile(from, { phone: t });
+    s.profileStep = "email";
+    await sendText(from, "4/7 — Ton *email* ? (ou tape - pour ignorer)");
+    return true;
+  }
 
-function clampPercent(p) {
-  if (p == null) return null;
-  const v = Number(p);
-  if (!Number.isFinite(v)) return null;
-  if (v < 0) return 0;
-  if (v > 100) return 100;
-  return v;
-}
+  if (step === "email") {
+    await updateProfile(from, { email: t === "-" ? null : t });
+    s.profileStep = "ifu";
+    await sendText(from, "5/7 — Ton *IFU* ? (ou tape - pour ignorer)");
+    return true;
+  }
 
-function parseItemLine(line) {
-  const raw = String(line || "").trim();
-  if (!raw) return null;
-  // ... (code existant inchangé)
-  const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
-  const numbers = nums.map(cleanNumber).filter((v) => typeof v === "number");
+  if (step === "ifu") {
+    await updateProfile(from, { ifu: t === "-" ? null : t });
+    s.profileStep = "rccm";
+    await sendText(from, "6/7 — Ton *RCCM* ? (ou tape - pour ignorer)");
+    return true;
+  }
 
-  let qty = null;
-  const xMatch = raw.match(/x\s*(\d+)/i);
-  if (xMatch) qty = Number(xMatch[1]);
+  if (step === "rccm") {
+    await updateProfile(from, { rccm: t === "-" ? null : t });
+    s.profileStep = "logo";
+    await sendText(
+      from,
+      "7/7 — Envoie maintenant ton *logo* en image 📷 (png/jpg).\n\n📌 Si tu n’as pas de logo, tape -"
+    );
+    return true;
+  }
 
-  let unitPrice = null;
-
-  if (numbers.length === 1) {
-    qty = qty || 1;
-    unitPrice = numbers[0];
-  } else if (numbers.length >= 2) {
-    const first = numbers[0];
-    const last = numbers[numbers.length - 1];
-
-    if (!qty) {
-      if (Number.isInteger(first) && first > 0 && first <= 100) {
-        qty = first;
-        unitPrice = last;
-      } else {
-        qty = 1;
-        unitPrice = last;
-      }
-    } else {
-      unitPrice = last;
+  if (step === "logo") {
+    if (t === "-") {
+      s.step = "idle";
+      s.profileStep = null;
+      await sendText(from, "✅ Profil enregistré (sans logo).");
+      await sendMainMenu(from);
+      return true;
     }
+    // S'il tape un texte au lieu d'image
+    await sendText(from, "⚠️ Pour le logo, envoie une *image* (pas du texte). Ou tape - pour ignorer.");
+    return true;
   }
 
-  qty = qty || 1;
-  unitPrice = unitPrice ?? null;
-
-  const label =
-    raw
-      .replace(/x\s*\d+/gi, "")
-      .replace(/(\d[\d\s.,]*)/g, "")
-      .replace(/[-:]+/g, " ")
-      .trim() || raw;
-
-  const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : null;
-
-  return { label, qty: Number(qty), unitPrice, amount, raw };
+  return false;
 }
 
-function sumItems(items) {
-  let sum = 0;
-  let hasAny = false;
-  for (const it of items || []) {
-    if (typeof it?.amount === "number" && Number.isFinite(it.amount)) {
-      sum += it.amount;
-      hasAny = true;
-    }
-  }
-  return hasAny ? sum : 0;
-}
+async function handleLogoImage(from, imageMessage) {
+  const s = getSession(from);
 
-function computeFinance(doc) {
-  const items = Array.isArray(doc.items) ? doc.items : [];
-  const subtotal = sumItems(items);
-
-  let discount = 0;
-  const discountType = doc.discountType;
-  const discountValue = doc.discountValue;
-
-  if (discountType === "percent") {
-    const p = clampPercent(discountValue);
-    if (p != null) discount = subtotal * (p / 100);
-  } else if (discountType === "amount") {
-    const a = Number(discountValue);
-    if (Number.isFinite(a) && a > 0) discount = a;
+  const mediaId = imageMessage?.image?.id;
+  if (!mediaId) {
+    await sendText(from, "❌ Image reçue mais sans media_id. Réessaie d’envoyer l’image.");
+    return;
   }
 
-  if (discount > subtotal) discount = subtotal;
+  const info = await getMediaInfo(mediaId);
+  const mime = info.mime_type || "image/jpeg";
 
-  const net = subtotal - discount;
+  const buf = await downloadMediaToBuffer(info.url);
 
-  let vat = 0;
-  const vatRate = clampPercent(doc.vatRate);
-  if (vatRate != null && vatRate > 0) vat = net * (vatRate / 100);
+  const { filePath } = await uploadLogoBuffer({
+    userId: from,
+    buffer: buf,
+    mimeType: mime
+  });
 
-  const gross = net + vat;
+  await updateProfile(from, { logo_path: filePath });
 
-  let deposit = 0;
-  if (typeof doc.deposit === "number" && Number.isFinite(doc.deposit) && doc.deposit > 0) {
-    deposit = doc.deposit;
-  }
-  if (deposit > gross) deposit = gross;
-
-  const due = gross - deposit;
-
-  return {
-    subtotal,
-    discount,
-    net,
-    vat,
-    gross,
-    deposit,
-    due,
-  };
-}
-
-function normalizeDoc(doc) {
-  doc.items = Array.isArray(doc.items) ? doc.items : [];
-  doc.date = doc.date || formatDateISO();
-
-  doc.vatRate = doc.vatRate ?? null;
-  doc.discountType = doc.discountType ?? null;
-  doc.discountValue = doc.discountValue ?? null;
-  doc.deposit = typeof doc.deposit === "number" ? doc.deposit : null;
-
-  doc.paid = typeof doc.paid === "boolean" ? doc.paid : null;
-  doc.paymentMethod = doc.paymentMethod || null;
-  doc.motif = doc.motif || null;
-
-  doc.finance = computeFinance(doc);
-  return doc;
-}
-
-function money(v) {
-  if (v == null) return "—";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return String(Math.round(n));
-}
-
-function buildPreview(doc) {
-  const type = String(doc.type || "document").toUpperCase();
-  const items = Array.isArray(doc.items) ? doc.items : [];
-
-  const lines = items.length
-    ? items
-        .map((it, idx) => {
-          const pu = it.unitPrice != null ? it.unitPrice : "—";
-          const amt = it.amount != null ? it.amount : "—";
-          return `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${pu} | Montant:${amt}`;
-        })
-        .join("\n")
-    : "—";
-
-  const f = doc.finance || computeFinance(doc);
-
-  const extra = [
-    doc.vatRate != null ? `TVA : ${doc.vatRate}%` : null,
-    doc.discountType === "percent" ? `Remise : ${doc.discountValue}%` : null,
-    doc.discountType === "amount" ? `Remise : ${money(doc.discountValue)}` : null,
-    doc.deposit ? `Acompte : ${money(doc.deposit)}` : null,
-    doc.paymentMethod ? `Mode : ${doc.paymentMethod}` : null,
-    doc.paid === true ? "Statut : PAYÉ" : doc.paid === false ? "Statut : NON PAYÉ" : null,
-    doc.motif ? `Motif : ${doc.motif}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const numLine = doc.docNumber ? `\nNuméro : ${doc.docNumber}` : "";
-
-  return `
-📄 *${type}*${numLine}
-Date : ${doc.date || "—"}
-Client : ${doc.client || "—"}
-
-Lignes :
-${lines}
-
-Sous-total : ${money(f.subtotal)}
-Remise : ${money(f.discount)}
-Net : ${money(f.net)}
-TVA : ${money(f.vat)}
-Total : ${money(f.gross)}
-Acompte : ${money(f.deposit)}
-Reste : ${money(f.due)}${extra ? `\n\n${extra}` : ""}
-  `.trim();
-}
-
-async function generateDocumentFromText({ userId, mode, text }) {
-  try {
-    if (!mode) return { ok: false, error: "MODE_MISSING" };
-
-    const lines = String(text || "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    const doc = normalizeDoc({
-      type: mode,
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      raw_text: text,
-      questions: [],
-
-      vatRate: null,
-      discountType: null,
-      discountValue: null,
-      deposit: null,
-      paid: null,
-      paymentMethod: null,
-      motif: null,
-    });
-
-    for (const line of lines) {
-      if (!doc.client && /^(client|nom)\s*[:\-]/i.test(line)) {
-        doc.client = line.replace(/^(client|nom)\s*[:\-]\s*/i, "").trim() || null;
-        continue;
-      }
-
-      if (/\d/.test(line)) {
-        const it = parseItemLine(line);
-        if (it) doc.items.push(it);
-      }
-    }
-
-    doc.questions = [];
-    if (!doc.client) doc.questions.push("Le nom du client ?");
-    if (!doc.items.length) doc.questions.push("Les prestations ou produits ?");
-
-    normalizeDoc(doc);
-
-    return { ok: true, doc, preview: buildPreview(doc), questions: doc.questions };
-  } catch (err) {
-    console.error("❌ kadiEngine error:", err);
-    return { ok: false, error: "ENGINE_ERROR" };
-  }
-}
-
-function applyAnswerToDraft({ draft, question, answer }) {
-  if (!draft) return { ok: false, error: "DRAFT_MISSING" };
-  const a = String(answer || "").trim();
-  if (!a) return { ok: false, error: "ANSWER_EMPTY" };
-
-  draft.items = Array.isArray(draft.items) ? draft.items : [];
-
-  if (/nom du client/i.test(question)) {
-    draft.client = a;
-  } else if (/prestations|produits|éléments/i.test(question)) {
-    const parts = a.split(/\n|,/).map((s) => s.trim()).filter(Boolean);
-    for (const p of parts) {
-      const it = parseItemLine(p);
-      if (it) draft.items.push(it);
-    }
-  } else {
-    draft.raw_text = (draft.raw_text || "") + "\n" + a;
+  // si on est dans le flow profil
+  if (s.step === "profile" && s.profileStep === "logo") {
+    s.step = "idle";
+    s.profileStep = null;
+    await sendText(from, "✅ Logo enregistré ! Profil terminé.");
+    await sendMainMenu(from);
+    return;
   }
 
-  draft.questions = [];
-  if (!draft.client) draft.questions.push("Le nom du client ?");
-  if (!draft.items.length) draft.questions.push("Les prestations ou produits ?");
-
-  normalizeDoc(draft);
-  return { ok: true, draft, preview: buildPreview(draft), questions: draft.questions };
+  await sendText(from, "✅ Logo enregistré !");
 }
 
-function applyCommandToDraft(draft, cmd) {
-  if (!draft) return { ok: false, error: "DRAFT_MISSING" };
-  draft.items = Array.isArray(draft.items) ? draft.items : [];
+async function handleInteractiveReply(from, replyId) {
+  const s = getSession(from);
 
-  switch (cmd.type) {
-    case "set_client":
-      draft.client = cmd.value || draft.client;
-      break;
-    case "set_date":
-      draft.date = cmd.value || draft.date;
-      break;
-    case "add_lines":
-      for (const l of cmd.lines || []) {
-        const it = parseItemLine(l);
-        if (it) draft.items.push(it);
-      }
-      break;
-    case "delete_item":
-      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
-        draft.items.splice(cmd.index - 1, 1);
-      }
-      break;
-    case "replace_item":
-      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
-        const it = parseItemLine(cmd.line);
-        if (it) draft.items[cmd.index - 1] = it;
-      }
-      break;
-    case "set_vat_rate":
-      draft.vatRate = clampPercent(cmd.value);
-      break;
-    case "set_discount_percent":
-      draft.discountType = "percent";
-      draft.discountValue = clampPercent(cmd.value);
-      break;
-    case "set_discount_amount":
-      draft.discountType = "amount";
-      draft.discountValue = Number(cmd.value);
-      break;
-    case "set_deposit":
-      draft.deposit = Number(cmd.value);
-      break;
-    case "set_paid":
-      draft.paid = Boolean(cmd.value);
-      break;
-    case "set_payment_method":
-      draft.paymentMethod = cmd.value || null;
-      break;
-    case "set_motif":
-      draft.motif = cmd.value || null;
-      break;
-    default:
-      return { ok: false, error: "UNKNOWN_COMMAND" };
+  if (replyId === "MENU_DEVIS") {
+    s.step = "collecting_doc";
+    s.mode = "devis";
+    await sendText(from, "📝 OK. Envoie les lignes.\nEx:\nClient: Karim\nChaise x2 5000\nTable x1 20000");
+    return;
   }
 
-  draft.questions = [];
-  if (!draft.client) draft.questions.push("Le nom du client ?");
-  if (!draft.items.length) draft.questions.push("Les prestations ou produits ?");
+  if (replyId === "MENU_FACTURE") {
+    s.step = "collecting_doc";
+    s.mode = "facture";
+    await sendText(from, "🧾 OK. Envoie les lignes.\nEx:\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000");
+    return;
+  }
 
-  normalizeDoc(draft);
+  if (replyId === "MENU_PROFIL") {
+    await startProfileFlow(from);
+    return;
+  }
 
-  return { ok: true, draft, preview: buildPreview(draft), questions: draft.questions };
+  if (replyId === "DOC_DEVIS" || replyId === "DOC_FACTURE" || replyId === "DOC_RECU") {
+    const map = { DOC_DEVIS: "devis", DOC_FACTURE: "facture", DOC_RECU: "recu" };
+    s.step = "collecting_doc";
+    s.mode = map[replyId];
+    await sendText(from, `📄 OK. Mode: *${s.mode}*\nEnvoie tes détails.`);
+    return;
+  }
+
+  await sendText(from, "⚠️ Action non reconnue. Tape *menu*.");
 }
 
-// ✅ FONCTION PRINCIPALE DE TRAITEMENT WHATSAPP
 async function handleIncomingMessage(value) {
-  console.log("\n🔧 === KADI ENGINE - TRAITEMENT ====");
-  
-  try {
-    // 1. Vérifier si c'est un message texte
-    if (value.messages && value.messages[0]) {
-      const message = value.messages[0];
-      const from = message.from;
-      const text = message.text?.body?.trim() || "";
-      
-      console.log(`📱 Message reçu de ${from}: "${text}"`);
-      console.log(`📱 Type: ${message.type}, ID: ${message.id}`);
-      
-      // 2. Traiter la commande "Menu"
-      if (text.toLowerCase() === "menu") {
-        console.log("✅ Commande 'Menu' détectée!");
-        
-        const menuResponse = `✅ *KADI BOT EST EN LIGNE !*\n
-📋 *MENU PRINCIPAL*
-1️⃣ - Créer un devis
-2️⃣ - Créer une facture
-3️⃣ - Voir mes documents
-4️⃣ - Support technique
-5️⃣ - Informations compte
+  // value = change.value
+  if (!value) return;
 
-👉 *Tapez le numéro correspondant (1, 2, 3...)*`;
-        
-        console.log("📤 Envoi réponse Menu...");
-        await sendWhatsAppMessage(from, menuResponse);
-        console.log("🎯 Réponse Menu envoyée avec succès!");
-      }
-      // 3. Traiter d'autres commandes numériques
-      else if (["1", "2", "3", "4", "5"].includes(text)) {
-        const responses = {
-          "1": "📝 *CRÉATION DE DEVIS*\nEnvoyez les détails sous la forme:\nClient: [Nom]\nProduit1 x 2 5000\nProduit2 x 1 3000",
-          "2": "🧾 *CRÉATION DE FACTURE*\nEnvoyez les détails sous la forme:\nClient: [Nom]\nService1 x 3 7500\nService2 x 1 12000",
-          "3": "📂 *MES DOCUMENTS*\nFonctionnalité en développement...",
-          "4": "🔧 *SUPPORT TECHNIQUE*\nContact: support@kadi.com\nTél: +226 XX XX XX XX",
-          "5": "👤 *INFORMATIONS COMPTE*\nVous êtes connecté avec le numéro: " + from
-        };
-        
-        console.log(`📤 Réponse à la commande ${text}`);
-        await sendWhatsAppMessage(from, responses[text]);
-      }
-      // 4. Réponse par défaut
-      else if (text) {
-        console.log(`⚠️ Message non reconnu: "${text}"`);
-        await sendWhatsAppMessage(from, 
-          `📝 J'ai reçu votre message: "${text}"\n\n` +
-          `Tapez *MENU* pour voir les options disponibles.`
-        );
-      }
-    }
-    // 5. Vérifier les statuts de message
-    else if (value.statuses && value.statuses[0]) {
-      const status = value.statuses[0];
-      console.log(`📊 Statut message ${status.id}: ${status.status}`);
-    }
-    else {
-      console.log("⚠️ Format de payload inattendu:", JSON.stringify(value, null, 2));
-    }
-    
-  } catch (error) {
-    console.error("💥 ERREUR dans handleIncomingMessage:", error.message);
-    console.error("Stack:", error.stack);
+  // STATUSES
+  if (value.statuses?.length) {
+    const st = value.statuses[0];
+    console.log("📊 Status:", st.status, "id:", st.id);
+    return;
   }
-  
-  console.log("🔧 === FIN TRAITEMENT ====\n");
+
+  // MESSAGES
+  if (!value.messages?.length) {
+    console.log("ℹ️ Webhook reçu sans messages (probablement status/update).");
+    return;
+  }
+
+  const msg = value.messages[0];
+  const from = msg.from;
+
+  // Interactive reply button
+  if (msg.type === "interactive") {
+    const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
+    if (replyId) {
+      await handleInteractiveReply(from, replyId);
+      return;
+    }
+  }
+
+  // Image (logo)
+  if (msg.type === "image") {
+    await handleLogoImage(from, msg);
+    return;
+  }
+
+  // Text
+  const text = norm(msg.text?.body);
+  if (!text) return;
+
+  const lower = text.toLowerCase();
+
+  // Priorité : si on est dans flow profil
+  const consumed = await handleProfileAnswer(from, text);
+  if (consumed) return;
+
+  if (lower === "menu" || lower === "m") {
+    await sendMainMenu(from);
+    return;
+  }
+
+  // Option: "profil"
+  if (lower === "profil" || lower === "profile") {
+    await startProfileFlow(from);
+    return;
+  }
+
+  // fallback
+  await sendText(from, `🤖 J’ai reçu: "${text}"\n\nTape *menu* pour voir les options.`);
 }
 
-// Export des fonctions
-module.exports = {
-  generateDocumentFromText,
-  applyAnswerToDraft,
-  applyCommandToDraft,
-  buildPreview,
-  cleanNumber,
-  handleIncomingMessage,
-  sendWhatsAppMessage  // Exporté pour les tests
-};
+module.exports = { handleIncomingMessage, sendMainMenu };
