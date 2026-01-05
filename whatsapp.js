@@ -1,18 +1,20 @@
+// whatsapp.js
 const axios = require("axios");
 
-function getGraphBase() {
-  const v = process.env.GRAPH_VERSION || "v22.0";
-  return `https://graph.facebook.com/${v}`;
+function must(v, name) {
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
 }
 
-async function sendTextMessage(to, text) {
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+async function sendTextMessage({ to, text, phoneNumberIdOverride }) {
+  const token = must(process.env.WHATSAPP_TOKEN, "WHATSAPP_TOKEN");
+  const graphVersion = process.env.GRAPH_VERSION || "v22.0";
 
-  if (!token) throw new Error("Missing WHATSAPP_TOKEN");
-  if (!phoneNumberId) throw new Error("Missing WHATSAPP_PHONE_NUMBER_ID");
+  // Par défaut on utilise l'ID en env, mais on peut overrider avec celui du webhook entrant
+  const phoneNumberId =
+    phoneNumberIdOverride || must(process.env.WHATSAPP_PHONE_NUMBER_ID, "WHATSAPP_PHONE_NUMBER_ID");
 
-  const url = `${getGraphBase()}/${phoneNumberId}/messages`;
+  const url = `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`;
 
   const payload = {
     messaging_product: "whatsapp",
@@ -21,15 +23,12 @@ async function sendTextMessage(to, text) {
     text: { body: text },
   };
 
-  const res = await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 20000,
+  const r = await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    timeout: 15000,
   });
 
-  return res.data;
+  return r.data;
 }
 
 module.exports = { sendTextMessage };
