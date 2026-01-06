@@ -14,7 +14,7 @@ function extFromMime(mime) {
 
 async function uploadLogoBuffer({ userId, buffer, mimeType }) {
   const ext = extFromMime(mimeType);
-  const filePath = `${userId}/logo.${ext}`; // stable (remplace le logo)
+  const filePath = `${userId}/logo.${ext}`; // stable
   const contentType = mimeType || "image/jpeg";
 
   const { error } = await supabase.storage
@@ -22,7 +22,6 @@ async function uploadLogoBuffer({ userId, buffer, mimeType }) {
     .upload(filePath, buffer, { contentType, upsert: true });
 
   if (error) throw error;
-
   return { filePath };
 }
 

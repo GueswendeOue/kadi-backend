@@ -5,11 +5,15 @@ const sessions = new Map();
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, {
-      step: "idle",          // idle | menu | profile | collecting_doc
+      step: "idle",          // idle | profile | collecting_doc | confirming_doc
       profileStep: null,     // business_name | address | phone | email | ifu | rccm | logo
       mode: null,            // devis | facture | recu
-      lastDocDraft: null,    // futur: brouillon facture/devis
-      lastUpdated: Date.now()
+
+      // document draft
+      lastDocDraft: null,
+      pendingQuestion: null,
+
+      lastUpdated: Date.now(),
     });
   }
   return sessions.get(userId);
