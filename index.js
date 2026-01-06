@@ -1,3 +1,4 @@
+// index.js (✅ APP_SECRET partout)
 "use strict";
 
 require("dotenv").config();
@@ -12,7 +13,7 @@ console.log("ENV CHECK:", {
   HAS_WHATSAPP_TOKEN: !!process.env.WHATSAPP_TOKEN,
   HAS_PHONE_NUMBER_ID: !!process.env.PHONE_NUMBER_ID,
   HAS_VERIFY_TOKEN: !!process.env.VERIFY_TOKEN,
-  HAS_META_APP_SECRET: !!process.env.APP_SECRET,
+  HAS_APP_SECRET: !!process.env.APP_SECRET, // ✅ renommé
   HAS_SUPABASE_URL: !!process.env.SUPABASE_URL,
   HAS_SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
 });
@@ -21,7 +22,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-// ✅ Body parsing standard (AUCUNE vérif signature ici)
+// ✅ Body parsing standard (PAS de vérif signature ici)
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => res.status(200).send("✅ Kadi backend is running"));
@@ -67,13 +68,14 @@ app.post(
           const value = change.value;
           if (!value) continue;
 
+          // traitement async (ne bloque pas la réponse Meta)
           Promise.resolve(handleIncomingMessage(value)).catch((e) => {
-            console.error("💥 handleIncomingMessage error:", e.message);
+            console.error("💥 handleIncomingMessage error:", e?.message || e);
           });
         }
       }
     } catch (e) {
-      console.error("💥 Webhook fatal error:", e.message);
+      console.error("💥 Webhook fatal error:", e?.message || e);
     }
   }
 );
