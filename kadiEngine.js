@@ -1,7 +1,4 @@
-// kadiEngine.js
 "use strict";
-
-const axios = require("axios");
 
 const { getSession } = require("./kadiState");
 const { parseCommand } = require("./kadiCommands");
@@ -11,6 +8,7 @@ const { saveDocument } = require("./kadiRepo");
 
 const { getOrCreateProfile, updateProfile } = require("./store");
 const { uploadLogoBuffer, getSignedLogoUrl } = require("./supabaseStorage");
+const { getWallet, decrementOneCredit, applyVoucher } = require("./billingRepo");
 
 const {
   sendText,
@@ -21,27 +19,28 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
-// =====================
-// Utils
-// =====================
+// -------------------- Utils --------------------
 function norm(s) {
   return String(s || "").trim();
 }
-
 function formatDateISO(d = new Date()) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
-
 function cleanNumber(str) {
   const s = String(str).replace(/\s/g, "").replace(/,/g, ".");
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
+function money(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  return String(Math.round(n));
+}
 
-// qty + PU parsing (robuste)
+// Parsing robuste item
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -73,22 +72,22 @@ function parseItemLine(line) {
       .replace(/\s+/g, " ")
       .trim() || raw;
 
-  const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : null;
-
-  return { label, qty: Number(qty), unitPrice, amount, raw };
+  const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : 0;
+  return { label, qty: Number(qty), unitPrice: unitPrice ?? 0, amount, raw };
 }
 
 function sumItems(items) {
   let sum = 0;
   for (const it of items || []) {
-    if (typeof it?.amount === "number" && Number.isFinite(it.amount)) sum += it.amount;
+    const a = Number(it?.amount);
+    if (Number.isFinite(a)) sum += a;
   }
   return sum;
 }
 
 function computeFinance(doc) {
   const subtotal = sumItems(doc.items || []);
-  const gross = subtotal; // (TVA/remise plus tard)
+  const gross = subtotal;
   return {
     subtotal,
     discount: 0,
@@ -100,50 +99,49 @@ function computeFinance(doc) {
   };
 }
 
-function money(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0";
-  return String(Math.round(n));
-}
-
-// Année propre: 2026-FAC-0001
-function withYear(docNumber, dateISO) {
-  const y = String(dateISO || formatDateISO()).slice(0, 4);
-  if (!docNumber) return `${y}-DOC-0000`;
-  if (docNumber.startsWith(`${y}-`)) return docNumber;
-  return `${y}-${docNumber}`;
-}
-
-// download logo via signed url (bucket privé)
-async function downloadSignedLogoToBuffer(signedUrl) {
-  if (!signedUrl) return null;
-  const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 30000 });
-  return Buffer.from(resp.data);
-}
-
-// =====================
-// MENUS
-// =====================
+// -------------------- Menus --------------------
 async function sendMainMenu(to) {
-  // WhatsApp buttons max = 3
-  return sendButtons(to, "📋 *Menu KADI*\nChoisis une action :", [
-    { id: "MENU_DEVIS", title: "Créer un devis" },
-    { id: "MENU_FACTURE", title: "Créer une facture" },
-    { id: "MENU_PROFIL", title: "Profil entreprise" },
-  ]);
+  const wallet = await getWallet(to);
+  return sendButtons(
+    to,
+    `📋 *Menu KADI*\nCrédits: *${wallet.credits}*\nChoisis une action :`,
+    [
+      { id: "MENU_FACTURE", title: "Créer facture" },
+      { id: "MENU_PROFIL", title: "Profil entreprise" },
+      { id: "MENU_TOPUP", title: "Acheter crédits" },
+    ]
+  );
 }
 
 async function sendAfterPreviewMenu(to) {
   return sendButtons(to, "✅ Que veux-tu faire ?", [
-    { id: "DOC_CONFIRM", title: "Confirmer" },
+    { id: "DOC_CONFIRM", title: "Confirmer PDF" },
     { id: "DOC_RESTART", title: "Recommencer" },
     { id: "MENU_HOME", title: "Menu" },
   ]);
 }
 
-// =====================
-// PROFILE FLOW (0 au lieu de -)
-// =====================
+async function sendTopupInstructions(to) {
+  return sendText(
+    to,
+    [
+      "💳 *Acheter des crédits KADI*",
+      "",
+      "✅ Pack recommandé : *2000 FCFA = 25 crédits* (1 crédit = 1 PDF)",
+      "",
+      "🟧 *Orange Money (manuel pour l’instant)*",
+      "1) Fais un dépôt OM vers notre numéro (bientôt automatisé)",
+      "2) Après paiement, tu recevras un *code* (voucher)",
+      "3) Active-le ici en envoyant :",
+      "",
+      "*code:XXXX-XXXX*",
+      "",
+      "📌 Tu peux aussi taper *menu* pour revenir.",
+    ].join("\n")
+  );
+}
+
+// -------------------- Profile Flow (0 = ignorer) --------------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -161,52 +159,47 @@ async function handleProfileAnswer(from, text) {
   const t = norm(text);
   if (s.step !== "profile" || !s.profileStep) return false;
 
+  const isSkip = t === "0";
   const step = s.profileStep;
 
   if (step === "business_name") {
-    await updateProfile(from, { business_name: t });
+    await updateProfile(from, { business_name: isSkip ? null : t });
     s.profileStep = "address";
-    await sendText(from, "2/7 — Adresse ?\nEx: Ouaga, Karpala, Secteur 05");
+    await sendText(from, "2/7 — Adresse ? (ou tape 0)");
     return true;
   }
-
   if (step === "address") {
-    await updateProfile(from, { address: t });
+    await updateProfile(from, { address: isSkip ? null : t });
     s.profileStep = "phone";
-    await sendText(from, "3/7 — Téléphone pro ?\nEx: +226 70 62 60 55");
+    await sendText(from, "3/7 — Téléphone pro ? (ou tape 0)");
     return true;
   }
-
   if (step === "phone") {
-    await updateProfile(from, { phone: t });
+    await updateProfile(from, { phone: isSkip ? null : t });
     s.profileStep = "email";
     await sendText(from, "4/7 — Email ? (ou tape 0)");
     return true;
   }
-
   if (step === "email") {
-    await updateProfile(from, { email: t === "0" ? null : t });
+    await updateProfile(from, { email: isSkip ? null : t });
     s.profileStep = "ifu";
     await sendText(from, "5/7 — IFU ? (ou tape 0)");
     return true;
   }
-
   if (step === "ifu") {
-    await updateProfile(from, { ifu: t === "0" ? null : t });
+    await updateProfile(from, { ifu: isSkip ? null : t });
     s.profileStep = "rccm";
     await sendText(from, "6/7 — RCCM ? (ou tape 0)");
     return true;
   }
-
   if (step === "rccm") {
-    await updateProfile(from, { rccm: t === "0" ? null : t });
+    await updateProfile(from, { rccm: isSkip ? null : t });
     s.profileStep = "logo";
     await sendText(from, "7/7 — Envoie ton *logo* en image 📷 (ou tape 0)");
     return true;
   }
-
   if (step === "logo") {
-    if (t === "0") {
+    if (isSkip) {
       s.step = "idle";
       s.profileStep = null;
       await sendText(from, "✅ Profil enregistré (sans logo).");
@@ -222,8 +215,8 @@ async function handleProfileAnswer(from, text) {
 
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
-
   const mediaId = msg?.image?.id;
+
   if (!mediaId) {
     await sendText(from, "❌ Image reçue mais sans media_id. Réessaie.");
     return;
@@ -247,13 +240,12 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré !");
 }
 
-// =====================
-// DOC FLOW
-// =====================
+// -------------------- Document Flow --------------------
 async function startDocFlow(from, mode) {
   const s = getSession(from);
   s.step = "collecting_doc";
   s.mode = mode;
+
   s.lastDocDraft = {
     type: mode,
     docNumber: null,
@@ -265,7 +257,13 @@ async function startDocFlow(from, mode) {
 
   await sendText(
     from,
-    `🧾 OK. Mode: *${String(mode).toUpperCase()}*\nEnvoie les lignes comme ça :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n(Ensuite tu confirmes pour recevoir le PDF.)`
+    [
+      `🧾 OK. Mode: *${mode.toUpperCase()}*`,
+      "Envoie les lignes comme ça :",
+      "Client: Awa",
+      "Design logo x1 30000",
+      "Impression x2 5000",
+    ].join("\n")
   );
 }
 
@@ -273,24 +271,20 @@ async function buildPreviewMessage({ profile, doc }) {
   const bp = profile || {};
   const finance = computeFinance(doc);
 
-  const logoOk = bp.logo_path ? "OK ✅" : "0";
-
   const header = [
-    bp.business_name ? `🏢 ${bp.business_name}` : null,
+    bp.business_name ? `🏢 ${bp.business_name}` : "🏢 (Entreprise non définie)",
     bp.address ? `📍 ${bp.address}` : null,
     bp.phone ? `📞 ${bp.phone}` : null,
     bp.email ? `✉️ ${bp.email}` : null,
     bp.ifu ? `IFU: ${bp.ifu}` : null,
     bp.rccm ? `RCCM: ${bp.rccm}` : null,
-    `🖼️ Logo: ${logoOk}`,
+    bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: (aucun)`,
   ]
     .filter(Boolean)
     .join("\n");
 
   const lines = (doc.items || [])
-    .map((it, idx) => {
-      return `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`;
-    })
+    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`)
     .join("\n");
 
   return [
@@ -303,56 +297,11 @@ async function buildPreviewMessage({ profile, doc }) {
     "*Lignes :*",
     lines || "—",
     "",
-    `Sous-total : ${money(finance.subtotal)}`,
-    `Remise : ${money(finance.discount)}`,
-    `Net : ${money(finance.net)}`,
-    `TVA : ${money(finance.vat)}`,
     `Total : ${money(finance.gross)}`,
-    `Acompte : ${money(finance.deposit)}`,
-    `Reste : ${money(finance.due)}`,
     "",
-    "✅ Si c’est bon, clique *Confirmer* pour recevoir le PDF.",
+    "🧾 *Arrêter la présente facture à la somme de* :",
+    `*${money(finance.gross)} FCFA*`,
   ].join("\n");
-}
-
-function applyCommandToDraft(draft, cmd) {
-  if (!draft) return false;
-
-  switch (cmd.type) {
-    case "cancel":
-      return { action: "cancel" };
-
-    case "set_client":
-      draft.client = cmd.value || draft.client;
-      return true;
-
-    case "set_date":
-      draft.date = cmd.value || draft.date;
-      return true;
-
-    case "add_lines":
-      for (const l of cmd.lines || []) {
-        const it = parseItemLine(l);
-        if (it) draft.items.push(it);
-      }
-      return true;
-
-    case "delete_item":
-      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
-        draft.items.splice(cmd.index - 1, 1);
-      }
-      return true;
-
-    case "replace_item":
-      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
-        const it = parseItemLine(cmd.line);
-        if (it) draft.items[cmd.index - 1] = it;
-      }
-      return true;
-
-    default:
-      return false;
-  }
 }
 
 async function handleDocText(from, text) {
@@ -361,29 +310,6 @@ async function handleDocText(from, text) {
 
   const draft = s.lastDocDraft;
 
-  // 1) commandes (client:, ajoute:, supprime 2, corrige 3: ...)
-  const cmd = parseCommand(text);
-  if (cmd) {
-    const result = applyCommandToDraft(draft, cmd);
-    if (result && result.action === "cancel") {
-      s.step = "idle";
-      s.mode = null;
-      s.lastDocDraft = null;
-      await sendText(from, "❌ OK, document annulé.");
-      await sendMainMenu(from);
-      return true;
-    }
-
-    // après commande -> preview
-    draft.finance = computeFinance(draft);
-    const profile = await getOrCreateProfile(from);
-    const preview = await buildPreviewMessage({ profile, doc: draft });
-    await sendText(from, preview);
-    await sendAfterPreviewMenu(from);
-    return true;
-  }
-
-  // 2) parse brut lignes
   const lines = String(text || "")
     .split("\n")
     .map((l) => l.trim())
@@ -419,34 +345,40 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
-  // doc number (avec année)
-  const rawNum = nextDocNumber(draft.type);
-  draft.docNumber = withYear(rawNum, draft.date);
+  // 1) décrément crédit (atomique)
+  const dec = await decrementOneCredit(from);
+  if (!dec.ok) {
+    await sendText(
+      from,
+      `⛔ *Crédits insuffisants.*\nCrédits: *${dec.credits_left || 0}*\n\n👉 Clique *Acheter crédits* ou envoie un code: *code:XXXX-XXXX*`
+    );
+    await sendMainMenu(from);
+    return;
+  }
 
-  // profile + logo
+  // 2) doc number
+  draft.docNumber = nextDocNumber(draft.type);
+  draft.finance = draft.finance || computeFinance(draft);
+
+  // 3) récupérer profil + logo buffer (signed url)
   const profile = await getOrCreateProfile(from);
 
   let logoBuffer = null;
   if (profile?.logo_path) {
     try {
       const signedUrl = await getSignedLogoUrl(profile.logo_path);
-      logoBuffer = await downloadSignedLogoToBuffer(signedUrl);
+      if (signedUrl) {
+        // signedUrl est public temporaire -> download direct via axios sans token whatsapp
+        const axios = require("axios");
+        const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 30000 });
+        logoBuffer = Buffer.from(resp.data);
+      }
     } catch (e) {
-      console.error("logo signed url / download error:", e?.message);
+      console.error("logo download error:", e?.message);
     }
   }
 
-  // save doc in DB
-  try {
-    await saveDocument({ waId: from, doc: { ...draft, finance: computeFinance(draft) } });
-  } catch (e) {
-    console.error("saveDocument error:", e?.message);
-    await sendText(from, "⚠️ Sauvegarde historique: erreur (on continue quand même).");
-  }
-
-  // build pdf with business profile + logo
-  const finance = computeFinance(draft);
-
+  // 4) build pdf
   const pdfBuf = await buildPdfBuffer({
     docData: {
       type: String(draft.type || "").toUpperCase(),
@@ -454,33 +386,24 @@ async function confirmAndSendPdf(from) {
       date: draft.date,
       client: draft.client,
       items: draft.items || [],
-      total: finance.gross,
+      total: draft.finance?.gross ?? computeFinance(draft).gross,
     },
     businessProfile: profile,
     logoBuffer,
-    logoMime: null,
   });
 
-  // upload pdf to WhatsApp
-  const fileName = `${draft.docNumber || "KADI"}-${draft.date || formatDateISO()}.pdf`;
-  let mediaId = null;
+  // 5) upload + send doc
+  const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
 
-  try {
-    const up = await uploadMediaBuffer({
-      buffer: pdfBuf,
-      filename: fileName,
-      mimeType: "application/pdf",
-    });
-    mediaId = up?.id;
-  } catch (e) {
-    console.error("uploadMediaBuffer error:", e?.response?.data || e?.message);
-  }
+  const up = await uploadMediaBuffer({
+    buffer: pdfBuf,
+    filename: fileName,
+    mimeType: "application/pdf",
+  });
 
+  const mediaId = up?.id;
   if (!mediaId) {
-    await sendText(
-      from,
-      "❌ Je n’ai pas pu envoyer le PDF (upload media échoué). Regarde les logs Render.\n\n✅ Le document est quand même prêt. On peut réessayer."
-    );
+    await sendText(from, "❌ Upload PDF échoué. Regarde les logs Render.");
     return;
   }
 
@@ -488,10 +411,17 @@ async function confirmAndSendPdf(from) {
     to: from,
     mediaId,
     filename: fileName,
-    caption: `✅ ${String(draft.type || "").toUpperCase()} ${draft.docNumber}\nTotal: ${money(finance.gross)} FCFA`,
+    caption: `✅ ${String(draft.type || "").toUpperCase()} ${draft.docNumber} — Total: ${money(draft.finance.gross)} FCFA\nCrédits restants: ${dec.credits_left}`,
   });
 
-  // reset doc flow
+  // 6) save history (best effort)
+  try {
+    await saveDocument({ waId: from, doc: draft });
+  } catch (e) {
+    console.error("saveDocument error:", e?.message);
+  }
+
+  // reset
   s.step = "idle";
   s.mode = null;
   s.lastDocDraft = null;
@@ -499,15 +429,21 @@ async function confirmAndSendPdf(from) {
   await sendMainMenu(from);
 }
 
-// =====================
-// Interactive replies
-// =====================
+// -------------------- Voucher parsing --------------------
+function parseVoucherText(text) {
+  const t = norm(text);
+  const m = t.match(/^code\s*:\s*(.+)$/i);
+  if (!m) return null;
+  return m[1].trim();
+}
+
+// -------------------- Interactive Replies --------------------
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
 
-  if (replyId === "MENU_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "MENU_FACTURE") return startDocFlow(from, "facture");
   if (replyId === "MENU_PROFIL") return startProfileFlow(from);
+  if (replyId === "MENU_TOPUP") return sendTopupInstructions(from);
 
   if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
 
@@ -515,7 +451,7 @@ async function handleInteractiveReply(from, replyId) {
     s.step = "idle";
     s.mode = null;
     s.lastDocDraft = null;
-    await sendText(from, "🔁 OK, on recommence. Choisis une action :");
+    await sendText(from, "🔁 OK, on recommence.");
     return sendMainMenu(from);
   }
 
@@ -524,23 +460,17 @@ async function handleInteractiveReply(from, replyId) {
   await sendText(from, "⚠️ Action non reconnue. Tape *menu*.");
 }
 
-// =====================
-// Main handler
-// =====================
+// -------------------- Main Handler --------------------
 async function handleIncomingMessage(value) {
   if (!value) return;
 
-  // status updates
   if (value.statuses?.length) {
     const st = value.statuses[0];
     console.log("📊 Status:", st.status, "id:", st.id);
     return;
   }
 
-  if (!value.messages?.length) {
-    console.log("ℹ️ Webhook reçu sans messages (probablement status/update).");
-    return;
-  }
+  if (!value.messages?.length) return;
 
   const msg = value.messages[0];
   const from = msg.from;
@@ -552,9 +482,7 @@ async function handleIncomingMessage(value) {
   }
 
   // image (logo)
-  if (msg.type === "image") {
-    return handleLogoImage(from, msg);
-  }
+  if (msg.type === "image") return handleLogoImage(from, msg);
 
   // text
   const text = norm(msg.text?.body);
@@ -562,28 +490,38 @@ async function handleIncomingMessage(value) {
 
   const lower = text.toLowerCase();
 
-  // profile flow consumes first
+  // profile flow first
   if (await handleProfileAnswer(from, text)) return;
 
-  // menu
-  if (lower === "menu" || lower === "m") {
-    return sendMainMenu(from);
+  // voucher
+  const voucher = parseVoucherText(text);
+  if (voucher) {
+    try {
+      const r = await applyVoucher(from, voucher);
+      if (r.ok) {
+        await sendText(from, `✅ Recharge OK ! Crédits: *${r.credits_new}*`);
+      } else {
+        await sendText(from, `❌ Code invalide ou déjà utilisé. Crédits: *${r.credits_new || 0}*`);
+      }
+    } catch (e) {
+      await sendText(from, "⚠️ Erreur lors de l’activation du code. Réessaie.");
+    }
+    await sendMainMenu(from);
+    return;
   }
 
-  // quick start
+  // menu
+  if (lower === "menu" || lower === "m") return sendMainMenu(from);
+
+  // start shortcuts
   if (lower === "facture") return startDocFlow(from, "facture");
-  if (lower === "devis") return startDocFlow(from, "devis");
   if (lower === "profil" || lower === "profile") return startProfileFlow(from);
+  if (lower === "credits" || lower === "crédits") return sendTopupInstructions(from);
 
   // collecting doc
   if (await handleDocText(from, text)) return;
 
-  // fallback
   await sendText(from, `🤖 J’ai reçu: "${text}"\n\nTape *menu* pour voir les options.`);
 }
 
-module.exports = {
-  handleIncomingMessage,
-  sendMainMenu,
-  cleanNumber,
-};
+module.exports = { handleIncomingMessage, sendMainMenu, cleanNumber };
