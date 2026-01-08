@@ -1,24 +1,11 @@
+// kadiEngine.js
 "use strict";
-
-/**
- * kadiEngine.js — VERSION À JOUR (Année + Compteur Supabase + Skip = "0")
- *
- * ✅ Numérotation propre: DEV-2026-0001 / FAC-2026-0001 / RCU-2026-0001
- * ✅ Profil entreprise Supabase (business_profiles)
- * ✅ Logo bucket PRIVÉ (storage) + signed URL (optionnel pour PDF)
- * ✅ Boutons interactifs
- * ✅ Génération PDF + upload WhatsApp + envoi document
- * ✅ "0" pour ignorer (au lieu de "-") — accepte aussi "-" par compat
- */
 
 const axios = require("axios");
 
 const { getSession } = require("./kadiState");
 const { parseCommand } = require("./kadiCommands");
-
-// ✅ IMPORTANT: on utilise le compteur Supabase "par année"
-const { nextDocNumber } = require("./kadiCounterRepo");
-
+const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
 
@@ -34,14 +21,11 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
-// -------------------- Utils --------------------
+// =====================
+// Utils
+// =====================
 function norm(s) {
   return String(s || "").trim();
-}
-
-function isSkip(v) {
-  const t = norm(v);
-  return t === "0" || t === "-" || /^skip$/i.test(t);
 }
 
 function formatDateISO(d = new Date()) {
@@ -57,7 +41,7 @@ function cleanNumber(str) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Parsing robuste: "x2", "2x", "qty 2", "2 * 5000" etc.
+// qty + PU parsing (robuste)
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -65,27 +49,21 @@ function parseItemLine(line) {
   const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
   const numbers = nums.map(cleanNumber).filter((v) => typeof v === "number");
 
-  // qty via "x2" ou "2x"
   let qty = null;
   const xAfter = raw.match(/x\s*(\d+)/i);
   const xBefore = raw.match(/(\d+)\s*x/i);
   if (xAfter) qty = Number(xAfter[1]);
   else if (xBefore) qty = Number(xBefore[1]);
 
-  // prix unitaire = dernier nombre
   let unitPrice = null;
   if (numbers.length >= 1) unitPrice = numbers[numbers.length - 1];
 
-  // si qty pas donné et on a au moins 2 nombres, le premier est qty si petit
   if (!qty && numbers.length >= 2) {
     const first = numbers[0];
-    if (Number.isInteger(first) && first > 0 && first <= 100) qty = first;
-    else qty = 1;
+    qty = Number.isInteger(first) && first > 0 && first <= 100 ? first : 1;
   }
-
   qty = qty || 1;
 
-  // label = texte sans nombres / sans x2
   const label =
     raw
       .replace(/(\d[\d\s.,]*)/g, " ")
@@ -95,10 +73,7 @@ function parseItemLine(line) {
       .replace(/\s+/g, " ")
       .trim() || raw;
 
-  // si pas de prix -> on ignore la ligne (évite montants bizarres)
-  if (unitPrice == null) return null;
-
-  const amount = Number(qty) * Number(unitPrice);
+  const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : null;
 
   return { label, qty: Number(qty), unitPrice, amount, raw };
 }
@@ -111,10 +86,9 @@ function sumItems(items) {
   return sum;
 }
 
-// MVP: pas encore TVA/remise/acompte (on pourra réactiver + tard)
 function computeFinance(doc) {
   const subtotal = sumItems(doc.items || []);
-  const gross = subtotal;
+  const gross = subtotal; // (TVA/remise plus tard)
   return {
     subtotal,
     discount: 0,
@@ -132,8 +106,26 @@ function money(v) {
   return String(Math.round(n));
 }
 
-// -------------------- Menus --------------------
+// Année propre: 2026-FAC-0001
+function withYear(docNumber, dateISO) {
+  const y = String(dateISO || formatDateISO()).slice(0, 4);
+  if (!docNumber) return `${y}-DOC-0000`;
+  if (docNumber.startsWith(`${y}-`)) return docNumber;
+  return `${y}-${docNumber}`;
+}
+
+// download logo via signed url (bucket privé)
+async function downloadSignedLogoToBuffer(signedUrl) {
+  if (!signedUrl) return null;
+  const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 30000 });
+  return Buffer.from(resp.data);
+}
+
+// =====================
+// MENUS
+// =====================
 async function sendMainMenu(to) {
+  // WhatsApp buttons max = 3
   return sendButtons(to, "📋 *Menu KADI*\nChoisis une action :", [
     { id: "MENU_DEVIS", title: "Créer un devis" },
     { id: "MENU_FACTURE", title: "Créer une facture" },
@@ -149,7 +141,9 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// -------------------- Profile Flow --------------------
+// =====================
+// PROFILE FLOW (0 au lieu de -)
+// =====================
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -158,7 +152,7 @@ async function startProfileFlow(from) {
 
   await sendText(
     from,
-    "🏢 *Profil entreprise*\n\n1/7 — Quel est le *nom* de ton entreprise ?\nEx: Gueswende Technologies SARL"
+    "🏢 *Profil entreprise*\n\n1/7 — Quel est le *nom* de ton entreprise ?\nEx: GUESWENDE Technologies"
   );
 }
 
@@ -170,60 +164,56 @@ async function handleProfileAnswer(from, text) {
   const step = s.profileStep;
 
   if (step === "business_name") {
-    if (isSkip(t)) {
-      await sendText(from, "⚠️ Le nom ne peut pas être ignoré. Donne le nom de ton entreprise.");
-      return true;
-    }
     await updateProfile(from, { business_name: t });
     s.profileStep = "address";
-    await sendText(from, "2/7 — Adresse ?\nEx: Ouaga, Karpala, Secteur 05\n(ou tape 0)");
+    await sendText(from, "2/7 — Adresse ?\nEx: Ouaga, Karpala, Secteur 05");
     return true;
   }
 
   if (step === "address") {
-    await updateProfile(from, { address: isSkip(t) ? null : t });
+    await updateProfile(from, { address: t });
     s.profileStep = "phone";
-    await sendText(from, "3/7 — Téléphone pro ?\nEx: +226 70 62 60 55\n(ou tape 0)");
+    await sendText(from, "3/7 — Téléphone pro ?\nEx: +226 70 62 60 55");
     return true;
   }
 
   if (step === "phone") {
-    await updateProfile(from, { phone: isSkip(t) ? null : t });
+    await updateProfile(from, { phone: t });
     s.profileStep = "email";
     await sendText(from, "4/7 — Email ? (ou tape 0)");
     return true;
   }
 
   if (step === "email") {
-    await updateProfile(from, { email: isSkip(t) ? null : t });
+    await updateProfile(from, { email: t === "0" ? null : t });
     s.profileStep = "ifu";
     await sendText(from, "5/7 — IFU ? (ou tape 0)");
     return true;
   }
 
   if (step === "ifu") {
-    await updateProfile(from, { ifu: isSkip(t) ? null : t });
+    await updateProfile(from, { ifu: t === "0" ? null : t });
     s.profileStep = "rccm";
     await sendText(from, "6/7 — RCCM ? (ou tape 0)");
     return true;
   }
 
   if (step === "rccm") {
-    await updateProfile(from, { rccm: isSkip(t) ? null : t });
+    await updateProfile(from, { rccm: t === "0" ? null : t });
     s.profileStep = "logo";
     await sendText(from, "7/7 — Envoie ton *logo* en image 📷 (ou tape 0)");
     return true;
   }
 
   if (step === "logo") {
-    if (isSkip(t)) {
+    if (t === "0") {
       s.step = "idle";
       s.profileStep = null;
       await sendText(from, "✅ Profil enregistré (sans logo).");
       await sendMainMenu(from);
       return true;
     }
-    await sendText(from, "⚠️ Pour le logo, envoie une *image* (pas du texte). Ou tape 0.");
+    await sendText(from, "⚠️ Pour le logo, envoie une *image* (pas du texte). Ou tape 0");
     return true;
   }
 
@@ -257,7 +247,9 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré !");
 }
 
-// -------------------- Document Flow --------------------
+// =====================
+// DOC FLOW
+// =====================
 async function startDocFlow(from, mode) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -273,7 +265,7 @@ async function startDocFlow(from, mode) {
 
   await sendText(
     from,
-    `🧾 OK. Mode: *${mode.toUpperCase()}*\nEnvoie les lignes comme ça :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000`
+    `🧾 OK. Mode: *${String(mode).toUpperCase()}*\nEnvoie les lignes comme ça :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n(Ensuite tu confirmes pour recevoir le PDF.)`
   );
 }
 
@@ -281,7 +273,8 @@ async function buildPreviewMessage({ profile, doc }) {
   const bp = profile || {};
   const finance = computeFinance(doc);
 
-  const logoOk = bp.logo_path ? "OK ✅" : "NON";
+  const logoOk = bp.logo_path ? "OK ✅" : "0";
+
   const header = [
     bp.business_name ? `🏢 ${bp.business_name}` : null,
     bp.address ? `📍 ${bp.address}` : null,
@@ -295,7 +288,9 @@ async function buildPreviewMessage({ profile, doc }) {
     .join("\n");
 
   const lines = (doc.items || [])
-    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`)
+    .map((it, idx) => {
+      return `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`;
+    })
     .join("\n");
 
   return [
@@ -309,10 +304,55 @@ async function buildPreviewMessage({ profile, doc }) {
     lines || "—",
     "",
     `Sous-total : ${money(finance.subtotal)}`,
+    `Remise : ${money(finance.discount)}`,
+    `Net : ${money(finance.net)}`,
     `TVA : ${money(finance.vat)}`,
     `Total : ${money(finance.gross)}`,
+    `Acompte : ${money(finance.deposit)}`,
     `Reste : ${money(finance.due)}`,
+    "",
+    "✅ Si c’est bon, clique *Confirmer* pour recevoir le PDF.",
   ].join("\n");
+}
+
+function applyCommandToDraft(draft, cmd) {
+  if (!draft) return false;
+
+  switch (cmd.type) {
+    case "cancel":
+      return { action: "cancel" };
+
+    case "set_client":
+      draft.client = cmd.value || draft.client;
+      return true;
+
+    case "set_date":
+      draft.date = cmd.value || draft.date;
+      return true;
+
+    case "add_lines":
+      for (const l of cmd.lines || []) {
+        const it = parseItemLine(l);
+        if (it) draft.items.push(it);
+      }
+      return true;
+
+    case "delete_item":
+      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
+        draft.items.splice(cmd.index - 1, 1);
+      }
+      return true;
+
+    case "replace_item":
+      if (cmd.index >= 1 && cmd.index <= draft.items.length) {
+        const it = parseItemLine(cmd.line);
+        if (it) draft.items[cmd.index - 1] = it;
+      }
+      return true;
+
+    default:
+      return false;
+  }
 }
 
 async function handleDocText(from, text) {
@@ -321,45 +361,40 @@ async function handleDocText(from, text) {
 
   const draft = s.lastDocDraft;
 
-  // ✅ Commandes (supprime/corrige/ajoute...) si l’utilisateur les tape
+  // 1) commandes (client:, ajoute:, supprime 2, corrige 3: ...)
   const cmd = parseCommand(text);
   if (cmd) {
-    // MVP: on implémente juste cancel / show_list
-    if (cmd.type === "cancel") {
+    const result = applyCommandToDraft(draft, cmd);
+    if (result && result.action === "cancel") {
       s.step = "idle";
       s.mode = null;
       s.lastDocDraft = null;
-      await sendText(from, "✅ OK, annulé.");
+      await sendText(from, "❌ OK, document annulé.");
       await sendMainMenu(from);
       return true;
     }
-    if (cmd.type === "show_list") {
-      const preview = await buildPreviewMessage({
-        profile: await getOrCreateProfile(from),
-        doc: draft,
-      });
-      await sendText(from, preview);
-      await sendAfterPreviewMenu(from);
-      return true;
-    }
-    // Les autres commandes seront ajoutées plus tard (delete/replace/add)
-    await sendText(from, "⚠️ Commande reconnue, mais pas encore activée dans cette version.");
+
+    // après commande -> preview
+    draft.finance = computeFinance(draft);
+    const profile = await getOrCreateProfile(from);
+    const preview = await buildPreviewMessage({ profile, doc: draft });
+    await sendText(from, preview);
+    await sendAfterPreviewMenu(from);
     return true;
   }
 
+  // 2) parse brut lignes
   const lines = String(text || "")
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // client + items
   for (const line of lines) {
     const m = line.match(/^client\s*[:\-]\s*(.+)$/i);
     if (m && !draft.client) {
       draft.client = m[1].trim() || null;
       continue;
     }
-
     if (/\d/.test(line) && !/^client\s*[:\-]/i.test(line)) {
       const it = parseItemLine(line);
       if (it) draft.items.push(it);
@@ -367,17 +402,6 @@ async function handleDocText(from, text) {
   }
 
   draft.finance = computeFinance(draft);
-
-  // si pas de client -> demande
-  if (!draft.client) {
-    await sendText(from, "👤 Donne le nom du client avec :\nClient: Nom");
-    return true;
-  }
-  // si pas d'items -> demande
-  if (!draft.items.length) {
-    await sendText(from, "🧾 Ajoute au moins une ligne.\nEx: Impression x2 5000");
-    return true;
-  }
 
   const profile = await getOrCreateProfile(from);
   const preview = await buildPreviewMessage({ profile, doc: draft });
@@ -387,89 +411,76 @@ async function handleDocText(from, text) {
   return true;
 }
 
-// (Optionnel) récupère le logo en buffer via signed URL (bucket privé)
-async function tryGetLogoBuffer(from, profile) {
-  try {
-    if (!profile?.logo_path) return null;
-    const signedUrl = await getSignedLogoUrl(profile.logo_path);
-    if (!signedUrl) return null;
-
-    const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 20000 });
-    return Buffer.from(resp.data);
-  } catch (e) {
-    console.error("⚠️ tryGetLogoBuffer failed:", e?.message);
-    return null;
-  }
-}
-
 async function confirmAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
-
   if (!draft) {
     await sendText(from, "❌ Aucun document en cours. Tape *menu*.");
     return;
   }
 
-  if (!draft.client || !draft.items?.length) {
-    await sendText(from, "⚠️ Il manque des infos (client ou lignes). Renvoie les détails puis confirme.");
-    return;
-  }
+  // doc number (avec année)
+  const rawNum = nextDocNumber(draft.type);
+  draft.docNumber = withYear(rawNum, draft.date);
 
-  // ✅ doc number "par année" via Supabase RPC
-  draft.docNumber = await nextDocNumber({
-    waId: from,
-    mode: draft.type,     // "facture" | "devis" | "recu"
-    dateISO: draft.date,  // "YYYY-MM-DD"
-  });
-
-  // Profil pour personnalisation
+  // profile + logo
   const profile = await getOrCreateProfile(from);
 
-  // Logo buffer (bucket privé) — sera utilisé seulement si kadiPdf gère logoBuffer
-  const logoBuffer = await tryGetLogoBuffer(from, profile);
+  let logoBuffer = null;
+  if (profile?.logo_path) {
+    try {
+      const signedUrl = await getSignedLogoUrl(profile.logo_path);
+      logoBuffer = await downloadSignedLogoToBuffer(signedUrl);
+    } catch (e) {
+      console.error("logo signed url / download error:", e?.message);
+    }
+  }
 
-  // Sauve en DB
+  // save doc in DB
   try {
-    await saveDocument({ waId: from, doc: draft });
+    await saveDocument({ waId: from, doc: { ...draft, finance: computeFinance(draft) } });
   } catch (e) {
     console.error("saveDocument error:", e?.message);
     await sendText(from, "⚠️ Sauvegarde historique: erreur (on continue quand même).");
   }
 
-  // Génère PDF (⚠️ si ton kadiPdf n’intègre pas encore logoBuffer/business, il l’ignorera)
+  // build pdf with business profile + logo
+  const finance = computeFinance(draft);
+
   const pdfBuf = await buildPdfBuffer({
-    type: String(draft.type || "").toUpperCase(),
-    docNumber: draft.docNumber,
-    date: draft.date,
-    client: draft.client,
-    items: draft.items || [],
-    total: draft.finance?.gross ?? computeFinance(draft).gross,
-
-    // ✅ Personnalisation (si kadiPdf supporte)
-    business: {
-      name: profile?.business_name || null,
-      address: profile?.address || null,
-      phone: profile?.phone || null,
-      email: profile?.email || null,
-      ifu: profile?.ifu || null,
-      rccm: profile?.rccm || null,
+    docData: {
+      type: String(draft.type || "").toUpperCase(),
+      docNumber: draft.docNumber,
+      date: draft.date,
+      client: draft.client,
+      items: draft.items || [],
+      total: finance.gross,
     },
-    logoBuffer, // Buffer|null
+    businessProfile: profile,
+    logoBuffer,
+    logoMime: null,
   });
 
-  // Upload PDF to WhatsApp
-  const fileName = `${draft.docNumber || "KADI"}-${formatDateISO()}.pdf`;
+  // upload pdf to WhatsApp
+  const fileName = `${draft.docNumber || "KADI"}-${draft.date || formatDateISO()}.pdf`;
+  let mediaId = null;
 
-  const up = await uploadMediaBuffer({
-    buffer: pdfBuf,
-    filename: fileName,
-    mimeType: "application/pdf",
-  });
+  try {
+    const up = await uploadMediaBuffer({
+      buffer: pdfBuf,
+      filename: fileName,
+      mimeType: "application/pdf",
+    });
+    mediaId = up?.id;
+  } catch (e) {
+    console.error("uploadMediaBuffer error:", e?.response?.data || e?.message);
+  }
 
-  const mediaId = up?.id;
   if (!mediaId) {
-    await sendText(from, "❌ Upload PDF échoué (pas de media_id). Regarde les logs Render.");
+    await sendText(
+      from,
+      "❌ Je n’ai pas pu envoyer le PDF (upload media échoué). Regarde les logs Render.\n\n✅ Le document est quand même prêt. On peut réessayer."
+    );
     return;
   }
 
@@ -477,7 +488,7 @@ async function confirmAndSendPdf(from) {
     to: from,
     mediaId,
     filename: fileName,
-    caption: `✅ ${String(draft.type || "").toUpperCase()} ${draft.docNumber}\nTotal: ${money(draft.finance?.gross)}`,
+    caption: `✅ ${String(draft.type || "").toUpperCase()} ${draft.docNumber}\nTotal: ${money(finance.gross)} FCFA`,
   });
 
   // reset doc flow
@@ -488,7 +499,9 @@ async function confirmAndSendPdf(from) {
   await sendMainMenu(from);
 }
 
-// -------------------- Interactive Replies --------------------
+// =====================
+// Interactive replies
+// =====================
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
 
@@ -511,11 +524,13 @@ async function handleInteractiveReply(from, replyId) {
   await sendText(from, "⚠️ Action non reconnue. Tape *menu*.");
 }
 
-// -------------------- Main Webhook Handler --------------------
+// =====================
+// Main handler
+// =====================
 async function handleIncomingMessage(value) {
   if (!value) return;
 
-  // Status updates
+  // status updates
   if (value.statuses?.length) {
     const st = value.statuses[0];
     console.log("📊 Status:", st.status, "id:", st.id);
@@ -547,22 +562,28 @@ async function handleIncomingMessage(value) {
 
   const lower = text.toLowerCase();
 
-  // profile flow consumes
+  // profile flow consumes first
   if (await handleProfileAnswer(from, text)) return;
 
   // menu
-  if (lower === "menu" || lower === "m") return sendMainMenu(from);
+  if (lower === "menu" || lower === "m") {
+    return sendMainMenu(from);
+  }
 
   // quick start
   if (lower === "facture") return startDocFlow(from, "facture");
   if (lower === "devis") return startDocFlow(from, "devis");
   if (lower === "profil" || lower === "profile") return startProfileFlow(from);
 
-  // document collecting
+  // collecting doc
   if (await handleDocText(from, text)) return;
 
   // fallback
   await sendText(from, `🤖 J’ai reçu: "${text}"\n\nTape *menu* pour voir les options.`);
 }
 
-module.exports = { handleIncomingMessage, sendMainMenu, cleanNumber };
+module.exports = {
+  handleIncomingMessage,
+  sendMainMenu,
+  cleanNumber,
+};
