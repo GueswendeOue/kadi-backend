@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const axios = require("axios");
+const FormData = require("form-data");
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -14,36 +15,50 @@ if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
 
 function verifyRequestSignature(req, res, buf) {
   const signature = req.headers["x-hub-signature-256"];
-  if (!signature) throw new Error('Missing "x-hub-signature-256" header.');
-  if (!APP_SECRET) throw new Error("APP_SECRET manquant: impossible de vérifier la signature.");
+  if (!signature) {
+    throw new Error('Missing "x-hub-signature-256" header.');
+  }
+  if (!APP_SECRET) {
+    throw new Error("APP_SECRET manquant: impossible de vérifier la signature.");
+  }
 
   const [algo, hash] = signature.split("=");
-  if (algo !== "sha256" || !hash) throw new Error("Invalid signature header format.");
+  if (algo !== "sha256" || !hash) {
+    throw new Error("Invalid signature header format.");
+  }
 
-  const expected = crypto.createHmac("sha256", APP_SECRET).update(buf).digest("hex");
-  if (hash !== expected) throw new Error("Invalid request signature.");
+  const expected = crypto
+    .createHmac("sha256", APP_SECRET)
+    .update(buf)
+    .digest("hex");
+
+  if (hash !== expected) {
+    throw new Error("Invalid request signature.");
+  }
 }
 
-function authHeaders(extra = {}) {
-  return {
-    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-    ...extra,
-  };
+function graphUrl(path) {
+  return `https://graph.facebook.com/${VERSION}/${path}`;
 }
 
 async function sendText(to, text) {
-  const url = `https://graph.facebook.com/${VERSION}/${PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  };
 
   const resp = await axios.post(url, payload, {
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
     timeout: 15000,
   });
   return resp.data;
 }
 
 async function sendButtons(to, bodyText, buttons) {
-  const url = `https://graph.facebook.com/${VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -61,21 +76,24 @@ async function sendButtons(to, bodyText, buttons) {
   };
 
   const resp = await axios.post(url, payload, {
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
     timeout: 15000,
   });
   return resp.data;
 }
 
 async function getMediaInfo(mediaId) {
-  const url = `https://graph.facebook.com/${VERSION}/${mediaId}`;
-  const resp = await axios.get(url, { headers: authHeaders(), timeout: 15000 });
+  const url = graphUrl(`${mediaId}`);
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 15000,
+  });
   return resp.data; // { url, mime_type, sha256, file_size, id }
 }
 
 async function downloadMediaToBuffer(mediaUrl) {
   const resp = await axios.get(mediaUrl, {
-    headers: authHeaders(),
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
     responseType: "arraybuffer",
     timeout: 30000,
   });
@@ -83,22 +101,23 @@ async function downloadMediaToBuffer(mediaUrl) {
 }
 
 /**
- * Upload un buffer (PDF) sur WhatsApp -> retourne { id }
+ * Upload buffer as WhatsApp media (PDF)
+ * returns: { id: "MEDIA_ID" }
  */
 async function uploadMediaBuffer({ buffer, filename, mimeType }) {
-  const url = `https://graph.facebook.com/${VERSION}/${PHONE_NUMBER_ID}/media`;
+  const url = graphUrl(`${PHONE_NUMBER_ID}/media`);
 
-  // Axios form-data (sans lib) : on passe par multipart via FormData natif Node? (pas stable)
-  // 👉 Solution simple & fiable : utiliser "form-data" package.
-  // npm i form-data
-  const FormData = require("form-data");
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
-  form.append("file", buffer, { filename, contentType: mimeType });
+  form.append("type", mimeType || "application/pdf");
+  form.append("file", buffer, {
+    filename: filename || "document.pdf",
+    contentType: mimeType || "application/pdf",
+  });
 
   const resp = await axios.post(url, form, {
     headers: {
-      ...authHeaders(),
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
       ...form.getHeaders(),
     },
     maxBodyLength: Infinity,
@@ -109,7 +128,7 @@ async function uploadMediaBuffer({ buffer, filename, mimeType }) {
 }
 
 async function sendDocument({ to, mediaId, filename, caption }) {
-  const url = `https://graph.facebook.com/${VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -122,8 +141,8 @@ async function sendDocument({ to, mediaId, filename, caption }) {
   };
 
   const resp = await axios.post(url, payload, {
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    timeout: 30000,
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    timeout: 15000,
   });
 
   return resp.data;

@@ -21,7 +21,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-// Body parsing standard (pas de signature check ici)
+// Standard parsing (pas de signature ici)
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => res.status(200).send("✅ Kadi backend is running"));
@@ -41,7 +41,7 @@ app.get("/webhook", (req, res) => {
   return res.status(200).send(challenge);
 });
 
-// Webhook receive (POST) + signature verify UNIQUEMENT ici
+// Webhook receive (POST) — signature verify uniquement ici
 app.post(
   "/webhook",
   express.json({
@@ -52,14 +52,17 @@ app.post(
     },
   }),
   (req, res) => {
+    // répondre immédiatement à Meta
     res.status(200).send("EVENT_RECEIVED");
 
     try {
       const body = req.body || {};
       if (body.object !== "whatsapp_business_account") return;
 
-      for (const entry of body.entry || []) {
-        for (const change of entry.changes || []) {
+      const entries = body.entry || [];
+      for (const entry of entries) {
+        const changes = entry.changes || [];
+        for (const change of changes) {
           const value = change.value;
           if (!value) continue;
 

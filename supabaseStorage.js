@@ -1,5 +1,6 @@
 "use strict";
 
+const axios = require("axios");
 const { supabase } = require("./supabaseClient");
 
 const BUCKET = process.env.SUPABASE_BUCKET_LOGOS || "kadi-logos";
@@ -14,12 +15,14 @@ function extFromMime(mime) {
 
 async function uploadLogoBuffer({ userId, buffer, mimeType }) {
   const ext = extFromMime(mimeType);
-  const filePath = `${userId}/logo.${ext}`; // stable
-  const contentType = mimeType || "image/jpeg";
+  const filePath = `${userId}/logo.${ext}`;
 
   const { error } = await supabase.storage
     .from(BUCKET)
-    .upload(filePath, buffer, { contentType, upsert: true });
+    .upload(filePath, buffer, {
+      contentType: mimeType || "image/jpeg",
+      upsert: true,
+    });
 
   if (error) throw error;
   return { filePath };
@@ -36,4 +39,14 @@ async function getSignedLogoUrl(logoPath) {
   return data?.signedUrl || null;
 }
 
-module.exports = { uploadLogoBuffer, getSignedLogoUrl };
+async function downloadSignedUrlToBuffer(signedUrl) {
+  if (!signedUrl) return null;
+  const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 30000 });
+  return Buffer.from(resp.data);
+}
+
+module.exports = {
+  uploadLogoBuffer,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+};

@@ -1,14 +1,11 @@
 "use strict";
 
-const { getSession } = require("./kadiState");
-const { parseCommand } = require("./kadiCommands");
+const { getSession, resetSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
-
 const { getOrCreateProfile, updateProfile } = require("./store");
-const { uploadLogoBuffer, getSignedLogoUrl } = require("./supabaseStorage");
-const { getWallet, decrementOneCredit, applyVoucher } = require("./billingRepo");
+const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
 
 const {
   sendText,
@@ -19,34 +16,40 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
-// -------------------- Utils --------------------
+const {
+  getBalance,
+  consumeCredit,
+  createRechargeCodes,
+  redeemCode,
+  addCredits,
+} = require("./kadiCreditsRepo");
+
+const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
+
+// ---------------- Utils ----------------
 function norm(s) {
   return String(s || "").trim();
 }
+
 function formatDateISO(d = new Date()) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
+
 function cleanNumber(str) {
   const s = String(str).replace(/\s/g, "").replace(/,/g, ".");
   const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-function money(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0";
-  return String(Math.round(n));
+  return Number.isFinite(n) ? n : 0;
 }
 
-// Parsing robuste item
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
   const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
-  const numbers = nums.map(cleanNumber).filter((v) => typeof v === "number");
+  const numbers = nums.map(cleanNumber);
 
   let qty = null;
   const xAfter = raw.match(/x\s*(\d+)/i);
@@ -54,12 +57,12 @@ function parseItemLine(line) {
   if (xAfter) qty = Number(xAfter[1]);
   else if (xBefore) qty = Number(xBefore[1]);
 
-  let unitPrice = null;
+  let unitPrice = 0;
   if (numbers.length >= 1) unitPrice = numbers[numbers.length - 1];
 
   if (!qty && numbers.length >= 2) {
     const first = numbers[0];
-    qty = Number.isInteger(first) && first > 0 && first <= 100 ? first : 1;
+    if (Number.isInteger(first) && first > 0 && first <= 100) qty = first;
   }
   qty = qty || 1;
 
@@ -72,14 +75,21 @@ function parseItemLine(line) {
       .replace(/\s+/g, " ")
       .trim() || raw;
 
-  const amount = unitPrice != null ? Number(qty) * Number(unitPrice) : 0;
-  return { label, qty: Number(qty), unitPrice: unitPrice ?? 0, amount, raw };
+  const amount = Number(qty) * Number(unitPrice || 0);
+
+  return {
+    label,
+    qty: Number(qty) || 0,
+    unitPrice: Number(unitPrice) || 0,
+    amount: Number(amount) || 0,
+    raw,
+  };
 }
 
 function sumItems(items) {
   let sum = 0;
   for (const it of items || []) {
-    const a = Number(it?.amount);
+    const a = Number(it?.amount || 0);
     if (Number.isFinite(a)) sum += a;
   }
   return sum;
@@ -88,60 +98,65 @@ function sumItems(items) {
 function computeFinance(doc) {
   const subtotal = sumItems(doc.items || []);
   const gross = subtotal;
-  return {
-    subtotal,
-    discount: 0,
-    net: gross,
-    vat: 0,
-    gross,
-    deposit: 0,
-    due: gross,
-  };
+  return { subtotal, gross };
 }
 
-// -------------------- Menus --------------------
-async function sendMainMenu(to) {
-  const wallet = await getWallet(to);
-  return sendButtons(
-    to,
-    `📋 *Menu KADI*\nCrédits: *${wallet.credits}*\nChoisis une action :`,
-    [
-      { id: "MENU_FACTURE", title: "Créer facture" },
-      { id: "MENU_PROFIL", title: "Profil entreprise" },
-      { id: "MENU_TOPUP", title: "Acheter crédits" },
-    ]
-  );
+function money(v) {
+  const n = Number(v || 0);
+  return String(Math.round(Number.isFinite(n) ? n : 0));
 }
 
-async function sendAfterPreviewMenu(to) {
-  return sendButtons(to, "✅ Que veux-tu faire ?", [
-    { id: "DOC_CONFIRM", title: "Confirmer PDF" },
-    { id: "DOC_RESTART", title: "Recommencer" },
-    { id: "MENU_HOME", title: "Menu" },
+// --------------- Menus (Version B) ---------------
+async function sendHomeMenu(to) {
+  // 3 boutons max
+  return sendButtons(to, "👋 Bonjour. Que souhaitez-vous faire ?", [
+    { id: "HOME_DOCS", title: "Documents" },
+    { id: "HOME_CREDITS", title: "Crédits" },
+    { id: "HOME_PROFILE", title: "Profil" },
   ]);
 }
 
-async function sendTopupInstructions(to) {
-  return sendText(
-    to,
-    [
-      "💳 *Acheter des crédits KADI*",
-      "",
-      "✅ Pack recommandé : *2000 FCFA = 25 crédits* (1 crédit = 1 PDF)",
-      "",
-      "🟧 *Orange Money (manuel pour l’instant)*",
-      "1) Fais un dépôt OM vers notre numéro (bientôt automatisé)",
-      "2) Après paiement, tu recevras un *code* (voucher)",
-      "3) Active-le ici en envoyant :",
-      "",
-      "*code:XXXX-XXXX*",
-      "",
-      "📌 Tu peux aussi taper *menu* pour revenir.",
-    ].join("\n")
-  );
+async function sendDocsMenu(to) {
+  return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
+    { id: "DOC_DEVIS", title: "Devis" },
+    { id: "DOC_FACTURE", title: "Facture" },
+    { id: "DOC_RECU", title: "Reçu" },
+  ]);
 }
 
-// -------------------- Profile Flow (0 = ignorer) --------------------
+async function sendFactureKindMenu(to) {
+  return sendButtons(to, "🧾 Quel type de facture ?", [
+    { id: "FAC_PROFORMA", title: "Pro forma" },
+    { id: "FAC_DEFINITIVE", title: "Définitive" },
+    { id: "BACK_DOCS", title: "Retour" },
+  ]);
+}
+
+async function sendCreditsMenu(to) {
+  return sendButtons(to, "💳 Crédits KADI", [
+    { id: "CREDITS_SOLDE", title: "Voir solde" },
+    { id: "CREDITS_RECHARGE", title: "Recharger" },
+    { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+async function sendProfileMenu(to) {
+  return sendButtons(to, "🏢 Profil entreprise", [
+    { id: "PROFILE_EDIT", title: "Configurer" },
+    { id: "PROFILE_VIEW", title: "Voir" },
+    { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+async function sendAfterPreviewMenu(to) {
+  return sendButtons(to, "✅ Vérifiez. Que souhaitez-vous faire ?", [
+    { id: "DOC_CONFIRM", title: "Confirmer (PDF)" },
+    { id: "DOC_RESTART", title: "Recommencer" },
+    { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+// --------------- Profil entreprise ---------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -150,63 +165,70 @@ async function startProfileFlow(from) {
 
   await sendText(
     from,
-    "🏢 *Profil entreprise*\n\n1/7 — Quel est le *nom* de ton entreprise ?\nEx: GUESWENDE Technologies"
+    "🏢 *Profil entreprise*\n\n1/7 — Nom de l’entreprise ?\nEx: GUESWENDE Technologies\n\n📌 Tapez 0 pour ignorer un champ."
   );
 }
 
 async function handleProfileAnswer(from, text) {
   const s = getSession(from);
-  const t = norm(text);
   if (s.step !== "profile" || !s.profileStep) return false;
 
-  const isSkip = t === "0";
+  const t = norm(text);
+  const skip = t === "0";
+
   const step = s.profileStep;
 
   if (step === "business_name") {
-    await updateProfile(from, { business_name: isSkip ? null : t });
+    await updateProfile(from, { business_name: skip ? null : t });
     s.profileStep = "address";
-    await sendText(from, "2/7 — Adresse ? (ou tape 0)");
+    await sendText(from, "2/7 — Adresse ? (ou 0)");
     return true;
   }
+
   if (step === "address") {
-    await updateProfile(from, { address: isSkip ? null : t });
+    await updateProfile(from, { address: skip ? null : t });
     s.profileStep = "phone";
-    await sendText(from, "3/7 — Téléphone pro ? (ou tape 0)");
+    await sendText(from, "3/7 — Téléphone pro ? (ou 0)");
     return true;
   }
+
   if (step === "phone") {
-    await updateProfile(from, { phone: isSkip ? null : t });
+    await updateProfile(from, { phone: skip ? null : t });
     s.profileStep = "email";
-    await sendText(from, "4/7 — Email ? (ou tape 0)");
+    await sendText(from, "4/7 — Email ? (ou 0)");
     return true;
   }
+
   if (step === "email") {
-    await updateProfile(from, { email: isSkip ? null : t });
+    await updateProfile(from, { email: skip ? null : t });
     s.profileStep = "ifu";
-    await sendText(from, "5/7 — IFU ? (ou tape 0)");
+    await sendText(from, "5/7 — IFU ? (ou 0)");
     return true;
   }
+
   if (step === "ifu") {
-    await updateProfile(from, { ifu: isSkip ? null : t });
+    await updateProfile(from, { ifu: skip ? null : t });
     s.profileStep = "rccm";
-    await sendText(from, "6/7 — RCCM ? (ou tape 0)");
+    await sendText(from, "6/7 — RCCM ? (ou 0)");
     return true;
   }
+
   if (step === "rccm") {
-    await updateProfile(from, { rccm: isSkip ? null : t });
+    await updateProfile(from, { rccm: skip ? null : t });
     s.profileStep = "logo";
-    await sendText(from, "7/7 — Envoie ton *logo* en image 📷 (ou tape 0)");
+    await sendText(from, "7/7 — Envoyez votre logo en *image* (ou tapez 0)");
     return true;
   }
+
   if (step === "logo") {
-    if (isSkip) {
+    if (skip) {
       s.step = "idle";
       s.profileStep = null;
       await sendText(from, "✅ Profil enregistré (sans logo).");
-      await sendMainMenu(from);
+      await sendHomeMenu(from);
       return true;
     }
-    await sendText(from, "⚠️ Pour le logo, envoie une *image* (pas du texte). Ou tape 0");
+    await sendText(from, "⚠️ Pour le logo, envoyez une *image*. Ou tapez 0.");
     return true;
   }
 
@@ -215,10 +237,10 @@ async function handleProfileAnswer(from, text) {
 
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
-  const mediaId = msg?.image?.id;
 
+  const mediaId = msg?.image?.id;
   if (!mediaId) {
-    await sendText(from, "❌ Image reçue mais sans media_id. Réessaie.");
+    await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
     return;
   }
 
@@ -232,22 +254,38 @@ async function handleLogoImage(from, msg) {
   if (s.step === "profile" && s.profileStep === "logo") {
     s.step = "idle";
     s.profileStep = null;
-    await sendText(from, "✅ Logo enregistré ! Profil terminé.");
-    await sendMainMenu(from);
+    await sendText(from, "✅ Logo enregistré. Profil terminé.");
+    await sendHomeMenu(from);
     return;
   }
 
-  await sendText(from, "✅ Logo enregistré !");
+  await sendText(from, "✅ Logo enregistré.");
 }
 
-// -------------------- Document Flow --------------------
-async function startDocFlow(from, mode) {
+// --------------- Crédits ---------------
+async function replyBalance(from) {
+  const bal = await getBalance(from);
+  await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
+}
+
+async function replyRechargeInfo(from) {
+  const label = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
+  await sendText(
+    from,
+    `💰 *Recharger vos crédits KADI*\n\n✅ Actuellement: Orange Money\n📌 Offre: ${label}\n\n🔑 Après paiement, vous recevrez un *code*.\n👉 Envoyez ici: *CODE KDI-XXXX-XXXX*`
+  );
+}
+
+// --------------- Documents ---------------
+async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
   s.mode = mode;
+  s.factureKind = factureKind;
 
   s.lastDocDraft = {
     type: mode,
+    factureKind: factureKind,
     docNumber: null,
     date: formatDateISO(),
     client: null,
@@ -255,52 +293,52 @@ async function startDocFlow(from, mode) {
     finance: null,
   };
 
+  const prefix = mode === "facture"
+    ? (factureKind === "proforma" ? "🧾 Facture Pro forma" : "🧾 Facture Définitive")
+    : (mode === "devis" ? "📝 Devis" : "🧾 Reçu");
+
   await sendText(
     from,
-    [
-      `🧾 OK. Mode: *${mode.toUpperCase()}*`,
-      "Envoie les lignes comme ça :",
-      "Client: Awa",
-      "Design logo x1 30000",
-      "Impression x2 5000",
-    ].join("\n")
+    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000`
   );
 }
 
 async function buildPreviewMessage({ profile, doc }) {
   const bp = profile || {};
-  const finance = computeFinance(doc);
+  const f = computeFinance(doc);
 
   const header = [
-    bp.business_name ? `🏢 ${bp.business_name}` : "🏢 (Entreprise non définie)",
+    bp.business_name ? `🏢 ${bp.business_name}` : null,
     bp.address ? `📍 ${bp.address}` : null,
     bp.phone ? `📞 ${bp.phone}` : null,
     bp.email ? `✉️ ${bp.email}` : null,
     bp.ifu ? `IFU: ${bp.ifu}` : null,
     bp.rccm ? `RCCM: ${bp.rccm}` : null,
-    bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: (aucun)`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: 0`,
+  ].filter(Boolean).join("\n");
 
-  const lines = (doc.items || [])
-    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${it.qty} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`)
-    .join("\n");
+  const title =
+    doc.type === "facture"
+      ? (doc.factureKind === "proforma" ? "FACTURE PRO FORMA" : "FACTURE DÉFINITIVE")
+      : String(doc.type || "").toUpperCase();
+
+  const lines = (doc.items || []).map((it, idx) => (
+    `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
+  )).join("\n");
 
   return [
     header,
     "",
-    `📄 *${String(doc.type || "").toUpperCase()}*`,
+    `📄 *${title}*`,
     `Date : ${doc.date || "—"}`,
     `Client : ${doc.client || "—"}`,
     "",
     "*Lignes :*",
-    lines || "—",
+    lines || "0",
     "",
-    `Total : ${money(finance.gross)}`,
+    `Total : ${money(f.gross)} FCFA`,
     "",
-    "🧾 *Arrêter la présente facture à la somme de* :",
-    `*${money(finance.gross)} FCFA*`,
+    `Arrêtée la présente ${title.toLowerCase()} à la somme de : ${money(f.gross)} FCFA.`,
   ].join("\n");
 }
 
@@ -310,10 +348,7 @@ async function handleDocText(from, text) {
 
   const draft = s.lastDocDraft;
 
-  const lines = String(text || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+  const lines = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
 
   for (const line of lines) {
     const m = line.match(/^client\s*[:\-]\s*(.+)$/i);
@@ -341,60 +376,63 @@ async function confirmAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
   if (!draft) {
-    await sendText(from, "❌ Aucun document en cours. Tape *menu*.");
+    await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
     return;
   }
 
-  // 1) décrément crédit (atomique)
-  const dec = await decrementOneCredit(from);
-  if (!dec.ok) {
-    await sendText(
-      from,
-      `⛔ *Crédits insuffisants.*\nCrédits: *${dec.credits_left || 0}*\n\n👉 Clique *Acheter crédits* ou envoie un code: *code:XXXX-XXXX*`
-    );
-    await sendMainMenu(from);
+  // ✅ check credits
+  const cons = await consumeCredit(from, 1, "pdf");
+  if (!cons.ok) {
+    await sendText(from, `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`);
     return;
   }
 
-  // 2) doc number
-  draft.docNumber = nextDocNumber(draft.type);
-  draft.finance = draft.finance || computeFinance(draft);
+  // numéro
+  draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
 
-  // 3) récupérer profil + logo buffer (signed url)
+  // profile + logo buffer
   const profile = await getOrCreateProfile(from);
 
-  let logoBuffer = null;
+  let logoBuf = null;
   if (profile?.logo_path) {
     try {
-      const signedUrl = await getSignedLogoUrl(profile.logo_path);
-      if (signedUrl) {
-        // signedUrl est public temporaire -> download direct via axios sans token whatsapp
-        const axios = require("axios");
-        const resp = await axios.get(signedUrl, { responseType: "arraybuffer", timeout: 30000 });
-        logoBuffer = Buffer.from(resp.data);
-      }
+      const signed = await getSignedLogoUrl(profile.logo_path);
+      logoBuf = await downloadSignedUrlToBuffer(signed);
     } catch (e) {
       console.error("logo download error:", e?.message);
     }
   }
 
-  // 4) build pdf
+  // PDF buffer
+  const title =
+    draft.type === "facture"
+      ? (draft.factureKind === "proforma" ? "FACTURE PRO FORMA" : "FACTURE DÉFINITIVE")
+      : String(draft.type || "").toUpperCase();
+
+  const total = draft.finance?.gross ?? computeFinance(draft).gross;
+
   const pdfBuf = await buildPdfBuffer({
     docData: {
-      type: String(draft.type || "").toUpperCase(),
+      type: title,
       docNumber: draft.docNumber,
       date: draft.date,
       client: draft.client,
       items: draft.items || [],
-      total: draft.finance?.gross ?? computeFinance(draft).gross,
+      total: total,
     },
     businessProfile: profile,
-    logoBuffer,
+    logoBuffer: logoBuf,
   });
 
-  // 5) upload + send doc
-  const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
+  // save
+  try {
+    await saveDocument({ waId: from, doc: draft });
+  } catch (e) {
+    console.error("saveDocument error:", e?.message);
+  }
 
+  // upload to WhatsApp
+  const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
   const up = await uploadMediaBuffer({
     buffer: pdfBuf,
     filename: fileName,
@@ -403,7 +441,7 @@ async function confirmAndSendPdf(from) {
 
   const mediaId = up?.id;
   if (!mediaId) {
-    await sendText(from, "❌ Upload PDF échoué. Regarde les logs Render.");
+    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
     return;
   }
 
@@ -411,64 +449,117 @@ async function confirmAndSendPdf(from) {
     to: from,
     mediaId,
     filename: fileName,
-    caption: `✅ ${String(draft.type || "").toUpperCase()} ${draft.docNumber} — Total: ${money(draft.finance.gross)} FCFA\nCrédits restants: ${dec.credits_left}`,
+    caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nSolde: ${cons.balance} crédit(s)`,
   });
 
-  // 6) save history (best effort)
-  try {
-    await saveDocument({ waId: from, doc: draft });
-  } catch (e) {
-    console.error("saveDocument error:", e?.message);
-  }
-
-  // reset
+  // reset doc
   s.step = "idle";
   s.mode = null;
+  s.factureKind = null;
   s.lastDocDraft = null;
 
-  await sendMainMenu(from);
+  await sendHomeMenu(from);
 }
 
-// -------------------- Voucher parsing --------------------
-function parseVoucherText(text) {
+// --------------- Admin (codes, topup) ---------------
+async function handleAdmin(from, text) {
+  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) return false;
+
   const t = norm(text);
-  const m = t.match(/^code\s*:\s*(.+)$/i);
-  if (!m) return null;
-  return m[1].trim();
-}
 
-// -------------------- Interactive Replies --------------------
-async function handleInteractiveReply(from, replyId) {
-  const s = getSession(from);
+  // ADMIN CODES 100 25
+  // => génère 100 codes de 25 crédits
+  {
+    const m = t.match(/^ADMIN\s+CODES\s+(\d+)\s+(\d+)$/i);
+    if (m) {
+      const count = Number(m[1]);
+      const creditsEach = Number(m[2]);
 
-  if (replyId === "MENU_FACTURE") return startDocFlow(from, "facture");
-  if (replyId === "MENU_PROFIL") return startProfileFlow(from);
-  if (replyId === "MENU_TOPUP") return sendTopupInstructions(from);
+      const codes = await createRechargeCodes({ count, creditsEach, createdBy: from });
+      const preview = codes.slice(0, 20).map(c => `${c.code} (${c.credits})`).join("\n");
 
-  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
-
-  if (replyId === "DOC_RESTART") {
-    s.step = "idle";
-    s.mode = null;
-    s.lastDocDraft = null;
-    await sendText(from, "🔁 OK, on recommence.");
-    return sendMainMenu(from);
+      await sendText(
+        from,
+        `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}\n\n📌 Astuce: vous pouvez copier/coller ces codes.`
+      );
+      return true;
+    }
   }
 
-  if (replyId === "MENU_HOME") return sendMainMenu(from);
+  // ADMIN ADD 22670626055 25
+  {
+    const m = t.match(/^ADMIN\s+ADD\s+(\d+)\s+(\d+)$/i);
+    if (m) {
+      const wa = m[1];
+      const amt = Number(m[2]);
+      const bal = await addCredits(wa, amt, `admin:${from}`);
+      await sendText(from, `✅ Crédité ${amt} sur ${wa}. Nouveau solde: ${bal}`);
+      return true;
+    }
+  }
 
-  await sendText(from, "⚠️ Action non reconnue. Tape *menu*.");
+  // ADMIN SOLDE 22670626055
+  {
+    const m = t.match(/^ADMIN\s+SOLDE\s+(\d+)$/i);
+    if (m) {
+      const wa = m[1];
+      const bal = await getBalance(wa);
+      await sendText(from, `💳 Solde de ${wa}: ${bal} crédit(s)`);
+      return true;
+    }
+  }
+
+  return false;
 }
 
-// -------------------- Main Handler --------------------
+// --------------- Interactive replies ---------------
+async function handleInteractiveReply(from, replyId) {
+  if (replyId === "BACK_HOME") return sendHomeMenu(from);
+  if (replyId === "HOME_DOCS") return sendDocsMenu(from);
+  if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
+  if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+
+  if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
+  if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
+
+  if (replyId === "DOC_FACTURE") return sendFactureKindMenu(from);
+  if (replyId === "FAC_PROFORMA") return startDocFlow(from, "facture", "proforma");
+  if (replyId === "FAC_DEFINITIVE") return startDocFlow(from, "facture", "definitive");
+  if (replyId === "BACK_DOCS") return sendDocsMenu(from);
+
+  if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
+  if (replyId === "PROFILE_VIEW") {
+    const p = await getOrCreateProfile(from);
+    await sendText(
+      from,
+      `🏢 Profil\nNom: ${p.business_name || "0"}\nAdresse: ${p.address || "0"}\nTel: ${p.phone || "0"}\nEmail: ${p.email || "0"}\nIFU: ${p.ifu || "0"}\nRCCM: ${p.rccm || "0"}\nLogo: ${p.logo_path ? "OK ✅" : "0"}`
+    );
+    return;
+  }
+
+  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
+  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
+
+  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
+  if (replyId === "DOC_RESTART") {
+    const s = getSession(from);
+    s.step = "idle";
+    s.mode = null;
+    s.factureKind = null;
+    s.lastDocDraft = null;
+    await sendText(from, "🔁 Très bien. Recommençons.");
+    return sendDocsMenu(from);
+  }
+
+  await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
+}
+
+// --------------- Main entry ---------------
 async function handleIncomingMessage(value) {
   if (!value) return;
 
-  if (value.statuses?.length) {
-    const st = value.statuses[0];
-    console.log("📊 Status:", st.status, "id:", st.id);
-    return;
-  }
+  // statuses
+  if (value.statuses?.length) return;
 
   if (!value.messages?.length) return;
 
@@ -481,47 +572,58 @@ async function handleIncomingMessage(value) {
     if (replyId) return handleInteractiveReply(from, replyId);
   }
 
-  // image (logo)
-  if (msg.type === "image") return handleLogoImage(from, msg);
+  // image
+  if (msg.type === "image") {
+    return handleLogoImage(from, msg);
+  }
 
   // text
   const text = norm(msg.text?.body);
   if (!text) return;
 
+  // admin commands
+  if (await handleAdmin(from, text)) return;
+
   const lower = text.toLowerCase();
 
-  // profile flow first
+  // profile flow
   if (await handleProfileAnswer(from, text)) return;
 
-  // voucher
-  const voucher = parseVoucherText(text);
-  if (voucher) {
-    try {
-      const r = await applyVoucher(from, voucher);
-      if (r.ok) {
-        await sendText(from, `✅ Recharge OK ! Crédits: *${r.credits_new}*`);
-      } else {
-        await sendText(from, `❌ Code invalide ou déjà utilisé. Crédits: *${r.credits_new || 0}*`);
+  // credits shortcuts
+  if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
+    return replyBalance(from);
+  }
+  if (lower === "recharge") {
+    return replyRechargeInfo(from);
+  }
+
+  // redeem code: CODE KDI-XXXX-XXXX
+  {
+    const m = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
+    if (m) {
+      const result = await redeemCode({ waId: from, code: m[1] });
+      if (!result.ok) {
+        if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
+        return sendText(from, "❌ Code invalide.");
       }
-    } catch (e) {
-      await sendText(from, "⚠️ Erreur lors de l’activation du code. Réessaie.");
+      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
-    await sendMainMenu(from);
-    return;
   }
 
   // menu
-  if (lower === "menu" || lower === "m") return sendMainMenu(from);
+  if (lower === "menu" || lower === "m") return sendHomeMenu(from);
 
-  // start shortcuts
-  if (lower === "facture") return startDocFlow(from, "facture");
-  if (lower === "profil" || lower === "profile") return startProfileFlow(from);
-  if (lower === "credits" || lower === "crédits") return sendTopupInstructions(from);
+  // quick doc
+  if (lower === "devis") return startDocFlow(from, "devis");
+  if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
+  if (lower === "facture") return sendFactureKindMenu(from);
+  if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
 
-  // collecting doc
+  // collecting doc?
   if (await handleDocText(from, text)) return;
 
-  await sendText(from, `🤖 J’ai reçu: "${text}"\n\nTape *menu* pour voir les options.`);
+  // fallback
+  await sendText(from, `Je vous ai lu.\nTapez *MENU* pour commencer.`);
 }
 
-module.exports = { handleIncomingMessage, sendMainMenu, cleanNumber };
+module.exports = { handleIncomingMessage, cleanNumber };
