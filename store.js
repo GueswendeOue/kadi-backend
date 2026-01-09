@@ -14,9 +14,15 @@ async function getOrCreateProfile(userId) {
   if (!data) {
     const { data: created, error: e2 } = await supabase
       .from("business_profiles")
-      .insert([{ user_id: userId }])
+      .insert([
+        {
+          user_id: userId,
+          welcome_credits_granted: false, // ✅ safe même si la colonne n'existe pas encore
+        },
+      ])
       .select("*")
       .single();
+
     if (e2) throw e2;
     return created;
   }
@@ -25,9 +31,14 @@ async function getOrCreateProfile(userId) {
 }
 
 async function updateProfile(userId, patch) {
+  // ✅ évite d’envoyer undefined à Supabase
+  const cleanPatch = Object.fromEntries(
+    Object.entries(patch || {}).filter(([, v]) => v !== undefined)
+  );
+
   const { data, error } = await supabase
     .from("business_profiles")
-    .update(patch)
+    .update(cleanPatch)
     .eq("user_id", userId)
     .select("*")
     .single();

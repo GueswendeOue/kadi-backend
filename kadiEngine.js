@@ -1,11 +1,16 @@
+// kadiEngine.js
 "use strict";
 
-const { getSession, resetSession } = require("./kadiState");
+const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile } = require("./store");
-const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
+const {
+  uploadLogoBuffer,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+} = require("./supabaseStorage");
 
 const {
   sendText,
@@ -24,7 +29,15 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
-const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
+// ---------------- Config ----------------
+const ADMIN_WA_ID = process.env.ADMIN_WA_ID || ""; // ex: "226XXXXXXXX"
+const OM_NUMBER = process.env.OM_NUMBER || "76894642";
+const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
+const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
+const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
+
+// Anti-double welcome in memory (bonus si pas de colonne DB)
+const _WELCOME_CACHE = new Set();
 
 // ---------------- Utils ----------------
 function norm(s) {
@@ -38,39 +51,124 @@ function formatDateISO(d = new Date()) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function cleanNumber(str) {
-  const s = String(str).replace(/\s/g, "").replace(/,/g, ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
+function money(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  return String(Math.round(n));
 }
 
+/**
+ * cleanNumber: tolère
+ * - "1 000 000" / "1,000,000" / "1000000"
+ * - "12,5" (décimal)
+ */
+function cleanNumber(str) {
+  if (str == null) return null;
+  let s = String(str).trim();
+  if (!s) return null;
+
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+
+  if (hasComma && !hasDot) {
+    const parts = s.split(",");
+    // si la partie après virgule != 3 chiffres => décimal (12,5)
+    if (parts.length === 2 && parts[1].length !== 3) {
+      s = `${parts[0]}.${parts[1]}`;
+    } else {
+      // sinon: séparateur milliers
+      s = s.replace(/,/g, "");
+    }
+  } else {
+    s = s.replace(/,/g, "");
+  }
+
+  s = s.replace(/\s/g, "");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Fix principal: évite le regex gourmand qui colle "1 100000" -> 1100000.
+ * On extrait d'abord des tokens \d+ puis on merge 1 + 000 + 000 => 1000000
+ */
+function extractNumbersSmart(text) {
+  const t = String(text || "");
+  const digitTokens = t.match(/\d+/g) || [];
+
+  if (digitTokens.length === 0) {
+    const dec = t.match(/\d+(?:[.,]\d+)?/g) || [];
+    return dec.map(cleanNumber).filter((n) => typeof n === "number");
+  }
+
+  const merged = [];
+  for (let i = 0; i < digitTokens.length; i++) {
+    const cur = digitTokens[i];
+    const next = digitTokens[i + 1];
+
+    // merge thousands groups: X + 000 + 000 (+000...)
+    if (cur.length <= 3 && next && next.length === 3) {
+      let acc = cur;
+      let j = i + 1;
+      while (j < digitTokens.length && digitTokens[j].length === 3) {
+        acc += digitTokens[j];
+        j++;
+      }
+      merged.push(acc);
+      i = j - 1;
+      continue;
+    }
+
+    merged.push(cur);
+  }
+
+  return merged.map(cleanNumber).filter((n) => typeof n === "number");
+}
+
+/**
+ * ✅ PATCH CALCULS (v2):
+ * - prix = "plus grand nombre" de la ligne (avec filtre années si possible)
+ * - qté = x2/2x en priorité, sinon premier petit entier <= 100
+ * - évite que des dates/années prennent la place du prix
+ */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
-  const nums = raw.match(/(\d[\d\s.,]*)/g) || [];
-  const numbers = nums.map(cleanNumber);
-
+  // 1) qty via x2 / 2x
   let qty = null;
-  const xAfter = raw.match(/x\s*(\d+)/i);
-  const xBefore = raw.match(/(\d+)\s*x/i);
+  const xAfter = raw.match(/\bx\s*(\d+)\b/i);
+  const xBefore = raw.match(/\b(\d+)\s*x\b/i);
   if (xAfter) qty = Number(xAfter[1]);
   else if (xBefore) qty = Number(xBefore[1]);
 
+  // 2) extract numbers
+  const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
+
+  // 3) unitPrice = biggest candidate
   let unitPrice = 0;
-  if (numbers.length >= 1) unitPrice = numbers[numbers.length - 1];
-
-  if (!qty && numbers.length >= 2) {
-    const first = numbers[0];
-    if (Number.isInteger(first) && first > 0 && first <= 100) qty = first;
+  if (numbers.length === 1) {
+    unitPrice = numbers[0];
+  } else if (numbers.length >= 2) {
+    // remove year-like only if we have other candidates
+    const nonYear = numbers.filter((n) => !(n >= 1900 && n <= 2100));
+    const pool = nonYear.length ? nonYear : numbers;
+    unitPrice = Math.max(...pool);
   }
-  qty = qty || 1;
 
+  // 4) qty fallback
+  if (!qty) {
+    const smalls = numbers.filter((n) => Number.isInteger(n) && n > 0 && n <= 100);
+    if (smalls.length) qty = smalls[0];
+    else qty = 1;
+  }
+
+  // 5) label
   const label =
     raw
-      .replace(/(\d[\d\s.,]*)/g, " ")
-      .replace(/\bx\s*\d+\b/gi, " ")
-      .replace(/\b\d+\s*x\b/gi, " ")
+      .replace(/\b(\d+)\s*x\b/gi, " ")
+      .replace(/\bx\s*(\d+)\b/gi, " ")
+      .replace(/\d+/g, " ")
       .replace(/[-:]+/g, " ")
       .replace(/\s+/g, " ")
       .trim() || raw;
@@ -79,9 +177,9 @@ function parseItemLine(line) {
 
   return {
     label,
-    qty: Number(qty) || 0,
+    qty: Number(qty) || 1,
     unitPrice: Number(unitPrice) || 0,
-    amount: Number(amount) || 0,
+    amount: Number.isFinite(amount) ? amount : 0,
     raw,
   };
 }
@@ -89,7 +187,7 @@ function parseItemLine(line) {
 function sumItems(items) {
   let sum = 0;
   for (const it of items || []) {
-    const a = Number(it?.amount || 0);
+    const a = Number(it?.amount);
     if (Number.isFinite(a)) sum += a;
   }
   return sum;
@@ -101,14 +199,50 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-function money(v) {
-  const n = Number(v || 0);
-  return String(Math.round(Number.isFinite(n) ? n : 0));
+// ---------------- Welcome credits (50 gratuits) ----------------
+async function ensureWelcomeCredits(waId) {
+  try {
+    if (_WELCOME_CACHE.has(waId)) return;
+
+    const p = await getOrCreateProfile(waId);
+
+    // si tu as la colonne en DB, c'est parfait
+    if (p && p.welcome_credits_granted === true) {
+      _WELCOME_CACHE.add(waId);
+      return;
+    }
+
+    // si déjà un solde, pas besoin
+    const bal = await getBalance(waId);
+    if (bal > 0) {
+      _WELCOME_CACHE.add(waId);
+      try {
+        await updateProfile(waId, { welcome_credits_granted: true });
+      } catch (_) {}
+      return;
+    }
+
+    await addCredits(waId, WELCOME_CREDITS, "welcome");
+    _WELCOME_CACHE.add(waId);
+
+    try {
+      await updateProfile(waId, { welcome_credits_granted: true });
+    } catch (e) {
+      // colonne peut ne pas exister, on ne casse pas
+      console.warn("⚠️ welcome_credits_granted non persisté (colonne manquante ?)");
+    }
+
+    await sendText(
+      waId,
+      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
+    );
+  } catch (e) {
+    console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
+  }
 }
 
-// --------------- Menus (Version B) ---------------
+// ---------------- Menus (Version B) ----------------
 async function sendHomeMenu(to) {
-  // 3 boutons max
   return sendButtons(to, "👋 Bonjour. Que souhaitez-vous faire ?", [
     { id: "HOME_DOCS", title: "Documents" },
     { id: "HOME_CREDITS", title: "Crédits" },
@@ -156,7 +290,7 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// --------------- Profil entreprise ---------------
+// ---------------- Profil entreprise ----------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -175,7 +309,6 @@ async function handleProfileAnswer(from, text) {
 
   const t = norm(text);
   const skip = t === "0";
-
   const step = s.profileStep;
 
   if (step === "business_name") {
@@ -184,42 +317,36 @@ async function handleProfileAnswer(from, text) {
     await sendText(from, "2/7 — Adresse ? (ou 0)");
     return true;
   }
-
   if (step === "address") {
     await updateProfile(from, { address: skip ? null : t });
     s.profileStep = "phone";
     await sendText(from, "3/7 — Téléphone pro ? (ou 0)");
     return true;
   }
-
   if (step === "phone") {
     await updateProfile(from, { phone: skip ? null : t });
     s.profileStep = "email";
     await sendText(from, "4/7 — Email ? (ou 0)");
     return true;
   }
-
   if (step === "email") {
     await updateProfile(from, { email: skip ? null : t });
     s.profileStep = "ifu";
     await sendText(from, "5/7 — IFU ? (ou 0)");
     return true;
   }
-
   if (step === "ifu") {
     await updateProfile(from, { ifu: skip ? null : t });
     s.profileStep = "rccm";
     await sendText(from, "6/7 — RCCM ? (ou 0)");
     return true;
   }
-
   if (step === "rccm") {
     await updateProfile(from, { rccm: skip ? null : t });
     s.profileStep = "logo";
     await sendText(from, "7/7 — Envoyez votre logo en *image* (ou tapez 0)");
     return true;
   }
-
   if (step === "logo") {
     if (skip) {
       s.step = "idle";
@@ -231,12 +358,78 @@ async function handleProfileAnswer(from, text) {
     await sendText(from, "⚠️ Pour le logo, envoyez une *image*. Ou tapez 0.");
     return true;
   }
-
   return false;
 }
 
+// ---------------- Recharge: preuve -> admin ----------------
+async function replyRechargeInfo(from) {
+  const s = getSession(from);
+  s.step = "recharge_proof";
+
+  await sendText(
+    from,
+    `💰 *Recharger vos crédits KADI*\n\n✅ Orange Money\n📌 Numéro : *${OM_NUMBER}*\n👤 Nom : *${OM_NAME}*\n💳 Offre : *${PRICE_LABEL}*\n\n📎 Après paiement, envoyez ici une *preuve* (capture d’écran).\nLe support vérifiera et activera vos crédits.\n\n🔑 Si vous avez un code: *CODE KDI-XXXX-XXXX*`
+  );
+}
+
+async function handleRechargeProofImage(from, msg) {
+  try {
+    if (!ADMIN_WA_ID) {
+      await sendText(from, "✅ Preuve reçue. Le support vous contactera.");
+      return;
+    }
+
+    const mediaId = msg?.image?.id;
+    if (!mediaId) {
+      await sendText(from, "❌ Preuve reçue mais sans media_id. Réessayez.");
+      return;
+    }
+
+    const info = await getMediaInfo(mediaId);
+    const mime = info.mime_type || "image/jpeg";
+    const buf = await downloadMediaToBuffer(info.url);
+
+    const filename = `preuve-${from}-${Date.now()}.jpg`;
+    const up = await uploadMediaBuffer({
+      buffer: buf,
+      filename,
+      mimeType: mime,
+    });
+
+    if (up?.id) {
+      await sendDocument({
+        to: ADMIN_WA_ID,
+        mediaId: up.id,
+        filename,
+        caption:
+          `🧾 *Preuve de paiement reçue*\nClient WA: ${from}\nOffre: ${PRICE_LABEL}\n\n✅ Action admin:\nADMIN ADD ${from} 25`,
+      });
+    } else {
+      await sendText(ADMIN_WA_ID, `🧾 Preuve paiement reçue (upload fail). Client: ${from}`);
+    }
+
+    await sendText(
+      from,
+      "✅ Merci. Votre preuve a été transmise au support.\n⏳ Après vérification, vos crédits seront activés."
+    );
+
+    const s = getSession(from);
+    s.step = "idle";
+    await sendHomeMenu(from);
+  } catch (e) {
+    console.error("handleRechargeProofImage error:", e?.message);
+    await sendText(from, "❌ Désolé, la preuve n’a pas pu être traitée. Réessayez.");
+  }
+}
+
+// ---------------- Logo upload ----------------
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
+
+  // si on attend une preuve de recharge, on traite comme preuve
+  if (s.step === "recharge_proof") {
+    return handleRechargeProofImage(from, msg);
+  }
 
   const mediaId = msg?.image?.id;
   if (!mediaId) {
@@ -262,21 +455,13 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré.");
 }
 
-// --------------- Crédits ---------------
+// ---------------- Crédits ----------------
 async function replyBalance(from) {
   const bal = await getBalance(from);
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
-async function replyRechargeInfo(from) {
-  const label = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
-  await sendText(
-    from,
-    `💰 *Recharger vos crédits KADI*\n\n✅ Actuellement: Orange Money\n📌 Offre: ${label}\n\n🔑 Après paiement, vous recevrez un *code*.\n👉 Envoyez ici: *CODE KDI-XXXX-XXXX*`
-  );
-}
-
-// --------------- Documents ---------------
+// ---------------- Documents ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -285,7 +470,7 @@ async function startDocFlow(from, mode, factureKind = null) {
 
   s.lastDocDraft = {
     type: mode,
-    factureKind: factureKind,
+    factureKind,
     docNumber: null,
     date: formatDateISO(),
     client: null,
@@ -293,13 +478,18 @@ async function startDocFlow(from, mode, factureKind = null) {
     finance: null,
   };
 
-  const prefix = mode === "facture"
-    ? (factureKind === "proforma" ? "🧾 Facture Pro forma" : "🧾 Facture Définitive")
-    : (mode === "devis" ? "📝 Devis" : "🧾 Reçu");
+  const prefix =
+    mode === "facture"
+      ? factureKind === "proforma"
+        ? "🧾 Facture Pro forma"
+        : "🧾 Facture Définitive"
+      : mode === "devis"
+      ? "📝 Devis"
+      : "🧾 Reçu";
 
   await sendText(
     from,
-    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000`
+    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n📌 Exemple aussi: Impression 2x 5000`
   );
 }
 
@@ -315,16 +505,23 @@ async function buildPreviewMessage({ profile, doc }) {
     bp.ifu ? `IFU: ${bp.ifu}` : null,
     bp.rccm ? `RCCM: ${bp.rccm}` : null,
     bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: 0`,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const title =
     doc.type === "facture"
-      ? (doc.factureKind === "proforma" ? "FACTURE PRO FORMA" : "FACTURE DÉFINITIVE")
+      ? doc.factureKind === "proforma"
+        ? "FACTURE PRO FORMA"
+        : "FACTURE DÉFINITIVE"
       : String(doc.type || "").toUpperCase();
 
-  const lines = (doc.items || []).map((it, idx) => (
-    `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
-  )).join("\n");
+  const lines = (doc.items || [])
+    .map(
+      (it, idx) =>
+        `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
+    )
+    .join("\n");
 
   return [
     header,
@@ -347,8 +544,10 @@ async function handleDocText(from, text) {
   if (s.step !== "collecting_doc" || !s.lastDocDraft) return false;
 
   const draft = s.lastDocDraft;
-
-  const lines = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   for (const line of lines) {
     const m = line.match(/^client\s*[:\-]\s*(.+)$/i);
@@ -375,22 +574,23 @@ async function handleDocText(from, text) {
 async function confirmAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
+
   if (!draft) {
     await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
     return;
   }
 
-  // ✅ check credits
   const cons = await consumeCredit(from, 1, "pdf");
   if (!cons.ok) {
-    await sendText(from, `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`);
+    await sendText(
+      from,
+      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`
+    );
     return;
   }
 
-  // numéro
   draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
 
-  // profile + logo buffer
   const profile = await getOrCreateProfile(from);
 
   let logoBuf = null;
@@ -403,10 +603,11 @@ async function confirmAndSendPdf(from) {
     }
   }
 
-  // PDF buffer
   const title =
     draft.type === "facture"
-      ? (draft.factureKind === "proforma" ? "FACTURE PRO FORMA" : "FACTURE DÉFINITIVE")
+      ? draft.factureKind === "proforma"
+        ? "FACTURE PRO FORMA"
+        : "FACTURE DÉFINITIVE"
       : String(draft.type || "").toUpperCase();
 
   const total = draft.finance?.gross ?? computeFinance(draft).gross;
@@ -418,20 +619,18 @@ async function confirmAndSendPdf(from) {
       date: draft.date,
       client: draft.client,
       items: draft.items || [],
-      total: total,
+      total,
     },
     businessProfile: profile,
     logoBuffer: logoBuf,
   });
 
-  // save
   try {
     await saveDocument({ waId: from, doc: draft });
   } catch (e) {
     console.error("saveDocument error:", e?.message);
   }
 
-  // upload to WhatsApp
   const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
   const up = await uploadMediaBuffer({
     buffer: pdfBuf,
@@ -452,7 +651,6 @@ async function confirmAndSendPdf(from) {
     caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nSolde: ${cons.balance} crédit(s)`,
   });
 
-  // reset doc
   s.step = "idle";
   s.mode = null;
   s.factureKind = null;
@@ -461,14 +659,12 @@ async function confirmAndSendPdf(from) {
   await sendHomeMenu(from);
 }
 
-// --------------- Admin (codes, topup) ---------------
+// ---------------- Admin (codes, topup) ----------------
 async function handleAdmin(from, text) {
   if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) return false;
 
   const t = norm(text);
 
-  // ADMIN CODES 100 25
-  // => génère 100 codes de 25 crédits
   {
     const m = t.match(/^ADMIN\s+CODES\s+(\d+)\s+(\d+)$/i);
     if (m) {
@@ -476,7 +672,10 @@ async function handleAdmin(from, text) {
       const creditsEach = Number(m[2]);
 
       const codes = await createRechargeCodes({ count, creditsEach, createdBy: from });
-      const preview = codes.slice(0, 20).map(c => `${c.code} (${c.credits})`).join("\n");
+      const preview = codes
+        .slice(0, 20)
+        .map((c) => `${c.code} (${c.credits})`)
+        .join("\n");
 
       await sendText(
         from,
@@ -486,7 +685,6 @@ async function handleAdmin(from, text) {
     }
   }
 
-  // ADMIN ADD 22670626055 25
   {
     const m = t.match(/^ADMIN\s+ADD\s+(\d+)\s+(\d+)$/i);
     if (m) {
@@ -498,7 +696,6 @@ async function handleAdmin(from, text) {
     }
   }
 
-  // ADMIN SOLDE 22670626055
   {
     const m = t.match(/^ADMIN\s+SOLDE\s+(\d+)$/i);
     if (m) {
@@ -512,7 +709,7 @@ async function handleAdmin(from, text) {
   return false;
 }
 
-// --------------- Interactive replies ---------------
+// ---------------- Interactive replies ----------------
 async function handleInteractiveReply(from, replyId) {
   if (replyId === "BACK_HOME") return sendHomeMenu(from);
   if (replyId === "HOME_DOCS") return sendDocsMenu(from);
@@ -554,42 +751,37 @@ async function handleInteractiveReply(from, replyId) {
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
 }
 
-// --------------- Main entry ---------------
+// ---------------- Main entry ----------------
 async function handleIncomingMessage(value) {
   if (!value) return;
 
-  // statuses
   if (value.statuses?.length) return;
-
   if (!value.messages?.length) return;
 
   const msg = value.messages[0];
   const from = msg.from;
 
-  // interactive
+  // 🎁 50 crédits gratuits au départ
+  await ensureWelcomeCredits(from);
+
   if (msg.type === "interactive") {
     const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
     if (replyId) return handleInteractiveReply(from, replyId);
   }
 
-  // image
   if (msg.type === "image") {
     return handleLogoImage(from, msg);
   }
 
-  // text
   const text = norm(msg.text?.body);
   if (!text) return;
 
-  // admin commands
   if (await handleAdmin(from, text)) return;
 
   const lower = text.toLowerCase();
 
-  // profile flow
   if (await handleProfileAnswer(from, text)) return;
 
-  // credits shortcuts
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     return replyBalance(from);
   }
@@ -597,7 +789,6 @@ async function handleIncomingMessage(value) {
     return replyRechargeInfo(from);
   }
 
-  // redeem code: CODE KDI-XXXX-XXXX
   {
     const m = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
     if (m) {
@@ -606,23 +797,22 @@ async function handleIncomingMessage(value) {
         if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
         return sendText(from, "❌ Code invalide.");
       }
-      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
+      return sendText(
+        from,
+        `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`
+      );
     }
   }
 
-  // menu
   if (lower === "menu" || lower === "m") return sendHomeMenu(from);
 
-  // quick doc
   if (lower === "devis") return startDocFlow(from, "devis");
   if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
   if (lower === "facture") return sendFactureKindMenu(from);
   if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
 
-  // collecting doc?
   if (await handleDocText(from, text)) return;
 
-  // fallback
   await sendText(from, `Je vous ai lu.\nTapez *MENU* pour commencer.`);
 }
 
