@@ -51,6 +51,13 @@ function formatDateISO(d = new Date()) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// ✅ clé mensuelle: "YYYY-MM"
+function periodKey(d = new Date()) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yyyy}-${mm}`;
+}
+
 function money(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0";
@@ -228,7 +235,6 @@ async function ensureWelcomeCredits(waId) {
     try {
       await updateProfile(waId, { welcome_credits_granted: true });
     } catch (e) {
-      // colonne peut ne pas exister, on ne casse pas
       console.warn("⚠️ welcome_credits_granted non persisté (colonne manquante ?)");
     }
 
@@ -589,7 +595,11 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
-  draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
+  // ✅ Compteur mensuel (reset auto par mois)
+  // On passe periodKey("YYYY-MM") à nextDocNumber
+  // (et idéalement le kadiCounter utilisera aussi from/wa_id pour séparer par utilisateur)
+  const pKey = periodKey(new Date());
+  draft.docNumber = nextDocNumber(draft.type, draft.factureKind, pKey, from);
 
   const profile = await getOrCreateProfile(from);
 

@@ -33,16 +33,32 @@ function prefixForMode(mode, factureKind) {
   return "DOC";
 }
 
+/**
+ * Mois en lettres (FR) — sans accents pour éviter les soucis d'encodage dans certains systèmes
+ * Si tu veux absolument "FÉV" / "AOÛ", dis-moi et je te fais la version accentuée.
+ */
+function monthCodeFR(monthIndex1to12) {
+  const arr = ["JAN", "FEV", "MAR", "AVR", "MAI", "JUN", "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"];
+  return arr[(monthIndex1to12 - 1) % 12] || "UNK";
+}
+
 function nextDocNumber(mode, factureKind) {
-  const year = new Date().getFullYear();
+  const now = new Date();
+  const year = now.getFullYear();
+  const monthIndex = now.getMonth() + 1; // 1..12
+  const monthCode = monthCodeFR(monthIndex); // JAN/FEV/...
+
   const prefix = prefixForMode(mode, factureKind);
-  const key = `${year}-${prefix}`;
+
+  // ✅ clé mensuelle => le compteur repart à 0 chaque mois
+  const key = `${year}-${monthCode}-${prefix}`;
 
   const counters = loadCounters();
   counters[key] = (counters[key] || 0) + 1;
   saveCounters(counters);
 
-  return `${prefix}-${year}-${pad(counters[key])}`;
+  // Format: FAC-2026-JAN-0001
+  return `${prefix}-${year}-${monthCode}-${pad(counters[key])}`;
 }
 
 module.exports = { nextDocNumber, prefixForMode };
