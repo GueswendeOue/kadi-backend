@@ -1,18 +1,9 @@
-// kadiPdf.js
 "use strict";
 
 const PDFDocument = require("pdfkit");
 
 function safe(v) {
   return String(v || "").trim();
-}
-
-// ---------- Money formatting ----------
-function fmtMoney(n) {
-  const x = Number(n || 0);
-  if (!Number.isFinite(x)) return "0";
-  // format FCFA with spaces as thousands separators
-  return Math.round(x).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 // mini conversion nombre→texte (fr) simple et robuste
@@ -84,7 +75,6 @@ function numberToFrench(n) {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
-// ---------- Core PDF ----------
 function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
   return new Promise((resolve, reject) => {
     try {
@@ -93,78 +83,104 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       pdf.on("data", (c) => chunks.push(c));
       pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
-      const bp = businessProfile || {};
-
-      const docType = String(docData.type || "DOCUMENT").toUpperCase();
+      // ---------------- Data ----------------
+      const type = String(docData.type || "DOCUMENT").toUpperCase();
       const docNumber = docData.docNumber || "—";
       const date = docData.date || "—";
       const client = docData.client || "—";
       const items = Array.isArray(docData.items) ? docData.items : [];
+      const total = Number(docData.total || 0);
 
-      // ⚠️ Totaux: on RECALCULE à partir des lignes (source de vérité)
-      const computedTotal = items.reduce((acc, it) => {
-        const qty = Number(it?.qty ?? 0);
-        const pu = Number(it?.unitPrice ?? 0);
-        const amt = Number(it?.amount);
-        const lineAmount = Number.isFinite(amt) ? amt : qty * pu;
-        return acc + (Number.isFinite(lineAmount) ? lineAmount : 0);
-      }, 0);
+      const bp = businessProfile || {};
 
-      const total = Number.isFinite(Number(docData.total))
-        ? Number(docData.total) // si tu veux forcer un total (rare)
-        : computedTotal;
+      // ---------------- Layout constants ----------------
+      const pageLeft = pdf.page.margins.left;
+      const pageRight = pdf.page.width - pdf.page.margins.right;
+      const pageTop = pdf.page.margins.top;
+      const pageBottom = pdf.page.height - pdf.page.margins.bottom;
 
-      // ---------- Layout constants ----------
-      const pageW = pdf.page.width;
-      const pageH = pdf.page.height;
-      const margin = pdf.page.margins.left; // 50
-      const leftX = margin;
-      const rightX = pageW - margin;
-      const topY = 45;
+      const leftX = pageLeft;
+      const topY = pageTop - 5;
 
-      // Table sizing
-      const tableX = leftX;
-      const tableW = rightX - leftX;
+      // Table geometry
+      const tableX = pageLeft;
+      const tableW = pageRight - pageLeft;
 
-      // Column widths (sum must == tableW)
-      // Tweak safe for A4 margins: tableW is about 495
+      // Columns widths (pro, stable)
       const col = {
-        n: 28,
-        des: 265,
-        qty: 50,
-        pu: 75,
-        amt: tableW - (28 + 265 + 50 + 75), // remainder
+        idx: 30,
+        designation: 290,
+        qty: 55,
+        pu: 85,
+        amount: tableW - (30 + 290 + 55 + 85), // remainder
       };
 
-      const rowH = 22;
-      const pad = 6;
+      const colX = {
+        idx: tableX,
+        designation: tableX + col.idx,
+        qty: tableX + col.idx + col.designation,
+        pu: tableX + col.idx + col.designation + col.qty,
+        amount: tableX + col.idx + col.designation + col.qty + col.pu,
+      };
+
+      const lineGap = 4;
+
+      function drawHr(y, thickness = 1) {
+        pdf.save();
+        pdf.lineWidth(thickness);
+        pdf.moveTo(tableX, y).lineTo(tableX + tableW, y).stroke();
+        pdf.restore();
+      }
+
+      function drawRect(x, y, w, h, thickness = 1) {
+        pdf.save();
+        pdf.lineWidth(thickness);
+        pdf.rect(x, y, w, h).stroke();
+        pdf.restore();
+      }
+
+      function drawVLines(yTop, yBottom) {
+        // vertical separators for the table grid
+        pdf.save();
+        pdf.lineWidth(1);
+        const xs = [
+          colX.idx,
+          colX.designation,
+          colX.qty,
+          colX.pu,
+          colX.amount,
+          tableX + tableW,
+        ];
+        xs.forEach((x) => {
+          pdf.moveTo(x, yTop).lineTo(x, yBottom).stroke();
+        });
+        pdf.restore();
+      }
+
+      function fmtMoney(n) {
+        const v = Math.round(Number(n) || 0);
+        // grouping with spaces: 100000 -> 100 000
+        return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+      }
 
       function drawHeader() {
-        const headerH = 86;
-
-        // background line / separation
-        // (no fill to keep it clean; just spacing)
-
         // Logo
+        const logoSize = 55;
+        let logoW = 0;
+
         if (logoBuffer) {
           try {
-            pdf.image(logoBuffer, leftX, topY, { fit: [70, 70] });
+            pdf.image(logoBuffer, leftX, topY, { fit: [logoSize, logoSize] });
+            logoW = logoSize + 12;
           } catch {}
         }
 
-        const companyX = leftX + (logoBuffer ? 82 : 0);
-        const companyW = 290; // left block width
-        const metaW = 170;    // right block width
-        const metaX = rightX - metaW;
+        const businessX = leftX + logoW;
 
-        // Company block (left) — NEW LINES (no more " | " overflow)
-        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "KADI", companyX, topY, {
-          width: companyW,
-        });
+        // Bloc entreprise (à gauche, sur plusieurs lignes)
+        pdf.font("Helvetica-Bold").fontSize(12).text(safe(bp.business_name) || "KADI", businessX, topY);
 
-        pdf.font("Helvetica").fontSize(10);
-
-        const companyLines = [
+        const businessLines = [
           safe(bp.address) ? `Adresse : ${safe(bp.address)}` : null,
           safe(bp.phone) ? `Tél : ${safe(bp.phone)}` : null,
           safe(bp.email) ? `Email : ${safe(bp.email)}` : null,
@@ -172,172 +188,189 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
           safe(bp.rccm) ? `RCCM : ${safe(bp.rccm)}` : null,
         ].filter(Boolean);
 
-        pdf.text(companyLines.join("\n") || "", companyX, topY + 18, { width: companyW });
-
-        // Meta block (right) — isolated, no overlap
-        pdf.font("Helvetica-Bold").fontSize(16).text(docType, metaX, topY, { width: metaW, align: "right" });
-        pdf.font("Helvetica").fontSize(10).text(`N° : ${docNumber}`, metaX, topY + 22, { width: metaW, align: "right" });
-        pdf.text(`Date : ${date}`, metaX, topY + 36, { width: metaW, align: "right" });
-
-        // Separator line
-        const sepY = topY + headerH;
-        pdf.moveTo(leftX, sepY).lineTo(rightX, sepY).stroke();
-
-        // Move cursor below header
-        pdf.y = sepY + 12;
-      }
-
-      function drawClientBox() {
-        const boxX = leftX;
-        const boxW = tableW;
-        const boxY = pdf.y;
-        const boxH = 46;
-
-        pdf.rect(boxX, boxY, boxW, boxH).stroke();
-
-        pdf.font("Helvetica-Bold").fontSize(11).text("Client", boxX + pad, boxY + 8);
-        pdf.font("Helvetica").fontSize(11).text(String(client || "—"), boxX + pad, boxY + 24, {
-          width: boxW - pad * 2,
+        pdf.font("Helvetica").fontSize(9);
+        const businessBoxW = 260; // fixe pour éviter de chevaucher à droite
+        pdf.text(businessLines.join("\n") || " ", businessX, topY + 16, {
+          width: businessBoxW,
+          lineGap,
         });
 
-        pdf.y = boxY + boxH + 12;
+        // Bloc document (à droite, zone fixe => pro forma ne casse plus)
+        const rightW = 230;
+        const rightX = pageRight - rightW;
+
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, rightX, topY, {
+          width: rightW,
+          align: "right",
+        });
+
+        pdf.font("Helvetica").fontSize(10).text(`N° : ${docNumber}`, rightX, topY + 22, {
+          width: rightW,
+          align: "right",
+        });
+        pdf.text(`Date : ${date}`, rightX, topY + 36, {
+          width: rightW,
+          align: "right",
+        });
+
+        // Ligne de séparation
+        const afterHeaderY = Math.max(topY + 62, pdf.y + 8);
+        drawHr(afterHeaderY, 1);
+
+        // Bloc client (encadré pro)
+        let y = afterHeaderY + 14;
+        const clientBoxH = 46;
+        drawRect(tableX, y, tableW, clientBoxH, 1);
+
+        pdf.font("Helvetica-Bold").fontSize(10).text("Client", tableX + 10, y + 8);
+        pdf.font("Helvetica").fontSize(10).text(String(client || "—"), tableX + 10, y + 24, {
+          width: tableW - 20,
+        });
+
+        return y + clientBoxH + 14; // next y
       }
 
-      function drawTableHeader() {
-        const y = pdf.y;
+      function drawTableHeader(y) {
+        const h = 26;
 
-        // Header background
-        // (keep white; just bold + borders)
-        pdf.rect(tableX, y, tableW, rowH).stroke();
+        // header row background (gris clair)
+        pdf.save();
+        pdf.fillColor("#F2F2F2").rect(tableX, y, tableW, h).fill();
+        pdf.restore();
 
-        // Vertical lines
-        let x = tableX;
-        const cuts = [col.n, col.des, col.qty, col.pu, col.amt];
-        for (let i = 0; i < cuts.length - 1; i++) {
-          x += cuts[i];
-          pdf.moveTo(x, y).lineTo(x, y + rowH).stroke();
-        }
+        drawRect(tableX, y, tableW, h, 1);
+        drawVLines(y, y + h);
 
+        pdf.fillColor("black");
         pdf.font("Helvetica-Bold").fontSize(10);
-        pdf.text("#", tableX + pad, y + 6, { width: col.n - pad * 2 });
-        pdf.text("Désignation", tableX + col.n + pad, y + 6, { width: col.des - pad * 2 });
-        pdf.text("Qté", tableX + col.n + col.des + pad, y + 6, { width: col.qty - pad * 2, align: "right" });
-        pdf.text("PU", tableX + col.n + col.des + col.qty + pad, y + 6, { width: col.pu - pad * 2, align: "right" });
-        pdf.text("Montant", tableX + col.n + col.des + col.qty + col.pu + pad, y + 6, {
-          width: col.amt - pad * 2,
-          align: "right",
-        });
 
-        pdf.font("Helvetica").fontSize(10);
-        pdf.y = y + rowH;
+        pdf.text("#", colX.idx + 8, y + 8, { width: col.idx - 16, align: "left" });
+        pdf.text("Désignation", colX.designation + 8, y + 8, { width: col.designation - 16 });
+        pdf.text("Qté", colX.qty + 8, y + 8, { width: col.qty - 16, align: "right" });
+        pdf.text("PU", colX.pu + 8, y + 8, { width: col.pu - 16, align: "right" });
+        pdf.text("Montant", colX.amount + 8, y + 8, { width: col.amount - 16, align: "right" });
+
+        return y + h;
       }
 
-      function ensureSpace(hNeeded) {
-        const bottomLimit = pageH - margin;
-        if (pdf.y + hNeeded <= bottomLimit) return;
+      function measureRowHeight(item) {
+        const label = String(item?.label || item?.raw || "—");
+        pdf.font("Helvetica").fontSize(10);
+        const hLabel = pdf.heightOfString(label, {
+          width: col.designation - 16,
+          lineGap,
+        });
+        // minimum row height
+        const base = 24;
+        return Math.max(base, Math.ceil(hLabel + 14));
+      }
 
+      function drawRow(y, idx, item, rowH) {
+        drawRect(tableX, y, tableW, rowH, 1);
+        drawVLines(y, y + rowH);
+
+        const label = String(item?.label || item?.raw || "—");
+        const qty = Number(item?.qty || 0);
+        const pu = Number(item?.unitPrice || 0);
+        const amt = Number(item?.amount || qty * pu || 0);
+
+        pdf.font("Helvetica").fontSize(10);
+
+        // index
+        pdf.text(String(idx), colX.idx + 8, y + 7, { width: col.idx - 16, align: "left" });
+
+        // designation wrap
+        pdf.text(label, colX.designation + 8, y + 7, {
+          width: col.designation - 16,
+          lineGap,
+        });
+
+        // qty / prices aligned right
+        pdf.text(String(qty || 0), colX.qty + 8, y + 7, { width: col.qty - 16, align: "right" });
+        pdf.text(fmtMoney(pu), colX.pu + 8, y + 7, { width: col.pu - 16, align: "right" });
+        pdf.text(fmtMoney(amt), colX.amount + 8, y + 7, { width: col.amount - 16, align: "right" });
+      }
+
+      function ensureSpace(y, needed, redrawHeaderFn) {
+        if (y + needed <= pageBottom) return y;
         pdf.addPage();
-        drawHeader();
-        drawClientBox();
-        drawTableHeader();
+        const newY = redrawHeaderFn();
+        return newY;
       }
 
-      function drawRow(idx, it) {
-        const y = pdf.y;
+      // ---------------- Render ----------------
+      let y = drawHeader();
 
-        // derive amounts safely
-        const qty = Number(it?.qty ?? 0);
-        const pu = Number(it?.unitPrice ?? 0);
-        const amtRaw = Number(it?.amount);
-        const amt = Number.isFinite(amtRaw) ? amtRaw : qty * pu;
-
-        const label = String(it?.label || it?.raw || "—");
-
-        // Row rectangle + borders
-        pdf.rect(tableX, y, tableW, rowH).stroke();
-
-        let x = tableX;
-        const cuts = [col.n, col.des, col.qty, col.pu, col.amt];
-        for (let i = 0; i < cuts.length - 1; i++) {
-          x += cuts[i];
-          pdf.moveTo(x, y).lineTo(x, y + rowH).stroke();
-        }
-
-        // Text in cells
-        pdf.font("Helvetica").fontSize(10);
-
-        pdf.text(String(idx + 1), tableX + pad, y + 6, { width: col.n - pad * 2 });
-
-        // Désignation: keep in its cell, truncate if too long
-        pdf.text(label, tableX + col.n + pad, y + 6, {
-          width: col.des - pad * 2,
-          height: rowH - 8,
-          ellipsis: true,
-        });
-
-        pdf.text(fmtMoney(qty), tableX + col.n + col.des + pad, y + 6, {
-          width: col.qty - pad * 2,
-          align: "right",
-        });
-
-        pdf.text(fmtMoney(pu), tableX + col.n + col.des + col.qty + pad, y + 6, {
-          width: col.pu - pad * 2,
-          align: "right",
-        });
-
-        pdf.text(fmtMoney(amt), tableX + col.n + col.des + col.qty + col.pu + pad, y + 6, {
-          width: col.amt - pad * 2,
-          align: "right",
-        });
-
-        pdf.y = y + rowH;
-      }
-
-      function drawTotals() {
-        ensureSpace(110);
-
-        const y = pdf.y + 10;
-
-        // Totals box on the right
-        const boxW = 220;
-        const boxH = 46;
-        const boxX = rightX - boxW;
-        const boxY = y;
-
-        pdf.rect(boxX, boxY, boxW, boxH).stroke();
-        pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", boxX + pad, boxY + 14, { width: boxW - pad * 2 });
-        pdf.font("Helvetica-Bold").fontSize(12).text(`${fmtMoney(total)} FCFA`, boxX + pad, boxY + 14, {
-          width: boxW - pad * 2,
-          align: "right",
-        });
-
-        // Amount in words
-        const words = numberToFrench(total);
-        const textY = boxY + boxH + 10;
-
-        pdf.font("Helvetica").fontSize(10).text(
-          `Arrêtée la présente ${docType.toLowerCase()} à la somme de : ${words} francs CFA.`,
-          leftX,
-          textY,
-          { width: tableW }
-        );
-
-        pdf.y = textY + 40;
-        pdf.font("Helvetica").fontSize(10).text("Merci pour votre confiance.", { align: "center" });
-      }
-
-      // ---------- Build document ----------
-      drawHeader();
-      drawClientBox();
-      drawTableHeader();
+      // Table header
+      y = drawTableHeader(y);
 
       // Rows
       for (let i = 0; i < items.length; i++) {
-        ensureSpace(rowH + 8);
-        drawRow(i, items[i]);
+        const it = items[i] || {};
+        const rowH = measureRowHeight(it);
+
+        // page break with header re-draw
+        y = ensureSpace(y, rowH + 90, () => {
+          const ny = drawHeader();
+          return drawTableHeader(ny);
+        });
+
+        drawRow(y, i + 1, it, rowH);
+        y += rowH;
       }
 
-      drawTotals();
+      // If no items, show one empty row
+      if (items.length === 0) {
+        const rowH = 24;
+        y = ensureSpace(y, rowH + 90, () => {
+          const ny = drawHeader();
+          return drawTableHeader(ny);
+        });
+        drawRow(y, 1, { label: "—", qty: 0, unitPrice: 0, amount: 0, raw: "—" }, rowH);
+        y += rowH;
+      }
+
+      y += 14;
+
+      // TOTAL box (pro)
+      const totalBoxW = 260;
+      const totalBoxH = 46;
+      const totalBoxX = pageRight - totalBoxW;
+
+      y = ensureSpace(y, totalBoxH + 80, () => drawHeader());
+
+      drawRect(totalBoxX, y, totalBoxW, totalBoxH, 1);
+
+      pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", totalBoxX + 14, y + 14, {
+        width: 80,
+      });
+
+      pdf.font("Helvetica-Bold").fontSize(12).text(`${fmtMoney(total)} FCFA`, totalBoxX + 90, y + 14, {
+        width: totalBoxW - 104,
+        align: "right",
+      });
+
+      y += totalBoxH + 16;
+
+      // Montant en lettres (avec partie en gras)
+      const words = numberToFrench(total);
+
+      pdf.font("Helvetica").fontSize(10).text(
+        `Arrêtée la présente ${type.toLowerCase()} à la somme de : `,
+        tableX,
+        y,
+        { continued: true, width: tableW }
+      );
+      pdf.font("Helvetica-Bold").fontSize(10).text(`${words} francs CFA.`, {
+        continued: false,
+      });
+
+      y += 30;
+
+      pdf.font("Helvetica").fontSize(10).text("Merci pour votre confiance.", tableX, y, {
+        width: tableW,
+        align: "center",
+      });
 
       pdf.end();
     } catch (e) {
