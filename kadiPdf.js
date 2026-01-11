@@ -23,7 +23,7 @@ function numberToFrench(n) {
 
     if (t === 7 || t === 9) {
       const base = tens[t];
-      const rest = x - t * 10; // 70->10..19, 90->10..19
+      const rest = x - t * 10;
       return `${base}-${teens[rest - 10]}`;
     }
 
@@ -102,17 +102,19 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       const leftX = pageLeft;
       const topY = pageTop - 5;
 
-      // Table geometry
       const tableX = pageLeft;
       const tableW = pageRight - pageLeft;
 
-      // Columns widths (pro, stable)
+      /**
+       * ✅ FIX: élargir "Montant" pour éviter le wrap
+       * (et garder PU/Qté lisibles)
+       */
       const col = {
         idx: 30,
-        designation: 290,
+        designation: 265, // un peu réduit
         qty: 55,
         pu: 85,
-        amount: tableW - (30 + 290 + 55 + 85), // remainder
+        amount: tableW - (30 + 265 + 55 + 85), // reste (≈110)
       };
 
       const colX = {
@@ -140,7 +142,6 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       }
 
       function drawVLines(yTop, yBottom) {
-        // vertical separators for the table grid
         pdf.save();
         pdf.lineWidth(1);
         const xs = [
@@ -159,8 +160,16 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       function fmtMoney(n) {
         const v = Math.round(Number(n) || 0);
-        // grouping with spaces: 100000 -> 100 000
         return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+      }
+
+      function noWrapOpts(w, align = "right") {
+        return {
+          width: w,
+          align,
+          lineBreak: false, // ✅ empêche le retour à la ligne
+          ellipsis: false,
+        };
       }
 
       function drawHeader() {
@@ -177,7 +186,7 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
         const businessX = leftX + logoW;
 
-        // Bloc entreprise (à gauche, sur plusieurs lignes)
+        // Entreprise (multi-lignes)
         pdf.font("Helvetica-Bold").fontSize(12).text(safe(bp.business_name) || "KADI", businessX, topY);
 
         const businessLines = [
@@ -189,35 +198,37 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         ].filter(Boolean);
 
         pdf.font("Helvetica").fontSize(9);
-        const businessBoxW = 260; // fixe pour éviter de chevaucher à droite
+        const businessBoxW = 260;
         pdf.text(businessLines.join("\n") || " ", businessX, topY + 16, {
           width: businessBoxW,
           lineGap,
         });
 
-        // Bloc document (à droite, zone fixe => pro forma ne casse plus)
+        // Bloc doc (droite fixe => "PRO FORMA" ne casse plus)
         const rightW = 230;
         const rightX = pageRight - rightW;
 
         pdf.font("Helvetica-Bold").fontSize(16).text(type, rightX, topY, {
           width: rightW,
           align: "right",
+          lineBreak: false,
         });
 
         pdf.font("Helvetica").fontSize(10).text(`N° : ${docNumber}`, rightX, topY + 22, {
           width: rightW,
           align: "right",
+          lineBreak: false,
         });
         pdf.text(`Date : ${date}`, rightX, topY + 36, {
           width: rightW,
           align: "right",
+          lineBreak: false,
         });
 
-        // Ligne de séparation
         const afterHeaderY = Math.max(topY + 62, pdf.y + 8);
         drawHr(afterHeaderY, 1);
 
-        // Bloc client (encadré pro)
+        // Client box
         let y = afterHeaderY + 14;
         const clientBoxH = 46;
         drawRect(tableX, y, tableW, clientBoxH, 1);
@@ -225,15 +236,15 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         pdf.font("Helvetica-Bold").fontSize(10).text("Client", tableX + 10, y + 8);
         pdf.font("Helvetica").fontSize(10).text(String(client || "—"), tableX + 10, y + 24, {
           width: tableW - 20,
+          lineBreak: false,
         });
 
-        return y + clientBoxH + 14; // next y
+        return y + clientBoxH + 14;
       }
 
       function drawTableHeader(y) {
         const h = 26;
 
-        // header row background (gris clair)
         pdf.save();
         pdf.fillColor("#F2F2F2").rect(tableX, y, tableW, h).fill();
         pdf.restore();
@@ -242,13 +253,13 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         drawVLines(y, y + h);
 
         pdf.fillColor("black");
-        pdf.font("Helvetica-Bold").fontSize(10);
+        pdf.font("Helvetica-Bold").fontSize(9); // ✅ un peu plus petit pour éviter "Montant" coupé
 
-        pdf.text("#", colX.idx + 8, y + 8, { width: col.idx - 16, align: "left" });
+        pdf.text("#", colX.idx + 8, y + 8, { width: col.idx - 16 });
         pdf.text("Désignation", colX.designation + 8, y + 8, { width: col.designation - 16 });
-        pdf.text("Qté", colX.qty + 8, y + 8, { width: col.qty - 16, align: "right" });
-        pdf.text("PU", colX.pu + 8, y + 8, { width: col.pu - 16, align: "right" });
-        pdf.text("Montant", colX.amount + 8, y + 8, { width: col.amount - 16, align: "right" });
+        pdf.text("Qté", colX.qty + 8, y + 8, noWrapOpts(col.qty - 16, "right"));
+        pdf.text("PU", colX.pu + 8, y + 8, noWrapOpts(col.pu - 16, "right"));
+        pdf.text("Montant", colX.amount + 8, y + 8, noWrapOpts(col.amount - 16, "right"));
 
         return y + h;
       }
@@ -260,9 +271,7 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
           width: col.designation - 16,
           lineGap,
         });
-        // minimum row height
-        const base = 24;
-        return Math.max(base, Math.ceil(hLabel + 14));
+        return Math.max(24, Math.ceil(hLabel + 14));
       }
 
       function drawRow(y, idx, item, rowH) {
@@ -276,19 +285,16 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
         pdf.font("Helvetica").fontSize(10);
 
-        // index
-        pdf.text(String(idx), colX.idx + 8, y + 7, { width: col.idx - 16, align: "left" });
-
-        // designation wrap
+        pdf.text(String(idx), colX.idx + 8, y + 7, { width: col.idx - 16 });
         pdf.text(label, colX.designation + 8, y + 7, {
           width: col.designation - 16,
           lineGap,
         });
 
-        // qty / prices aligned right
-        pdf.text(String(qty || 0), colX.qty + 8, y + 7, { width: col.qty - 16, align: "right" });
-        pdf.text(fmtMoney(pu), colX.pu + 8, y + 7, { width: col.pu - 16, align: "right" });
-        pdf.text(fmtMoney(amt), colX.amount + 8, y + 7, { width: col.amount - 16, align: "right" });
+        // ✅ NO WRAP on numbers
+        pdf.text(String(qty || 0), colX.qty + 8, y + 7, noWrapOpts(col.qty - 16, "right"));
+        pdf.text(fmtMoney(pu), colX.pu + 8, y + 7, noWrapOpts(col.pu - 16, "right"));
+        pdf.text(fmtMoney(amt), colX.amount + 8, y + 7, noWrapOpts(col.amount - 16, "right"));
       }
 
       function ensureSpace(y, needed, redrawHeaderFn) {
@@ -300,16 +306,12 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       // ---------------- Render ----------------
       let y = drawHeader();
-
-      // Table header
       y = drawTableHeader(y);
 
-      // Rows
       for (let i = 0; i < items.length; i++) {
         const it = items[i] || {};
         const rowH = measureRowHeight(it);
 
-        // page break with header re-draw
         y = ensureSpace(y, rowH + 90, () => {
           const ny = drawHeader();
           return drawTableHeader(ny);
@@ -319,7 +321,6 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         y += rowH;
       }
 
-      // If no items, show one empty row
       if (items.length === 0) {
         const rowH = 24;
         y = ensureSpace(y, rowH + 90, () => {
@@ -332,7 +333,7 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       y += 14;
 
-      // TOTAL box (pro)
+      // TOTAL box
       const totalBoxW = 260;
       const totalBoxH = 46;
       const totalBoxX = pageRight - totalBoxW;
@@ -343,16 +344,18 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", totalBoxX + 14, y + 14, {
         width: 80,
+        lineBreak: false,
       });
 
       pdf.font("Helvetica-Bold").fontSize(12).text(`${fmtMoney(total)} FCFA`, totalBoxX + 90, y + 14, {
         width: totalBoxW - 104,
         align: "right",
+        lineBreak: false,
       });
 
       y += totalBoxH + 16;
 
-      // Montant en lettres (avec partie en gras)
+      // Montant en lettres (partie en gras)
       const words = numberToFrench(total);
 
       pdf.font("Helvetica").fontSize(10).text(
@@ -361,9 +364,7 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         y,
         { continued: true, width: tableW }
       );
-      pdf.font("Helvetica-Bold").fontSize(10).text(`${words} francs CFA.`, {
-        continued: false,
-      });
+      pdf.font("Helvetica-Bold").fontSize(10).text(`${words} francs CFA.`, { continued: false });
 
       y += 30;
 
