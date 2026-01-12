@@ -3,271 +3,200 @@
 
 const { supabase } = require("./supabaseClient");
 
-/**
- * ⚙️ Config pricing (pour estimation revenue)
- */
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
-/**
- * Helper: get a "count" using head:true
- */
-async function countRows(table, filters = (q) => q) {
-  const q = filters(supabase.from(table).select("*", { count: "exact", head: true }));
-  const { count, error } = await q;
+function isoSinceDays(days) {
+  const d = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000);
+  return d.toISOString();
+}
+
+function uniqCount(list, key = "wa_id") {
+  const s = new Set();
+  for (const r of list || []) {
+    const v = r?.[key];
+    if (v) s.add(v);
+  }
+  return s.size;
+}
+
+function sumDeltas(list) {
+  let added = 0;
+  let consumed = 0;
+  for (const r of list || []) {
+    const d = Number(r?.delta || 0);
+    if (!Number.isFinite(d)) continue;
+    if (d > 0) added += d;
+    if (d < 0) consumed += -d;
+  }
+  return { added, consumed };
+}
+
+async function countRows(tableName) {
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("*", { count: "exact", head: true });
   if (error) throw error;
   return count || 0;
 }
 
-/**
- * Helper: run a SQL query (returns rows)
- */
-async function sql(query, params = {}) {
-  // Supabase SQL Editor is for console; in code we use RPC.
-  // So here: keep a helper that expects you've created an RPC if needed.
-  // For simple stats, we DON'T need sql().
-  throw new Error("sql() not implemented. Use direct supabase queries below.");
+async function countRowsSince(tableName, sinceIso) {
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("*", { count: "exact", head: true })
+    .gte("created_at", sinceIso);
+  if (error) throw error;
+  return count || 0;
 }
 
-/**
- * Detect which column exists on business_profiles for user id.
- * You have shown "user_id" exists, and sometimes you might have "wa_id".
- */
-async function detectBusinessProfilesIdColumn() {
-  // Try "wa_id" first
-  let { error: e1 } = await supabase
+async function usersTotal() {
+  const { count, error } = await supabase
     .from("business_profiles")
-    .select("wa_id", { head: true, count: "exact" })
-    .limit(1);
+    .select("*", { count: "exact", head: true });
 
-  if (!e1) return "wa_id";
-
-  // Fallback to "user_id"
-  let { error: e2 } = await supabase
-    .from("business_profiles")
-    .select("user_id", { head: true, count: "exact" })
-    .limit(1);
-
-  if (!e2) return "user_id";
-
-  // Last fallback
-  return null;
+  if (error) throw error;
+  return count || 0;
 }
 
-/**
- * ✅ Users total = ALL business_profiles rows
- */
-async function getUsersTotal() {
-  const idCol = await detectBusinessProfilesIdColumn();
-  if (!idCol) {
-    // fallback: just count rows
-    return countRows("business_profiles");
-  }
-  // count all rows (not distinct) = your "all users"
-  // If you want distinct, use .select(idCol) then Set on client — but countRows is enough if 1 row per user.
-  return countRows("business_profiles");
+async function activeUsersSince(sinceIso) {
+  const { data, error } = await supabase
+    .from("kadi_activity")
+    .select("wa_id")
+    .gte("created_at", sinceIso)
+    .limit(10000);
+
+  if (error) throw error;
+  return uniqCount(data, "wa_id");
 }
 
-/**
- * ✅ Active users = users with at least one document in the last X days
- */
-async function getActiveUsers(days) {
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+async function docsByTypeSince(sinceIso) {
   const { data, error } = await supabase
     .from("kadi_documents")
-    .select("wa_id")
-    .gte("created_at", since)
-    .limit(50000);
+    .select("doc_type")
+    .gte("created_at", sinceIso)
+    .limit(10000);
 
   if (error) throw error;
-  const uniq = new Set((data || []).map((r) => r.wa_id).filter(Boolean));
-  return uniq.size;
+
+  const map = new Map();
+  for (const r of data || []) {
+    const k = (r.doc_type || "unknown").toLowerCase();
+    map.set(k, (map.get(k) || 0) + 1);
+  }
+  return Object.fromEntries(map.entries());
 }
 
-/**
- * ✅ Docs counts
- */
-async function getDocsCounts() {
-  const now = new Date();
-  const since7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
+async function factureKindsSince(sinceIso) {
+  const { data, error } = await supabase
+    .from("kadi_documents")
+    .select("facture_kind, doc_type")
+    .gte("created_at", sinceIso)
+    .limit(10000);
 
-  const [total, d7, d30, today] = await Promise.all([
-    countRows("kadi_documents"),
-    countRows("kadi_documents", (q) => q.gte("created_at", since7)),
-    countRows("kadi_documents", (q) => q.gte("created_at", since30)),
-    countRows("kadi_documents", (q) => q.gte("created_at", todayStart.toISOString())),
-  ]);
+  if (error) throw error;
 
-  return { total, d7, d30, today };
+  const map = new Map();
+  for (const r of data || []) {
+    if ((r.doc_type || "").toLowerCase() !== "facture") continue;
+    const k = (r.facture_kind || "unknown").toLowerCase();
+    map.set(k, (map.get(k) || 0) + 1);
+  }
+  return Object.fromEntries(map.entries());
 }
 
-/**
- * ✅ Credits stats (7d) using delta
- * - added_7d = sum(delta>0)
- * - consumed_7d = sum(-delta<0)
- */
-async function getCredits7d() {
-  const since7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
+async function creditsStatsSince(sinceIso) {
   const { data, error } = await supabase
     .from("kadi_credit_tx")
-    .select("delta")
-    .gte("created_at", since7)
-    .limit(50000);
+    .select("delta, reason, created_at")
+    .gte("created_at", sinceIso)
+    .limit(20000);
 
   if (error) throw error;
 
-  let added = 0;
-  let consumed = 0;
+  const { added, consumed } = sumDeltas(data);
+
+  let welcomeAdded = 0;
+  let adminAdded = 0;
 
   for (const r of data || []) {
-    const d = Number(r.delta) || 0;
-    if (d > 0) added += d;
-    else if (d < 0) consumed += -d;
+    const d = Number(r?.delta || 0);
+    if (!(d > 0)) continue;
+    const reason = String(r?.reason || "").toLowerCase();
+    if (reason === "welcome") welcomeAdded += d;
+    if (reason.startsWith("admin:")) adminAdded += d;
   }
 
-  return { added, consumed };
+  return { added, consumed, welcomeAdded, adminAdded };
 }
 
-/**
- * ✅ Welcome bonus total (all time)
- */
-async function getWelcomeBonusTotal() {
+async function paidCreditsAddedSince(sinceIso) {
   const { data, error } = await supabase
     .from("kadi_credit_tx")
-    .select("delta,reason")
-    .eq("reason", "welcome")
-    .limit(50000);
-
-  if (error) throw error;
-  let sum = 0;
-  for (const r of data || []) sum += Math.max(0, Number(r.delta) || 0);
-  return sum;
-}
-
-/**
- * ✅ Credits paid (30d) = delta > 0 excluding welcome + admin
- * (Adapt filters to your business rules)
- */
-async function getCreditsPaid30d() {
-  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-  const { data, error } = await supabase
-    .from("kadi_credit_tx")
-    .select("delta,reason,created_at")
-    .gte("created_at", since30)
-    .limit(50000);
+    .select("delta, reason, created_at")
+    .gte("created_at", sinceIso)
+    .gt("delta", 0)
+    .neq("reason", "welcome")
+    .not("reason", "ilike", "admin:%")
+    .limit(20000);
 
   if (error) throw error;
 
   let sum = 0;
   for (const r of data || []) {
-    const d = Number(r.delta) || 0;
-    if (d <= 0) continue;
-
-    const reason = String(r.reason || "");
-    if (reason === "welcome") continue;
-    if (reason.startsWith("admin:")) continue;
-
-    // If you also want to exclude recharge codes from "paid":
-    // if (reason.startsWith("code:")) continue;
-
-    sum += d;
+    const d = Number(r?.delta || 0);
+    if (Number.isFinite(d) && d > 0) sum += d;
   }
   return sum;
 }
 
-/**
- * ✅ Revenue estimate (30d): creditsPaid30d / packCredits * packPrice
- */
-async function getRevenueEstimate30d() {
-  const creditsPaid30d = await getCreditsPaid30d();
+function estimateRevenueFcfa(paidCreditsAdded) {
   const packCredits = PACK_CREDITS || 25;
   const packPrice = PACK_PRICE_FCFA || 2000;
-
-  const revenue = Math.round((creditsPaid30d / packCredits) * packPrice);
-  return { creditsPaid30d, revenue };
+  return Math.round((paidCreditsAdded / packCredits) * packPrice);
 }
 
-/**
- * ✅ Main: build stats object for /stats
- * Users total = ALL business_profiles users (what you requested)
- */
 async function getKadiStats() {
-  const [usersTotal, active7, active30, docs, credits7, welcomeBonusTotal, rev] =
-    await Promise.all([
-      getUsersTotal(),
-      getActiveUsers(7),
-      getActiveUsers(30),
-      getDocsCounts(),
-      getCredits7d(),
-      getWelcomeBonusTotal(),
-      getRevenueEstimate30d(),
-    ]);
+  const since7 = isoSinceDays(7);
+  const since30 = isoSinceDays(30);
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayStart = `${todayIso}T00:00:00.000Z`;
+
+  const users_total = await usersTotal();
+  const users_active_7d = await activeUsersSince(since7);
+  const users_active_30d = await activeUsersSince(since30);
+
+  const docs_total = await countRows("kadi_documents");
+  const docs_7d = await countRowsSince("kadi_documents", since7);
+  const docs_30d = await countRowsSince("kadi_documents", since30);
+  const docs_today = await countRowsSince("kadi_documents", todayStart);
+
+  const docs_by_type_30d = await docsByTypeSince(since30);
+  const facture_kinds_30d = await factureKindsSince(since30);
+
+  const credits_7d = await creditsStatsSince(since7);
+
+  const paid_added_30d = await paidCreditsAddedSince(since30);
+  const revenue_estimate_30d = estimateRevenueFcfa(paid_added_30d);
 
   return {
-    users: {
-      total: usersTotal,
-      active7,
-      active30,
+    users: { total: users_total, active_7d: users_active_7d, active_30d: users_active_30d },
+    documents: {
+      total: docs_total,
+      d7: docs_7d,
+      d30: docs_30d,
+      today: docs_today,
+      by_type_30d: docs_by_type_30d,
+      facture_kinds_30d: facture_kinds_30d,
     },
-    documents: docs,
-    credits: {
-      added7: credits7.added,
-      consumed7: credits7.consumed,
-      welcomeBonusTotal,
-      creditsPaid30d: rev.creditsPaid30d,
-    },
+    credits: { d7: credits_7d, paid_added_30d },
     revenue: {
-      estimate30d: rev.revenue,
-      packCredits: PACK_CREDITS || 25,
-      packPriceFcfa: PACK_PRICE_FCFA || 2000,
+      estimate_30d_fcfa: revenue_estimate_30d,
+      pack_credits: PACK_CREDITS,
+      pack_price_fcfa: PACK_PRICE_FCFA,
     },
-    ts: new Date().toISOString(),
+    meta: { generated_at: new Date().toISOString() },
   };
 }
 
-/**
- * ✅ Optional: format a WhatsApp message
- */
-function formatStatsMessage(stats) {
-  const frDate = new Date().toLocaleString("fr-FR");
-
-  return (
-    `📊 *KADI — STATISTIQUES*\n\n` +
-    `👥 *Utilisateurs*\n` +
-    `• Total (business_profiles) : ${stats.users.total}\n` +
-    `• Actifs 7j (docs) : ${stats.users.active7}\n` +
-    `• Actifs 30j (docs) : ${stats.users.active30}\n\n` +
-    `📄 *Documents*\n` +
-    `• Total : ${stats.documents.total}\n` +
-    `• 7 derniers jours : ${stats.documents.d7}\n` +
-    `• 30 derniers jours : ${stats.documents.d30}\n` +
-    `• Aujourd’hui : ${stats.documents.today}\n\n` +
-    `💳 *Crédits*\n` +
-    `• Consommés (7j) : ${stats.credits.consumed7}\n` +
-    `• Ajoutés (7j) : ${stats.credits.added7}\n` +
-    `• Bonus welcome (total) : ${stats.credits.welcomeBonusTotal}\n` +
-    `• Crédits payés (30j) : ${stats.credits.creditsPaid30d}\n\n` +
-    `💰 *Revenu estimé (30j)*\n` +
-    `• ≈ ${stats.revenue.estimate30d} FCFA\n` +
-    `   (Pack: ${stats.revenue.packCredits} crédits = ${stats.revenue.packPriceFcfa} FCFA)\n\n` +
-    `🕒 ${frDate}`
-  );
-}
-
-module.exports = {
-  getKadiStats,
-  formatStatsMessage,
-  // exported helpers if you want:
-  getUsersTotal,
-  getActiveUsers,
-  getDocsCounts,
-  getCredits7d,
-  getWelcomeBonusTotal,
-  getCreditsPaid30d,
-  getRevenueEstimate30d,
-};
+module.exports = { getKadiStats, estimateRevenueFcfa };

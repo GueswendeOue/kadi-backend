@@ -6,6 +6,7 @@ const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile } = require("./store");
+
 const {
   uploadLogoBuffer,
   getSignedLogoUrl,
@@ -19,6 +20,7 @@ const {
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
+  verifyRequestSignature,
 } = require("./whatsappApi");
 
 const {
@@ -29,7 +31,11 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
-const { getKadiStats, getTopClients, recordActivity } = require("./kadiStatsRepo");
+const { supabase } = require("./supabaseClient");
+
+// ✅ NOUVEAU: activité + stats repos
+const { recordActivity } = require("./kadiActivityRepo");
+const { getKadiStats } = require("./kadiStatsRepo");
 
 // ---------------- Config ----------------
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || ""; // ex: "226XXXXXXXX"
@@ -38,7 +44,7 @@ const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
-// Anti-double welcome in memory
+// Anti-double welcome in memory (bonus si pas de colonne DB)
 const _WELCOME_CACHE = new Set();
 
 // ---------------- Utils ----------------
@@ -97,8 +103,11 @@ function cleanNumber(str) {
 
   if (hasComma && !hasDot) {
     const parts = s.split(",");
-    if (parts.length === 2 && parts[1].length !== 3) s = `${parts[0]}.${parts[1]}`;
-    else s = s.replace(/,/g, "");
+    if (parts.length === 2 && parts[1].length !== 3) {
+      s = `${parts[0]}.${parts[1]}`;
+    } else {
+      s = s.replace(/,/g, "");
+    }
   } else {
     s = s.replace(/,/g, "");
   }
@@ -133,17 +142,13 @@ function extractNumbersSmart(text) {
       i = j - 1;
       continue;
     }
+
     merged.push(cur);
   }
 
   return merged.map(cleanNumber).filter((n) => typeof n === "number");
 }
 
-/**
- * ✅ PATCH CALCULS (v2):
- * - prix = plus grand nombre (hors années si possible)
- * - qté = x2/2x en priorité, sinon premier entier <= 100
- */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -205,17 +210,13 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-// ---------------- Admin guard ----------------
-function ensureAdmin(from) {
-  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
-}
-
-// ---------------- Welcome credits ----------------
+// ---------------- Welcome credits (50 gratuits) ----------------
 async function ensureWelcomeCredits(waId) {
   try {
     if (_WELCOME_CACHE.has(waId)) return;
 
     const p = await getOrCreateProfile(waId);
+
     if (p && p.welcome_credits_granted === true) {
       _WELCOME_CACHE.add(waId);
       return;
@@ -242,7 +243,7 @@ async function ensureWelcomeCredits(waId) {
       `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
     );
   } catch (e) {
-    console.warn("ensureWelcomeCredits warn:", e?.message);
+    console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
   }
 }
 
@@ -295,14 +296,12 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// ---------------- Profil ----------------
+// ---------------- Profil entreprise ----------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
   s.profileStep = "business_name";
   await getOrCreateProfile(from);
-
-  await recordActivity({ waId: from, event: "profile_start" });
 
   await sendText(
     from,
@@ -358,7 +357,6 @@ async function handleProfileAnswer(from, text) {
     if (skip) {
       s.step = "idle";
       s.profileStep = null;
-      await recordActivity({ waId: from, event: "profile_done_no_logo" });
       await sendText(from, "✅ Profil enregistré (sans logo).");
       await sendHomeMenu(from);
       return true;
@@ -369,12 +367,10 @@ async function handleProfileAnswer(from, text) {
   return false;
 }
 
-// ---------------- Recharge (preuve -> admin) ----------------
+// ---------------- Recharge preuve -> admin ----------------
 async function replyRechargeInfo(from) {
   const s = getSession(from);
   s.step = "recharge_proof";
-
-  await recordActivity({ waId: from, event: "recharge_info" });
 
   await sendText(
     from,
@@ -384,8 +380,6 @@ async function replyRechargeInfo(from) {
 
 async function handleRechargeProofImage(from, msg) {
   try {
-    await recordActivity({ waId: from, event: "recharge_proof_received" });
-
     if (!ADMIN_WA_ID) {
       await sendText(from, "✅ Preuve reçue. Le support vous contactera.");
       return;
@@ -434,7 +428,9 @@ async function handleRechargeProofImage(from, msg) {
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
 
-  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
+  if (s.step === "recharge_proof") {
+    return handleRechargeProofImage(from, msg);
+  }
 
   const mediaId = msg?.image?.id;
   if (!mediaId) {
@@ -449,8 +445,6 @@ async function handleLogoImage(from, msg) {
   const { filePath } = await uploadLogoBuffer({ userId: from, buffer: buf, mimeType: mime });
   await updateProfile(from, { logo_path: filePath });
 
-  await recordActivity({ waId: from, event: "logo_uploaded" });
-
   if (s.step === "profile" && s.profileStep === "logo") {
     s.step = "idle";
     s.profileStep = null;
@@ -462,59 +456,90 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré.");
 }
 
-// ---------------- Credits ----------------
+// ---------------- Crédits ----------------
 async function replyBalance(from) {
   const bal = await getBalance(from);
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
-// ---------------- Admin stats/top/export ----------------
+// ---------------- Admin security ----------------
+function ensureAdmin(from) {
+  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
+}
+
+// ---------------- /STATS (admin) ----------------
 async function replyStats(from) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l’administrateur.");
+  }
 
   try {
-    const s = await getKadiStats({ days7: 7, days30: 30 });
+    const s = await getKadiStats();
 
     const msg =
       `📊 *KADI — STATISTIQUES*\n\n` +
       `👥 *Utilisateurs*\n` +
-      `• Total : ${asInt(s.users_total)}\n` +
-      `• Actifs 7j : ${asInt(s.users_active_7)}\n` +
-      `• Actifs 30j : ${asInt(s.users_active_30)}\n\n` +
+      `• Total : ${s.users.total}\n` +
+      `• Actifs 7j : ${s.users.active_7d}\n` +
+      `• Actifs 30j : ${s.users.active_30d}\n\n` +
       `📄 *Documents*\n` +
-      `• Total : ${asInt(s.docs_total)}\n` +
-      `• 7j : ${asInt(s.docs_7)}\n` +
-      `• 30j : ${asInt(s.docs_30)}\n` +
-      `• Aujourd’hui : ${asInt(s.docs_today)}\n\n` +
+      `• Total : ${s.documents.total}\n` +
+      `• 7 derniers jours : ${s.documents.d7}\n` +
+      `• 30 derniers jours : ${s.documents.d30}\n` +
+      `• Aujourd’hui : ${s.documents.today}\n\n` +
       `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${asInt(s.credits_consumed_7)}\n` +
-      `• Ajoutés : ${asInt(s.credits_added_7)}\n\n` +
-      `🎁 *Bonus Welcome (30j)* : ${asInt(s.welcome_added_30)}\n` +
-      `💰 *Revenu estimé (30j)* (hors bonus) : ≈ ${asInt(s.revenue_est_30)} FCFA\n\n` +
+      `• Consommés : ${asInt(s.credits.d7.consumed)}\n` +
+      `• Ajoutés : ${asInt(s.credits.d7.added)}\n` +
+      `• Bonus welcome (incl.) : ${asInt(s.credits.d7.welcomeAdded)}\n\n` +
+      `💰 *Revenu estimé (30j)*\n` +
+      `• ≈ ${asInt(s.revenue.estimate_30d_fcfa)} FCFA\n\n` +
       `🕒 ${new Date().toLocaleString("fr-FR")}`;
 
     await sendText(from, msg);
   } catch (e) {
     console.error("replyStats error:", e?.message);
-    await sendText(from, "❌ Erreur stats. Vérifie la RPC `kadi_stats`.");
+    await sendText(from, "❌ Erreur stats. Vérifie business_profiles / kadi_activity / kadi_documents / kadi_credit_tx.");
   }
 }
 
+// ---------------- TOP / EXPORT (Admin) ----------------
 async function replyTopClients(from, days = 30) {
   if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
   try {
-    const top = await getTopClients({ days, limit: 5 });
+    const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
+
+    const { data, error } = await supabase
+      .from("kadi_documents")
+      .select("client,total,created_at")
+      .gte("created_at", sinceIso)
+      .limit(10000);
+
+    if (error) throw error;
+
+    const map = new Map();
+    for (const r of data || []) {
+      const key = (r.client || "—").trim() || "—";
+      const prev = map.get(key) || { count: 0, sum: 0 };
+      prev.count += 1;
+      prev.sum += Number(r.total) || 0;
+      map.set(key, prev);
+    }
+
+    const top = [...map.entries()]
+      .sort((a, b) => (b[1].count - a[1].count) || (b[1].sum - a[1].sum))
+      .slice(0, 5);
+
     if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
 
     const lines = top
-      .map((r, i) => `${i + 1}) ${(r.client || "—").trim()} — ${asInt(r.doc_count)} doc • ${money(r.total_sum)} FCFA`)
+      .map(([name, v], i) => `${i + 1}) ${name} — ${v.count} doc • ${money(v.sum)} FCFA`)
       .join("\n");
 
     await sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
   } catch (e) {
     console.error("replyTopClients error:", e?.message);
-    await sendText(from, "❌ Erreur top clients. Vérifie la RPC `kadi_top_clients`.");
+    await sendText(from, "❌ Erreur top clients.");
   }
 }
 
@@ -522,9 +547,9 @@ async function exportDocsCsv(from, days = 30) {
   if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
   try {
-    const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
 
-    const { data, error } = await require("./supabaseClient").supabase
+    const { data, error } = await supabase
       .from("kadi_documents")
       .select("created_at,wa_id,doc_number,doc_type,facture_kind,client,date,total,items")
       .gte("created_at", sinceIso)
@@ -559,9 +584,13 @@ async function exportDocsCsv(from, days = 30) {
 
     const csv = toCsv([header, ...rows]);
     const buf = Buffer.from(csv, "utf8");
-
     const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-    const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
+
+    const up = await uploadMediaBuffer({
+      buffer: buf,
+      filename: fileName,
+      mimeType: "text/csv",
+    });
 
     if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
 
@@ -577,7 +606,7 @@ async function exportDocsCsv(from, days = 30) {
   }
 }
 
-// ---------------- Documents ----------------
+// ---------------- Documents flow ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -593,8 +622,6 @@ async function startDocFlow(from, mode, factureKind = null) {
     items: [],
     finance: null,
   };
-
-  await recordActivity({ waId: from, event: "doc_start", meta: { mode, factureKind } });
 
   const prefix =
     mode === "facture"
@@ -684,8 +711,6 @@ async function handleDocText(from, text) {
   const profile = await getOrCreateProfile(from);
   const preview = await buildPreviewMessage({ profile, doc: draft });
 
-  await recordActivity({ waId: from, event: "doc_preview" });
-
   await sendText(from, preview);
   await sendAfterPreviewMenu(from);
   return true;
@@ -707,7 +732,6 @@ async function confirmAndSendPdf(from) {
   }
 
   draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
-
   const profile = await getOrCreateProfile(from);
 
   let logoBuf = null;
@@ -755,17 +779,14 @@ async function confirmAndSendPdf(from) {
     mimeType: "application/pdf",
   });
 
-  const mediaId = up?.id;
-  if (!mediaId) {
+  if (!up?.id) {
     await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
     return;
   }
 
-  await recordActivity({ waId: from, event: "doc_pdf_sent", meta: { docNumber: draft.docNumber } });
-
   await sendDocument({
     to: from,
-    mediaId,
+    mediaId: up.id,
     filename: fileName,
     caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nSolde: ${cons.balance} crédit(s)`,
   });
@@ -778,9 +799,9 @@ async function confirmAndSendPdf(from) {
   await sendHomeMenu(from);
 }
 
-// ---------------- Admin legacy ----------------
+// ---------------- Admin commands (legacy) ----------------
 async function handleAdmin(from, text) {
-  if (!ensureAdmin(from)) return false;
+  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) return false;
 
   const t = norm(text);
 
@@ -870,43 +891,55 @@ async function handleInteractiveReply(from, replyId) {
 // ---------------- Main entry ----------------
 async function handleIncomingMessage(value) {
   if (!value) return;
+
   if (value.statuses?.length) return;
   if (!value.messages?.length) return;
 
   const msg = value.messages[0];
   const from = msg.from;
 
-  // Activity: message received (toujours)
-  await recordActivity({ waId: from, event: "message_in", meta: { type: msg.type } });
+  // ✅ activity tracking (utilisateur vu)
+  await recordActivity(from, "message", { type: msg.type });
 
+  // 🎁 50 crédits gratuits au départ
   await ensureWelcomeCredits(from);
 
   if (msg.type === "interactive") {
     const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
-    if (replyId) return handleInteractiveReply(from, replyId);
+    if (replyId) {
+      await recordActivity(from, "interactive", { replyId });
+      return handleInteractiveReply(from, replyId);
+    }
   }
 
-  if (msg.type === "image") return handleLogoImage(from, msg);
+  if (msg.type === "image") {
+    await recordActivity(from, "image", {});
+    return handleLogoImage(from, msg);
+  }
 
   const text = norm(msg.text?.body);
   if (!text) return;
 
+  // Commands ADMIN (stats/top/export)
   const lower = text.toLowerCase();
 
-  // Admin commands (WhatsApp)
-  if (lower === "/stats" || lower === "stats") return replyStats(from);
+  if (lower === "/stats" || lower === "stats") {
+    await recordActivity(from, "command", { cmd: "stats" });
+    return replyStats(from);
+  }
 
   if (lower.startsWith("/top") || lower.startsWith("top")) {
     const days = parseDaysArg(text, 30);
+    await recordActivity(from, "command", { cmd: "top", days });
     return replyTopClients(from, days);
   }
 
   if (lower.startsWith("/export") || lower.startsWith("export")) {
     const days = parseDaysArg(text, 30);
+    await recordActivity(from, "command", { cmd: "export", days });
     return exportDocsCsv(from, days);
   }
 
-  // Admin legacy
   if (await handleAdmin(from, text)) return;
 
   if (await handleProfileAnswer(from, text)) return;
@@ -914,9 +947,11 @@ async function handleIncomingMessage(value) {
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     return replyBalance(from);
   }
-  if (lower === "recharge") return replyRechargeInfo(from);
 
-  // Redeem code
+  if (lower === "recharge") {
+    return replyRechargeInfo(from);
+  }
+
   {
     const m = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
     if (m) {
@@ -925,7 +960,7 @@ async function handleIncomingMessage(value) {
         if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
         return sendText(from, "❌ Code invalide.");
       }
-      await recordActivity({ waId: from, event: "recharge_code_ok", meta: { added: result.added } });
+      await recordActivity(from, "redeem_code", { added: result.added });
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
   }
