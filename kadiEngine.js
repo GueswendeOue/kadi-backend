@@ -29,7 +29,7 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
-const { supabase } = require("./supabaseClient");
+const { getKadiStats, getTopClients, recordActivity } = require("./kadiStatsRepo");
 
 // ---------------- Config ----------------
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || ""; // ex: "226XXXXXXXX"
@@ -38,11 +38,7 @@ const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
-// Pour estimer revenu: (crédits ajoutés / 25) * 2000
-const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
-const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
-
-// Anti-double welcome in memory (bonus si pas de colonne DB)
+// Anti-double welcome in memory
 const _WELCOME_CACHE = new Set();
 
 // ---------------- Utils ----------------
@@ -69,17 +65,11 @@ function asInt(v, def = 0) {
 }
 
 function parseDaysArg(text, defDays) {
-  // accepte: "/stats 7" "/export 30" "/top 90"
   const m = String(text || "").trim().match(/(?:\s+)(\d{1,3})\b/);
   if (!m) return defDays;
   const d = Number(m[1]);
   if (!Number.isFinite(d) || d <= 0) return defDays;
   return Math.min(d, 365);
-}
-
-function isoSinceDays(days) {
-  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  return d.toISOString();
 }
 
 function csvEscape(v) {
@@ -89,9 +79,7 @@ function csvEscape(v) {
 }
 
 function toCsv(rows) {
-  return rows
-    .map((r) => r.map(csvEscape).join(","))
-    .join("\n");
+  return rows.map((r) => r.map(csvEscape).join(",")).join("\n");
 }
 
 /**
@@ -109,13 +97,8 @@ function cleanNumber(str) {
 
   if (hasComma && !hasDot) {
     const parts = s.split(",");
-    // si la partie après virgule != 3 chiffres => décimal (12,5)
-    if (parts.length === 2 && parts[1].length !== 3) {
-      s = `${parts[0]}.${parts[1]}`;
-    } else {
-      // sinon: séparateur milliers
-      s = s.replace(/,/g, "");
-    }
+    if (parts.length === 2 && parts[1].length !== 3) s = `${parts[0]}.${parts[1]}`;
+    else s = s.replace(/,/g, "");
   } else {
     s = s.replace(/,/g, "");
   }
@@ -125,10 +108,6 @@ function cleanNumber(str) {
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * Fix principal: évite le regex gourmand qui colle "1 100000" -> 1100000.
- * On extrait d'abord des tokens \d+ puis on merge 1 + 000 + 000 => 1000000
- */
 function extractNumbersSmart(text) {
   const t = String(text || "");
   const digitTokens = t.match(/\d+/g) || [];
@@ -143,7 +122,6 @@ function extractNumbersSmart(text) {
     const cur = digitTokens[i];
     const next = digitTokens[i + 1];
 
-    // merge thousands groups: X + 000 + 000 (+000...)
     if (cur.length <= 3 && next && next.length === 3) {
       let acc = cur;
       let j = i + 1;
@@ -155,7 +133,6 @@ function extractNumbersSmart(text) {
       i = j - 1;
       continue;
     }
-
     merged.push(cur);
   }
 
@@ -164,43 +141,35 @@ function extractNumbersSmart(text) {
 
 /**
  * ✅ PATCH CALCULS (v2):
- * - prix = "plus grand nombre" de la ligne (avec filtre années si possible)
- * - qté = x2/2x en priorité, sinon premier petit entier <= 100
- * - évite que des dates/années prennent la place du prix
+ * - prix = plus grand nombre (hors années si possible)
+ * - qté = x2/2x en priorité, sinon premier entier <= 100
  */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
-  // 1) qty via x2 / 2x
   let qty = null;
   const xAfter = raw.match(/\bx\s*(\d+)\b/i);
   const xBefore = raw.match(/\b(\d+)\s*x\b/i);
   if (xAfter) qty = Number(xAfter[1]);
   else if (xBefore) qty = Number(xBefore[1]);
 
-  // 2) extract numbers
   const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
 
-  // 3) unitPrice = biggest candidate
   let unitPrice = 0;
   if (numbers.length === 1) {
     unitPrice = numbers[0];
   } else if (numbers.length >= 2) {
-    // remove year-like only if we have other candidates
     const nonYear = numbers.filter((n) => !(n >= 1900 && n <= 2100));
     const pool = nonYear.length ? nonYear : numbers;
     unitPrice = Math.max(...pool);
   }
 
-  // 4) qty fallback
   if (!qty) {
     const smalls = numbers.filter((n) => Number.isInteger(n) && n > 0 && n <= 100);
-    if (smalls.length) qty = smalls[0];
-    else qty = 1;
+    qty = smalls.length ? smalls[0] : 1;
   }
 
-  // 5) label
   const label =
     raw
       .replace(/\b(\d+)\s*x\b/gi, " ")
@@ -236,20 +205,22 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-// ---------------- Welcome credits (50 gratuits) ----------------
+// ---------------- Admin guard ----------------
+function ensureAdmin(from) {
+  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
+}
+
+// ---------------- Welcome credits ----------------
 async function ensureWelcomeCredits(waId) {
   try {
     if (_WELCOME_CACHE.has(waId)) return;
 
     const p = await getOrCreateProfile(waId);
-
-    // si tu as la colonne en DB, c'est parfait
     if (p && p.welcome_credits_granted === true) {
       _WELCOME_CACHE.add(waId);
       return;
     }
 
-    // si déjà un solde, pas besoin
     const bal = await getBalance(waId);
     if (bal > 0) {
       _WELCOME_CACHE.add(waId);
@@ -264,21 +235,18 @@ async function ensureWelcomeCredits(waId) {
 
     try {
       await updateProfile(waId, { welcome_credits_granted: true });
-    } catch (e) {
-      // colonne peut ne pas exister, on ne casse pas
-      console.warn("⚠️ welcome_credits_granted non persisté (colonne manquante ?)");
-    }
+    } catch (_) {}
 
     await sendText(
       waId,
       `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
     );
   } catch (e) {
-    console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
+    console.warn("ensureWelcomeCredits warn:", e?.message);
   }
 }
 
-// ---------------- Menus (Version B) ----------------
+// ---------------- Menus ----------------
 async function sendHomeMenu(to) {
   return sendButtons(to, "👋 Bonjour. Que souhaitez-vous faire ?", [
     { id: "HOME_DOCS", title: "Documents" },
@@ -327,12 +295,14 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// ---------------- Profil entreprise ----------------
+// ---------------- Profil ----------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
   s.profileStep = "business_name";
   await getOrCreateProfile(from);
+
+  await recordActivity({ waId: from, event: "profile_start" });
 
   await sendText(
     from,
@@ -388,6 +358,7 @@ async function handleProfileAnswer(from, text) {
     if (skip) {
       s.step = "idle";
       s.profileStep = null;
+      await recordActivity({ waId: from, event: "profile_done_no_logo" });
       await sendText(from, "✅ Profil enregistré (sans logo).");
       await sendHomeMenu(from);
       return true;
@@ -398,10 +369,12 @@ async function handleProfileAnswer(from, text) {
   return false;
 }
 
-// ---------------- Recharge: preuve -> admin ----------------
+// ---------------- Recharge (preuve -> admin) ----------------
 async function replyRechargeInfo(from) {
   const s = getSession(from);
   s.step = "recharge_proof";
+
+  await recordActivity({ waId: from, event: "recharge_info" });
 
   await sendText(
     from,
@@ -411,6 +384,8 @@ async function replyRechargeInfo(from) {
 
 async function handleRechargeProofImage(from, msg) {
   try {
+    await recordActivity({ waId: from, event: "recharge_proof_received" });
+
     if (!ADMIN_WA_ID) {
       await sendText(from, "✅ Preuve reçue. Le support vous contactera.");
       return;
@@ -427,11 +402,7 @@ async function handleRechargeProofImage(from, msg) {
     const buf = await downloadMediaToBuffer(info.url);
 
     const filename = `preuve-${from}-${Date.now()}.jpg`;
-    const up = await uploadMediaBuffer({
-      buffer: buf,
-      filename,
-      mimeType: mime,
-    });
+    const up = await uploadMediaBuffer({ buffer: buf, filename, mimeType: mime });
 
     if (up?.id) {
       await sendDocument({
@@ -463,10 +434,7 @@ async function handleRechargeProofImage(from, msg) {
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
 
-  // si on attend une preuve de recharge, on traite comme preuve
-  if (s.step === "recharge_proof") {
-    return handleRechargeProofImage(from, msg);
-  }
+  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
 
   const mediaId = msg?.image?.id;
   if (!mediaId) {
@@ -481,6 +449,8 @@ async function handleLogoImage(from, msg) {
   const { filePath } = await uploadLogoBuffer({ userId: from, buffer: buf, mimeType: mime });
   await updateProfile(from, { logo_path: filePath });
 
+  await recordActivity({ waId: from, event: "logo_uploaded" });
+
   if (s.step === "profile" && s.profileStep === "logo") {
     s.step = "idle";
     s.profileStep = null;
@@ -492,159 +462,74 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré.");
 }
 
-// ---------------- Crédits ----------------
+// ---------------- Credits ----------------
 async function replyBalance(from) {
   const bal = await getBalance(from);
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
-// ---------------- STATS / TOP / EXPORT (Admin) ----------------
-function ensureAdmin(from) {
-  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
-}
-
+// ---------------- Admin stats/top/export ----------------
 async function replyStats(from) {
-  if (!ensureAdmin(from)) {
-    return sendText(from, "❌ Commande réservée à l’administrateur.");
-  }
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
   try {
-    const todayIso = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const since7 = isoSinceDays(7);
-    const since30 = isoSinceDays(30);
-
-    // Docs
-    const docsTotal = await supabase.from("kadi_documents").select("id", { count: "exact", head: true });
-    const docs7 = await supabase
-      .from("kadi_documents")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", since7);
-    const docs30 = await supabase
-      .from("kadi_documents")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", since30);
-    const docsToday = await supabase
-      .from("kadi_documents")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", `${todayIso}T00:00:00.000Z`);
-
-    // Users (distinct wa_id) via query simple (on fait approx via group)
-    const users7 = await supabase
-      .from("kadi_documents")
-      .select("wa_id")
-      .gte("created_at", since7);
-    const users30 = await supabase
-      .from("kadi_documents")
-      .select("wa_id")
-      .gte("created_at", since30);
-    const usersAll = await supabase.from("kadi_documents").select("wa_id");
-
-    const uniq = (arr) => new Set((arr || []).map((x) => x.wa_id).filter(Boolean)).size;
-
-    // Credits (7j)
-    const tx7 = await supabase
-      .from("kadi_credit_tx")
-      .select("delta")
-      .gte("created_at", since7);
-
-    const deltas7 = (tx7.data || []).map((r) => Number(r.delta) || 0);
-    const added7 = deltas7.filter((d) => d > 0).reduce((a, b) => a + b, 0);
-    const consumed7 = deltas7.filter((d) => d < 0).reduce((a, b) => a + (-b), 0);
-
-    // revenue estimé (30j) basé sur crédits ajoutés
-    const tx30 = await supabase
-      .from("kadi_credit_tx")
-      .select("delta")
-      .gte("created_at", since30);
-
-    const deltas30 = (tx30.data || []).map((r) => Number(r.delta) || 0);
-    const added30 = deltas30.filter((d) => d > 0).reduce((a, b) => a + b, 0);
-    const estRevenue = Math.round((added30 / (PACK_CREDITS || 25)) * (PACK_PRICE_FCFA || 2000));
+    const s = await getKadiStats({ days7: 7, days30: 30 });
 
     const msg =
       `📊 *KADI — STATISTIQUES*\n\n` +
       `👥 *Utilisateurs*\n` +
-      `• Total (approx) : ${uniq(usersAll.data)}\n` +
-      `• Actifs 7j : ${uniq(users7.data)}\n` +
-      `• Actifs 30j : ${uniq(users30.data)}\n\n` +
+      `• Total : ${asInt(s.users_total)}\n` +
+      `• Actifs 7j : ${asInt(s.users_active_7)}\n` +
+      `• Actifs 30j : ${asInt(s.users_active_30)}\n\n` +
       `📄 *Documents*\n` +
-      `• Total : ${docsTotal.count || 0}\n` +
-      `• 7 derniers jours : ${docs7.count || 0}\n` +
-      `• 30 derniers jours : ${docs30.count || 0}\n` +
-      `• Aujourd’hui : ${docsToday.count || 0}\n\n` +
+      `• Total : ${asInt(s.docs_total)}\n` +
+      `• 7j : ${asInt(s.docs_7)}\n` +
+      `• 30j : ${asInt(s.docs_30)}\n` +
+      `• Aujourd’hui : ${asInt(s.docs_today)}\n\n` +
       `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${asInt(consumed7)}\n` +
-      `• Ajoutés : ${asInt(added7)}\n\n` +
-      `💰 *Revenu estimé (30j)*\n` +
-      `• ≈ ${asInt(estRevenue)} FCFA\n\n` +
+      `• Consommés : ${asInt(s.credits_consumed_7)}\n` +
+      `• Ajoutés : ${asInt(s.credits_added_7)}\n\n` +
+      `🎁 *Bonus Welcome (30j)* : ${asInt(s.welcome_added_30)}\n` +
+      `💰 *Revenu estimé (30j)* (hors bonus) : ≈ ${asInt(s.revenue_est_30)} FCFA\n\n` +
       `🕒 ${new Date().toLocaleString("fr-FR")}`;
 
     await sendText(from, msg);
   } catch (e) {
     console.error("replyStats error:", e?.message);
-    await sendText(from, "❌ Erreur stats. Vérifie les tables kadi_documents / kadi_credit_tx.");
+    await sendText(from, "❌ Erreur stats. Vérifie la RPC `kadi_stats`.");
   }
 }
 
 async function replyTopClients(from, days = 30) {
-  if (!ensureAdmin(from)) {
-    return sendText(from, "❌ Commande réservée à l’administrateur.");
-  }
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
   try {
-    const since = isoSinceDays(days);
-
-    // On récupère doc récents (client + total)
-    const { data, error } = await supabase
-      .from("kadi_documents")
-      .select("client,total,wa_id,created_at")
-      .gte("created_at", since)
-      .limit(5000);
-
-    if (error) throw error;
-
-    const map = new Map();
-    for (const r of data || []) {
-      const key = (r.client || "—").trim() || "—";
-      const prev = map.get(key) || { count: 0, sum: 0 };
-      prev.count += 1;
-      prev.sum += Number(r.total) || 0;
-      map.set(key, prev);
-    }
-
-    const top = [...map.entries()]
-      .sort((a, b) => (b[1].count - a[1].count) || (b[1].sum - a[1].sum))
-      .slice(0, 5);
-
-    if (!top.length) {
-      return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
-    }
+    const top = await getTopClients({ days, limit: 5 });
+    if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
 
     const lines = top
-      .map(([name, v], i) => `${i + 1}) ${name} — ${v.count} doc • ${money(v.sum)} FCFA`)
+      .map((r, i) => `${i + 1}) ${(r.client || "—").trim()} — ${asInt(r.doc_count)} doc • ${money(r.total_sum)} FCFA`)
       .join("\n");
 
     await sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
   } catch (e) {
     console.error("replyTopClients error:", e?.message);
-    await sendText(from, "❌ Erreur top clients.");
+    await sendText(from, "❌ Erreur top clients. Vérifie la RPC `kadi_top_clients`.");
   }
 }
 
 async function exportDocsCsv(from, days = 30) {
-  if (!ensureAdmin(from)) {
-    return sendText(from, "❌ Commande réservée à l’administrateur.");
-  }
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
   try {
-    const since = isoSinceDays(days);
+    const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-    const { data, error } = await supabase
+    const { data, error } = await require("./supabaseClient").supabase
       .from("kadi_documents")
       .select("created_at,wa_id,doc_number,doc_type,facture_kind,client,date,total,items")
-      .gte("created_at", since)
+      .gte("created_at", sinceIso)
       .order("created_at", { ascending: false })
-      .limit(5000);
+      .limit(10000);
 
     if (error) throw error;
 
@@ -676,15 +561,9 @@ async function exportDocsCsv(from, days = 30) {
     const buf = Buffer.from(csv, "utf8");
 
     const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-    const up = await uploadMediaBuffer({
-      buffer: buf,
-      filename: fileName,
-      mimeType: "text/csv",
-    });
+    const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
 
-    if (!up?.id) {
-      return sendText(from, "❌ Export: upload échoué.");
-    }
+    if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
 
     await sendDocument({
       to: from,
@@ -714,6 +593,8 @@ async function startDocFlow(from, mode, factureKind = null) {
     items: [],
     finance: null,
   };
+
+  await recordActivity({ waId: from, event: "doc_start", meta: { mode, factureKind } });
 
   const prefix =
     mode === "facture"
@@ -803,6 +684,8 @@ async function handleDocText(from, text) {
   const profile = await getOrCreateProfile(from);
   const preview = await buildPreviewMessage({ profile, doc: draft });
 
+  await recordActivity({ waId: from, event: "doc_preview" });
+
   await sendText(from, preview);
   await sendAfterPreviewMenu(from);
   return true;
@@ -819,10 +702,7 @@ async function confirmAndSendPdf(from) {
 
   const cons = await consumeCredit(from, 1, "pdf");
   if (!cons.ok) {
-    await sendText(
-      from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`
-    );
+    await sendText(from, `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`);
     return;
   }
 
@@ -881,6 +761,8 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
+  await recordActivity({ waId: from, event: "doc_pdf_sent", meta: { docNumber: draft.docNumber } });
+
   await sendDocument({
     to: from,
     mediaId,
@@ -896,9 +778,9 @@ async function confirmAndSendPdf(from) {
   await sendHomeMenu(from);
 }
 
-// ---------------- Admin (codes, topup) ----------------
+// ---------------- Admin legacy ----------------
 async function handleAdmin(from, text) {
-  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) return false;
+  if (!ensureAdmin(from)) return false;
 
   const t = norm(text);
 
@@ -914,10 +796,7 @@ async function handleAdmin(from, text) {
         .map((c) => `${c.code} (${c.credits})`)
         .join("\n");
 
-      await sendText(
-        from,
-        `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}\n\n📌 Astuce: vous pouvez copier/coller ces codes.`
-      );
+      await sendText(from, `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}`);
       return true;
     }
   }
@@ -991,14 +870,15 @@ async function handleInteractiveReply(from, replyId) {
 // ---------------- Main entry ----------------
 async function handleIncomingMessage(value) {
   if (!value) return;
-
   if (value.statuses?.length) return;
   if (!value.messages?.length) return;
 
   const msg = value.messages[0];
   const from = msg.from;
 
-  // 🎁 50 crédits gratuits au départ
+  // Activity: message received (toujours)
+  await recordActivity({ waId: from, event: "message_in", meta: { type: msg.type } });
+
   await ensureWelcomeCredits(from);
 
   if (msg.type === "interactive") {
@@ -1006,19 +886,15 @@ async function handleIncomingMessage(value) {
     if (replyId) return handleInteractiveReply(from, replyId);
   }
 
-  if (msg.type === "image") {
-    return handleLogoImage(from, msg);
-  }
+  if (msg.type === "image") return handleLogoImage(from, msg);
 
   const text = norm(msg.text?.body);
   if (!text) return;
 
-  // Commands ADMIN (stats/top/export)
   const lower = text.toLowerCase();
 
-  if (lower === "/stats" || lower === "stats") {
-    return replyStats(from);
-  }
+  // Admin commands (WhatsApp)
+  if (lower === "/stats" || lower === "stats") return replyStats(from);
 
   if (lower.startsWith("/top") || lower.startsWith("top")) {
     const days = parseDaysArg(text, 30);
@@ -1038,10 +914,9 @@ async function handleIncomingMessage(value) {
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     return replyBalance(from);
   }
-  if (lower === "recharge") {
-    return replyRechargeInfo(from);
-  }
+  if (lower === "recharge") return replyRechargeInfo(from);
 
+  // Redeem code
   {
     const m = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
     if (m) {
@@ -1050,10 +925,8 @@ async function handleIncomingMessage(value) {
         if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
         return sendText(from, "❌ Code invalide.");
       }
-      return sendText(
-        from,
-        `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`
-      );
+      await recordActivity({ waId: from, event: "recharge_code_ok", meta: { added: result.added } });
+      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
   }
 
