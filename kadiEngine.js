@@ -6,7 +6,6 @@ const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile } = require("./store");
-
 const {
   uploadLogoBuffer,
   getSignedLogoUrl,
@@ -20,7 +19,6 @@ const {
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
-  verifyRequestSignature,
 } = require("./whatsappApi");
 
 const {
@@ -31,20 +29,20 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
-const { supabase } = require("./supabaseClient");
-
-// ✅ NOUVEAU: activité + stats repos
 const { recordActivity } = require("./kadiActivityRepo");
-const { getKadiStats } = require("./kadiStatsRepo");
+const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
 
 // ---------------- Config ----------------
-const ADMIN_WA_ID = process.env.ADMIN_WA_ID || ""; // ex: "226XXXXXXXX"
+const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
 const OM_NUMBER = process.env.OM_NUMBER || "76894642";
 const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
-// Anti-double welcome in memory (bonus si pas de colonne DB)
+const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
+const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
+
+// Anti-double welcome (mémoire)
 const _WELCOME_CACHE = new Set();
 
 // ---------------- Utils ----------------
@@ -57,12 +55,6 @@ function formatDateISO(d = new Date()) {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
-}
-
-function money(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0";
-  return String(Math.round(n));
 }
 
 function asInt(v, def = 0) {
@@ -78,20 +70,8 @@ function parseDaysArg(text, defDays) {
   return Math.min(d, 365);
 }
 
-function csvEscape(v) {
-  const s = String(v ?? "");
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function toCsv(rows) {
-  return rows.map((r) => r.map(csvEscape).join(",")).join("\n");
-}
-
 /**
- * cleanNumber: tolère
- * - "1 000 000" / "1,000,000" / "1000000"
- * - "12,5" (décimal)
+ * cleanNumber: tolère "1 000 000" / "1,000,000" / "12,5"
  */
 function cleanNumber(str) {
   if (str == null) return null;
@@ -103,11 +83,8 @@ function cleanNumber(str) {
 
   if (hasComma && !hasDot) {
     const parts = s.split(",");
-    if (parts.length === 2 && parts[1].length !== 3) {
-      s = `${parts[0]}.${parts[1]}`;
-    } else {
-      s = s.replace(/,/g, "");
-    }
+    if (parts.length === 2 && parts[1].length !== 3) s = `${parts[0]}.${parts[1]}`;
+    else s = s.replace(/,/g, "");
   } else {
     s = s.replace(/,/g, "");
   }
@@ -162,9 +139,8 @@ function parseItemLine(line) {
   const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
 
   let unitPrice = 0;
-  if (numbers.length === 1) {
-    unitPrice = numbers[0];
-  } else if (numbers.length >= 2) {
+  if (numbers.length === 1) unitPrice = numbers[0];
+  else if (numbers.length >= 2) {
     const nonYear = numbers.filter((n) => !(n >= 1900 && n <= 2100));
     const pool = nonYear.length ? nonYear : numbers;
     unitPrice = Math.max(...pool);
@@ -210,7 +186,7 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-// ---------------- Welcome credits (50 gratuits) ----------------
+// ---------------- Welcome credits ----------------
 async function ensureWelcomeCredits(waId) {
   try {
     if (_WELCOME_CACHE.has(waId)) return;
@@ -296,7 +272,7 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// ---------------- Profil entreprise ----------------
+// ---------------- Profil ----------------
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -367,7 +343,7 @@ async function handleProfileAnswer(from, text) {
   return false;
 }
 
-// ---------------- Recharge preuve -> admin ----------------
+// ---------------- Recharge ----------------
 async function replyRechargeInfo(from) {
   const s = getSession(from);
   s.step = "recharge_proof";
@@ -404,7 +380,7 @@ async function handleRechargeProofImage(from, msg) {
         mediaId: up.id,
         filename,
         caption:
-          `🧾 *Preuve de paiement reçue*\nClient WA: ${from}\nOffre: ${PRICE_LABEL}\n\n✅ Action admin:\nADMIN ADD ${from} 25`,
+          `🧾 *Preuve de paiement reçue*\nClient WA: ${from}\nOffre: ${PRICE_LABEL}\n\n✅ Action admin:\nADMIN ADD ${from} ${PACK_CREDITS}`,
       });
     } else {
       await sendText(ADMIN_WA_ID, `🧾 Preuve paiement reçue (upload fail). Client: ${from}`);
@@ -462,151 +438,7 @@ async function replyBalance(from) {
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
-// ---------------- Admin security ----------------
-function ensureAdmin(from) {
-  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
-}
-
-// ---------------- /STATS (admin) ----------------
-async function replyStats(from) {
-  if (!ensureAdmin(from)) {
-    return sendText(from, "❌ Commande réservée à l’administrateur.");
-  }
-
-  try {
-    const s = await getKadiStats();
-
-    const msg =
-      `📊 *KADI — STATISTIQUES*\n\n` +
-      `👥 *Utilisateurs*\n` +
-      `• Total : ${s.users.total}\n` +
-      `• Actifs 7j : ${s.users.active_7d}\n` +
-      `• Actifs 30j : ${s.users.active_30d}\n\n` +
-      `📄 *Documents*\n` +
-      `• Total : ${s.documents.total}\n` +
-      `• 7 derniers jours : ${s.documents.d7}\n` +
-      `• 30 derniers jours : ${s.documents.d30}\n` +
-      `• Aujourd’hui : ${s.documents.today}\n\n` +
-      `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${asInt(s.credits.d7.consumed)}\n` +
-      `• Ajoutés : ${asInt(s.credits.d7.added)}\n` +
-      `• Bonus welcome (incl.) : ${asInt(s.credits.d7.welcomeAdded)}\n\n` +
-      `💰 *Revenu estimé (30j)*\n` +
-      `• ≈ ${asInt(s.revenue.estimate_30d_fcfa)} FCFA\n\n` +
-      `🕒 ${new Date().toLocaleString("fr-FR")}`;
-
-    await sendText(from, msg);
-  } catch (e) {
-    console.error("replyStats error:", e?.message);
-    await sendText(from, "❌ Erreur stats. Vérifie business_profiles / kadi_activity / kadi_documents / kadi_credit_tx.");
-  }
-}
-
-// ---------------- TOP / EXPORT (Admin) ----------------
-async function replyTopClients(from, days = 30) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-  try {
-    const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
-
-    const { data, error } = await supabase
-      .from("kadi_documents")
-      .select("client,total,created_at")
-      .gte("created_at", sinceIso)
-      .limit(10000);
-
-    if (error) throw error;
-
-    const map = new Map();
-    for (const r of data || []) {
-      const key = (r.client || "—").trim() || "—";
-      const prev = map.get(key) || { count: 0, sum: 0 };
-      prev.count += 1;
-      prev.sum += Number(r.total) || 0;
-      map.set(key, prev);
-    }
-
-    const top = [...map.entries()]
-      .sort((a, b) => (b[1].count - a[1].count) || (b[1].sum - a[1].sum))
-      .slice(0, 5);
-
-    if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
-
-    const lines = top
-      .map(([name, v], i) => `${i + 1}) ${name} — ${v.count} doc • ${money(v.sum)} FCFA`)
-      .join("\n");
-
-    await sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
-  } catch (e) {
-    console.error("replyTopClients error:", e?.message);
-    await sendText(from, "❌ Erreur top clients.");
-  }
-}
-
-async function exportDocsCsv(from, days = 30) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-  try {
-    const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
-
-    const { data, error } = await supabase
-      .from("kadi_documents")
-      .select("created_at,wa_id,doc_number,doc_type,facture_kind,client,date,total,items")
-      .gte("created_at", sinceIso)
-      .order("created_at", { ascending: false })
-      .limit(10000);
-
-    if (error) throw error;
-
-    const header = [
-      "created_at",
-      "wa_id",
-      "doc_number",
-      "doc_type",
-      "facture_kind",
-      "client",
-      "date",
-      "total",
-      "items_count",
-    ];
-
-    const rows = (data || []).map((r) => [
-      r.created_at || "",
-      r.wa_id || "",
-      r.doc_number || "",
-      r.doc_type || "",
-      r.facture_kind || "",
-      r.client || "",
-      r.date || "",
-      String(r.total ?? ""),
-      String(Array.isArray(r.items) ? r.items.length : 0),
-    ]);
-
-    const csv = toCsv([header, ...rows]);
-    const buf = Buffer.from(csv, "utf8");
-    const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-
-    const up = await uploadMediaBuffer({
-      buffer: buf,
-      filename: fileName,
-      mimeType: "text/csv",
-    });
-
-    if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
-
-    await sendDocument({
-      to: from,
-      mediaId: up.id,
-      filename: fileName,
-      caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
-    });
-  } catch (e) {
-    console.error("exportDocsCsv error:", e?.message);
-    await sendText(from, "❌ Erreur export CSV.");
-  }
-}
-
-// ---------------- Documents flow ----------------
+// ---------------- Documents ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -679,8 +511,6 @@ async function buildPreviewMessage({ profile, doc }) {
     lines || "0",
     "",
     `Total : ${money(f.gross)} FCFA`,
-    "",
-    `Arrêtée la présente ${title.toLowerCase()} à la somme de : ${money(f.gross)} FCFA.`,
   ].join("\n");
 }
 
@@ -732,6 +562,7 @@ async function confirmAndSendPdf(from) {
   }
 
   draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
+
   const profile = await getOrCreateProfile(from);
 
   let logoBuf = null;
@@ -779,14 +610,15 @@ async function confirmAndSendPdf(from) {
     mimeType: "application/pdf",
   });
 
-  if (!up?.id) {
+  const mediaId = up?.id;
+  if (!mediaId) {
     await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
     return;
   }
 
   await sendDocument({
     to: from,
-    mediaId: up.id,
+    mediaId,
     filename: fileName,
     caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nSolde: ${cons.balance} crédit(s)`,
   });
@@ -799,48 +631,43 @@ async function confirmAndSendPdf(from) {
   await sendHomeMenu(from);
 }
 
-// ---------------- Admin commands (legacy) ----------------
+// ---------------- Admin (codes, topup) ----------------
+function ensureAdmin(from) {
+  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
+}
+
 async function handleAdmin(from, text) {
-  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) return false;
+  if (!ensureAdmin(from)) return false;
 
   const t = norm(text);
 
-  {
-    const m = t.match(/^ADMIN\s+CODES\s+(\d+)\s+(\d+)$/i);
-    if (m) {
-      const count = Number(m[1]);
-      const creditsEach = Number(m[2]);
+  const mCodes = t.match(/^ADMIN\s+CODES\s+(\d+)\s+(\d+)$/i);
+  if (mCodes) {
+    const count = Number(mCodes[1]);
+    const creditsEach = Number(mCodes[2]);
 
-      const codes = await createRechargeCodes({ count, creditsEach, createdBy: from });
-      const preview = codes
-        .slice(0, 20)
-        .map((c) => `${c.code} (${c.credits})`)
-        .join("\n");
+    const codes = await createRechargeCodes({ count, creditsEach, createdBy: from });
+    const preview = codes.slice(0, 20).map((c) => `${c.code} (${c.credits})`).join("\n");
 
-      await sendText(from, `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}`);
-      return true;
-    }
+    await sendText(from, `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}`);
+    return true;
   }
 
-  {
-    const m = t.match(/^ADMIN\s+ADD\s+(\d+)\s+(\d+)$/i);
-    if (m) {
-      const wa = m[1];
-      const amt = Number(m[2]);
-      const bal = await addCredits(wa, amt, `admin:${from}`);
-      await sendText(from, `✅ Crédité ${amt} sur ${wa}. Nouveau solde: ${bal}`);
-      return true;
-    }
+  const mAdd = t.match(/^ADMIN\s+ADD\s+(\d+)\s+(\d+)$/i);
+  if (mAdd) {
+    const wa = mAdd[1];
+    const amt = Number(mAdd[2]);
+    const bal = await addCredits(wa, amt, `admin:${from}`);
+    await sendText(from, `✅ Crédité ${amt} sur ${wa}. Nouveau solde: ${bal}`);
+    return true;
   }
 
-  {
-    const m = t.match(/^ADMIN\s+SOLDE\s+(\d+)$/i);
-    if (m) {
-      const wa = m[1];
-      const bal = await getBalance(wa);
-      await sendText(from, `💳 Solde de ${wa}: ${bal} crédit(s)`);
-      return true;
-    }
+  const mSolde = t.match(/^ADMIN\s+SOLDE\s+(\d+)$/i);
+  if (mSolde) {
+    const wa = mSolde[1];
+    const bal = await getBalance(wa);
+    await sendText(from, `💳 Solde de ${wa}: ${bal} crédit(s)`);
+    return true;
   }
 
   return false;
@@ -891,55 +718,127 @@ async function handleInteractiveReply(from, replyId) {
 // ---------------- Main entry ----------------
 async function handleIncomingMessage(value) {
   if (!value) return;
-
   if (value.statuses?.length) return;
   if (!value.messages?.length) return;
 
   const msg = value.messages[0];
   const from = msg.from;
 
-  // ✅ activity tracking (utilisateur vu)
-  await recordActivity(from, "message", { type: msg.type });
+  // ✅ enregistrer l'utilisateur (même s’il ne fait aucun document)
+  try {
+    await recordActivity(from);
+  } catch (e) {
+    console.warn("⚠️ recordActivity error:", e?.message);
+  }
 
-  // 🎁 50 crédits gratuits au départ
+  // 🎁 welcome credits
   await ensureWelcomeCredits(from);
 
   if (msg.type === "interactive") {
     const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
-    if (replyId) {
-      await recordActivity(from, "interactive", { replyId });
-      return handleInteractiveReply(from, replyId);
-    }
+    if (replyId) return handleInteractiveReply(from, replyId);
   }
 
   if (msg.type === "image") {
-    await recordActivity(from, "image", {});
     return handleLogoImage(from, msg);
   }
 
   const text = norm(msg.text?.body);
   if (!text) return;
 
-  // Commands ADMIN (stats/top/export)
   const lower = text.toLowerCase();
 
+  // ---- STATS / TOP / EXPORT (ADMIN)
   if (lower === "/stats" || lower === "stats") {
-    await recordActivity(from, "command", { cmd: "stats" });
-    return replyStats(from);
+    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+    const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
+
+    const msgTxt =
+      `📊 *KADI — STATISTIQUES*\n\n` +
+      `👥 *Utilisateurs*\n` +
+      `• Total : ${stats.users.totalUsers}\n` +
+      `• Actifs 7j : ${stats.users.active7}\n` +
+      `• Actifs 30j : ${stats.users.active30}\n\n` +
+      `📄 *Documents*\n` +
+      `• Total : ${stats.docs.total}\n` +
+      `• 7 derniers jours : ${stats.docs.last7}\n` +
+      `• 30 derniers jours : ${stats.docs.last30}\n\n` +
+      `💳 *Crédits (7j)*\n` +
+      `• Consommés : ${stats.credits.consumed7}\n` +
+      `• Ajoutés : ${stats.credits.added7}\n\n` +
+      `💰 *Revenu estimé (30j)*\n` +
+      `• ≈ ${stats.revenue.est30} FCFA\n` +
+      `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
+
+    return sendText(from, msgTxt);
   }
 
   if (lower.startsWith("/top") || lower.startsWith("top")) {
+    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
     const days = parseDaysArg(text, 30);
-    await recordActivity(from, "command", { cmd: "top", days });
-    return replyTopClients(from, days);
+    const top = await getTopClients({ days, limit: 5 });
+
+    if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
+
+    const lines = top
+      .map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`)
+      .join("\n");
+
+    return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
   }
 
   if (lower.startsWith("/export") || lower.startsWith("export")) {
+    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
     const days = parseDaysArg(text, 30);
-    await recordActivity(from, "command", { cmd: "export", days });
-    return exportDocsCsv(from, days);
+    const rows = await getDocsForExport({ days });
+
+    // CSV simple
+    const header = [
+      "created_at",
+      "wa_id",
+      "doc_number",
+      "doc_type",
+      "facture_kind",
+      "client",
+      "date",
+      "total",
+      "items_count",
+    ];
+
+    const csvLines = [header.join(",")].concat(
+      rows.map((r) => [
+        r.created_at || "",
+        r.wa_id || "",
+        r.doc_number || "",
+        r.doc_type || "",
+        r.facture_kind || "",
+        String((r.client || "")).replace(/"/g, '""'),
+        r.date || "",
+        String(r.total ?? ""),
+        String(Array.isArray(r.items) ? r.items.length : 0),
+      ].map((v) => (/[",\n]/.test(v) ? `"${v}"` : v)).join(","))
+    );
+
+    const csv = csvLines.join("\n");
+    const buf = Buffer.from(csv, "utf8");
+
+    const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
+    const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
+
+    if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
+
+    return sendDocument({
+      to: from,
+      mediaId: up.id,
+      filename: fileName,
+      caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
+    });
   }
 
+  // Admin legacy
   if (await handleAdmin(from, text)) return;
 
   if (await handleProfileAnswer(from, text)) return;
@@ -952,17 +851,14 @@ async function handleIncomingMessage(value) {
     return replyRechargeInfo(from);
   }
 
-  {
-    const m = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
-    if (m) {
-      const result = await redeemCode({ waId: from, code: m[1] });
-      if (!result.ok) {
-        if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
-        return sendText(from, "❌ Code invalide.");
-      }
-      await recordActivity(from, "redeem_code", { added: result.added });
-      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
+  const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
+  if (mCode) {
+    const result = await redeemCode({ waId: from, code: mCode[1] });
+    if (!result.ok) {
+      if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
+      return sendText(from, "❌ Code invalide.");
     }
+    return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
   }
 
   if (lower === "menu" || lower === "m") return sendHomeMenu(from);
