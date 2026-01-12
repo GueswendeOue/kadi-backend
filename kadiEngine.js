@@ -29,12 +29,18 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
+const { supabase } = require("./supabaseClient");
+
 // ---------------- Config ----------------
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || ""; // ex: "226XXXXXXXX"
 const OM_NUMBER = process.env.OM_NUMBER || "76894642";
 const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
+
+// Pour estimer revenu: (crédits ajoutés / 25) * 2000
+const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
+const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
 // Anti-double welcome in memory (bonus si pas de colonne DB)
 const _WELCOME_CACHE = new Set();
@@ -51,17 +57,41 @@ function formatDateISO(d = new Date()) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-// ✅ clé mensuelle: "YYYY-MM"
-function periodKey(d = new Date()) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${yyyy}-${mm}`;
-}
-
 function money(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0";
   return String(Math.round(n));
+}
+
+function asInt(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : def;
+}
+
+function parseDaysArg(text, defDays) {
+  // accepte: "/stats 7" "/export 30" "/top 90"
+  const m = String(text || "").trim().match(/(?:\s+)(\d{1,3})\b/);
+  if (!m) return defDays;
+  const d = Number(m[1]);
+  if (!Number.isFinite(d) || d <= 0) return defDays;
+  return Math.min(d, 365);
+}
+
+function isoSinceDays(days) {
+  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return d.toISOString();
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function toCsv(rows) {
+  return rows
+    .map((r) => r.map(csvEscape).join(","))
+    .join("\n");
 }
 
 /**
@@ -235,6 +265,7 @@ async function ensureWelcomeCredits(waId) {
     try {
       await updateProfile(waId, { welcome_credits_granted: true });
     } catch (e) {
+      // colonne peut ne pas exister, on ne casse pas
       console.warn("⚠️ welcome_credits_granted non persisté (colonne manquante ?)");
     }
 
@@ -467,6 +498,206 @@ async function replyBalance(from) {
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
+// ---------------- STATS / TOP / EXPORT (Admin) ----------------
+function ensureAdmin(from) {
+  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
+}
+
+async function replyStats(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l’administrateur.");
+  }
+
+  try {
+    const todayIso = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const since7 = isoSinceDays(7);
+    const since30 = isoSinceDays(30);
+
+    // Docs
+    const docsTotal = await supabase.from("kadi_documents").select("id", { count: "exact", head: true });
+    const docs7 = await supabase
+      .from("kadi_documents")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", since7);
+    const docs30 = await supabase
+      .from("kadi_documents")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", since30);
+    const docsToday = await supabase
+      .from("kadi_documents")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", `${todayIso}T00:00:00.000Z`);
+
+    // Users (distinct wa_id) via query simple (on fait approx via group)
+    const users7 = await supabase
+      .from("kadi_documents")
+      .select("wa_id")
+      .gte("created_at", since7);
+    const users30 = await supabase
+      .from("kadi_documents")
+      .select("wa_id")
+      .gte("created_at", since30);
+    const usersAll = await supabase.from("kadi_documents").select("wa_id");
+
+    const uniq = (arr) => new Set((arr || []).map((x) => x.wa_id).filter(Boolean)).size;
+
+    // Credits (7j)
+    const tx7 = await supabase
+      .from("kadi_credit_tx")
+      .select("delta")
+      .gte("created_at", since7);
+
+    const deltas7 = (tx7.data || []).map((r) => Number(r.delta) || 0);
+    const added7 = deltas7.filter((d) => d > 0).reduce((a, b) => a + b, 0);
+    const consumed7 = deltas7.filter((d) => d < 0).reduce((a, b) => a + (-b), 0);
+
+    // revenue estimé (30j) basé sur crédits ajoutés
+    const tx30 = await supabase
+      .from("kadi_credit_tx")
+      .select("delta")
+      .gte("created_at", since30);
+
+    const deltas30 = (tx30.data || []).map((r) => Number(r.delta) || 0);
+    const added30 = deltas30.filter((d) => d > 0).reduce((a, b) => a + b, 0);
+    const estRevenue = Math.round((added30 / (PACK_CREDITS || 25)) * (PACK_PRICE_FCFA || 2000));
+
+    const msg =
+      `📊 *KADI — STATISTIQUES*\n\n` +
+      `👥 *Utilisateurs*\n` +
+      `• Total (approx) : ${uniq(usersAll.data)}\n` +
+      `• Actifs 7j : ${uniq(users7.data)}\n` +
+      `• Actifs 30j : ${uniq(users30.data)}\n\n` +
+      `📄 *Documents*\n` +
+      `• Total : ${docsTotal.count || 0}\n` +
+      `• 7 derniers jours : ${docs7.count || 0}\n` +
+      `• 30 derniers jours : ${docs30.count || 0}\n` +
+      `• Aujourd’hui : ${docsToday.count || 0}\n\n` +
+      `💳 *Crédits (7j)*\n` +
+      `• Consommés : ${asInt(consumed7)}\n` +
+      `• Ajoutés : ${asInt(added7)}\n\n` +
+      `💰 *Revenu estimé (30j)*\n` +
+      `• ≈ ${asInt(estRevenue)} FCFA\n\n` +
+      `🕒 ${new Date().toLocaleString("fr-FR")}`;
+
+    await sendText(from, msg);
+  } catch (e) {
+    console.error("replyStats error:", e?.message);
+    await sendText(from, "❌ Erreur stats. Vérifie les tables kadi_documents / kadi_credit_tx.");
+  }
+}
+
+async function replyTopClients(from, days = 30) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l’administrateur.");
+  }
+
+  try {
+    const since = isoSinceDays(days);
+
+    // On récupère doc récents (client + total)
+    const { data, error } = await supabase
+      .from("kadi_documents")
+      .select("client,total,wa_id,created_at")
+      .gte("created_at", since)
+      .limit(5000);
+
+    if (error) throw error;
+
+    const map = new Map();
+    for (const r of data || []) {
+      const key = (r.client || "—").trim() || "—";
+      const prev = map.get(key) || { count: 0, sum: 0 };
+      prev.count += 1;
+      prev.sum += Number(r.total) || 0;
+      map.set(key, prev);
+    }
+
+    const top = [...map.entries()]
+      .sort((a, b) => (b[1].count - a[1].count) || (b[1].sum - a[1].sum))
+      .slice(0, 5);
+
+    if (!top.length) {
+      return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
+    }
+
+    const lines = top
+      .map(([name, v], i) => `${i + 1}) ${name} — ${v.count} doc • ${money(v.sum)} FCFA`)
+      .join("\n");
+
+    await sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
+  } catch (e) {
+    console.error("replyTopClients error:", e?.message);
+    await sendText(from, "❌ Erreur top clients.");
+  }
+}
+
+async function exportDocsCsv(from, days = 30) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l’administrateur.");
+  }
+
+  try {
+    const since = isoSinceDays(days);
+
+    const { data, error } = await supabase
+      .from("kadi_documents")
+      .select("created_at,wa_id,doc_number,doc_type,facture_kind,client,date,total,items")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+
+    if (error) throw error;
+
+    const header = [
+      "created_at",
+      "wa_id",
+      "doc_number",
+      "doc_type",
+      "facture_kind",
+      "client",
+      "date",
+      "total",
+      "items_count",
+    ];
+
+    const rows = (data || []).map((r) => [
+      r.created_at || "",
+      r.wa_id || "",
+      r.doc_number || "",
+      r.doc_type || "",
+      r.facture_kind || "",
+      r.client || "",
+      r.date || "",
+      String(r.total ?? ""),
+      String(Array.isArray(r.items) ? r.items.length : 0),
+    ]);
+
+    const csv = toCsv([header, ...rows]);
+    const buf = Buffer.from(csv, "utf8");
+
+    const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
+    const up = await uploadMediaBuffer({
+      buffer: buf,
+      filename: fileName,
+      mimeType: "text/csv",
+    });
+
+    if (!up?.id) {
+      return sendText(from, "❌ Export: upload échoué.");
+    }
+
+    await sendDocument({
+      to: from,
+      mediaId: up.id,
+      filename: fileName,
+      caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
+    });
+  } catch (e) {
+    console.error("exportDocsCsv error:", e?.message);
+    await sendText(from, "❌ Erreur export CSV.");
+  }
+}
+
 // ---------------- Documents ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
@@ -595,11 +826,7 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
-  // ✅ Compteur mensuel (reset auto par mois)
-  // On passe periodKey("YYYY-MM") à nextDocNumber
-  // (et idéalement le kadiCounter utilisera aussi from/wa_id pour séparer par utilisateur)
-  const pKey = periodKey(new Date());
-  draft.docNumber = nextDocNumber(draft.type, draft.factureKind, pKey, from);
+  draft.docNumber = nextDocNumber(draft.type, draft.factureKind);
 
   const profile = await getOrCreateProfile(from);
 
@@ -786,9 +1013,25 @@ async function handleIncomingMessage(value) {
   const text = norm(msg.text?.body);
   if (!text) return;
 
-  if (await handleAdmin(from, text)) return;
-
+  // Commands ADMIN (stats/top/export)
   const lower = text.toLowerCase();
+
+  if (lower === "/stats" || lower === "stats") {
+    return replyStats(from);
+  }
+
+  if (lower.startsWith("/top") || lower.startsWith("top")) {
+    const days = parseDaysArg(text, 30);
+    return replyTopClients(from, days);
+  }
+
+  if (lower.startsWith("/export") || lower.startsWith("export")) {
+    const days = parseDaysArg(text, 30);
+    return exportDocsCsv(from, days);
+  }
+
+  // Admin legacy
+  if (await handleAdmin(from, text)) return;
 
   if (await handleProfileAnswer(from, text)) return;
 
