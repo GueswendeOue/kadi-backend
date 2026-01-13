@@ -1,17 +1,6 @@
-// kadiStatsRepo.js
 "use strict";
 
 const { supabase } = require("./supabaseClient");
-const { getUsersStats } = require("./kadiActivityRepo");
-
-function isoSinceDays(days) {
-  return new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
-}
-
-function asInt(v, def = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.round(n) : def;
-}
 
 function money(v) {
   const n = Number(v);
@@ -19,20 +8,31 @@ function money(v) {
   return String(Math.round(n));
 }
 
-/**
- * Stats globales:
- * - Users (depuis kadi_activity)
- * - Docs (kadi_documents)
- * - Credits (kadi_credit_tx.delta)
- * - Estimation CA (optionnel)
- */
-async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
-  const users = await getUsersStats();
+function isoSinceDays(days) {
+  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return d.toISOString();
+}
 
+async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const since7 = isoSinceDays(7);
   const since30 = isoSinceDays(30);
 
-  // DOCS
+  // ---- Users (from kadi_activity)
+  const usersTotal = await supabase
+    .from("kadi_activity")
+    .select("wa_id", { count: "exact", head: true });
+
+  const users7 = await supabase
+    .from("kadi_activity")
+    .select("wa_id", { count: "exact", head: true })
+    .gte("last_seen", since7);
+
+  const users30 = await supabase
+    .from("kadi_activity")
+    .select("wa_id", { count: "exact", head: true })
+    .gte("last_seen", since30);
+
+  // ---- Docs
   const docsTotal = await supabase
     .from("kadi_documents")
     .select("id", { count: "exact", head: true });
@@ -47,86 +47,81 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     .select("id", { count: "exact", head: true })
     .gte("created_at", since30);
 
-  if (docsTotal.error) throw docsTotal.error;
-  if (docs7.error) throw docs7.error;
-  if (docs30.error) throw docs30.error;
-
-  // CREDITS (delta)
+  // ---- Credits (7j)
   const tx7 = await supabase
     .from("kadi_credit_tx")
     .select("delta")
     .gte("created_at", since7);
 
-  if (tx7.error) throw tx7.error;
-
   const deltas7 = (tx7.data || []).map((r) => Number(r.delta) || 0);
   const added7 = deltas7.filter((d) => d > 0).reduce((a, b) => a + b, 0);
   const consumed7 = deltas7.filter((d) => d < 0).reduce((a, b) => a + (-b), 0);
 
+  // ---- Revenue estimate (30j) based on added credits
   const tx30 = await supabase
     .from("kadi_credit_tx")
     .select("delta")
     .gte("created_at", since30);
 
-  if (tx30.error) throw tx30.error;
-
   const deltas30 = (tx30.data || []).map((r) => Number(r.delta) || 0);
   const added30 = deltas30.filter((d) => d > 0).reduce((a, b) => a + b, 0);
-
   const estRevenue = Math.round((added30 / (packCredits || 25)) * (packPriceFcfa || 2000));
 
   return {
-    users,
+    users: {
+      totalUsers: usersTotal.count || 0,
+      active7: users7.count || 0,
+      active30: users30.count || 0,
+    },
     docs: {
       total: docsTotal.count || 0,
       last7: docs7.count || 0,
       last30: docs30.count || 0,
     },
     credits: {
-      consumed7: asInt(consumed7),
-      added7: asInt(added7),
-      added30: asInt(added30),
+      added7: Math.round(added7),
+      consumed7: Math.round(consumed7),
     },
     revenue: {
-      est30: asInt(estRevenue),
-      packCredits,
-      packPriceFcfa,
+      est30: Math.round(estRevenue),
+      packCredits: Number(packCredits || 25),
+      packPriceFcfa: Number(packPriceFcfa || 2000),
     },
   };
 }
 
-/**
- * Top clients sur kadi_documents
- */
 async function getTopClients({ days = 30, limit = 5 } = {}) {
-  const since = isoSinceDays(days);
+  // Si tu as la RPC, c'est plus rapide, sinon fallback JS
+  const { data, error } = await supabase.rpc("kadi_top_clients", {
+    p_days: Number(days || 30),
+    p_limit: Number(limit || 5),
+  });
 
-  const { data, error } = await supabase
+  if (!error && Array.isArray(data)) return data;
+
+  // fallback
+  const since = isoSinceDays(days);
+  const { data: docs } = await supabase
     .from("kadi_documents")
     .select("client,total,created_at")
     .gte("created_at", since)
     .limit(5000);
 
-  if (error) throw error;
-
   const map = new Map();
-  for (const r of data || []) {
-    const key = (r.client || "—").trim() || "—";
-    const prev = map.get(key) || { count: 0, sum: 0 };
-    prev.count += 1;
-    prev.sum += Number(r.total) || 0;
+  for (const r of docs || []) {
+    const key = String(r.client || "—").trim() || "—";
+    const prev = map.get(key) || { doc_count: 0, total_sum: 0 };
+    prev.doc_count += 1;
+    prev.total_sum += Number(r.total) || 0;
     map.set(key, prev);
   }
 
   return [...map.entries()]
-    .sort((a, b) => (b[1].count - a[1].count) || (b[1].sum - a[1].sum))
-    .slice(0, limit)
-    .map(([client, v]) => ({ client, doc_count: v.count, total_sum: v.sum }));
+    .map(([client, v]) => ({ client, doc_count: v.doc_count, total_sum: v.total_sum }))
+    .sort((a, b) => (b.doc_count - a.doc_count) || (b.total_sum - a.total_sum))
+    .slice(0, limit);
 }
 
-/**
- * Export CSV docs (données brutes)
- */
 async function getDocsForExport({ days = 30 } = {}) {
   const since = isoSinceDays(days);
 
