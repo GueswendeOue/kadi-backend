@@ -457,7 +457,9 @@ async function buildPreviewMessage({ profile, doc }) {
     bp.ifu ? `IFU: ${bp.ifu}` : null,
     bp.rccm ? `RCCM: ${bp.rccm}` : null,
     bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: 0`,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const title =
     doc.type === "facture"
@@ -467,7 +469,10 @@ async function buildPreviewMessage({ profile, doc }) {
       : String(doc.type || "").toUpperCase();
 
   const lines = (doc.items || [])
-    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`)
+    .map(
+      (it, idx) =>
+        `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
+    )
     .join("\n");
 
   return [
@@ -489,7 +494,10 @@ async function handleDocText(from, text) {
   if (s.step !== "collecting_doc" || !s.lastDocDraft) return false;
 
   const draft = s.lastDocDraft;
-  const lines = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   for (const line of lines) {
     const m = line.match(/^client\s*[:\-]\s*(.+)$/i);
@@ -683,135 +691,151 @@ async function handleInteractiveReply(from, replyId) {
 
 // ---------------- Main entry ----------------
 async function handleIncomingMessage(value) {
-  if (!value) return;
-  if (value.statuses?.length) return;
-  if (!value.messages?.length) return;
-
-  const msg = value.messages[0];
-  const from = msg.from;
-
-  // ✅ activity
   try {
-    await recordActivity(from);
-  } catch (e) {
-    console.warn("⚠️ recordActivity error:", e?.message);
-  }
+    if (!value) return;
+    if (value.statuses?.length) return;
+    if (!value.messages?.length) return;
 
-  // ✅ welcome
-  await ensureWelcomeCredits(from);
+    const msg = value.messages[0];
+    const from = msg.from;
 
-  if (msg.type === "interactive") {
-    const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
-    if (replyId) return handleInteractiveReply(from, replyId);
-  }
-
-  if (msg.type === "image") return handleLogoImage(from, msg);
-
-  const text = norm(msg.text?.body);
-  if (!text) return;
-
-  const lower = text.toLowerCase();
-
-  // ---- STATS / TOP / EXPORT (ADMIN)
-  if (lower === "/stats" || lower === "stats") {
-    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-    const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
-
-    const msgTxt =
-      `📊 *KADI — STATISTIQUES*\n\n` +
-      `👥 *Utilisateurs*\n` +
-      `• Total : ${stats.users.totalUsers}\n` +
-      `• Actifs 7j : ${stats.users.active7}\n` +
-      `• Actifs 30j : ${stats.users.active30}\n\n` +
-      `📄 *Documents*\n` +
-      `• Total : ${stats.docs.total}\n` +
-      `• 7 derniers jours : ${stats.docs.last7}\n` +
-      `• 30 derniers jours : ${stats.docs.last30}\n\n` +
-      `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${stats.credits.consumed7}\n` +
-      `• Ajoutés : ${stats.credits.added7}\n\n` +
-      `💰 *Revenu estimé (30j)*\n` +
-      `• ≈ ${stats.revenue.est30} FCFA\n` +
-      `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
-
-    return sendText(from, msgTxt);
-  }
-
-  if (lower.startsWith("/top") || lower.startsWith("top")) {
-    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-    const days = parseDaysArg(text, 30);
-    const top = await getTopClients({ days, limit: 5 });
-
-    if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
-
-    const lines = top.map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`).join("\n");
-    return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
-  }
-
-  if (lower.startsWith("/export") || lower.startsWith("export")) {
-    if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-    const days = parseDaysArg(text, 30);
-    const rows = await getDocsForExport({ days });
-
-    const header = ["created_at","wa_id","doc_number","doc_type","facture_kind","client","date","total","items_count"];
-
-    const csvLines = [header.join(",")].concat(
-      rows.map((r) => {
-        const vals = [
-          r.created_at || "",
-          r.wa_id || "",
-          r.doc_number || "",
-          r.doc_type || "",
-          r.facture_kind || "",
-          String(r.client || "").replace(/"/g, '""'),
-          r.date || "",
-          String(r.total ?? ""),
-          String(Array.isArray(r.items) ? r.items.length : 0),
-        ];
-        return vals.map((v) => (/[",\n]/.test(v) ? `"${v}"` : v)).join(",");
-      })
-    );
-
-    const buf = Buffer.from(csvLines.join("\n"), "utf8");
-    const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-
-    const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
-    if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
-
-    return sendDocument({ to: from, mediaId: up.id, filename: fileName, caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}` });
-  }
-
-  // Admin legacy
-  if (await handleAdmin(from, text)) return;
-
-  if (await handleProfileAnswer(from, text)) return;
-
-  if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
-  if (lower === "recharge") return replyRechargeInfo(from);
-
-  const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
-  if (mCode) {
-    const result = await redeemCode({ waId: from, code: mCode[1] });
-    if (!result.ok) {
-      if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
-      return sendText(from, "❌ Code invalide.");
+    // ✅ activity
+    try {
+      await recordActivity(from);
+    } catch (e) {
+      console.warn("⚠️ recordActivity error:", e?.message);
     }
-    return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
+
+    // ✅ welcome
+    await ensureWelcomeCredits(from);
+
+    if (msg.type === "interactive") {
+      const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
+      if (replyId) return handleInteractiveReply(from, replyId);
+    }
+
+    if (msg.type === "image") return handleLogoImage(from, msg);
+
+    const text = norm(msg.text?.body);
+    if (!text) return;
+
+    const lower = text.toLowerCase();
+
+    // ---- STATS / TOP / EXPORT (ADMIN)
+    if (lower === "/stats" || lower === "stats") {
+      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+      try {
+        const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
+
+        const msgTxt =
+          `📊 *KADI — STATISTIQUES*\n\n` +
+          `👥 *Utilisateurs*\n` +
+          `• Total : ${stats.users.totalUsers}\n` +
+          `• Actifs 7j : ${stats.users.active7}\n` +
+          `• Actifs 30j : ${stats.users.active30}\n\n` +
+          `📄 *Documents*\n` +
+          `• Total : ${stats.docs.total}\n` +
+          `• 7 derniers jours : ${stats.docs.last7}\n` +
+          `• 30 derniers jours : ${stats.docs.last30}\n\n` +
+          `💳 *Crédits (7j)*\n` +
+          `• Consommés : ${stats.credits.consumed7}\n` +
+          `• Ajoutés : ${stats.credits.added7}\n\n` +
+          `💰 *Revenu estimé (30j)*\n` +
+          `• ≈ ${stats.revenue.est30} FCFA\n` +
+          `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
+
+        return sendText(from, msgTxt);
+      } catch (e) {
+        console.error("❌ /stats error:", e?.message, e);
+        return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
+      }
+    }
+
+    if (lower.startsWith("/top") || lower.startsWith("top")) {
+      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+      const days = parseDaysArg(text, 30);
+      const top = await getTopClients({ days, limit: 5 });
+
+      if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
+
+      const lines = top
+        .map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`)
+        .join("\n");
+      return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
+    }
+
+    if (lower.startsWith("/export") || lower.startsWith("export")) {
+      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+      const days = parseDaysArg(text, 30);
+      const rows = await getDocsForExport({ days });
+
+      const header = ["created_at", "wa_id", "doc_number", "doc_type", "facture_kind", "client", "date", "total", "items_count"];
+
+      const csvLines = [header.join(",")].concat(
+        rows.map((r) => {
+          const vals = [
+            r.created_at || "",
+            r.wa_id || "",
+            r.doc_number || "",
+            r.doc_type || "",
+            r.facture_kind || "",
+            String(r.client || "").replace(/"/g, '""'),
+            r.date || "",
+            String(r.total ?? ""),
+            String(Array.isArray(r.items) ? r.items.length : 0),
+          ];
+          return vals.map((v) => (/[",\n]/.test(v) ? `"${v}"` : v)).join(",");
+        })
+      );
+
+      const buf = Buffer.from(csvLines.join("\n"), "utf8");
+      const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
+
+      const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
+      if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
+
+      return sendDocument({
+        to: from,
+        mediaId: up.id,
+        filename: fileName,
+        caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
+      });
+    }
+
+    // Admin legacy
+    if (await handleAdmin(from, text)) return;
+
+    if (await handleProfileAnswer(from, text)) return;
+
+    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
+    if (lower === "recharge") return replyRechargeInfo(from);
+
+    const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
+    if (mCode) {
+      const result = await redeemCode({ waId: from, code: mCode[1] });
+      if (!result.ok) {
+        if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
+        return sendText(from, "❌ Code invalide.");
+      }
+      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
+    }
+
+    if (lower === "menu" || lower === "m") return sendHomeMenu(from);
+
+    if (lower === "devis") return startDocFlow(from, "devis");
+    if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
+    if (lower === "facture") return sendFactureKindMenu(from);
+    if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
+
+    if (await handleDocText(from, text)) return;
+
+    await sendText(from, `Je vous ai lu.\nTapez *MENU* pour commencer.`);
+  } catch (e) {
+    console.error("❌ handleIncomingMessage error:", e?.message, e);
   }
-
-  if (lower === "menu" || lower === "m") return sendHomeMenu(from);
-
-  if (lower === "devis") return startDocFlow(from, "devis");
-  if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
-  if (lower === "facture") return sendFactureKindMenu(from);
-  if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
-
-  if (await handleDocText(from, text)) return;
-
-  await sendText(from, `Je vous ai lu.\nTapez *MENU* pour commencer.`);
 }
 
 module.exports = { handleIncomingMessage, cleanNumber };
