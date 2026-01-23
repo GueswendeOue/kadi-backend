@@ -3,82 +3,117 @@
 const PDFDocument = require("pdfkit");
 
 function safe(v) {
-  return String(v || "").trim();
+  // Important: on normalise aussi les retours ligne
+  return String(v || "").replace(/\s+\n/g, "\n").trim();
 }
 
 function fmtNumber(n) {
   const x = Math.round(Number(n || 0));
-  // format 100000 -> "100 000"
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-// mini conversion nombre→texte (fr) simple et robuste
+/**
+ * Conversion nombre -> texte FR (robuste pour 0..999 999 999)
+ * Fix:
+ * - 70..79 = soixante + (10..19)
+ * - 90..99 = quatre-vingt + (10..19)
+ * - 71 = soixante et onze
+ * - "mille" est invariable (pas "milles")
+ * - évite les "undefined"
+ */
 function numberToFrench(n) {
   n = Math.floor(Number(n) || 0);
+  if (!Number.isFinite(n)) return "";
   if (n === 0) return "zéro";
+  if (n < 0) return `moins ${numberToFrench(Math.abs(n))}`;
 
-  const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
+  const units = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
   const teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
-  const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
+  const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante"];
 
   function under100(x) {
+    x = x % 100;
+
     if (x < 10) return units[x];
     if (x < 20) return teens[x - 10];
+
     const t = Math.floor(x / 10);
     const u = x % 10;
 
-    if (t === 7 || t === 9) {
+    // 20..69
+    if (t <= 6) {
       const base = tens[t];
-      const rest = x - t * 10;
-      return `${base}-${teens[rest - 10]}`;
+      if (u === 0) return base;
+      if (u === 1) return `${base} et un`;
+      return `${base}-${units[u]}`;
     }
 
-    if (t === 8 && u === 0) return "quatre-vingts";
-    if (u === 0) return tens[t];
-    if (t === 8) return `quatre-vingt-${units[u]}`;
-    if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
-    return `${tens[t]}-${units[u]}`;
+    // 70..79 = soixante + (10..19)
+    if (t === 7) {
+      // 70 = soixante-dix
+      // 71 = soixante et onze
+      // 72..79 = soixante-douze...
+      if (x === 71) return "soixante et onze";
+      return `soixante-${under100(10 + u)}`;
+    }
+
+    // 80..89
+    if (t === 8) {
+      if (u === 0) return "quatre-vingts";
+      return `quatre-vingt-${units[u]}`;
+    }
+
+    // 90..99 = quatre-vingt + (10..19)
+    // 90 = quatre-vingt-dix
+    // 91 = quatre-vingt-onze, etc.
+    return `quatre-vingt-${under100(10 + u)}`;
   }
 
   function under1000(x) {
+    x = x % 1000;
     const h = Math.floor(x / 100);
     const r = x % 100;
+
     let s = "";
     if (h > 0) {
       if (h === 1) s = "cent";
       else s = `${units[h]} cent`;
+
+      // "deux cents" seulement si rien après
       if (r === 0 && h > 1) s += "s";
     }
+
     if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
-    return s;
+    return s.trim();
   }
 
-  function chunk(x, value, name) {
-    const q = Math.floor(x / value);
-    const r = x % value;
-    if (q === 0) return { text: "", rest: r };
-    let t = q === 1 ? name : `${under1000(q)} ${name}s`;
-    return { text: t, rest: r };
+  function joinParts(parts) {
+    return parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   }
 
-  let x = n;
+  // Millions
+  const millions = Math.floor(n / 1_000_000);
+  const thousands = Math.floor((n % 1_000_000) / 1_000);
+  const rest = n % 1_000;
+
   const parts = [];
 
-  const m = chunk(x, 1_000_000, "million");
-  if (m.text) parts.push(m.text);
-  x = m.rest;
-
-  const k = chunk(x, 1_000, "mille");
-  if (Math.floor(x / 1000) === 1) {
-    if (k.text) parts.push("mille");
-  } else {
-    if (k.text) parts.push(k.text.replace("un mille", "mille"));
+  if (millions > 0) {
+    if (millions === 1) parts.push("un million");
+    else parts.push(`${under1000(millions)} millions`);
   }
-  x = k.rest;
 
-  if (x > 0) parts.push(under1000(x));
+  if (thousands > 0) {
+    // "mille" invariable, pas de "s"
+    if (thousands === 1) parts.push("mille");
+    else parts.push(`${under1000(thousands)} mille`);
+  }
 
-  return parts.join(" ").replace(/\s+/g, " ").trim();
+  if (rest > 0) {
+    parts.push(under1000(rest));
+  }
+
+  return joinParts(parts);
 }
 
 function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
@@ -102,7 +137,7 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       const pageRight = 545;
       const topY = 45;
 
-      // ---- Header (logo + business infos LEFT, doc meta RIGHT) ----
+      // ---- Header ----
       if (logoBuffer) {
         try {
           pdf.image(logoBuffer, pageLeft, topY, { fit: [70, 70] });
@@ -112,10 +147,11 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       const headerTextX = pageLeft + (logoBuffer ? 85 : 0);
       const headerTop = topY;
 
-      // Business block (multiline to avoid overlap)
-      pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "KADI", headerTextX, headerTop, {
-        width: 280,
-      });
+      // ✅ FIX 1: on écrit le nom, puis on utilise pdf.y pour placer l’adresse (évite mélange/overlap)
+      pdf.font("Helvetica-Bold").fontSize(13);
+      pdf.text(safe(bp.business_name) || "KADI", headerTextX, headerTop, { width: 280 });
+
+      const afterNameY = pdf.y;
 
       pdf.font("Helvetica").fontSize(9);
       const bizLines = [
@@ -126,16 +162,19 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         safe(bp.rccm) ? `RCCM : ${safe(bp.rccm)}` : null,
       ].filter(Boolean);
 
-      pdf.text(bizLines.join("\n"), headerTextX, headerTop + 18, { width: 280, lineGap: 2 });
+      if (bizLines.length) {
+        pdf.text(bizLines.join("\n"), headerTextX, afterNameY + 3, { width: 280, lineGap: 2 });
+      }
 
-      // Doc meta block (right)
-      pdf.font("Helvetica-Bold").fontSize(16).text(type, pageLeft, headerTop, { width: pageRight - pageLeft, align: "right" });
+      // Doc meta RIGHT
+      pdf.font("Helvetica-Bold").fontSize(16);
+      pdf.text(type, pageLeft, headerTop, { width: pageRight - pageLeft, align: "right" });
 
       pdf.font("Helvetica").fontSize(10);
       pdf.text(`N° : ${docNumber}`, pageLeft, headerTop + 20, { width: pageRight - pageLeft, align: "right" });
       pdf.text(`Date : ${date}`, pageLeft, headerTop + 35, { width: pageRight - pageLeft, align: "right" });
 
-      // divider
+      // Divider
       pdf.moveTo(pageLeft, headerTop + 80).lineTo(pageRight, headerTop + 80).stroke();
 
       // ---- Client box ----
@@ -152,33 +191,20 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       y += clientBoxH + 18;
 
-      // ---- Table layout (fixed widths to prevent wrapping numbers) ----
+      // ---- Table layout ----
       const tableX = pageLeft;
       const tableW = pageRight - pageLeft;
 
-      const col = {
-        idx: 30,
-        des: 270,
-        qty: 55,
-        pu: 80,
-        amt: 90,
-      };
-
-      // Ensure totals == tableW
+      const col = { idx: 30, des: 270, qty: 55, pu: 80, amt: 90 };
       const sumW = col.idx + col.des + col.qty + col.pu + col.amt;
-      if (sumW !== tableW) {
-        // adjust designation width
-        col.des += (tableW - sumW);
-      }
+      if (sumW !== tableW) col.des += tableW - sumW;
 
       const rowH = 26;
       const headH = 26;
 
-      // Table header background
       pdf.rect(tableX, y, tableW, headH).fillAndStroke("#F2F2F2", "#000");
       pdf.fillColor("#000");
 
-      // Vertical lines (header)
       let x = tableX;
       const xIdxEnd = (x += col.idx);
       const xDesEnd = (x += col.des);
@@ -186,7 +212,6 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       const xPuEnd = (x += col.pu);
       const xAmtEnd = (x += col.amt);
 
-      // Header labels
       pdf.font("Helvetica-Bold").fontSize(10);
       pdf.text("#", tableX + 8, y + 8, { width: col.idx - 16, align: "left", lineBreak: false });
       pdf.text("Désignation", xIdxEnd + 8, y + 8, { width: col.des - 16, align: "left", lineBreak: false });
@@ -194,7 +219,6 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
       pdf.text("PU", xQtyEnd + 8, y + 8, { width: col.pu - 16, align: "right", lineBreak: false });
       pdf.text("Montant", xPuEnd + 8, y + 8, { width: col.amt - 16, align: "right", lineBreak: false });
 
-      // Header vertical strokes
       pdf.moveTo(xIdxEnd, y).lineTo(xIdxEnd, y + headH).stroke();
       pdf.moveTo(xDesEnd, y).lineTo(xDesEnd, y + headH).stroke();
       pdf.moveTo(xQtyEnd, y).lineTo(xQtyEnd, y + headH).stroke();
@@ -202,7 +226,6 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       y += headH;
 
-      // Rows
       pdf.font("Helvetica").fontSize(10);
 
       for (let i = 0; i < items.length; i++) {
@@ -211,31 +234,22 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
         const pu = Number(it.unitPrice || 0);
         const amt = Number(it.amount || (qty * pu) || 0);
 
-        // page break
         if (y + rowH + 140 > pdf.page.height) {
           pdf.addPage();
           y = 80;
         }
 
-        // row box
         pdf.rect(tableX, y, tableW, rowH).stroke();
 
-        // vertical lines
         pdf.moveTo(xIdxEnd, y).lineTo(xIdxEnd, y + rowH).stroke();
         pdf.moveTo(xDesEnd, y).lineTo(xDesEnd, y + rowH).stroke();
         pdf.moveTo(xQtyEnd, y).lineTo(xQtyEnd, y + rowH).stroke();
         pdf.moveTo(xPuEnd, y).lineTo(xPuEnd, y + rowH).stroke();
 
-        // cells (NO WRAP for numbers)
         pdf.text(String(i + 1), tableX + 8, y + 8, { width: col.idx - 16, align: "left", lineBreak: false });
 
         const des = safe(it.label || it.raw || "—");
-        pdf.text(des, xIdxEnd + 8, y + 8, {
-          width: col.des - 16,
-          align: "left",
-          lineBreak: false,
-          ellipsis: true,
-        });
+        pdf.text(des, xIdxEnd + 8, y + 8, { width: col.des - 16, align: "left", lineBreak: false, ellipsis: true });
 
         pdf.text(fmtNumber(qty), xDesEnd + 8, y + 8, { width: col.qty - 16, align: "right", lineBreak: false });
         pdf.text(fmtNumber(pu), xQtyEnd + 8, y + 8, { width: col.pu - 16, align: "right", lineBreak: false });
@@ -262,8 +276,9 @@ function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = nul
 
       y += totalBoxH + 18;
 
-      // ---- Amount in words (bold) ----
+      // ✅ FIX 2: montant en lettres sans undefined
       const words = numberToFrench(total);
+
       pdf.font("Helvetica-Bold").fontSize(10).text(
         `Arrêtée la présente ${type.toLowerCase()} à la somme de : ${words} francs CFA.`,
         pageLeft,
