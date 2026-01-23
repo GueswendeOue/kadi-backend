@@ -107,24 +107,109 @@ function extractNumbersSmart(text) {
   return merged.map(cleanNumber).filter((n) => typeof n === "number");
 }
 
+/**
+ * ✅ NEW: Détecte si la ligne contient une dimension (vitrier)
+ * Ex: 44x34, 66x60.5, 44x34 cm, 1.2m x 0.8m
+ */
+function hasDimensionPattern(raw) {
+  const s = String(raw || "").toLowerCase();
+
+  // dimension avec unité (cm/mm/m)
+  if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
+
+  // dimension "nue" style 44x34 (vitrier) => on ne veut PAS le confondre avec qty "2x"
+  const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
+  if (m) {
+    const a = cleanNumber(m[1]);
+    const b = cleanNumber(m[2]);
+    if (a != null && b != null) {
+      // dimension plausible: deux valeurs "petites"
+      if (a <= 500 && b <= 500) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * ✅ NEW: Parse structuré universel (tous métiers)
+ * Ex:
+ *  D: Verre clair 44x34 cm | Q: 2 | PU: 7120
+ *  D=Silicone; Q=1; PU=12000
+ */
+function parseStructuredItemLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+
+  const getField = (key) => {
+    const re = new RegExp(`\\b${key}\\b\\s*[:=]\\s*([^|;,]+)`, "i");
+    const m = raw.match(re);
+    return m ? m[1].trim() : null;
+  };
+
+  const d = getField("d") || getField("designation") || getField("désignation");
+  const qStr =
+    getField("q") ||
+    getField("qty") ||
+    getField("qte") ||
+    getField("qté") ||
+    getField("quantite") ||
+    getField("quantité");
+  const puStr = getField("pu") || getField("prix") || getField("prixunitaire") || getField("unitprice");
+
+  // si aucun champ détecté => pas structuré
+  if (!d && !qStr && !puStr) return null;
+
+  const qty = cleanNumber(qStr) ?? 1;
+  const unitPrice = cleanNumber(puStr) ?? 0;
+  const label = d || raw;
+
+  const amount = Number(qty) * Number(unitPrice || 0);
+
+  return {
+    label,
+    qty: Number(qty) || 1,
+    unitPrice: Number(unitPrice) || 0,
+    amount: Number.isFinite(amount) ? amount : 0,
+    raw,
+  };
+}
+
+/**
+ * ✅ UPDATED: parseItemLine corrigé vitrier + robustesse
+ */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
+  const isDim = hasDimensionPattern(raw);
+
   let qty = null;
-  const xAfter = raw.match(/\bx\s*(\d+)\b/i);
-  const xBefore = raw.match(/\b(\d+)\s*x\b/i);
-  if (xAfter) qty = Number(xAfter[1]);
-  else if (xBefore) qty = Number(xBefore[1]);
+
+  // ✅ Interpréter x comme quantité seulement si ce n'est pas une dimension
+  if (!isDim) {
+    const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i); // "x2"
+    const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i); // "2x"
+    if (xAfter) qty = Number(xAfter[1]);
+    else if (xBefore) qty = Number(xBefore[1]);
+  }
 
   const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
 
+  // prix unitaire
   let unitPrice = 0;
   if (numbers.length === 1) unitPrice = numbers[0];
   else if (numbers.length >= 2) {
     const nonYear = numbers.filter((n) => !(n >= 1900 && n <= 2100));
     const pool = nonYear.length ? nonYear : numbers;
-    unitPrice = Math.max(...pool);
+
+    if (isDim) {
+      // si dimension détectée, on privilégie un prix "grand"
+      const bigs = pool.filter((n) => n >= 500);
+      unitPrice = bigs.length ? Math.max(...bigs) : Math.max(...pool);
+    } else {
+      unitPrice = Math.max(...pool);
+    }
   }
 
   if (!qty) {
@@ -132,14 +217,18 @@ function parseItemLine(line) {
     qty = smalls.length ? smalls[0] : 1;
   }
 
-  const label =
-    raw
-      .replace(/\b(\d+)\s*x\b/gi, " ")
-      .replace(/\bx\s*(\d+)\b/gi, " ")
-      .replace(/\d+/g, " ")
-      .replace(/[-:]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim() || raw;
+  // Label: on garde les dimensions, mais on nettoie un peu
+  // (On évite de supprimer les nombres si dimension: sinon on perd "44x34")
+  let label = raw;
+
+  if (!isDim) {
+    label = label
+      .replace(/(?:^|\s)(\d{1,3})\s*x\b/gi, " ")
+      .replace(/(?:^|\s)x\s*(\d{1,3})\b/gi, " ");
+  }
+
+  // Nettoyage léger (sans détruire le contenu utile)
+  label = label.replace(/[-:]+/g, " ").replace(/\s+/g, " ").trim() || raw;
 
   const amount = Number(qty) * Number(unitPrice || 0);
 
@@ -441,7 +530,7 @@ async function startDocFlow(from, mode, factureKind = null) {
 
   await sendText(
     from,
-    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n📌 Exemple aussi: Impression 2x 5000`
+    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n✅ Format conseillé (plus précis) :\nD: Verre clair 44x34 cm | Q: 2 | PU: 7120\nD: Silicone | Q: 1 | PU: 12000\n\n📌 Exemple aussi: Impression 2x 5000`
   );
 }
 
@@ -505,8 +594,11 @@ async function handleDocText(from, text) {
       draft.client = m[1].trim() || null;
       continue;
     }
+
     if (/\d/.test(line) && !/^client\s*[:\-]/i.test(line)) {
-      const it = parseItemLine(line);
+      // ✅ priorité au format structuré D/Q/PU
+      const itStructured = parseStructuredItemLine(line);
+      const it = itStructured || parseItemLine(line);
       if (it) draft.items.push(it);
     }
   }
@@ -536,7 +628,6 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
-  // ✅ compteur Supabase (par user + mois + type)
   draft.docNumber = await nextDocNumber({
     waId: from,
     mode: draft.type,
@@ -699,14 +790,12 @@ async function handleIncomingMessage(value) {
     const msg = value.messages[0];
     const from = msg.from;
 
-    // ✅ activity
     try {
       await recordActivity(from);
     } catch (e) {
       console.warn("⚠️ recordActivity error:", e?.message);
     }
 
-    // ✅ welcome
     await ensureWelcomeCredits(from);
 
     if (msg.type === "interactive") {
@@ -721,7 +810,6 @@ async function handleIncomingMessage(value) {
 
     const lower = text.toLowerCase();
 
-    // ---- STATS / TOP / EXPORT (ADMIN)
     if (lower === "/stats" || lower === "stats") {
       if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
 
@@ -805,9 +893,7 @@ async function handleIncomingMessage(value) {
       });
     }
 
-    // Admin legacy
     if (await handleAdmin(from, text)) return;
-
     if (await handleProfileAnswer(from, text)) return;
 
     if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
