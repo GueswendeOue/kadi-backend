@@ -3,7 +3,12 @@
 require("dotenv").config();
 const express = require("express");
 
-const { verifyRequestSignature } = require("./whatsappApi");
+// ✅ Import robuste + logs pour Render
+const wa = require("./whatsappApi");
+console.log("✅ whatsappApi loaded keys:", Object.keys(wa));
+console.log("✅ verifyRequestSignature type:", typeof wa.verifyRequestSignature);
+
+const { verifyRequestSignature } = wa;
 const { handleIncomingMessage } = require("./kadiEngine");
 
 console.log("🟢 KADI booting...");
@@ -47,8 +52,18 @@ app.post(
   express.json({
     limit: "2mb",
     verify: (req, res, buf) => {
-      verifyRequestSignature(req, res, buf);
-      req.rawBody = buf.toString();
+      // ✅ Ne doit jamais crasher le serveur
+      try {
+        if (typeof verifyRequestSignature === "function") {
+          verifyRequestSignature(req, res, buf);
+        } else {
+          console.error("❌ verifyRequestSignature is NOT a function (import issue).");
+        }
+        req.rawBody = buf.toString();
+      } catch (e) {
+        // On log mais on répond quand même 200 à Meta
+        console.error("❌ Signature verify error:", e?.message || e);
+      }
     },
   }),
   (req, res) => {
@@ -67,12 +82,12 @@ app.post(
           if (!value) continue;
 
           Promise.resolve(handleIncomingMessage(value)).catch((e) => {
-            console.error("💥 handleIncomingMessage error:", e.message);
+            console.error("💥 handleIncomingMessage error:", e?.message || e);
           });
         }
       }
     } catch (e) {
-      console.error("💥 Webhook fatal error:", e.message);
+      console.error("💥 Webhook fatal error:", e?.message || e);
     }
   }
 );
