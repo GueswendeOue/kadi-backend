@@ -5,8 +5,19 @@ const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
-const { getOrCreateProfile, updateProfile } = require("./store");
-const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
+const {
+  getOrCreateProfile,
+  updateProfile,
+  markOnboardingDone,
+  isProfileBasicComplete,
+} = require("./store");
+const {
+  uploadLogoBuffer,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+} = require("./supabaseStorage");
+
+const { ocrImageBuffer } = require("./kadiOcr");
 
 const {
   sendText,
@@ -17,7 +28,13 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
-const { getBalance, consumeCredit, createRechargeCodes, redeemCode, addCredits } = require("./kadiCreditsRepo");
+const {
+  getBalance,
+  consumeCredit,
+  createRechargeCodes,
+  redeemCode,
+  addCredits,
+} = require("./kadiCreditsRepo");
 
 const { recordActivity } = require("./kadiActivityRepo");
 const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
@@ -31,6 +48,12 @@ const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
+
+const OCR_CREDITS_COST = Number(process.env.OCR_CREDITS_COST || 2); // ✅ 2 crédits
+const OCR_LANG = process.env.OCR_LANG || "fra"; // "fra" ou "eng+fra"
+
+// Décharge
+const DECHARGE_CREDITS_COST = Number(process.env.DECHARGE_CREDITS_COST || 1);
 
 const _WELCOME_CACHE = new Set();
 
@@ -108,34 +131,26 @@ function extractNumbersSmart(text) {
 }
 
 /**
- * ✅ NEW: Détecte si la ligne contient une dimension (vitrier)
- * Ex: 44x34, 66x60.5, 44x34 cm, 1.2m x 0.8m
+ * ✅ Détecte dimension (vitrier)
  */
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
 
-  // dimension avec unité (cm/mm/m)
   if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
 
-  // dimension "nue" style 44x34 (vitrier) => on ne veut PAS le confondre avec qty "2x"
   const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
   if (m) {
     const a = cleanNumber(m[1]);
     const b = cleanNumber(m[2]);
     if (a != null && b != null) {
-      // dimension plausible: deux valeurs "petites"
       if (a <= 500 && b <= 500) return true;
     }
   }
-
   return false;
 }
 
 /**
- * ✅ NEW: Parse structuré universel (tous métiers)
- * Ex:
- *  D: Verre clair 44x34 cm | Q: 2 | PU: 7120
- *  D=Silicone; Q=1; PU=12000
+ * ✅ Parse structuré D/Q/PU
  */
 function parseStructuredItemLine(line) {
   const raw = String(line || "").trim();
@@ -157,13 +172,11 @@ function parseStructuredItemLine(line) {
     getField("quantité");
   const puStr = getField("pu") || getField("prix") || getField("prixunitaire") || getField("unitprice");
 
-  // si aucun champ détecté => pas structuré
   if (!d && !qStr && !puStr) return null;
 
   const qty = cleanNumber(qStr) ?? 1;
   const unitPrice = cleanNumber(puStr) ?? 0;
   const label = d || raw;
-
   const amount = Number(qty) * Number(unitPrice || 0);
 
   return {
@@ -176,7 +189,7 @@ function parseStructuredItemLine(line) {
 }
 
 /**
- * ✅ UPDATED: parseItemLine corrigé vitrier + robustesse
+ * ✅ Parse "universel" (texte libre)
  */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
@@ -185,18 +198,15 @@ function parseItemLine(line) {
   const isDim = hasDimensionPattern(raw);
 
   let qty = null;
-
-  // ✅ Interpréter x comme quantité seulement si ce n'est pas une dimension
   if (!isDim) {
-    const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i); // "x2"
-    const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i); // "2x"
+    const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i);
+    const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i);
     if (xAfter) qty = Number(xAfter[1]);
     else if (xBefore) qty = Number(xBefore[1]);
   }
 
   const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
 
-  // prix unitaire
   let unitPrice = 0;
   if (numbers.length === 1) unitPrice = numbers[0];
   else if (numbers.length >= 2) {
@@ -204,7 +214,6 @@ function parseItemLine(line) {
     const pool = nonYear.length ? nonYear : numbers;
 
     if (isDim) {
-      // si dimension détectée, on privilégie un prix "grand"
       const bigs = pool.filter((n) => n >= 500);
       unitPrice = bigs.length ? Math.max(...bigs) : Math.max(...pool);
     } else {
@@ -217,17 +226,12 @@ function parseItemLine(line) {
     qty = smalls.length ? smalls[0] : 1;
   }
 
-  // Label: on garde les dimensions, mais on nettoie un peu
-  // (On évite de supprimer les nombres si dimension: sinon on perd "44x34")
   let label = raw;
-
   if (!isDim) {
     label = label
       .replace(/(?:^|\s)(\d{1,3})\s*x\b/gi, " ")
       .replace(/(?:^|\s)x\s*(\d{1,3})\b/gi, " ");
   }
-
-  // Nettoyage léger (sans détruire le contenu utile)
   label = label.replace(/[-:]+/g, " ").replace(/\s+/g, " ").trim() || raw;
 
   const amount = Number(qty) * Number(unitPrice || 0);
@@ -256,13 +260,31 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
+// ---------------- Onboarding ----------------
+async function ensureOnboarding(from) {
+  try {
+    const p = await getOrCreateProfile(from);
+
+    // Si pas de colonnes, markOnboardingDone ne casse pas
+    if (p?.onboarding_done === true) return;
+
+    await sendText(
+      from,
+      `👋 Bienvenue sur KADI.\n\n✅ *Comment ça marche (simple)*\n1) Tapez *MENU*\n2) Choisissez *Devis / Facture / Reçu / Décharge*\n3) Envoyez vos lignes (ou une photo) → KADI fait le PDF\n\n🏢 *Profil*\nPour personnaliser vos PDF (Nom, IFU, RCCM, logo), allez dans *Profil > Configurer*.\n\n📷 *Photo*\n- Si vous êtes en train de configurer le logo → la photo = logo\n- Sinon → la photo = document à convertir (OCR)\n\n💳 *Crédits*\n1 crédit = 1 PDF\nPhoto→PDF (OCR) = ${OCR_CREDITS_COST} crédits`
+    );
+
+    await markOnboardingDone(from, 1);
+  } catch (e) {
+    // On ne bloque pas le user
+  }
+}
+
 // ---------------- Welcome credits ----------------
 async function ensureWelcomeCredits(waId) {
   try {
     if (_WELCOME_CACHE.has(waId)) return;
 
     const p = await getOrCreateProfile(waId);
-
     if (p && p.welcome_credits_granted === true) {
       _WELCOME_CACHE.add(waId);
       return;
@@ -338,6 +360,14 @@ async function sendAfterPreviewMenu(to) {
   return sendButtons(to, "✅ Vérifiez. Que souhaitez-vous faire ?", [
     { id: "DOC_CONFIRM", title: "Confirmer (PDF)" },
     { id: "DOC_RESTART", title: "Recommencer" },
+    { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+async function sendAfterOcrPreviewMenu(to) {
+  return sendButtons(to, "📷 OCR terminé. Que faire ?", [
+    { id: "OCR_CONFIRM", title: `Confirmer (PDF -${OCR_CREDITS_COST})` },
+    { id: "OCR_AS_LOGO", title: "C'était un logo" },
     { id: "BACK_HOME", title: "Menu" },
   ]);
 }
@@ -466,12 +496,8 @@ async function handleRechargeProofImage(from, msg) {
   }
 }
 
-// ---------------- Logo upload ----------------
-async function handleLogoImage(from, msg) {
-  const s = getSession(from);
-
-  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
-
+// ---------------- Logo upload (ou OCR photo) ----------------
+async function saveLogoFromImage(from, msg) {
   const mediaId = msg?.image?.id;
   if (!mediaId) {
     await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
@@ -484,16 +510,65 @@ async function handleLogoImage(from, msg) {
 
   const { filePath } = await uploadLogoBuffer({ userId: from, buffer: buf, mimeType: mime });
   await updateProfile(from, { logo_path: filePath });
+}
 
+async function handleImageAuto(from, msg) {
+  const s = getSession(from);
+
+  // 1) Si on attend une preuve de recharge => preuve
+  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
+
+  // 2) Si on est en flow profil à l'étape logo => logo
   if (s.step === "profile" && s.profileStep === "logo") {
+    await saveLogoFromImage(from, msg);
     s.step = "idle";
     s.profileStep = null;
     await sendText(from, "✅ Logo enregistré. Profil terminé.");
-    await sendHomeMenu(from);
+    return sendHomeMenu(from);
+  }
+
+  // 3) Sinon: photo = document à convertir (OCR)
+  const mediaId = msg?.image?.id;
+  if (!mediaId) {
+    await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
     return;
   }
 
-  await sendText(from, "✅ Logo enregistré.");
+  const info = await getMediaInfo(mediaId);
+  const buf = await downloadMediaToBuffer(info.url);
+
+  // OCR
+  let text = "";
+  try {
+    text = await ocrImageBuffer(buf, OCR_LANG);
+  } catch (e) {
+    console.error("OCR error:", e?.message);
+    await sendText(from, "❌ OCR impossible pour le moment. Réessayez plus tard.");
+    return;
+  }
+
+  // Si OCR vide, demander quoi faire
+  if (!text || text.length < 10) {
+    await sendText(from, "⚠️ Je n’arrive pas à lire ce document. Essayez une photo plus nette (bonne lumière).");
+    return;
+  }
+
+  // On stocke en session pour preview
+  s.step = "ocr_preview";
+  s.ocr = {
+    rawText: text,
+    createdAt: Date.now(),
+    image_mime: info.mime_type || "image/jpeg",
+  };
+
+  // Petite preview du texte
+  const excerpt = text.length > 900 ? `${text.slice(0, 900)}…` : text;
+
+  await sendText(
+    from,
+    `📷 *Texte détecté (OCR)*\n\n${excerpt}\n\n✅ Si c’est correct, confirme pour générer le PDF.\n💳 Coût: ${OCR_CREDITS_COST} crédits`
+  );
+  return sendAfterOcrPreviewMenu(from);
 }
 
 // ---------------- Crédits ----------------
@@ -596,7 +671,6 @@ async function handleDocText(from, text) {
     }
 
     if (/\d/.test(line) && !/^client\s*[:\-]/i.test(line)) {
-      // ✅ priorité au format structuré D/Q/PU
       const itStructured = parseStructuredItemLine(line);
       const it = itStructured || parseItemLine(line);
       if (it) draft.items.push(it);
@@ -607,6 +681,11 @@ async function handleDocText(from, text) {
 
   const profile = await getOrCreateProfile(from);
   const preview = await buildPreviewMessage({ profile, doc: draft });
+
+  // petit rappel si profil incomplet
+  if (!isProfileBasicComplete(profile)) {
+    await sendText(from, "ℹ️ Astuce: configurez votre *Profil* pour personnaliser vos PDFs (nom, contact, logo).");
+  }
 
   await sendText(from, preview);
   await sendAfterPreviewMenu(from);
@@ -698,6 +777,79 @@ async function confirmAndSendPdf(from) {
   await sendHomeMenu(from);
 }
 
+// ---------------- OCR confirm ----------------
+async function confirmOcrToPdf(from) {
+  const s = getSession(from);
+  if (s.step !== "ocr_preview" || !s.ocr?.rawText) {
+    await sendText(from, "❌ Aucun OCR en cours.");
+    return sendHomeMenu(from);
+  }
+
+  const cons = await consumeCredit(from, OCR_CREDITS_COST, "ocr_pdf");
+  if (!cons.ok) {
+    await sendText(
+      from,
+      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`
+    );
+    s.step = "idle";
+    s.ocr = null;
+    return;
+  }
+
+  const profile = await getOrCreateProfile(from);
+
+  // PDF "OCR" simple: on met le texte OCR dans un PDF comme un document
+  // -> ici on réutilise buildPdfBuffer avec un format "REÇU OCR" minimal via items
+  // On transforme le texte en lignes items (1 item)
+  const docNumber = await nextDocNumber({
+    waId: from,
+    mode: "recu",
+    factureKind: null,
+    dateISO: formatDateISO(),
+  });
+
+  let logoBuf = null;
+  if (profile?.logo_path) {
+    try {
+      const signed = await getSignedLogoUrl(profile.logo_path);
+      logoBuf = await downloadSignedUrlToBuffer(signed);
+    } catch (_) {}
+  }
+
+  const ocrText = s.ocr.rawText;
+  const pdfBuf = await buildPdfBuffer({
+    docData: {
+      type: "DOCUMENT OCR",
+      docNumber,
+      date: formatDateISO(),
+      client: "—",
+      items: [{ label: ocrText, qty: 1, unitPrice: 0, amount: 0, raw: ocrText }],
+      total: 0,
+    },
+    businessProfile: profile,
+    logoBuffer: logoBuf,
+  });
+
+  const fileName = `${docNumber}-ocr.pdf`;
+  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+
+  if (!up?.id) {
+    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
+    return;
+  }
+
+  await sendDocument({
+    to: from,
+    mediaId: up.id,
+    filename: fileName,
+    caption: `✅ Document OCR ${docNumber}\nSolde: ${cons.balance} crédit(s)`,
+  });
+
+  s.step = "idle";
+  s.ocr = null;
+  await sendHomeMenu(from);
+}
+
 // ---------------- Admin ----------------
 function ensureAdmin(from) {
   return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
@@ -767,6 +919,18 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
   if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
+
+  // OCR flow
+  if (replyId === "OCR_CONFIRM") return confirmOcrToPdf(from);
+  if (replyId === "OCR_AS_LOGO") {
+    // on repasse l'utilisateur en profil/logo directement
+    const s = getSession(from);
+    s.step = "profile";
+    s.profileStep = "logo";
+    await sendText(from, "✅ OK. Envoyez à nouveau l’image du logo (je vais l’enregistrer).");
+    return;
+  }
+
   if (replyId === "DOC_RESTART") {
     const s = getSession(from);
     s.step = "idle";
@@ -797,13 +961,15 @@ async function handleIncomingMessage(value) {
     }
 
     await ensureWelcomeCredits(from);
+    await ensureOnboarding(from);
 
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
     }
 
-    if (msg.type === "image") return handleLogoImage(from, msg);
+    // ✅ Photo => auto logo OR OCR selon contexte
+    if (msg.type === "image") return handleImageAuto(from, msg);
 
     const text = norm(msg.text?.body);
     if (!text) return;
@@ -860,7 +1026,17 @@ async function handleIncomingMessage(value) {
       const days = parseDaysArg(text, 30);
       const rows = await getDocsForExport({ days });
 
-      const header = ["created_at", "wa_id", "doc_number", "doc_type", "facture_kind", "client", "date", "total", "items_count"];
+      const header = [
+        "created_at",
+        "wa_id",
+        "doc_number",
+        "doc_type",
+        "facture_kind",
+        "client",
+        "date",
+        "total",
+        "items_count",
+      ];
 
       const csvLines = [header.join(",")].concat(
         rows.map((r) => {

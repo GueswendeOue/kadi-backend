@@ -1,3 +1,4 @@
+// store.js
 "use strict";
 
 const { supabase } = require("./supabaseClient");
@@ -17,7 +18,9 @@ async function getOrCreateProfile(userId) {
       .insert([
         {
           user_id: userId,
-          welcome_credits_granted: false, // ✅ safe même si la colonne n'existe pas encore
+          welcome_credits_granted: false,
+          onboarding_done: false,
+          onboarding_version: 1,
         },
       ])
       .select("*")
@@ -31,7 +34,6 @@ async function getOrCreateProfile(userId) {
 }
 
 async function updateProfile(userId, patch) {
-  // ✅ évite d’envoyer undefined à Supabase
   const cleanPatch = Object.fromEntries(
     Object.entries(patch || {}).filter(([, v]) => v !== undefined)
   );
@@ -47,4 +49,37 @@ async function updateProfile(userId, patch) {
   return data;
 }
 
-module.exports = { getOrCreateProfile, updateProfile };
+/**
+ * ✅ NEW: Onboarding flag helper
+ * Marque onboarding_done=true (si colonne existe) sans casser si elle n’existe pas.
+ */
+async function markOnboardingDone(userId, version = 1) {
+  try {
+    return await updateProfile(userId, {
+      onboarding_done: true,
+      onboarding_version: Number(version) || 1,
+    });
+  } catch (e) {
+    // si colonnes pas encore créées, on n'échoue pas l'app
+    return null;
+  }
+}
+
+/**
+ * ✅ NEW: Profil "suffisant" pour personnaliser un PDF
+ * (Tu peux durcir après: IFU/RCCM etc.)
+ */
+function isProfileBasicComplete(p) {
+  if (!p) return false;
+  const hasName = String(p.business_name || "").trim().length > 0;
+  const hasPhoneOrEmail =
+    String(p.phone || "").trim().length > 0 || String(p.email || "").trim().length > 0;
+  return hasName && hasPhoneOrEmail;
+}
+
+module.exports = {
+  getOrCreateProfile,
+  updateProfile,
+  markOnboardingDone,
+  isProfileBasicComplete,
+};

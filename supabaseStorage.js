@@ -13,9 +13,14 @@ function extFromMime(mime) {
   return "jpg";
 }
 
-async function uploadLogoBuffer({ userId, buffer, mimeType }) {
+function ensureBuffer(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer)) throw new Error("buffer invalide");
+}
+
+async function uploadAnyBuffer({ userId, buffer, mimeType, filename }) {
+  ensureBuffer(buffer);
   const ext = extFromMime(mimeType);
-  const filePath = `${userId}/logo.${ext}`;
+  const filePath = `${userId}/${filename}.${ext}`;
 
   const { error } = await supabase.storage
     .from(BUCKET)
@@ -28,15 +33,38 @@ async function uploadLogoBuffer({ userId, buffer, mimeType }) {
   return { filePath };
 }
 
-async function getSignedLogoUrl(logoPath) {
-  if (!logoPath) return null;
+// --- Logo ---
+async function uploadLogoBuffer({ userId, buffer, mimeType }) {
+  return uploadAnyBuffer({ userId, buffer, mimeType, filename: "logo" });
+}
+
+// --- Signature ---
+async function uploadSignatureBuffer({ userId, buffer, mimeType }) {
+  // On force png si c’est une image (sinon jpg ok)
+  return uploadAnyBuffer({ userId, buffer, mimeType: mimeType || "image/png", filename: "signature" });
+}
+
+// --- Tampon ---
+async function uploadStampBuffer({ userId, buffer }) {
+  // Tampon est généré en PNG, on garde png
+  return uploadAnyBuffer({ userId, buffer, mimeType: "image/png", filename: "stamp" });
+}
+
+// Signed URL générique
+async function getSignedUrl(filePath) {
+  if (!filePath) return null;
 
   const { data, error } = await supabase.storage
     .from(BUCKET)
-    .createSignedUrl(logoPath, TTL);
+    .createSignedUrl(filePath, TTL);
 
   if (error) throw error;
   return data?.signedUrl || null;
+}
+
+// Compat (ancien nom)
+async function getSignedLogoUrl(logoPath) {
+  return getSignedUrl(logoPath);
 }
 
 async function downloadSignedUrlToBuffer(signedUrl) {
@@ -46,7 +74,15 @@ async function downloadSignedUrlToBuffer(signedUrl) {
 }
 
 module.exports = {
+  // uploads
   uploadLogoBuffer,
-  getSignedLogoUrl,
+  uploadSignatureBuffer,
+  uploadStampBuffer,
+
+  // signed urls
+  getSignedUrl,
+  getSignedLogoUrl, // compat
+
+  // download
   downloadSignedUrlToBuffer,
 };

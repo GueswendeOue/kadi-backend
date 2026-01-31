@@ -3,6 +3,13 @@
 const crypto = require("crypto");
 const { supabase } = require("./supabaseClient");
 
+// ✅ Prix officiels (en crédits)
+const CREDIT_COSTS = {
+  pdf: 1,
+  stamp_standard: 10,
+  stamp_logo: 15,
+};
+
 function makeCode() {
   // ex: KDI-AB12-CD34
   const raw = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
@@ -17,6 +24,7 @@ async function getBalance(waId) {
     .maybeSingle();
 
   if (error) throw error;
+
   if (!data) {
     const { data: created, error: e2 } = await supabase
       .from("kadi_credits")
@@ -26,6 +34,7 @@ async function getBalance(waId) {
     if (e2) throw e2;
     return created.balance || 0;
   }
+
   return data.balance || 0;
 }
 
@@ -33,7 +42,6 @@ async function addCredits(waId, amount, reason = "admin") {
   amount = Number(amount || 0);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount invalid");
 
-  // RPC would be best, but simple approach for now:
   const current = await getBalance(waId);
   const next = current + amount;
 
@@ -52,8 +60,15 @@ async function addCredits(waId, amount, reason = "admin") {
   return next;
 }
 
+/**
+ * ✅ Consomme des crédits
+ * - amount: nombre de crédits à retirer
+ * - reason: tag dans kadi_credit_tx (ex: "pdf", "stamp_standard", "stamp_logo")
+ */
 async function consumeCredit(waId, amount = 1, reason = "pdf") {
   amount = Number(amount || 1);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount invalid");
+
   const current = await getBalance(waId);
   if (current < amount) return { ok: false, balance: current };
 
@@ -72,6 +87,18 @@ async function consumeCredit(waId, amount = 1, reason = "pdf") {
   });
 
   return { ok: true, balance: next };
+}
+
+/**
+ * ✅ Nouvelle fonction pratique: consommer une feature par nom
+ * ex: consumeFeature(waId, "stamp_logo")
+ */
+async function consumeFeature(waId, featureKey = "pdf") {
+  const key = String(featureKey || "pdf").toLowerCase();
+  const cost = CREDIT_COSTS[key];
+
+  if (!cost) throw new Error(`Unknown featureKey: ${featureKey}`);
+  return consumeCredit(waId, cost, key);
 }
 
 async function createRechargeCodes({ count = 100, creditsEach = 25, createdBy }) {
@@ -106,7 +133,6 @@ async function redeemCode({ waId, code }) {
   if (!data) return { ok: false, error: "CODE_INVALIDE" };
   if (data.redeemed_at) return { ok: false, error: "CODE_DEJA_UTILISE" };
 
-  // mark redeemed
   const { error: e2 } = await supabase
     .from("kadi_recharge_codes")
     .update({ redeemed_at: new Date().toISOString(), redeemed_by: waId })
@@ -119,9 +145,11 @@ async function redeemCode({ waId, code }) {
 }
 
 module.exports = {
+  CREDIT_COSTS,
   getBalance,
   addCredits,
   consumeCredit,
+  consumeFeature,
   createRechargeCodes,
   redeemCode,
 };
