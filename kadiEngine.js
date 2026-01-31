@@ -1,6 +1,8 @@
 // kadiEngine.js
 "use strict";
 
+const PDFDocument = require("pdfkit");
+
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
@@ -17,11 +19,10 @@ const {
   downloadSignedUrlToBuffer,
 } = require("./supabaseStorage");
 
-const { ocrImageBuffer } = require("./kadiOcr");
-
 const {
   sendText,
   sendButtons,
+  sendList, // ✅ IMPORTANT: doit exister dans whatsappApi.js
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
@@ -39,6 +40,8 @@ const {
 const { recordActivity } = require("./kadiActivityRepo");
 const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
 
+const { ocrImageBuffer } = require("./kadiOcr"); // ✅ ton fichier kadiOcr.js
+
 // ---------------- Config ----------------
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
 const OM_NUMBER = process.env.OM_NUMBER || "76894642";
@@ -48,12 +51,6 @@ const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
-
-const OCR_CREDITS_COST = Number(process.env.OCR_CREDITS_COST || 2); // ✅ 2 crédits
-const OCR_LANG = process.env.OCR_LANG || "fra"; // "fra" ou "eng+fra"
-
-// Décharge
-const DECHARGE_CREDITS_COST = Number(process.env.DECHARGE_CREDITS_COST || 1);
 
 const _WELCOME_CACHE = new Set();
 
@@ -135,7 +132,6 @@ function extractNumbersSmart(text) {
  */
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
-
   if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
 
   const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
@@ -150,7 +146,7 @@ function hasDimensionPattern(raw) {
 }
 
 /**
- * ✅ Parse structuré D/Q/PU
+ * ✅ Parse structuré universel : D/Q/PU
  */
 function parseStructuredItemLine(line) {
   const raw = String(line || "").trim();
@@ -189,15 +185,15 @@ function parseStructuredItemLine(line) {
 }
 
 /**
- * ✅ Parse "universel" (texte libre)
+ * ✅ parseItemLine (corrigé vitrier)
  */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
   const isDim = hasDimensionPattern(raw);
-
   let qty = null;
+
   if (!isDim) {
     const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i);
     const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i);
@@ -232,6 +228,7 @@ function parseItemLine(line) {
       .replace(/(?:^|\s)(\d{1,3})\s*x\b/gi, " ")
       .replace(/(?:^|\s)x\s*(\d{1,3})\b/gi, " ");
   }
+
   label = label.replace(/[-:]+/g, " ").replace(/\s+/g, " ").trim() || raw;
 
   const amount = Number(qty) * Number(unitPrice || 0);
@@ -261,21 +258,37 @@ function computeFinance(doc) {
 }
 
 // ---------------- Onboarding ----------------
-async function ensureOnboarding(from) {
+function onboardingText() {
+  return (
+    "👋 Bienvenue sur KADI.\n\n" +
+    "✅ En 10 secondes :\n" +
+    "1) Tapez *MENU*\n" +
+    "2) Choisissez : *Devis / Facture / Reçu / Décharge*\n" +
+    "3) Envoyez vos lignes (ou une *photo*) → KADI renvoie un *PDF propre*.\n\n" +
+    "🏢 Pour personnaliser vos PDF (Nom, IFU, RCCM, logo) :\n" +
+    "*Profil > Configurer*\n\n" +
+    "📸 Important :\n" +
+    "• Si KADI vous demande le *logo* → la photo = logo\n" +
+    "• Sinon → la photo = document à convertir (*OCR*)\n\n" +
+    "💳 Crédits :\n" +
+    "• 1 crédit = 1 PDF\n" +
+    "• Photo → PDF (OCR) = *2 crédits*"
+  );
+}
+
+async function maybeSendOnboarding(from) {
   try {
     const p = await getOrCreateProfile(from);
 
-    // Si pas de colonnes, markOnboardingDone ne casse pas
-    if (p?.onboarding_done === true) return;
+    // si colonne pas là ou erreur => on n'échoue pas
+    if (p && p.onboarding_done === true) return;
 
-    await sendText(
-      from,
-      `👋 Bienvenue sur KADI.\n\n✅ *Comment ça marche (simple)*\n1) Tapez *MENU*\n2) Choisissez *Devis / Facture / Reçu / Décharge*\n3) Envoyez vos lignes (ou une photo) → KADI fait le PDF\n\n🏢 *Profil*\nPour personnaliser vos PDF (Nom, IFU, RCCM, logo), allez dans *Profil > Configurer*.\n\n📷 *Photo*\n- Si vous êtes en train de configurer le logo → la photo = logo\n- Sinon → la photo = document à convertir (OCR)\n\n💳 *Crédits*\n1 crédit = 1 PDF\nPhoto→PDF (OCR) = ${OCR_CREDITS_COST} crédits`
-    );
+    await sendText(from, onboardingText());
 
+    // essayer de marquer done (si colonnes existent)
     await markOnboardingDone(from, 1);
-  } catch (e) {
-    // On ne bloque pas le user
+  } catch (_) {
+    // silence
   }
 }
 
@@ -285,6 +298,7 @@ async function ensureWelcomeCredits(waId) {
     if (_WELCOME_CACHE.has(waId)) return;
 
     const p = await getOrCreateProfile(waId);
+
     if (p && p.welcome_credits_granted === true) {
       _WELCOME_CACHE.add(waId);
       return;
@@ -308,7 +322,7 @@ async function ensureWelcomeCredits(waId) {
 
     await sendText(
       waId,
-      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
+      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF\n📸 Photo→PDF (OCR) = 2 crédits`
     );
   } catch (e) {
     console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
@@ -324,12 +338,27 @@ async function sendHomeMenu(to) {
   ]);
 }
 
+/**
+ * ✅ IMPORTANT: boutons WhatsApp = 3 max.
+ * Donc menu Documents => LIST pour avoir 4 options (Décharge incluse).
+ */
 async function sendDocsMenu(to) {
-  return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
-    { id: "DOC_DEVIS", title: "Devis" },
-    { id: "DOC_FACTURE", title: "Facture" },
-    { id: "DOC_RECU", title: "Reçu" },
-  ]);
+  return sendList(
+    to,
+    "📄 Quel document voulez-vous créer ?",
+    "Documents",
+    [
+      {
+        title: "Choisir un document",
+        rows: [
+          { id: "DOC_DEVIS", title: "Devis" },
+          { id: "DOC_FACTURE", title: "Facture" },
+          { id: "DOC_RECU", title: "Reçu" },
+          { id: "DOC_DECHARGE", title: "Décharge" },
+        ],
+      },
+    ]
+  );
 }
 
 async function sendFactureKindMenu(to) {
@@ -360,14 +389,6 @@ async function sendAfterPreviewMenu(to) {
   return sendButtons(to, "✅ Vérifiez. Que souhaitez-vous faire ?", [
     { id: "DOC_CONFIRM", title: "Confirmer (PDF)" },
     { id: "DOC_RESTART", title: "Recommencer" },
-    { id: "BACK_HOME", title: "Menu" },
-  ]);
-}
-
-async function sendAfterOcrPreviewMenu(to) {
-  return sendButtons(to, "📷 OCR terminé. Que faire ?", [
-    { id: "OCR_CONFIRM", title: `Confirmer (PDF -${OCR_CREDITS_COST})` },
-    { id: "OCR_AS_LOGO", title: "C'était un logo" },
     { id: "BACK_HOME", title: "Menu" },
   ]);
 }
@@ -496,8 +517,12 @@ async function handleRechargeProofImage(from, msg) {
   }
 }
 
-// ---------------- Logo upload (ou OCR photo) ----------------
-async function saveLogoFromImage(from, msg) {
+// ---------------- Logo upload ----------------
+async function handleLogoImage(from, msg) {
+  const s = getSession(from);
+
+  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
+
   const mediaId = msg?.image?.id;
   if (!mediaId) {
     await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
@@ -510,24 +535,141 @@ async function saveLogoFromImage(from, msg) {
 
   const { filePath } = await uploadLogoBuffer({ userId: from, buffer: buf, mimeType: mime });
   await updateProfile(from, { logo_path: filePath });
-}
 
-async function handleImageAuto(from, msg) {
-  const s = getSession(from);
-
-  // 1) Si on attend une preuve de recharge => preuve
-  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
-
-  // 2) Si on est en flow profil à l'étape logo => logo
   if (s.step === "profile" && s.profileStep === "logo") {
-    await saveLogoFromImage(from, msg);
     s.step = "idle";
     s.profileStep = null;
     await sendText(from, "✅ Logo enregistré. Profil terminé.");
-    return sendHomeMenu(from);
+    await sendHomeMenu(from);
+    return;
   }
 
-  // 3) Sinon: photo = document à convertir (OCR)
+  await sendText(from, "✅ Logo enregistré.");
+}
+
+// ---------------- OCR Photo -> PDF ----------------
+function guessDocTypeFromOcr(text) {
+  const t = String(text || "").toLowerCase();
+  if (t.includes("decharge") || t.includes("décharge")) return "DECHARGE";
+  if (t.includes("facture")) return "FACTURE";
+  if (t.includes("devis")) return "DEVIS";
+  if (t.includes("recu") || t.includes("reçu")) return "RECU";
+  return null;
+}
+
+async function buildOcrPdfBuffer({ title, ocrText, dateISO }) {
+  return new Promise((resolve, reject) => {
+    try {
+      const pdf = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks = [];
+      pdf.on("data", (c) => chunks.push(c));
+      pdf.on("end", () => resolve(Buffer.concat(chunks)));
+
+      pdf.font("Helvetica-Bold").fontSize(16).text(title || "DOCUMENT (OCR)");
+      pdf.moveDown(0.5);
+      pdf.font("Helvetica").fontSize(10).fillColor("#333").text(`Date : ${dateISO || formatDateISO()}`);
+      pdf.moveDown(0.8);
+
+      pdf.fillColor("#000");
+      pdf.font("Helvetica").fontSize(10).text(
+        "Texte extrait (OCR) :",
+        { underline: false }
+      );
+      pdf.moveDown(0.5);
+
+      pdf.font("Courier").fontSize(9).fillColor("#000");
+      pdf.text(String(ocrText || "—"), {
+        width: 495,
+        align: "left",
+      });
+
+      pdf.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function startOcrTypeChoice(from, ocrText) {
+  const s = getSession(from);
+  s.step = "ocr_choose_type";
+  s.ocr = { text: ocrText, date: formatDateISO() };
+
+  return sendList(
+    from,
+    "📸 J’ai reçu la photo.\nQuel type de document voulez-vous générer en PDF ?",
+    "Choisir",
+    [
+      {
+        title: "Type de document",
+        rows: [
+          { id: "OCR_DEVIS", title: "Devis" },
+          { id: "OCR_FACTURE", title: "Facture" },
+          { id: "OCR_RECU", title: "Reçu" },
+          { id: "OCR_DECHARGE", title: "Décharge" },
+        ],
+      },
+    ]
+  );
+}
+
+async function finalizeOcrPdf(from, typeUpper) {
+  const s = getSession(from);
+  const ocrText = s?.ocr?.text;
+  if (!ocrText) {
+    await sendText(from, "❌ OCR introuvable. Réenvoyez la photo.");
+    s.step = "idle";
+    s.ocr = null;
+    return;
+  }
+
+  // 2 crédits
+  const cons = await consumeCredit(from, 2, "ocr_pdf");
+  if (!cons.ok) {
+    await sendText(
+      from,
+      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n📸 Photo→PDF (OCR) = 2 crédits.\n👉 Tapez RECHARGE.`
+    );
+    return;
+  }
+
+  const dateISO = s.ocr.date || formatDateISO();
+  const title =
+    typeUpper === "FACTURE"
+      ? "FACTURE (OCR)"
+      : typeUpper === "DEVIS"
+      ? "DEVIS (OCR)"
+      : typeUpper === "RECU"
+      ? "REÇU (OCR)"
+      : "DÉCHARGE (OCR)";
+
+  const pdfBuf = await buildOcrPdfBuffer({
+    title,
+    ocrText,
+    dateISO,
+  });
+
+  const fileName = `kadi-ocr-${typeUpper}-${Date.now()}.pdf`;
+  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+
+  if (!up?.id) {
+    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
+    return;
+  }
+
+  await sendDocument({
+    to: from,
+    mediaId: up.id,
+    filename: fileName,
+    caption: `✅ ${title}\nSolde: ${cons.balance} crédit(s)`,
+  });
+
+  s.step = "idle";
+  s.ocr = null;
+  await sendHomeMenu(from);
+}
+
+async function handleOcrImage(from, msg) {
   const mediaId = msg?.image?.id;
   if (!mediaId) {
     await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
@@ -537,47 +679,56 @@ async function handleImageAuto(from, msg) {
   const info = await getMediaInfo(mediaId);
   const buf = await downloadMediaToBuffer(info.url);
 
-  // OCR
+  await sendText(from, "🔎 Lecture de la photo (OCR)…");
+
   let text = "";
   try {
-    text = await ocrImageBuffer(buf, OCR_LANG);
+    text = await ocrImageBuffer(buf, "fra");
   } catch (e) {
     console.error("OCR error:", e?.message);
-    await sendText(from, "❌ OCR impossible pour le moment. Réessayez plus tard.");
+    await sendText(from, "❌ OCR impossible pour le moment. Vérifiez Tesseract / node-tesseract-ocr.");
     return;
   }
 
-  // Si OCR vide, demander quoi faire
-  if (!text || text.length < 10) {
-    await sendText(from, "⚠️ Je n’arrive pas à lire ce document. Essayez une photo plus nette (bonne lumière).");
-    return;
+  const guessed = guessDocTypeFromOcr(text);
+
+  // Si on devine, on propose direct un mini choix (confirmer) via LIST
+  const s = getSession(from);
+  s.step = "ocr_choose_type";
+  s.ocr = { text, date: formatDateISO() };
+
+  if (guessed) {
+    return sendList(
+      from,
+      `✅ J’ai détecté : *${guessed}*.\nVoulez-vous générer le PDF ?`,
+      "Choisir",
+      [
+        {
+          title: "Confirmer",
+          rows: [
+            { id: `OCR_CONFIRM_${guessed}`, title: `Oui, ${guessed}` },
+            { id: "OCR_CHOOSE_OTHER", title: "Choisir un autre type" },
+            { id: "OCR_CANCEL", title: "Annuler" },
+          ],
+        },
+      ]
+    );
   }
 
-  // On stocke en session pour preview
-  s.step = "ocr_preview";
-  s.ocr = {
-    rawText: text,
-    createdAt: Date.now(),
-    image_mime: info.mime_type || "image/jpeg",
-  };
-
-  // Petite preview du texte
-  const excerpt = text.length > 900 ? `${text.slice(0, 900)}…` : text;
-
-  await sendText(
-    from,
-    `📷 *Texte détecté (OCR)*\n\n${excerpt}\n\n✅ Si c’est correct, confirme pour générer le PDF.\n💳 Coût: ${OCR_CREDITS_COST} crédits`
-  );
-  return sendAfterOcrPreviewMenu(from);
+  // Sinon: on demande le type
+  return startOcrTypeChoice(from, text);
 }
 
 // ---------------- Crédits ----------------
 async function replyBalance(from) {
   const bal = await getBalance(from);
-  await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
+  await sendText(
+    from,
+    `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF\n📸 Photo→PDF (OCR) = 2 crédits`
+  );
 }
 
-// ---------------- Documents ----------------
+// ---------------- Documents (Devis/Facture/Reçu texte) ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -682,11 +833,6 @@ async function handleDocText(from, text) {
   const profile = await getOrCreateProfile(from);
   const preview = await buildPreviewMessage({ profile, doc: draft });
 
-  // petit rappel si profil incomplet
-  if (!isProfileBasicComplete(profile)) {
-    await sendText(from, "ℹ️ Astuce: configurez votre *Profil* pour personnaliser vos PDFs (nom, contact, logo).");
-  }
-
   await sendText(from, preview);
   await sendAfterPreviewMenu(from);
   return true;
@@ -755,7 +901,11 @@ async function confirmAndSendPdf(from) {
   }
 
   const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
-  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+  const up = await uploadMediaBuffer({
+    buffer: pdfBuf,
+    filename: fileName,
+    mimeType: "application/pdf",
+  });
 
   if (!up?.id) {
     await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
@@ -774,79 +924,6 @@ async function confirmAndSendPdf(from) {
   s.factureKind = null;
   s.lastDocDraft = null;
 
-  await sendHomeMenu(from);
-}
-
-// ---------------- OCR confirm ----------------
-async function confirmOcrToPdf(from) {
-  const s = getSession(from);
-  if (s.step !== "ocr_preview" || !s.ocr?.rawText) {
-    await sendText(from, "❌ Aucun OCR en cours.");
-    return sendHomeMenu(from);
-  }
-
-  const cons = await consumeCredit(from, OCR_CREDITS_COST, "ocr_pdf");
-  if (!cons.ok) {
-    await sendText(
-      from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`
-    );
-    s.step = "idle";
-    s.ocr = null;
-    return;
-  }
-
-  const profile = await getOrCreateProfile(from);
-
-  // PDF "OCR" simple: on met le texte OCR dans un PDF comme un document
-  // -> ici on réutilise buildPdfBuffer avec un format "REÇU OCR" minimal via items
-  // On transforme le texte en lignes items (1 item)
-  const docNumber = await nextDocNumber({
-    waId: from,
-    mode: "recu",
-    factureKind: null,
-    dateISO: formatDateISO(),
-  });
-
-  let logoBuf = null;
-  if (profile?.logo_path) {
-    try {
-      const signed = await getSignedLogoUrl(profile.logo_path);
-      logoBuf = await downloadSignedUrlToBuffer(signed);
-    } catch (_) {}
-  }
-
-  const ocrText = s.ocr.rawText;
-  const pdfBuf = await buildPdfBuffer({
-    docData: {
-      type: "DOCUMENT OCR",
-      docNumber,
-      date: formatDateISO(),
-      client: "—",
-      items: [{ label: ocrText, qty: 1, unitPrice: 0, amount: 0, raw: ocrText }],
-      total: 0,
-    },
-    businessProfile: profile,
-    logoBuffer: logoBuf,
-  });
-
-  const fileName = `${docNumber}-ocr.pdf`;
-  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
-
-  if (!up?.id) {
-    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
-    return;
-  }
-
-  await sendDocument({
-    to: from,
-    mediaId: up.id,
-    filename: fileName,
-    caption: `✅ Document OCR ${docNumber}\nSolde: ${cons.balance} crédit(s)`,
-  });
-
-  s.step = "idle";
-  s.ocr = null;
   await sendHomeMenu(from);
 }
 
@@ -905,6 +982,11 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "FAC_DEFINITIVE") return startDocFlow(from, "facture", "definitive");
   if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
+  // ✅ Décharge (B3/B4 arrive après)
+  if (replyId === "DOC_DECHARGE") {
+    return sendText(from, "🧾 Décharge : en cours d’activation (B3/B4).");
+  }
+
   if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
   if (replyId === "PROFILE_VIEW") {
     const p = await getOrCreateProfile(from);
@@ -919,18 +1001,6 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
   if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
-
-  // OCR flow
-  if (replyId === "OCR_CONFIRM") return confirmOcrToPdf(from);
-  if (replyId === "OCR_AS_LOGO") {
-    // on repasse l'utilisateur en profil/logo directement
-    const s = getSession(from);
-    s.step = "profile";
-    s.profileStep = "logo";
-    await sendText(from, "✅ OK. Envoyez à nouveau l’image du logo (je vais l’enregistrer).");
-    return;
-  }
-
   if (replyId === "DOC_RESTART") {
     const s = getSession(from);
     s.step = "idle";
@@ -939,6 +1009,34 @@ async function handleInteractiveReply(from, replyId) {
     s.lastDocDraft = null;
     await sendText(from, "🔁 Très bien. Recommençons.");
     return sendDocsMenu(from);
+  }
+
+  // --- OCR confirm / choose / cancel ---
+  if (replyId === "OCR_CHOOSE_OTHER") {
+    const s = getSession(from);
+    const text = s?.ocr?.text || "";
+    return startOcrTypeChoice(from, text);
+  }
+  if (replyId === "OCR_CANCEL") {
+    const s = getSession(from);
+    s.step = "idle";
+    s.ocr = null;
+    await sendText(from, "✅ OK, annulé.");
+    return sendHomeMenu(from);
+  }
+
+  if (replyId === "OCR_DEVIS") return finalizeOcrPdf(from, "DEVIS");
+  if (replyId === "OCR_FACTURE") return finalizeOcrPdf(from, "FACTURE");
+  if (replyId === "OCR_RECU") return finalizeOcrPdf(from, "RECU");
+  if (replyId === "OCR_DECHARGE") return finalizeOcrPdf(from, "DECHARGE");
+
+  // OCR_CONFIRM_*
+  if (replyId && replyId.startsWith("OCR_CONFIRM_")) {
+    const type = replyId.replace("OCR_CONFIRM_", "");
+    if (type === "DEVIS") return finalizeOcrPdf(from, "DEVIS");
+    if (type === "FACTURE") return finalizeOcrPdf(from, "FACTURE");
+    if (type === "RECU") return finalizeOcrPdf(from, "RECU");
+    if (type === "DECHARGE") return finalizeOcrPdf(from, "DECHARGE");
   }
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
@@ -961,20 +1059,41 @@ async function handleIncomingMessage(value) {
     }
 
     await ensureWelcomeCredits(from);
-    await ensureOnboarding(from);
 
+    // ✅ interactive
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
     }
 
-    // ✅ Photo => auto logo OR OCR selon contexte
-    if (msg.type === "image") return handleImageAuto(from, msg);
+    // ✅ images
+    if (msg.type === "image") {
+      const s = getSession(from);
 
+      // 1) Si on est dans profil->logo, la photo = logo
+      if (s.step === "profile" && s.profileStep === "logo") {
+        return handleLogoImage(from, msg);
+      }
+
+      // 2) Si recharge proof, la photo = preuve
+      if (s.step === "recharge_proof") {
+        return handleRechargeProofImage(from, msg);
+      }
+
+      // 3) Sinon => OCR (Photo->PDF)
+      return handleOcrImage(from, msg);
+    }
+
+    // ✅ text
     const text = norm(msg.text?.body);
     if (!text) return;
-
     const lower = text.toLowerCase();
+
+    // onboarding sur "menu" (ou 1er usage)
+    if (lower === "menu" || lower === "m") {
+      await maybeSendOnboarding(from);
+      return sendHomeMenu(from);
+    }
 
     if (lower === "/stats" || lower === "stats") {
       if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
@@ -1072,7 +1191,8 @@ async function handleIncomingMessage(value) {
     if (await handleAdmin(from, text)) return;
     if (await handleProfileAnswer(from, text)) return;
 
-    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
+    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance")
+      return replyBalance(from);
     if (lower === "recharge") return replyRechargeInfo(from);
 
     const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
@@ -1085,8 +1205,7 @@ async function handleIncomingMessage(value) {
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
 
-    if (lower === "menu" || lower === "m") return sendHomeMenu(from);
-
+    // raccourcis
     if (lower === "devis") return startDocFlow(from, "devis");
     if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
     if (lower === "facture") return sendFactureKindMenu(from);
