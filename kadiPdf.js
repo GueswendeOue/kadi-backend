@@ -1,4 +1,3 @@
-// kadiPdf.js
 "use strict";
 
 const PDFDocument = require("pdfkit");
@@ -19,7 +18,18 @@ function numberToFrench(n) {
   if (n === 0) return "zéro";
 
   const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
-  const teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
+  const teens = [
+    "dix",
+    "onze",
+    "douze",
+    "treize",
+    "quatorze",
+    "quinze",
+    "seize",
+    "dix-sept",
+    "dix-huit",
+    "dix-neuf",
+  ];
   const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
 
   function under100(x) {
@@ -31,16 +41,20 @@ function numberToFrench(n) {
 
     // 70-79, 90-99
     if (t === 7 || t === 9) {
-      const base = tens[t];
-      const rest = x - t * 10;
+      const base = tens[t]; // "soixante" ou "quatre-vingt"
+      const rest = x - t * 10; // 10..19
       return `${base}-${teens[rest - 10]}`;
     }
 
-    // 80 exact
+    // 80 exact => "quatre-vingts"
     if (t === 8 && u === 0) return "quatre-vingts";
+
     if (u === 0) return tens[t];
 
+    // 81..89 => "quatre-vingt-un" (sans s)
     if (t === 8) return `quatre-vingt-${units[u]}`;
+
+    // 21,31,41,51,61 => "vingt et un"
     if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
 
     return `${tens[t]}-${units[u]}`;
@@ -54,7 +68,7 @@ function numberToFrench(n) {
     if (h > 0) {
       if (h === 1) s = "cent";
       else s = `${units[h]} cent`;
-      if (r === 0 && h > 1) s += "s";
+      if (r === 0 && h > 1) s += "s"; // "deux cents"
     }
 
     if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
@@ -66,14 +80,14 @@ function numberToFrench(n) {
     const r = x % value;
     if (q === 0) return { text: "", rest: r };
 
-    // mille invariable
+    // ✅ "mille" est invariable
     if (name === "mille") {
       if (q === 1) return { text: "mille", rest: r };
       return { text: `${under1000(q)} mille`, rest: r };
     }
 
     // million(s)
-    let t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
+    const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
     return { text: t, rest: r };
   }
 
@@ -99,7 +113,6 @@ function normalizeDocTypeForFooter(typeUpper) {
   if (t.includes("FACTURE")) return { phrase: "Arrêtée la présente facture" };
   if (t.includes("REÇU") || t.includes("RECU")) return { phrase: "Arrêté le présent reçu" };
   if (t.includes("DEVIS")) return { phrase: "Arrêté le présent devis" };
-  if (t.includes("DÉCHARGE") || t.includes("DECHARGE")) return { phrase: "Arrêtée la présente décharge" };
 
   return { phrase: "Arrêté le présent document" };
 }
@@ -119,40 +132,14 @@ async function makeKadiQrPngBuffer({ fullNumberE164, prefillText }) {
   return { url, png };
 }
 
-function drawFooter({ pdf, pageLeft, pageRight, kadiCountry, kadiNumberLocal, qr }) {
-  const footerY = pdf.page.height - 70;
-  const qrSize = 55;
-
-  // trait
-  pdf.moveTo(pageLeft, footerY - 6).lineTo(pageRight, footerY - 6).stroke();
-
-  // texte
-  pdf.font("Helvetica").fontSize(8).fillColor("#444");
-
-  const pretty = String(kadiNumberLocal || "").replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, "$1 $2 $3 $4");
-  const footerText = `Généré par KADI • WhatsApp +${kadiCountry} ${pretty} • Scannez pour essayer`;
-
-  pdf.text(footerText, pageLeft, footerY + 18, {
-    width: (pageRight - pageLeft) - (qr ? (qrSize + 10) : 0),
-    align: "left",
-    lineBreak: false,
-    ellipsis: true,
-  });
-
-  if (qr?.png) {
-    try {
-      pdf.image(qr.png, pageRight - qrSize, footerY, { fit: [qrSize, qrSize] });
-    } catch {}
-  }
-}
-
 async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
-  // KADI WhatsApp
+  // KADI WhatsApp: par défaut +226 79 23 90 27 => "22679239027"
   const KADI_NUMBER_LOCAL = process.env.KADI_NUMBER || "79239027";
   const KADI_COUNTRY = process.env.KADI_COUNTRY_CODE || "226";
   const KADI_E164 = process.env.KADI_E164 || `${KADI_COUNTRY}${KADI_NUMBER_LOCAL}`;
   const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
 
+  // QR préparé avant
   let qr = null;
   try {
     qr = await makeKadiQrPngBuffer({ fullNumberE164: KADI_E164, prefillText: KADI_PREFILL });
@@ -266,24 +253,18 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       pdf.font("Helvetica").fontSize(10);
 
+      // zone safe bas + réserve (total + phrase + footer)
+      const bottomSafe = pdf.page.height - pdf.page.margins.bottom;
+      const reserved = 140;
+
       for (let i = 0; i < items.length; i++) {
         const it = items[i] || {};
         const qty = Number(it.qty || 0);
         const pu = Number(it.unitPrice || 0);
-        const amt = Number(it.amount || qty * pu || 0);
+        const amt = Number(it.amount || (qty * pu) || 0);
 
-        // garde place footer
-        if (y + rowH + 170 > pdf.page.height) {
-          // footer sur page courante
-          drawFooter({
-            pdf,
-            pageLeft,
-            pageRight,
-            kadiCountry: KADI_COUNTRY,
-            kadiNumberLocal: KADI_NUMBER_LOCAL,
-            qr,
-          });
-
+        // ✅ saut de page basé sur la zone SAFE, pas sur page.height
+        if (y + rowH + reserved > bottomSafe) {
           pdf.addPage();
           y = 80;
         }
@@ -311,9 +292,16 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         y += rowH;
       }
-
       // ---- Total box ----
       y += 18;
+
+      // ✅ Si on est trop bas, on passe page AVANT le total
+      const bottomSafe2 = pdf.page.height - pdf.page.margins.bottom;
+      const reservedAfterTotal = 90; // phrase + footer
+      if (y + 46 + reservedAfterTotal > bottomSafe2) {
+        pdf.addPage();
+        y = 80;
+      }
 
       const totalBoxW = 260;
       const totalBoxH = 46;
@@ -339,15 +327,42 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         width: pageRight - pageLeft,
       });
 
-      // footer final (dernière page)
-      drawFooter({
-        pdf,
-        pageLeft,
-        pageRight,
-        kadiCountry: KADI_COUNTRY,
-        kadiNumberLocal: KADI_NUMBER_LOCAL,
-        qr,
+      // ---- Footer (bas de page) + QR ----
+      // ✅ Footer fixé en bas, mais DANS la marge safe
+      const footerBase = pdf.page.height - pdf.page.margins.bottom; // zone safe
+      const footerY = footerBase - 52; // bloc footer (texte + QR) reste au-dessus
+
+      const qrSize = 55;
+
+      // trait
+      pdf.moveTo(pageLeft, footerY - 6).lineTo(pageRight, footerY - 6).stroke();
+
+      // texte
+      pdf.font("Helvetica").fontSize(8).fillColor("#444");
+
+      const formattedLocal = String(KADI_NUMBER_LOCAL).replace(
+        /(\d{2})(\d{2})(\d{2})(\d{2})/,
+        "$1 $2 $3 $4"
+      );
+
+      const footerText = `Généré par KADI • WhatsApp +${KADI_COUNTRY} ${formattedLocal} • Scannez pour essayer`;
+
+      // ✅ IMPORTANT: largeur calculée pour éviter chevauchement QR
+      const textW = (pageRight - pageLeft) - (qr?.png ? (qrSize + 10) : 0);
+
+      pdf.text(footerText, pageLeft, footerY + 18, {
+        width: textW,
+        align: "left",
+        lineBreak: false,
+        ellipsis: true,
       });
+
+      // QR à droite
+      if (qr?.png) {
+        try {
+          pdf.image(qr.png, pageRight - qrSize, footerY, { fit: [qrSize, qrSize] });
+        } catch {}
+      }
 
       pdf.end();
     } catch (e) {
