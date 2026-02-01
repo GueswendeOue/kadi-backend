@@ -1,46 +1,27 @@
 // kadiEngine.js
 "use strict";
 
-const PDFDocument = require("pdfkit");
-
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
+const { buildDechargePdfBuffer } = require("./kadiDechargePdf"); // ✅ NEW
 const { saveDocument } = require("./kadiRepo");
-const {
-  getOrCreateProfile,
-  updateProfile,
-  markOnboardingDone,
-  isProfileBasicComplete,
-} = require("./store");
-const {
-  uploadLogoBuffer,
-  getSignedLogoUrl,
-  downloadSignedUrlToBuffer,
-} = require("./supabaseStorage");
+const { getOrCreateProfile, updateProfile } = require("./store");
+const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
 
 const {
   sendText,
   sendButtons,
-  sendList, // ✅ IMPORTANT: doit exister dans whatsappApi.js
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
 } = require("./whatsappApi");
 
-const {
-  getBalance,
-  consumeCredit,
-  createRechargeCodes,
-  redeemCode,
-  addCredits,
-} = require("./kadiCreditsRepo");
+const { getBalance, consumeCredit, createRechargeCodes, redeemCode, addCredits } = require("./kadiCreditsRepo");
 
 const { recordActivity } = require("./kadiActivityRepo");
 const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
-
-const { ocrImageBuffer } = require("./kadiOcr"); // ✅ ton fichier kadiOcr.js
 
 // ---------------- Config ----------------
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
@@ -51,6 +32,9 @@ const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
+
+// Décharge: prix en crédits (tu voulais 2)
+const DECHARGE_CREDITS = Number(process.env.DECHARGE_CREDITS || 2);
 
 const _WELCOME_CACHE = new Set();
 
@@ -127,11 +111,25 @@ function extractNumbersSmart(text) {
   return merged.map(cleanNumber).filter((n) => typeof n === "number");
 }
 
-/**
- * ✅ Détecte dimension (vitrier)
- */
+// ✅ NEW: BF phone normalizer
+function normalizePhoneBF(input) {
+  const s = String(input || "").replace(/\s+/g, "").replace(/[^\d]/g, "");
+  if (!s) return null;
+  if (s.length === 8) return `226${s}`;
+  if (s.length === 11 && s.startsWith("226")) return s;
+  return s;
+}
+
+function parseMoneyFromText(text) {
+  const nums = extractNumbersSmart(text).filter((n) => Number.isFinite(n));
+  if (!nums.length) return null;
+  return Math.max(...nums);
+}
+
+// ---------------- Parsing lignes (A) ----------------
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
+
   if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
 
   const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
@@ -145,9 +143,6 @@ function hasDimensionPattern(raw) {
   return false;
 }
 
-/**
- * ✅ Parse structuré universel : D/Q/PU
- */
 function parseStructuredItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -184,14 +179,12 @@ function parseStructuredItemLine(line) {
   };
 }
 
-/**
- * ✅ parseItemLine (corrigé vitrier)
- */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
 
   const isDim = hasDimensionPattern(raw);
+
   let qty = null;
 
   if (!isDim) {
@@ -223,6 +216,7 @@ function parseItemLine(line) {
   }
 
   let label = raw;
+
   if (!isDim) {
     label = label
       .replace(/(?:^|\s)(\d{1,3})\s*x\b/gi, " ")
@@ -257,41 +251,6 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-// ---------------- Onboarding ----------------
-function onboardingText() {
-  return (
-    "👋 Bienvenue sur KADI.\n\n" +
-    "✅ En 10 secondes :\n" +
-    "1) Tapez *MENU*\n" +
-    "2) Choisissez : *Devis / Facture / Reçu / Décharge*\n" +
-    "3) Envoyez vos lignes (ou une *photo*) → KADI renvoie un *PDF propre*.\n\n" +
-    "🏢 Pour personnaliser vos PDF (Nom, IFU, RCCM, logo) :\n" +
-    "*Profil > Configurer*\n\n" +
-    "📸 Important :\n" +
-    "• Si KADI vous demande le *logo* → la photo = logo\n" +
-    "• Sinon → la photo = document à convertir (*OCR*)\n\n" +
-    "💳 Crédits :\n" +
-    "• 1 crédit = 1 PDF\n" +
-    "• Photo → PDF (OCR) = *2 crédits*"
-  );
-}
-
-async function maybeSendOnboarding(from) {
-  try {
-    const p = await getOrCreateProfile(from);
-
-    // si colonne pas là ou erreur => on n'échoue pas
-    if (p && p.onboarding_done === true) return;
-
-    await sendText(from, onboardingText());
-
-    // essayer de marquer done (si colonnes existent)
-    await markOnboardingDone(from, 1);
-  } catch (_) {
-    // silence
-  }
-}
-
 // ---------------- Welcome credits ----------------
 async function ensureWelcomeCredits(waId) {
   try {
@@ -322,7 +281,7 @@ async function ensureWelcomeCredits(waId) {
 
     await sendText(
       waId,
-      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF\n📸 Photo→PDF (OCR) = 2 crédits`
+      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
     );
   } catch (e) {
     console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
@@ -338,27 +297,14 @@ async function sendHomeMenu(to) {
   ]);
 }
 
-/**
- * ✅ IMPORTANT: boutons WhatsApp = 3 max.
- * Donc menu Documents => LIST pour avoir 4 options (Décharge incluse).
- */
 async function sendDocsMenu(to) {
-  return sendList(
-    to,
-    "📄 Quel document voulez-vous créer ?",
-    "Documents",
-    [
-      {
-        title: "Choisir un document",
-        rows: [
-          { id: "DOC_DEVIS", title: "Devis" },
-          { id: "DOC_FACTURE", title: "Facture" },
-          { id: "DOC_RECU", title: "Reçu" },
-          { id: "DOC_DECHARGE", title: "Décharge" },
-        ],
-      },
-    ]
-  );
+  // ⚠️ si ton sendButtons limite à 3 boutons, on fera une "list" après
+  return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
+    { id: "DOC_DEVIS", title: "Devis" },
+    { id: "DOC_FACTURE", title: "Facture" },
+    { id: "DOC_RECU", title: "Reçu" },
+    { id: "DOC_DECHARGE", title: "Décharge" },
+  ]);
 }
 
 async function sendFactureKindMenu(to) {
@@ -517,7 +463,7 @@ async function handleRechargeProofImage(from, msg) {
   }
 }
 
-// ---------------- Logo upload ----------------
+// ---------------- Image handler (logo OU preuve) ----------------
 async function handleLogoImage(from, msg) {
   const s = getSession(from);
 
@@ -547,188 +493,13 @@ async function handleLogoImage(from, msg) {
   await sendText(from, "✅ Logo enregistré.");
 }
 
-// ---------------- OCR Photo -> PDF ----------------
-function guessDocTypeFromOcr(text) {
-  const t = String(text || "").toLowerCase();
-  if (t.includes("decharge") || t.includes("décharge")) return "DECHARGE";
-  if (t.includes("facture")) return "FACTURE";
-  if (t.includes("devis")) return "DEVIS";
-  if (t.includes("recu") || t.includes("reçu")) return "RECU";
-  return null;
-}
-
-async function buildOcrPdfBuffer({ title, ocrText, dateISO }) {
-  return new Promise((resolve, reject) => {
-    try {
-      const pdf = new PDFDocument({ size: "A4", margin: 50 });
-      const chunks = [];
-      pdf.on("data", (c) => chunks.push(c));
-      pdf.on("end", () => resolve(Buffer.concat(chunks)));
-
-      pdf.font("Helvetica-Bold").fontSize(16).text(title || "DOCUMENT (OCR)");
-      pdf.moveDown(0.5);
-      pdf.font("Helvetica").fontSize(10).fillColor("#333").text(`Date : ${dateISO || formatDateISO()}`);
-      pdf.moveDown(0.8);
-
-      pdf.fillColor("#000");
-      pdf.font("Helvetica").fontSize(10).text(
-        "Texte extrait (OCR) :",
-        { underline: false }
-      );
-      pdf.moveDown(0.5);
-
-      pdf.font("Courier").fontSize(9).fillColor("#000");
-      pdf.text(String(ocrText || "—"), {
-        width: 495,
-        align: "left",
-      });
-
-      pdf.end();
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
-async function startOcrTypeChoice(from, ocrText) {
-  const s = getSession(from);
-  s.step = "ocr_choose_type";
-  s.ocr = { text: ocrText, date: formatDateISO() };
-
-  return sendList(
-    from,
-    "📸 J’ai reçu la photo.\nQuel type de document voulez-vous générer en PDF ?",
-    "Choisir",
-    [
-      {
-        title: "Type de document",
-        rows: [
-          { id: "OCR_DEVIS", title: "Devis" },
-          { id: "OCR_FACTURE", title: "Facture" },
-          { id: "OCR_RECU", title: "Reçu" },
-          { id: "OCR_DECHARGE", title: "Décharge" },
-        ],
-      },
-    ]
-  );
-}
-
-async function finalizeOcrPdf(from, typeUpper) {
-  const s = getSession(from);
-  const ocrText = s?.ocr?.text;
-  if (!ocrText) {
-    await sendText(from, "❌ OCR introuvable. Réenvoyez la photo.");
-    s.step = "idle";
-    s.ocr = null;
-    return;
-  }
-
-  // 2 crédits
-  const cons = await consumeCredit(from, 2, "ocr_pdf");
-  if (!cons.ok) {
-    await sendText(
-      from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n📸 Photo→PDF (OCR) = 2 crédits.\n👉 Tapez RECHARGE.`
-    );
-    return;
-  }
-
-  const dateISO = s.ocr.date || formatDateISO();
-  const title =
-    typeUpper === "FACTURE"
-      ? "FACTURE (OCR)"
-      : typeUpper === "DEVIS"
-      ? "DEVIS (OCR)"
-      : typeUpper === "RECU"
-      ? "REÇU (OCR)"
-      : "DÉCHARGE (OCR)";
-
-  const pdfBuf = await buildOcrPdfBuffer({
-    title,
-    ocrText,
-    dateISO,
-  });
-
-  const fileName = `kadi-ocr-${typeUpper}-${Date.now()}.pdf`;
-  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
-
-  if (!up?.id) {
-    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
-    return;
-  }
-
-  await sendDocument({
-    to: from,
-    mediaId: up.id,
-    filename: fileName,
-    caption: `✅ ${title}\nSolde: ${cons.balance} crédit(s)`,
-  });
-
-  s.step = "idle";
-  s.ocr = null;
-  await sendHomeMenu(from);
-}
-
-async function handleOcrImage(from, msg) {
-  const mediaId = msg?.image?.id;
-  if (!mediaId) {
-    await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
-    return;
-  }
-
-  const info = await getMediaInfo(mediaId);
-  const buf = await downloadMediaToBuffer(info.url);
-
-  await sendText(from, "🔎 Lecture de la photo (OCR)…");
-
-  let text = "";
-  try {
-    text = await ocrImageBuffer(buf, "fra");
-  } catch (e) {
-    console.error("OCR error:", e?.message);
-    await sendText(from, "❌ OCR impossible pour le moment. Vérifiez Tesseract / node-tesseract-ocr.");
-    return;
-  }
-
-  const guessed = guessDocTypeFromOcr(text);
-
-  // Si on devine, on propose direct un mini choix (confirmer) via LIST
-  const s = getSession(from);
-  s.step = "ocr_choose_type";
-  s.ocr = { text, date: formatDateISO() };
-
-  if (guessed) {
-    return sendList(
-      from,
-      `✅ J’ai détecté : *${guessed}*.\nVoulez-vous générer le PDF ?`,
-      "Choisir",
-      [
-        {
-          title: "Confirmer",
-          rows: [
-            { id: `OCR_CONFIRM_${guessed}`, title: `Oui, ${guessed}` },
-            { id: "OCR_CHOOSE_OTHER", title: "Choisir un autre type" },
-            { id: "OCR_CANCEL", title: "Annuler" },
-          ],
-        },
-      ]
-    );
-  }
-
-  // Sinon: on demande le type
-  return startOcrTypeChoice(from, text);
-}
-
 // ---------------- Crédits ----------------
 async function replyBalance(from) {
   const bal = await getBalance(from);
-  await sendText(
-    from,
-    `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF\n📸 Photo→PDF (OCR) = 2 crédits`
-  );
+  await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
 
-// ---------------- Documents (Devis/Facture/Reçu texte) ----------------
+// ---------------- Documents (Devis/Facture/Reçu) ----------------
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -901,11 +672,7 @@ async function confirmAndSendPdf(from) {
   }
 
   const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
-  const up = await uploadMediaBuffer({
-    buffer: pdfBuf,
-    filename: fileName,
-    mimeType: "application/pdf",
-  });
+  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
 
   if (!up?.id) {
     await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
@@ -925,6 +692,227 @@ async function confirmAndSendPdf(from) {
   s.lastDocDraft = null;
 
   await sendHomeMenu(from);
+}
+
+// ---------------- Décharge ----------------
+async function startDechargeFlow(from) {
+  const s = getSession(from);
+  s.step = "decharge";
+  s.dechargeStep = "p1_name";
+
+  s.dechargeDraft = {
+    title: "DÉCHARGE",
+    docNumber: null,
+    date: formatDateISO(),
+    place: null,
+    amount: null,
+    currency: "FCFA",
+    objet: null,
+    partie1: { nom: null, phone: null, id_type: null, id_number: null }, // reçoit
+    partie2: { nom: null, phone: null, id_type: null, id_number: null }, // remet
+  };
+
+  await sendText(
+    from,
+    "🧾 *Décharge*\n\nOn va remplir 2 parties.\n📌 Tapez *0* pour ignorer un champ.\n\n1/10 — Nom *Partie 1* (celui qui REÇOIT) ?"
+  );
+}
+
+async function handleDechargeAnswer(from, text) {
+  const s = getSession(from);
+  if (s.step !== "decharge" || !s.dechargeStep || !s.dechargeDraft) return false;
+
+  const t = norm(text);
+  const skip = t === "0";
+  const d = s.dechargeDraft;
+
+  switch (s.dechargeStep) {
+    case "p1_name":
+      d.partie1.nom = skip ? null : t;
+      s.dechargeStep = "p1_phone";
+      await sendText(from, "2/10 — Téléphone Partie 1 ? (8 chiffres) ou 0");
+      return true;
+
+    case "p1_phone":
+      d.partie1.phone = skip ? null : normalizePhoneBF(t);
+      s.dechargeStep = "p1_id_type";
+      await sendText(from, "3/10 — Type de pièce Partie 1 ? (CNIB / Passeport) ou 0");
+      return true;
+
+    case "p1_id_type":
+      d.partie1.id_type = skip ? null : t;
+      s.dechargeStep = "p1_id_number";
+      await sendText(from, "4/10 — Numéro de pièce Partie 1 ? ou 0");
+      return true;
+
+    case "p1_id_number":
+      d.partie1.id_number = skip ? null : t;
+      s.dechargeStep = "p2_name";
+      await sendText(from, "5/10 — Nom *Partie 2* (celui qui REMET) ?");
+      return true;
+
+    case "p2_name":
+      d.partie2.nom = skip ? null : t;
+      s.dechargeStep = "p2_phone";
+      await sendText(from, "6/10 — Téléphone Partie 2 ? (8 chiffres) ou 0");
+      return true;
+
+    case "p2_phone":
+      d.partie2.phone = skip ? null : normalizePhoneBF(t);
+      s.dechargeStep = "p2_id_type";
+      await sendText(from, "7/10 — Type de pièce Partie 2 ? (CNIB / Passeport) ou 0");
+      return true;
+
+    case "p2_id_type":
+      d.partie2.id_type = skip ? null : t;
+      s.dechargeStep = "p2_id_number";
+      await sendText(from, "8/10 — Numéro de pièce Partie 2 ? ou 0");
+      return true;
+
+    case "p2_id_number":
+      d.partie2.id_number = skip ? null : t;
+      s.dechargeStep = "amount";
+      await sendText(from, "9/10 — Montant remis ? (ex: 350000)");
+      return true;
+
+    case "amount": {
+      const amt = skip ? null : parseMoneyFromText(t);
+      d.amount = amt;
+      s.dechargeStep = "place_objet";
+      await sendText(from, "10/10 — Ville/Lieu + Objet (optionnel)\nEx: Ouagadougou | Achat moto\nOu juste: Ouagadougou");
+      return true;
+    }
+
+    case "place_objet": {
+      if (!skip) {
+        const parts = t.split("|").map((x) => x.trim()).filter(Boolean);
+        d.place = parts[0] || null;
+        d.objet = parts[1] || null;
+      }
+
+      const preview =
+        `🧾 *DÉCHARGE — Aperçu*\n` +
+        `Date: ${d.date}\n` +
+        `Lieu: ${d.place || "—"}\n` +
+        `Montant: ${d.amount ? `${money(d.amount)} FCFA` : "—"}\n` +
+        (d.objet ? `Objet: ${d.objet}\n` : "") +
+        `\nPartie 1 (reçoit): ${d.partie1.nom || "—"} ${d.partie1.phone ? `(${d.partie1.phone})` : ""}\n` +
+        `Partie 2 (remet): ${d.partie2.nom || "—"} ${d.partie2.phone ? `(${d.partie2.phone})` : ""}\n\n` +
+        `✅ Si tout est bon, cliquez *Générer (PDF)*`;
+
+      await sendButtons(from, preview, [
+        { id: "DECHARGE_PDF", title: "Générer (PDF)" },
+        { id: "DECHARGE_RESTART", title: "Recommencer" },
+        { id: "BACK_HOME", title: "Menu" },
+      ]);
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}
+
+async function confirmAndSendDechargePdf(from) {
+  const s = getSession(from);
+  const d = s.dechargeDraft;
+
+  if (!d) {
+    await sendText(from, "❌ Aucune décharge en cours. Tapez MENU.");
+    return;
+  }
+
+  const cons = await consumeCredit(from, DECHARGE_CREDITS, "decharge_pdf");
+  if (!cons.ok) {
+    await sendText(from, `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\n👉 Tapez RECHARGE.`);
+    return;
+  }
+
+  d.docNumber = await nextDocNumber({
+    waId: from,
+    mode: "decharge",
+    factureKind: null,
+    dateISO: d.date,
+  });
+
+  const profile = await getOrCreateProfile(from);
+
+  let logoBuf = null;
+  if (profile?.logo_path) {
+    try {
+      const signed = await getSignedLogoUrl(profile.logo_path);
+      logoBuf = await downloadSignedUrlToBuffer(signed);
+    } catch (e) {
+      console.error("logo download error:", e?.message);
+    }
+  }
+
+  const pdfBuf = await buildDechargePdfBuffer({
+    docData: d,
+    businessProfile: profile,
+    logoBuffer: logoBuf,
+  });
+
+  const fileName = `${d.docNumber}-${formatDateISO()}.pdf`;
+  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+
+  if (!up?.id) {
+    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
+    return;
+  }
+
+  await sendDocument({
+    to: from,
+    mediaId: up.id,
+    filename: fileName,
+    caption:
+      `✅ DÉCHARGE ${d.docNumber}\nMontant: ${d.amount ? money(d.amount) : "—"} FCFA\nSolde: ${cons.balance} crédit(s)`,
+  });
+
+  await sendButtons(from, "🛡️ Souhaitez-vous demander une confirmation WhatsApp aux 2 parties ?", [
+    { id: "DECHARGE_CONFIRM_WA", title: "Confirmer WhatsApp" },
+    { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+async function requestDechargeConfirmations(from) {
+  const s = getSession(from);
+  const d = s.dechargeDraft;
+  if (!d) return;
+
+  const p1 = d.partie1 || {};
+  const p2 = d.partie2 || {};
+
+  const p1wa = normalizePhoneBF(p1.phone);
+  const p2wa = normalizePhoneBF(p2.phone);
+
+  if (p1wa) {
+    const msg1 =
+      `🧾 Confirmation Décharge\n` +
+      `Partie 2 (${p2.nom || "—"}) déclare vous avoir remis: ${d.amount ? money(d.amount) : "—"} FCFA.\n` +
+      `Confirmez-vous avoir REÇU ?`;
+
+    await sendButtons(p1wa, msg1, [
+      { id: `DEC_P1_OK_${from}`, title: "✅ Oui, reçu" },
+      { id: `DEC_P1_NO_${from}`, title: "❌ Non" },
+      { id: "BACK_HOME", title: "Menu" },
+    ]);
+  }
+
+  if (p2wa) {
+    const msg2 =
+      `🧾 Confirmation Décharge\n` +
+      `Partie 1 (${p1.nom || "—"}) déclare avoir reçu: ${d.amount ? money(d.amount) : "—"} FCFA.\n` +
+      `Confirmez-vous avoir REMIS ?`;
+
+    await sendButtons(p2wa, msg2, [
+      { id: `DEC_P2_OK_${from}`, title: "✅ Oui, remis" },
+      { id: `DEC_P2_NO_${from}`, title: "❌ Non" },
+      { id: "BACK_HOME", title: "Menu" },
+    ]);
+  }
+
+  await sendText(from, "✅ Demandes de confirmation envoyées (si numéros valides).");
 }
 
 // ---------------- Admin ----------------
@@ -982,62 +970,15 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "FAC_DEFINITIVE") return startDocFlow(from, "facture", "definitive");
   if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
-  // ✅ Décharge (B3/B4 arrive après)
-  if (replyId === "DOC_DECHARGE") {
-    return sendText(from, "🧾 Décharge : en cours d’activation (B3/B4).");
-  }
+  if (replyId === "DOC_DECHARGE") return startDechargeFlow(from);
+  if (replyId === "DECHARGE_RESTART") return startDechargeFlow(from);
+  if (replyId === "DECHARGE_PDF") return confirmAndSendDechargePdf(from);
+  if (replyId === "DECHARGE_CONFIRM_WA") return requestDechargeConfirmations(from);
 
-  if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
-  if (replyId === "PROFILE_VIEW") {
-    const p = await getOrCreateProfile(from);
-    await sendText(
-      from,
-      `🏢 Profil\nNom: ${p.business_name || "0"}\nAdresse: ${p.address || "0"}\nTel: ${p.phone || "0"}\nEmail: ${p.email || "0"}\nIFU: ${p.ifu || "0"}\nRCCM: ${p.rccm || "0"}\nLogo: ${p.logo_path ? "OK ✅" : "0"}`
-    );
-    return;
-  }
-
-  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
-  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
-
-  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
-  if (replyId === "DOC_RESTART") {
-    const s = getSession(from);
-    s.step = "idle";
-    s.mode = null;
-    s.factureKind = null;
-    s.lastDocDraft = null;
-    await sendText(from, "🔁 Très bien. Recommençons.");
-    return sendDocsMenu(from);
-  }
-
-  // --- OCR confirm / choose / cancel ---
-  if (replyId === "OCR_CHOOSE_OTHER") {
-    const s = getSession(from);
-    const text = s?.ocr?.text || "";
-    return startOcrTypeChoice(from, text);
-  }
-  if (replyId === "OCR_CANCEL") {
-    const s = getSession(from);
-    s.step = "idle";
-    s.ocr = null;
-    await sendText(from, "✅ OK, annulé.");
-    return sendHomeMenu(from);
-  }
-
-  if (replyId === "OCR_DEVIS") return finalizeOcrPdf(from, "DEVIS");
-  if (replyId === "OCR_FACTURE") return finalizeOcrPdf(from, "FACTURE");
-  if (replyId === "OCR_RECU") return finalizeOcrPdf(from, "RECU");
-  if (replyId === "OCR_DECHARGE") return finalizeOcrPdf(from, "DECHARGE");
-
-  // OCR_CONFIRM_*
-  if (replyId && replyId.startsWith("OCR_CONFIRM_")) {
-    const type = replyId.replace("OCR_CONFIRM_", "");
-    if (type === "DEVIS") return finalizeOcrPdf(from, "DEVIS");
-    if (type === "FACTURE") return finalizeOcrPdf(from, "FACTURE");
-    if (type === "RECU") return finalizeOcrPdf(from, "RECU");
-    if (type === "DECHARGE") return finalizeOcrPdf(from, "DECHARGE");
-  }
+  if (replyId && replyId.startsWith("DEC_P1_OK_")) return sendText(from, "✅ Merci. Confirmation REÇU enregistrée.");
+  if (replyId && replyId.startsWith("DEC_P1_NO_")) return sendText(from, "❌ Merci. Vous avez indiqué ne PAS avoir reçu.");
+  if (replyId && replyId.startsWith("DEC_P2_OK_")) return sendText(from, "✅ Merci. Confirmation REMIS enregistrée.");
+  if (replyId && replyId.startsWith("DEC_P2_NO_")) return sendText(from, "❌ Merci. Vous avez indiqué ne PAS avoir remis.");
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
 }
@@ -1060,40 +1001,17 @@ async function handleIncomingMessage(value) {
 
     await ensureWelcomeCredits(from);
 
-    // ✅ interactive
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
     }
 
-    // ✅ images
-    if (msg.type === "image") {
-      const s = getSession(from);
+    if (msg.type === "image") return handleLogoImage(from, msg);
 
-      // 1) Si on est dans profil->logo, la photo = logo
-      if (s.step === "profile" && s.profileStep === "logo") {
-        return handleLogoImage(from, msg);
-      }
-
-      // 2) Si recharge proof, la photo = preuve
-      if (s.step === "recharge_proof") {
-        return handleRechargeProofImage(from, msg);
-      }
-
-      // 3) Sinon => OCR (Photo->PDF)
-      return handleOcrImage(from, msg);
-    }
-
-    // ✅ text
     const text = norm(msg.text?.body);
     if (!text) return;
-    const lower = text.toLowerCase();
 
-    // onboarding sur "menu" (ou 1er usage)
-    if (lower === "menu" || lower === "m") {
-      await maybeSendOnboarding(from);
-      return sendHomeMenu(from);
-    }
+    const lower = text.toLowerCase();
 
     if (lower === "/stats" || lower === "stats") {
       if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
@@ -1190,9 +1108,9 @@ async function handleIncomingMessage(value) {
 
     if (await handleAdmin(from, text)) return;
     if (await handleProfileAnswer(from, text)) return;
+    if (await handleDechargeAnswer(from, text)) return;
 
-    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance")
-      return replyBalance(from);
+    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
     if (lower === "recharge") return replyRechargeInfo(from);
 
     const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
@@ -1205,11 +1123,13 @@ async function handleIncomingMessage(value) {
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
 
-    // raccourcis
+    if (lower === "menu" || lower === "m") return sendHomeMenu(from);
+
     if (lower === "devis") return startDocFlow(from, "devis");
     if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
     if (lower === "facture") return sendFactureKindMenu(from);
     if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
+    if (lower === "decharge" || lower === "décharge") return startDechargeFlow(from);
 
     if (await handleDocText(from, text)) return;
 
