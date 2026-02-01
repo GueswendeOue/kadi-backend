@@ -1,4 +1,3 @@
-// index.js
 "use strict";
 
 require("dotenv").config();
@@ -22,15 +21,14 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-// ✅ Standard parsing (pas de signature ici)
+// Pour routes GET / form posts éventuels
 app.use(express.urlencoded({ extended: true }));
 
+// Health
 app.get("/", (req, res) => res.status(200).send("✅ Kadi backend is running"));
-app.get("/health", (req, res) =>
-  res.status(200).json({ ok: true, ts: new Date().toISOString() })
-);
+app.get("/health", (req, res) => res.status(200).json({ ok: true, ts: new Date().toISOString() }));
 
-// ✅ Webhook verification (GET)
+// Webhook verification (GET)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -42,19 +40,19 @@ app.get("/webhook", (req, res) => {
   return res.status(200).send(challenge);
 });
 
-// ✅ Webhook receive (POST) — signature verify uniquement ici
+// Webhook receive (POST) — signature verify ici uniquement
 app.post(
   "/webhook",
   express.json({
     limit: "2mb",
     verify: (req, res, buf) => {
-      // ⚠️ IMPORTANT: verifyRequestSignature doit venir de whatsappApi.js (export OK)
+      // IMPORTANT: verification signature Meta
       verifyRequestSignature(req, res, buf);
       req.rawBody = buf.toString();
     },
   }),
   (req, res) => {
-    // ✅ répondre immédiatement à Meta
+    // répondre immédiatement à Meta
     res.status(200).send("EVENT_RECEIVED");
 
     try {
@@ -68,7 +66,7 @@ app.post(
           const value = change.value;
           if (!value) continue;
 
-          // ✅ traitement async sans bloquer la réponse webhook
+          // exécuter async sans bloquer
           Promise.resolve(handleIncomingMessage(value)).catch((e) => {
             console.error("💥 handleIncomingMessage error:", e?.message || e);
           });

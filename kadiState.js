@@ -5,44 +5,35 @@
 const sessions = new Map();
 
 function getSession(userId) {
-  if (!sessions.has(userId)) {
-    sessions.set(userId, {
-      // ----- Global -----
-      step: "idle",
+  const id = String(userId || "").trim();
+  if (!id) throw new Error("userId manquant");
+
+  if (!sessions.has(id)) {
+    sessions.set(id, {
+      step: "idle",           // idle | profile | collecting_doc | recharge_proof | decharge_collect | decharge_confirm
+      profileStep: null,      // business_name | address | phone | email | ifu | rccm | logo
+
+      // documents classiques
+      mode: null,             // devis | facture | recu
+      factureKind: null,      // proforma | definitive
+      lastDocDraft: null,     // draft doc
+
+      // décharge
+      decharge: null,         // draft décharge
+
+      // context "image intent" (logo vs ocr/photo->pdf)
+      imageIntent: null,      // "logo" | "ocr_doc" | "proof" | null
+      imageContext: null,     // { kind, docType, ... } optionnel
+
       lastUpdated: Date.now(),
-
-      // ----- Profil -----
-      profileStep: null, // business_name | address | phone | email | ifu | rccm | logo
-
-      // ----- Documents (devis/facture/reçu) -----
-      mode: null,        // devis | facture | recu | decharge (NEW)
-      factureKind: null, // proforma | definitive
-      lastDocDraft: null,
-
-      // ----- NEW: Décharge -----
-      dechargeStep: null,
-      lastDechargeDraft: null,
-
-      // ----- NEW: confirmations WhatsApp (décharge) -----
-      // Map<token, { draftId, party: "A"|"B", waId: string, status: "pending"|"yes"|"no", at?: ISO }>
-      confirmations: new Map(),
-
-      // ----- NEW: image intent (éviter confusion logo vs OCR) -----
-      // imageIntent: null | "logo" | "ocr_doc"
-      imageIntent: null,
-
-      // si on reçoit une image et qu'on doit demander "Logo ou Document ?"
-      pendingImage: null, // { mediaId, mimeType } optionnel
     });
   }
 
-  const s = sessions.get(userId);
-  s.lastUpdated = Date.now();
-  return s;
+  return sessions.get(id);
 }
 
 function resetSession(userId) {
-  sessions.delete(userId);
+  sessions.delete(String(userId || "").trim());
 }
 
 module.exports = { getSession, resetSession };
