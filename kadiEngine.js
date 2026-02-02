@@ -5,7 +5,7 @@ const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
-const { getOrCreateProfile, updateProfile, markOnboardingDone, isProfileBasicComplete } = require("./store");
+const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
 const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
 const { ocrImageBuffer } = require("./kadiOcr");
 
@@ -18,7 +18,13 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
-const { getBalance, consumeCredit, createRechargeCodes, redeemCode, addCredits } = require("./kadiCreditsRepo");
+const {
+  getBalance,
+  consumeCredit,
+  createRechargeCodes,
+  redeemCode,
+  addCredits,
+} = require("./kadiCreditsRepo");
 
 const { recordActivity } = require("./kadiActivityRepo");
 const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
@@ -28,22 +34,35 @@ const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
 const OM_NUMBER = process.env.OM_NUMBER || "76894642";
 const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
-const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 
-// Crédit OCR PDF final (tu voulais + cher => 2 crédits)
+const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
 const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
-const _WELCOME_CACHE = new Set();
+// ---------------- Limits ----------------
+const LIMITS = {
+  maxItems: 50,
+  maxImageSize: 5 * 1024 * 1024, // 5MB
+  maxOcrRetries: 3,
+  maxClientNameLength: 100,
+  maxItemLabelLength: 200,
+};
+
+const _WELCOME_CACHE = new Map(); // waId -> timestamp(ms)
 
 // ---------------- Utils ----------------
+function safe(v) {
+  return String(v || "").trim();
+}
+
 function norm(s) {
   return String(s || "").trim();
 }
 
-function formatDateISO(d = new Date()) {
+function nowISO() {
+  const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -56,6 +75,14 @@ function parseDaysArg(text, defDays) {
   const d = Number(m[1]);
   if (!Number.isFinite(d) || d <= 0) return defDays;
   return Math.min(d, 365);
+}
+
+function isValidWhatsAppId(id) {
+  return /^\d+$/.test(id) && id.length >= 8 && id.length <= 15;
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""));
 }
 
 function cleanNumber(str) {
@@ -111,14 +138,14 @@ function extractNumbersSmart(text) {
   return merged.map(cleanNumber).filter((n) => typeof n === "number");
 }
 
-/**
- * ✅ Détecte dimension (vitrier): 44x34, 1.2m x 0.8m
- */
+// ---------------- Parsing lignes ----------------
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
 
+  // dimension avec unité (cm/mm/m)
   if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
 
+  // dimension "nue" style 44x34
   const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
   if (m) {
     const a = cleanNumber(m[1]);
@@ -130,10 +157,6 @@ function hasDimensionPattern(raw) {
   return false;
 }
 
-/**
- * ✅ Parse structuré universel:
- * D: Verre clair 44x34 cm | Q: 2 | PU: 7120
- */
 function parseStructuredItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -158,7 +181,8 @@ function parseStructuredItemLine(line) {
 
   const qty = cleanNumber(qStr) ?? 1;
   const unitPrice = cleanNumber(puStr) ?? 0;
-  const label = d || raw;
+  const label = (d || raw).substring(0, LIMITS.maxItemLabelLength);
+
   const amount = Number(qty) * Number(unitPrice || 0);
 
   return {
@@ -170,9 +194,6 @@ function parseStructuredItemLine(line) {
   };
 }
 
-/**
- * ✅ Parse "libre" robust (et vitrier safe)
- */
 function parseItemLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -180,6 +201,7 @@ function parseItemLine(line) {
   const isDim = hasDimensionPattern(raw);
   let qty = null;
 
+  // "2x" / "x2" seulement si ce n'est pas une dimension
   if (!isDim) {
     const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i);
     const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i);
@@ -217,6 +239,7 @@ function parseItemLine(line) {
   }
 
   label = label.replace(/[-:]+/g, " ").replace(/\s+/g, " ").trim() || raw;
+  label = label.substring(0, LIMITS.maxItemLabelLength);
 
   const amount = Number(qty) * Number(unitPrice || 0);
 
@@ -244,7 +267,9 @@ function computeFinance(doc) {
   return { subtotal, gross };
 }
 
-// ---------------- OCR helpers ----------------
+// ===============================
+// OCR helpers (photo -> texte -> draft)
+// ===============================
 function guessDocTypeFromOcr(text) {
   const t = String(text || "").toLowerCase();
   if (t.includes("facture")) return "facture";
@@ -255,9 +280,7 @@ function guessDocTypeFromOcr(text) {
 
 function extractTotalFromOcr(text) {
   const t = String(text || "");
-  const m =
-    t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) ||
-    t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
+  let m = t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) || t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
   if (!m) return null;
   return cleanNumber(m[1]);
 }
@@ -275,7 +298,7 @@ function parseOcrToDraft(ocrText) {
       line.match(/^nom\s*[:\-]\s*(.+)$/i) ||
       line.match(/^doit\s*[:\-]\s*(.+)$/i);
     if (m) {
-      client = (m[1] || "").trim();
+      client = (m[1] || "").trim().substring(0, LIMITS.maxClientNameLength);
       break;
     }
   }
@@ -301,7 +324,7 @@ function parseOcrToDraft(ocrText) {
     if (/\d/.test(line)) {
       const itStructured = parseStructuredItemLine(line);
       const it = itStructured || parseItemLine(line);
-      if (it) items.push(it);
+      if (it && items.length < LIMITS.maxItems) items.push(it);
     }
   }
 
@@ -312,21 +335,36 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance };
 }
 
-// ---------------- Welcome + onboarding ----------------
+async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await ocrImageBuffer(buffer, lang);
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+    }
+  }
+}
+// ===============================
+// Welcome credits + Onboarding
+// ===============================
 async function ensureWelcomeCredits(waId) {
   try {
-    if (_WELCOME_CACHE.has(waId)) return;
+    if (!isValidWhatsAppId(waId)) return;
+
+    const cached = _WELCOME_CACHE.get(waId);
+    if (cached && Date.now() - cached < 24 * 60 * 60 * 1000) return;
 
     const p = await getOrCreateProfile(waId);
 
     if (p && p.welcome_credits_granted === true) {
-      _WELCOME_CACHE.add(waId);
+      _WELCOME_CACHE.set(waId, Date.now());
       return;
     }
 
     const bal = await getBalance(waId);
     if (bal > 0) {
-      _WELCOME_CACHE.add(waId);
+      _WELCOME_CACHE.set(waId, Date.now());
       try {
         await updateProfile(waId, { welcome_credits_granted: true });
       } catch (_) {}
@@ -334,7 +372,7 @@ async function ensureWelcomeCredits(waId) {
     }
 
     await addCredits(waId, WELCOME_CREDITS, "welcome");
-    _WELCOME_CACHE.add(waId);
+    _WELCOME_CACHE.set(waId, Date.now());
 
     try {
       await updateProfile(waId, { welcome_credits_granted: true });
@@ -345,39 +383,40 @@ async function ensureWelcomeCredits(waId) {
       `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
     );
   } catch (e) {
-    console.warn("⚠️ ensureWelcomeCredits error:", e?.message);
+    console.warn("⚠️ ensureWelcomeCredits:", e?.message);
   }
 }
 
 async function maybeSendOnboarding(from) {
-  // onboarding très simple + captivant
   try {
     const p = await getOrCreateProfile(from);
-
     if (p?.onboarding_done === true) return;
 
+    // ✅ Message simple + captivant
     const msg =
-      `👋 Bienvenue sur KADI.\n\n` +
-      `✅ Créez un *Devis / Facture / Reçu* en 30 secondes.\n` +
-      `📷 Envoyez aussi une *photo* d’un document → KADI extrait le texte et génère un PDF propre.\n\n` +
-      `👉 Commencez ici :`;
+      `👋 Bienvenue sur *KADI*.\n\n` +
+      `✅ *Devis / Facture / Reçu* en 30 secondes.\n` +
+      `📷 Envoyez aussi une *photo* d’un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
+      `👇 Choisissez :`;
 
+    // ✅ Un seul message (buttons) = plus propre
     await sendButtons(from, msg, [
-      { id: "HOME_DOCS", title: "Créer un document" },
+      { id: "HOME_DOCS", title: "Créer document" },
       { id: "HOME_PROFILE", title: "Mon profil" },
       { id: "HOME_CREDITS", title: "Crédits" },
     ]);
 
     await markOnboardingDone(from, 1);
-  } catch (_) {
-    // ne jamais bloquer
+  } catch (e) {
+    console.warn("⚠️ onboarding:", e?.message);
   }
 }
 
-// ---------------- Menus ----------------
+// ===============================
+// Menus (1 seul message)
+// ===============================
 async function sendHomeMenu(to) {
-  // IMPORTANT: on n'envoie qu'UN seul message (boutons)
-  return sendButtons(to, "👋 Menu KADI — que souhaitez-vous faire ?", [
+  return sendButtons(to, "🏠 *Menu KADI* — choisissez :", [
     { id: "HOME_DOCS", title: "Documents" },
     { id: "HOME_CREDITS", title: "Crédits" },
     { id: "HOME_PROFILE", title: "Profil" },
@@ -385,7 +424,7 @@ async function sendHomeMenu(to) {
 }
 
 async function sendDocsMenu(to) {
-  // IMPORTANT: un seul message (boutons)
+  // ✅ PAS en 2 messages
   return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
     { id: "DOC_DEVIS", title: "Devis" },
     { id: "DOC_FACTURE", title: "Facture" },
@@ -425,7 +464,9 @@ async function sendAfterPreviewMenu(to) {
   ]);
 }
 
-// ---------------- Profil ----------------
+// ===============================
+// Profil (7 étapes)
+// ===============================
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -434,7 +475,7 @@ async function startProfileFlow(from) {
 
   await sendText(
     from,
-    "🏢 *Profil entreprise*\n\n1/7 — Nom de l’entreprise ?\nEx: GUESWENDE Technologies\n\n📌 Tapez 0 pour ignorer un champ."
+    "🏢 *Profil entreprise*\n\n1/7 — Nom de l'entreprise ?\nEx: GUESWENDE Technologies\n\n📌 Tapez 0 pour ignorer un champ."
   );
 }
 
@@ -465,7 +506,12 @@ async function handleProfileAnswer(from, text) {
     return true;
   }
   if (step === "email") {
-    await updateProfile(from, { email: skip ? null : t });
+    const email = skip ? null : t;
+    if (email && !isValidEmail(email)) {
+      await sendText(from, "❌ Format email invalide. Réessayez ou tapez 0.");
+      return true;
+    }
+    await updateProfile(from, { email });
     s.profileStep = "ifu";
     await sendText(from, "5/7 — IFU ? (ou 0)");
     return true;
@@ -493,10 +539,13 @@ async function handleProfileAnswer(from, text) {
     await sendText(from, "⚠️ Pour le logo, envoyez une *image*. Ou tapez 0.");
     return true;
   }
+
   return false;
 }
 
-// ---------------- Recharge + preuve ----------------
+// ===============================
+// Recharge + preuve (image)
+// ===============================
 async function replyRechargeInfo(from) {
   const s = getSession(from);
   s.step = "recharge_proof";
@@ -521,6 +570,11 @@ async function handleRechargeProofImage(from, msg) {
     }
 
     const info = await getMediaInfo(mediaId);
+    if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+      await sendText(from, "❌ Image trop grande. Envoyez une capture plus légère.");
+      return;
+    }
+
     const mime = info.mime_type || "image/jpeg";
     const buf = await downloadMediaToBuffer(info.url);
 
@@ -544,12 +598,14 @@ async function handleRechargeProofImage(from, msg) {
     s.step = "idle";
     await sendHomeMenu(from);
   } catch (e) {
-    console.error("handleRechargeProofImage error:", e?.message);
+    console.error("handleRechargeProofImage:", e?.message);
     await sendText(from, "❌ Désolé, la preuve n’a pas pu être traitée. Réessayez.");
   }
 }
 
-// ---------------- Logo upload ----------------
+// ===============================
+// Logo upload (image)
+// ===============================
 async function handleLogoImage(from, msg) {
   const mediaId = msg?.image?.id;
   if (!mediaId) {
@@ -558,6 +614,11 @@ async function handleLogoImage(from, msg) {
   }
 
   const info = await getMediaInfo(mediaId);
+  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+    await sendText(from, "❌ Image trop grande. Envoyez une image plus légère.");
+    return;
+  }
+
   const mime = info.mime_type || "image/jpeg";
   const buf = await downloadMediaToBuffer(info.url);
 
@@ -575,13 +636,17 @@ async function handleLogoImage(from, msg) {
 
   await sendText(from, "✅ Logo enregistré.");
 }
-// ---------------- Crédits ----------------
+
+// ===============================
+// Crédits
+// ===============================
 async function replyBalance(from) {
   const bal = await getBalance(from);
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
-
-// ---------------- Documents ----------------
+// ===============================
+// Documents (texte)
+// ===============================
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
   s.step = "collecting_doc";
@@ -589,14 +654,14 @@ async function startDocFlow(from, mode, factureKind = null) {
   s.factureKind = factureKind;
 
   s.lastDocDraft = {
-    type: mode,
+    type: mode, // devis | facture | recu
     factureKind,
     docNumber: null,
     date: formatDateISO(),
     client: null,
     items: [],
     finance: null,
-    source: "text", // "text" | "ocr"
+    source: "text", // text | ocr
   };
 
   const prefix =
@@ -610,11 +675,34 @@ async function startDocFlow(from, mode, factureKind = null) {
 
   await sendText(
     from,
-    `${prefix}\n\nEnvoyez les lignes comme ceci :\nClient: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n✅ Format conseillé (plus précis) :\nD: Verre clair 44x34 cm | Q: 2 | PU: 7120\nD: Silicone | Q: 1 | PU: 12000\n\n📌 Exemple aussi: Impression 2x 5000\n\n📷 Vous pouvez aussi envoyer une *photo* d’un document (KADI extrait le texte).`
+    `${prefix}\n\n` +
+      `✅ Envoyez les lignes comme ceci :\n` +
+      `Client: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n` +
+      `✅ Format conseillé (plus précis) :\n` +
+      `D: Verre clair 44x34 cm | Q: 2 | PU: 7120\n` +
+      `D: Silicone | Q: 1 | PU: 12000\n\n` +
+      `📷 Vous pouvez aussi envoyer une *photo* d’un document (KADI extrait le texte et fait un PDF propre).`
   );
 }
 
+function validateDraft(draft) {
+  if (!draft) throw new Error("Draft manquant");
+  if (!Array.isArray(draft.items)) draft.items = [];
+  if (!draft.date) draft.date = formatDateISO();
+
+  for (let i = 0; i < draft.items.length; i++) {
+    const it = draft.items[i] || {};
+    if (Number(it.amount) < 0) throw new Error(`Montant négatif ligne ${i + 1}`);
+    if (Number(it.qty) <= 0) throw new Error(`Quantité invalide ligne ${i + 1}`);
+  }
+  return true;
+}
+
 async function buildPreviewMessage({ profile, doc }) {
+  try {
+    validateDraft(doc);
+  } catch (_) {}
+
   const bp = profile || {};
   const f = computeFinance(doc);
 
@@ -638,6 +726,7 @@ async function buildPreviewMessage({ profile, doc }) {
       : String(doc.type || "").toUpperCase();
 
   const lines = (doc.items || [])
+    .slice(0, LIMITS.maxItems)
     .map(
       (it, idx) =>
         `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
@@ -650,8 +739,8 @@ async function buildPreviewMessage({ profile, doc }) {
     header,
     "",
     `📄 *${title}*`,
-    `Date : ${doc.date || "—"}`,
-    `Client : ${doc.client || "—"}`,
+    `Date : ${doc.date || "-"}`,
+    `Client : ${doc.client || "-"}`,
     src,
     "",
     "*Lignes :*",
@@ -672,16 +761,24 @@ async function handleDocText(from, text) {
     .filter(Boolean);
 
   for (const line of lines) {
-    const m = line.match(/^client\s*[:\-]\s*(.+)$/i);
+    const m = REGEX.client.exec(line);
     if (m && !draft.client) {
-      draft.client = m[1].trim() || null;
+      draft.client = (m[1] || "").trim().slice(0, LIMITS.maxClientNameLength) || null;
       continue;
     }
 
     if (/\d/.test(line) && !/^client\s*[:\-]/i.test(line)) {
       const itStructured = parseStructuredItemLine(line);
       const it = itStructured || parseItemLine(line);
-      if (it) draft.items.push(it);
+
+      if (it) {
+        if (draft.items.length < LIMITS.maxItems) {
+          draft.items.push(it);
+        } else {
+          await sendText(from, `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`);
+          break;
+        }
+      }
     }
   }
 
@@ -695,24 +792,110 @@ async function handleDocText(from, text) {
   return true;
 }
 
-// ---------------- OCR image -> PDF propre ----------------
+// ===============================
+// OCR (photo → texte → draft)
+// ===============================
+function guessDocTypeFromOcr(text) {
+  const t = String(text || "").toLowerCase();
+  if (t.includes("facture")) return "facture";
+  if (t.includes("reçu") || t.includes("recu")) return "recu";
+  if (t.includes("devis") || t.includes("proforma") || t.includes("pro forma")) return "devis";
+  return null;
+}
+
+function extractTotalFromOcr(text) {
+  const t = String(text || "");
+  const m = t.match(REGEX.total) || t.match(REGEX.montantTotal);
+  if (!m) return null;
+  return cleanNumber(m[1]);
+}
+
+function parseOcrToDraft(ocrText) {
+  const lines = String(ocrText || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  let client = null;
+  for (const line of lines) {
+    const m =
+      line.match(REGEX.client) ||
+      line.match(/^nom\s*[:\-]\s*(.+)$/i) ||
+      line.match(/^doit\s*[:\-]\s*(.+)$/i);
+    if (m) {
+      client = (m[1] || "").trim().slice(0, LIMITS.maxClientNameLength);
+      break;
+    }
+  }
+
+  const items = [];
+  for (const line of lines) {
+    const low = line.toLowerCase();
+    // on skippe les lignes "meta"
+    if (
+      low.startsWith("total") ||
+      low.startsWith("montant total") ||
+      low.startsWith("date") ||
+      low.startsWith("facture") ||
+      low.startsWith("devis") ||
+      low.startsWith("reçu") ||
+      low.startsWith("recu") ||
+      low.startsWith("ifu") ||
+      low.startsWith("rccm") ||
+      low.startsWith("adresse") ||
+      low.startsWith("tél") ||
+      low.startsWith("tel") ||
+      low.startsWith("email")
+    ) continue;
+
+    if (/\d/.test(line)) {
+      const itStructured = parseStructuredItemLine(line);
+      const it = itStructured || parseItemLine(line);
+      if (it && items.length < LIMITS.maxItems) items.push(it);
+    }
+  }
+
+  const detected = extractTotalFromOcr(ocrText);
+  const calc = sumItems(items);
+  const finance = { subtotal: calc, gross: detected ?? calc };
+
+  return { client, items, finance };
+}
+
+async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await ocrImageBuffer(buffer, lang);
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+    }
+  }
+}
+
 async function processOcrImageToDraft(from, mediaId) {
   const s = getSession(from);
 
   const info = await getMediaInfo(mediaId);
+  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+    await sendText(from, "❌ Image trop grande. Envoyez une photo plus légère.");
+    return;
+  }
+
   const buf = await downloadMediaToBuffer(info.url);
 
   await sendText(from, "🔎 Lecture de la photo…");
 
   let ocrText = "";
   try {
-    ocrText = await ocrImageBuffer(buf, "fra");
+    ocrText = await robustOcr(buf, "fra");
   } catch (e) {
-    console.error("OCR error:", e?.message);
-    return sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
+    console.warn("OCR failed:", e?.message);
+    await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
+    return;
   }
 
-  // si aucun doc en cours, on en crée un
+  // si aucun doc en cours, on crée un draft
   if (!s.lastDocDraft) {
     const guessed = guessDocTypeFromOcr(ocrText) || "devis";
     s.lastDocDraft = {
@@ -733,7 +916,17 @@ async function processOcrImageToDraft(from, mediaId) {
   const parsed = parseOcrToDraft(ocrText);
 
   if (parsed.client && !s.lastDocDraft.client) s.lastDocDraft.client = parsed.client;
-  if (parsed.items?.length) s.lastDocDraft.items = parsed.items;
+
+  if (parsed.items?.length) {
+    const room = LIMITS.maxItems - s.lastDocDraft.items.length;
+    const toAdd = parsed.items.slice(0, Math.max(0, room));
+    s.lastDocDraft.items.push(...toAdd);
+
+    if (parsed.items.length > toAdd.length) {
+      await sendText(from, `⚠️ Limite ${LIMITS.maxItems} lignes. Certains items ont été ignorés.`);
+    }
+  }
+
   s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
 
   const profile = await getOrCreateProfile(from);
@@ -743,19 +936,18 @@ async function processOcrImageToDraft(from, mediaId) {
   await sendAfterPreviewMenu(from);
 }
 
-// Route image intelligente : logo/proof/OCR
+// ===============================
+// Route image intelligente
+// logo / preuve / OCR
+// ===============================
 async function handleIncomingImage(from, msg) {
   const s = getSession(from);
 
   // 1) logo
-  if (s.step === "profile" && s.profileStep === "logo") {
-    return handleLogoImage(from, msg);
-  }
+  if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
 
   // 2) preuve recharge
-  if (s.step === "recharge_proof") {
-    return handleRechargeProofImage(from, msg);
-  }
+  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
 
   const mediaId = msg?.image?.id;
   if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
@@ -775,8 +967,10 @@ async function handleIncomingImage(from, msg) {
   // 4) sinon OCR direct
   return processOcrImageToDraft(from, mediaId);
 }
-
-async function confirmAndSendPdf(from) {
+// ===============================
+// Création PDF finale (1 crédit ou OCR_PDF_CREDITS)
+// ===============================
+async function createAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
 
@@ -785,214 +979,385 @@ async function confirmAndSendPdf(from) {
     return;
   }
 
-  // crédits: OCR coûte + cher au moment du PDF final
+  // Validation rapide
+  try {
+    validateDraft(draft);
+  } catch (err) {
+    await sendText(from, `❌ Erreur dans le document: ${err.message}`);
+    return;
+  }
+
+  // Coût: OCR = plus cher au PDF final
   const cost = draft.source === "ocr" ? OCR_PDF_CREDITS : 1;
 
   const cons = await consumeCredit(from, cost, draft.source === "ocr" ? "ocr_pdf" : "pdf");
   if (!cons.ok) {
     await sendText(
       from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
+      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe PDF coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
     );
     return;
   }
 
-  draft.docNumber = await nextDocNumber({
-    waId: from,
-    mode: draft.type,
-    factureKind: draft.factureKind,
-    dateISO: draft.date,
-  });
-
-  const profile = await getOrCreateProfile(from);
-
-  let logoBuf = null;
-  if (profile?.logo_path) {
-    try {
-      const signed = await getSignedLogoUrl(profile.logo_path);
-      logoBuf = await downloadSignedUrlToBuffer(signed);
-    } catch (e) {
-      console.error("logo download error:", e?.message);
-    }
-  }
-
-  const title =
-    draft.type === "facture"
-      ? draft.factureKind === "proforma"
-        ? "FACTURE PRO FORMA"
-        : "FACTURE DÉFINITIVE"
-      : String(draft.type || "").toUpperCase();
-
-  const total = draft.finance?.gross ?? computeFinance(draft).gross;
-
-  const pdfBuf = await buildPdfBuffer({
-    docData: {
-      type: title,
-      docNumber: draft.docNumber,
-      date: draft.date,
-      client: draft.client,
-      items: draft.items || [],
-      total,
-    },
-    businessProfile: profile,
-    logoBuffer: logoBuf,
-  });
+  // ⚠️ si bug après débit crédits, on essaie un rollback (addCredits)
+  let successAfterDebit = false;
 
   try {
-    await saveDocument({ waId: from, doc: draft });
+    // Numéro doc
+    draft.docNumber = await nextDocNumber({
+      waId: from,
+      mode: draft.type,
+      factureKind: draft.factureKind,
+      dateISO: draft.date,
+    });
+
+    const profile = await getOrCreateProfile(from);
+
+    // Logo buffer (optionnel)
+    let logoBuf = null;
+    if (profile?.logo_path) {
+      try {
+        const signed = await getSignedLogoUrl(profile.logo_path);
+        logoBuf = await downloadSignedUrlToBuffer(signed);
+      } catch (e) {
+        console.warn("logo download error:", e?.message);
+      }
+    }
+
+    const title =
+      draft.type === "facture"
+        ? draft.factureKind === "proforma"
+          ? "FACTURE PRO FORMA"
+          : "FACTURE DÉFINITIVE"
+        : String(draft.type || "").toUpperCase();
+
+    const total = draft.finance?.gross ?? computeFinance(draft).gross;
+
+    // PDF buffer
+    const pdfBuf = await buildPdfBuffer({
+      docData: {
+        type: title,
+        docNumber: draft.docNumber,
+        date: draft.date,
+        client: draft.client,
+        items: draft.items || [],
+        total,
+      },
+      businessProfile: profile,
+      logoBuffer: logoBuf,
+    });
+
+    // Save document (best effort)
+    try {
+      await saveDocument({ waId: from, doc: draft });
+    } catch (e) {
+      console.warn("saveDocument error:", e?.message);
+    }
+
+    // Upload vers WhatsApp
+    const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
+    const up = await uploadMediaBuffer({
+      buffer: pdfBuf,
+      filename: fileName,
+      mimeType: "application/pdf",
+    });
+
+    if (!up?.id) throw new Error("Upload PDF échoué");
+
+    successAfterDebit = true;
+
+    await sendDocument({
+      to: from,
+      mediaId: up.id,
+      filename: fileName,
+      caption:
+        `✅ ${title} ${draft.docNumber}\n` +
+        `Total: ${money(total)} FCFA\n` +
+        `Coût: ${cost} crédit(s)\n` +
+        `Solde: ${cons.balance} crédit(s)`,
+    });
+
+    // Reset session
+    s.step = "idle";
+    s.mode = null;
+    s.factureKind = null;
+    s.lastDocDraft = null;
+
+    await sendHomeMenu(from);
   } catch (e) {
-    console.error("saveDocument error:", e?.message);
+    console.error("createAndSendPdf error:", e?.message);
+
+    // rollback crédits si on a débité mais on n’a pas livré le PDF
+    if (!successAfterDebit) {
+      try {
+        await addCredits(from, cost, "rollback_pdf_failed");
+      } catch (rb) {
+        console.error("rollback credits failed:", rb?.message);
+      }
+    }
+
+    await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
+  }
+}
+
+async function confirmAndSendPdf(from) {
+  return createAndSendPdf(from);
+}
+// ===============================
+// INTERACTIVE HANDLER (boutons)
+// ===============================
+async function handleInteractiveReply(from, replyId) {
+  const s = getSession(from);
+
+  // ---------- Navigation ----------
+  if (replyId === "BACK_HOME") return sendHomeMenu(from);
+  if (replyId === "BACK_DOCS") return sendDocsMenu(from);
+
+  // ---------- Home ----------
+  if (replyId === "HOME_DOCS") return sendDocsMenu(from);
+  if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
+  if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+
+  // ---------- Documents ----------
+  if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
+  if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
+
+  if (replyId === "DOC_FACTURE") {
+    return sendFactureKindMenu(from);
   }
 
-  const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
-  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+  if (replyId === "FAC_PROFORMA") {
+    return startDocFlow(from, "facture", "proforma");
+  }
 
-  if (!up?.id) {
-    await sendText(from, "❌ Envoi PDF impossible (upload échoué).");
+  if (replyId === "FAC_DEFINITIVE") {
+    return startDocFlow(from, "facture", "definitive");
+  }
+
+  // ---------- OCR : choix type doc ----------
+  if (replyId === "OCR_DEVIS" || replyId === "OCR_RECU") {
+    const mediaId = s.pendingOcrMediaId;
+    s.pendingOcrMediaId = null;
+
+    if (!mediaId) {
+      await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+      return;
+    }
+
+    await startDocFlow(from, replyId === "OCR_DEVIS" ? "devis" : "recu");
+    return processOcrImageToDraft(from, mediaId);
+  }
+
+  if (replyId === "OCR_FACTURE") {
+    s.step = "ocr_wait_facture_kind";
+    return sendFactureKindMenu(from);
+  }
+
+  // OCR + type facture
+  if (
+    (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") &&
+    s.step === "ocr_wait_facture_kind"
+  ) {
+    const mediaId = s.pendingOcrMediaId;
+    s.pendingOcrMediaId = null;
+
+    if (!mediaId) {
+      await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+      return;
+    }
+
+    await startDocFlow(
+      from,
+      "facture",
+      replyId === "FAC_PROFORMA" ? "proforma" : "definitive"
+    );
+
+    return processOcrImageToDraft(from, mediaId);
+  }
+
+  // ---------- Profil ----------
+  if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
+
+  if (replyId === "PROFILE_VIEW") {
+    const p = await getOrCreateProfile(from);
+    await sendText(
+      from,
+      `🏢 *Profil*\n` +
+        `Nom: ${p.business_name || "—"}\n` +
+        `Adresse: ${p.address || "—"}\n` +
+        `Tel: ${p.phone || "—"}\n` +
+        `Email: ${p.email || "—"}\n` +
+        `IFU: ${p.ifu || "—"}\n` +
+        `RCCM: ${p.rccm || "—"}\n` +
+        `Logo: ${p.logo_path ? "OK ✅" : "—"}`
+    );
     return;
   }
 
-  await sendDocument({
+  // ---------- Crédits ----------
+  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
+  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
+
+  // ---------- PDF ----------
+  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
+
+  if (replyId === "DOC_RESTART") {
+    s.step = "idle";
+    s.mode = null;
+    s.factureKind = null;
+    s.lastDocDraft = null;
+
+    await sendText(from, "🔁 Recommençons.");
+    return sendDocsMenu(from);
+  }
+
+  // Fallback
+  await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
+}
+// ===============================
+// COMMANDS (texte)
+// ===============================
+async function handleStatsCommand(from, text) {
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+  try {
+    const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
+
+    const msgTxt =
+      `📊 *KADI — STATISTIQUES*\n\n` +
+      `👥 *Utilisateurs*\n` +
+      `• Total : ${stats.users.totalUsers}\n` +
+      `• Actifs 7j : ${stats.users.active7}\n` +
+      `• Actifs 30j : ${stats.users.active30}\n\n` +
+      `📄 *Documents*\n` +
+      `• Total : ${stats.docs.total}\n` +
+      `• 7 derniers jours : ${stats.docs.last7}\n` +
+      `• 30 derniers jours : ${stats.docs.last30}\n\n` +
+      `💳 *Crédits (7j)*\n` +
+      `• Consommés : ${stats.credits.consumed7}\n` +
+      `• Ajoutés : ${stats.credits.added7}\n\n` +
+      `💰 *Revenu estimé (30j)*\n` +
+      `• ≈ ${stats.revenue.est30} FCFA\n` +
+      `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
+
+    return sendText(from, msgTxt);
+  } catch (e) {
+    logger.error("stats_command", e, { from });
+    return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
+  }
+}
+
+async function handleTopCommand(from, text) {
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+  const days = parseDaysArg(text, 30);
+  const top = await getTopClients({ days, limit: 5 });
+
+  if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
+
+  const lines = top
+    .map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`)
+    .join("\n");
+
+  return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
+}
+
+async function handleExportCommand(from, text) {
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+
+  const days = parseDaysArg(text, 30);
+  const rows = await getDocsForExport({ days });
+
+  const header = [
+    "created_at",
+    "wa_id",
+    "doc_number",
+    "doc_type",
+    "facture_kind",
+    "client",
+    "date",
+    "total",
+    "items_count",
+  ];
+
+  const csvLines = [header.join(",")].concat(
+    rows.map((r) => {
+      const vals = [
+        r.created_at || "",
+        r.wa_id || "",
+        r.doc_number || "",
+        r.doc_type || "",
+        r.facture_kind || "",
+        escapeCsvValue(r.client || ""),
+        r.date || "",
+        String(r.total ?? ""),
+        String(Array.isArray(r.items) ? r.items.length : 0),
+      ];
+      return vals.join(",");
+    })
+  );
+
+  const buf = Buffer.from(csvLines.join("\n"), "utf8");
+  const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
+
+  const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
+  if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
+
+  return sendDocument({
     to: from,
     mediaId: up.id,
     filename: fileName,
-    caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nSolde: ${cons.balance} crédit(s)`,
+    caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
   });
-
-  s.step = "idle";
-  s.mode = null;
-  s.factureKind = null;
-  s.lastDocDraft = null;
-
-  await sendHomeMenu(from);
 }
 
-// ---------------- Admin ----------------
-function ensureAdmin(from) {
-  return Boolean(ADMIN_WA_ID && from === ADMIN_WA_ID);
-}
+async function handleCommand(from, text) {
+  const lower = String(text || "").toLowerCase().trim();
 
-async function handleAdmin(from, text) {
-  if (!ensureAdmin(from)) return false;
+  // stats/top/export (admin)
+  if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
+  if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
+  if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
 
-  const t = norm(text);
-
-  const mCodes = t.match(/^ADMIN\s+CODES\s+(\d+)\s+(\d+)$/i);
-  if (mCodes) {
-    const count = Number(mCodes[1]);
-    const creditsEach = Number(mCodes[2]);
-    const codes = await createRechargeCodes({ count, creditsEach, createdBy: from });
-    const preview = codes.slice(0, 20).map((c) => `${c.code} (${c.credits})`).join("\n");
-    await sendText(from, `✅ ${codes.length} codes générés.\n\nAperçu (20):\n${preview}`);
+  // user quick commands
+  if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
+    await replyBalance(from);
     return true;
   }
-
-  const mAdd = t.match(/^ADMIN\s+ADD\s+(\d+)\s+(\d+)$/i);
-  if (mAdd) {
-    const wa = mAdd[1];
-    const amt = Number(mAdd[2]);
-    const bal = await addCredits(wa, amt, `admin:${from}`);
-    await sendText(from, `✅ Crédité ${amt} sur ${wa}. Nouveau solde: ${bal}`);
+  if (lower === "recharge") {
+    await replyRechargeInfo(from);
     return true;
   }
-
-  const mSolde = t.match(/^ADMIN\s+SOLDE\s+(\d+)$/i);
-  if (mSolde) {
-    const wa = mSolde[1];
-    const bal = await getBalance(wa);
-    await sendText(from, `💳 Solde de ${wa}: ${bal} crédit(s)`);
+  if (lower === "menu" || lower === "m") {
+    await sendHomeMenu(from);
+    return true;
+  }
+  if (lower === "devis") {
+    await startDocFlow(from, "devis");
+    return true;
+  }
+  if (lower === "recu" || lower === "reçu") {
+    await startDocFlow(from, "recu");
+    return true;
+  }
+  if (lower === "facture") {
+    await sendFactureKindMenu(from);
+    return true;
+  }
+  if (lower === "profil" || lower === "profile") {
+    await sendProfileMenu(from);
     return true;
   }
 
   return false;
 }
 
-// ---------------- Interactive ----------------
-async function handleInteractiveReply(from, replyId) {
-  // Menu
-  if (replyId === "BACK_HOME") return sendHomeMenu(from);
-  if (replyId === "HOME_DOCS") return sendDocsMenu(from);
-  if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
-  if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
-
-  // Docs
-  if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
-  if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
-  if (replyId === "DOC_FACTURE") return sendFactureKindMenu(from);
-
-  if (replyId === "FAC_PROFORMA") return startDocFlow(from, "facture", "proforma");
-  if (replyId === "FAC_DEFINITIVE") return startDocFlow(from, "facture", "definitive");
-  if (replyId === "BACK_DOCS") return sendDocsMenu(from);
-
-  // OCR choice
-  if (replyId === "OCR_DEVIS" || replyId === "OCR_FACTURE" || replyId === "OCR_RECU") {
-    const s = getSession(from);
-    const mediaId = s.pendingOcrMediaId;
-    s.pendingOcrMediaId = null;
-
-    if (!mediaId) {
-      await sendText(from, "❌ Je ne retrouve pas la photo. Renvoyez-la svp.");
-      return;
-    }
-
-    if (replyId === "OCR_DEVIS") await startDocFlow(from, "devis");
-    if (replyId === "OCR_RECU") await startDocFlow(from, "recu");
-    if (replyId === "OCR_FACTURE") {
-      // pour facture, on demande le type (proforma/définitive) via menu classique
-      s.step = "ocr_wait_facture_kind";
-      s.pendingOcrMediaId = mediaId;
-      return sendFactureKindMenu(from);
-    }
-
-    return processOcrImageToDraft(from, mediaId);
-  }
-
-  // Si on avait OCR + facture kind
-  if ((replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE")) {
-    const s = getSession(from);
-    if (s.step === "ocr_wait_facture_kind" && s.pendingOcrMediaId) {
-      const mediaId = s.pendingOcrMediaId;
-      s.pendingOcrMediaId = null;
-
-      if (replyId === "FAC_PROFORMA") await startDocFlow(from, "facture", "proforma");
-      if (replyId === "FAC_DEFINITIVE") await startDocFlow(from, "facture", "definitive");
-
-      return processOcrImageToDraft(from, mediaId);
-    }
-  }
-
-  // Profil
-  if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
-  if (replyId === "PROFILE_VIEW") {
-    const p = await getOrCreateProfile(from);
-    await sendText(
-      from,
-      `🏢 Profil\nNom: ${p.business_name || "0"}\nAdresse: ${p.address || "0"}\nTel: ${p.phone || "0"}\nEmail: ${p.email || "0"}\nIFU: ${p.ifu || "0"}\nRCCM: ${p.rccm || "0"}\nLogo: ${p.logo_path ? "OK ✅" : "0"}`
-    );
-    return;
-  }
-
-  // Crédits
-  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
-  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
-
-  // PDF
-  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
-  if (replyId === "DOC_RESTART") {
-    const s = getSession(from);
-    s.step = "idle";
-    s.mode = null;
-    s.factureKind = null;
-    s.lastDocDraft = null;
-    await sendText(from, "🔁 Très bien. Recommençons.");
-    return sendDocsMenu(from);
-  }
-
-  await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
-}
-
-// ---------------- Main entry ----------------
+// ===============================
+// MAIN ENTRY — handleIncomingMessage
+// ===============================
 async function handleIncomingMessage(value) {
+  const start = Date.now();
+
   try {
     if (!value) return;
     if (value.statuses?.length) return;
@@ -1001,135 +1366,43 @@ async function handleIncomingMessage(value) {
     const msg = value.messages[0];
     const from = msg.from;
 
+    if (!isValidWhatsAppId(from)) {
+      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { from });
+      return;
+    }
+
+    // activity
     try {
       await recordActivity(from);
     } catch (e) {
-      console.warn("⚠️ recordActivity error:", e?.message);
+      logger.warn("activity_recording", e.message, { from });
     }
 
+    // welcome + onboarding (safe)
     await ensureWelcomeCredits(from);
-
-    // onboarding (captivant) : une seule fois, puis il peut cliquer direct
-    // NOTE: si tu trouves que ça spam, tu peux commenter la ligne
     await maybeSendOnboarding(from);
 
-    // Interactive : on RETURN direct => pas de double message parasite
+    // ✅ INTERACTIVE -> return direct (évite double messages)
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
       return;
     }
 
-    // Image : logo / preuve / OCR document
-    if (msg.type === "image") return handleIncomingImage(from, msg);
+    // ✅ IMAGE -> route intelligent (logo / preuve / OCR)
+    if (msg.type === "image") {
+      return handleIncomingImage(from, msg);
+    }
 
+    // ✅ TEXT
     const text = norm(msg.text?.body);
     if (!text) return;
 
-    const lower = text.toLowerCase();
-
-    // Admin /stats
-    if (lower === "/stats" || lower === "stats") {
-      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-      try {
-        const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
-
-        const msgTxt =
-          `📊 *KADI — STATISTIQUES*\n\n` +
-          `👥 *Utilisateurs*\n` +
-          `• Total : ${stats.users.totalUsers}\n` +
-          `• Actifs 7j : ${stats.users.active7}\n` +
-          `• Actifs 30j : ${stats.users.active30}\n\n` +
-          `📄 *Documents*\n` +
-          `• Total : ${stats.docs.total}\n` +
-          `• 7 derniers jours : ${stats.docs.last7}\n` +
-          `• 30 derniers jours : ${stats.docs.last30}\n\n` +
-          `💳 *Crédits (7j)*\n` +
-          `• Consommés : ${stats.credits.consumed7}\n` +
-          `• Ajoutés : ${stats.credits.added7}\n\n` +
-          `💰 *Revenu estimé (30j)*\n` +
-          `• ≈ ${stats.revenue.est30} FCFA\n` +
-          `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
-
-        return sendText(from, msgTxt);
-      } catch (e) {
-        console.error("❌ /stats error:", e?.message, e);
-        return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
-      }
-    }
-
-    if (lower.startsWith("/top") || lower.startsWith("top")) {
-      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-      const days = parseDaysArg(text, 30);
-      const top = await getTopClients({ days, limit: 5 });
-
-      if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
-
-      const lines = top
-        .map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`)
-        .join("\n");
-      return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
-    }
-
-    if (lower.startsWith("/export") || lower.startsWith("export")) {
-      if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
-
-      const days = parseDaysArg(text, 30);
-      const rows = await getDocsForExport({ days });
-
-      const header = [
-        "created_at",
-        "wa_id",
-        "doc_number",
-        "doc_type",
-        "facture_kind",
-        "client",
-        "date",
-        "total",
-        "items_count",
-      ];
-
-      const csvLines = [header.join(",")].concat(
-        rows.map((r) => {
-          const vals = [
-            r.created_at || "",
-            r.wa_id || "",
-            r.doc_number || "",
-            r.doc_type || "",
-            r.facture_kind || "",
-            String(r.client || "").replace(/"/g, '""'),
-            r.date || "",
-            String(r.total ?? ""),
-            String(Array.isArray(r.items) ? r.items.length : 0),
-          ];
-          return vals.map((v) => (/[",\n]/.test(v) ? `"${v}"` : v)).join(",");
-        })
-      );
-
-      const buf = Buffer.from(csvLines.join("\n"), "utf8");
-      const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-
-      const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
-      if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
-
-      return sendDocument({
-        to: from,
-        mediaId: up.id,
-        filename: fileName,
-        caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
-      });
-    }
-
+    // admin
     if (await handleAdmin(from, text)) return;
-    if (await handleProfileAnswer(from, text)) return;
 
-    // mots clés
-    if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") return replyBalance(from);
-    if (lower === "recharge") return replyRechargeInfo(from);
-
-    const mCode = text.match(/^CODE\s+([A-Z0-9\-]+)$/i);
+    // code recharge
+    const mCode = text.match(CONFIG.regex.code);
     if (mCode) {
       const result = await redeemCode({ waId: from, code: mCode[1] });
       if (!result.ok) {
@@ -1139,20 +1412,35 @@ async function handleIncomingMessage(value) {
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
 
-    if (lower === "menu" || lower === "m") return sendHomeMenu(from);
+    // profile flow
+    if (await handleProfileAnswer(from, text)) return;
 
-    if (lower === "devis") return startDocFlow(from, "devis");
-    if (lower === "recu" || lower === "reçu") return startDocFlow(from, "recu");
-    if (lower === "facture") return sendFactureKindMenu(from);
-    if (lower === "profil" || lower === "profile") return sendProfileMenu(from);
+    // commands
+    if (await handleCommand(from, text)) return;
 
+    // doc text
     if (await handleDocText(from, text)) return;
 
     // fallback
-    await sendText(from, `Tapez *MENU* pour commencer.`);
+    await sendText(from, "Tapez *MENU* pour commencer.");
   } catch (e) {
-    console.error("❌ handleIncomingMessage error:", e?.message, e);
+    logger.error("incoming_message", e, {
+      messageType: value?.messages?.[0]?.type,
+    });
+  } finally {
+    const duration = Date.now() - start;
+    logger.metric("message_processing", duration, true, {
+      messageType: value?.messages?.[0]?.type,
+    });
   }
 }
 
-module.exports = { handleIncomingMessage, cleanNumber };
+// ===============================
+// EXPORTS
+// ===============================
+module.exports = {
+  handleIncomingMessage,
+  cleanNumber,
+  isValidWhatsAppId,
+  isValidEmail,
+};

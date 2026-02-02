@@ -1,3 +1,4 @@
+// whatsappApi.js
 "use strict";
 
 const crypto = require("crypto");
@@ -13,7 +14,10 @@ if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
   throw new Error("WHATSAPP_TOKEN / PHONE_NUMBER_ID manquants dans .env");
 }
 
-// ---------------- Security: verify webhook signature ----------------
+/**
+ * Vérifie la signature Meta (x-hub-signature-256)
+ * Utilisé dans index.js (express.json verify callback)
+ */
 function verifyRequestSignature(req, res, buf) {
   const signature = req.headers["x-hub-signature-256"];
   if (!signature) {
@@ -42,7 +46,16 @@ function graphUrl(path) {
   return `https://graph.facebook.com/${VERSION}/${path}`;
 }
 
-// ---------------- Basic senders ----------------
+function waHeadersJson() {
+  return {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+}
+
+/**
+ * Envoi d’un message texte
+ */
 async function sendText(to, text) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
@@ -53,18 +66,25 @@ async function sendText(to, text) {
   };
 
   const resp = await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
-    timeout: 20000,
+    headers: waHeadersJson(),
+    timeout: 15000,
   });
 
   return resp.data;
 }
 
 /**
- * Buttons (max 3)
+ * Envoi de boutons (max 3)
+ * buttons: [{id, title}]
  */
 async function sendButtons(to, bodyText, buttons) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+
+  const safeButtons = (buttons || []).slice(0, 3).map((b) => ({
+    type: "reply",
+    reply: { id: String(b.id), title: String(b.title).slice(0, 20) }, // WA limite title
+  }));
+
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -72,53 +92,49 @@ async function sendButtons(to, bodyText, buttons) {
     interactive: {
       type: "button",
       body: { text: String(bodyText || "") },
-      action: {
-        buttons: (buttons || []).slice(0, 3).map((b) => ({
-          type: "reply",
-          reply: {
-            id: String(b.id || ""),
-            title: String(b.title || "").slice(0, 20), // WhatsApp limite title
-          },
-        })),
-      },
+      action: { buttons: safeButtons },
     },
   };
 
   const resp = await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
-    timeout: 20000,
+    headers: waHeadersJson(),
+    timeout: 15000,
   });
 
   return resp.data;
 }
 
-// ---------------- Media helpers ----------------
+/**
+ * Récupère info media (url, mime_type, file_size, ...)
+ */
 async function getMediaInfo(mediaId) {
   const url = graphUrl(`${mediaId}`);
+
   const resp = await axios.get(url, {
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 20000,
+    timeout: 15000,
   });
-  // { url, mime_type, sha256, file_size, id }
-  return resp.data;
+
+  return resp.data; // { url, mime_type, sha256, file_size, id }
 }
 
+/**
+ * Télécharge le media (url retournée par getMediaInfo)
+ */
 async function downloadMediaToBuffer(mediaUrl) {
   const resp = await axios.get(mediaUrl, {
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
     responseType: "arraybuffer",
-    timeout: 45000,
+    timeout: 30000,
   });
   return Buffer.from(resp.data);
 }
 
 /**
- * Upload buffer as WhatsApp media (PDF/Image/etc.)
+ * Upload buffer as WhatsApp media (PDF / image / csv)
  * returns: { id: "MEDIA_ID" }
  */
 async function uploadMediaBuffer({ buffer, filename, mimeType }) {
-  if (!buffer || !Buffer.isBuffer(buffer)) throw new Error("uploadMediaBuffer: buffer invalide");
-
   const url = graphUrl(`${PHONE_NUMBER_ID}/media`);
 
   const form = new FormData();
@@ -135,12 +151,15 @@ async function uploadMediaBuffer({ buffer, filename, mimeType }) {
       ...form.getHeaders(),
     },
     maxBodyLength: Infinity,
-    timeout: 90000,
+    timeout: 60000,
   });
 
   return resp.data; // { id }
 }
 
+/**
+ * Envoi d’un document déjà uploadé (mediaId)
+ */
 async function sendDocument({ to, mediaId, filename, caption }) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
@@ -155,8 +174,8 @@ async function sendDocument({ to, mediaId, filename, caption }) {
   };
 
   const resp = await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
-    timeout: 20000,
+    headers: waHeadersJson(),
+    timeout: 15000,
   });
 
   return resp.data;
