@@ -3,6 +3,7 @@
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
 
+// ================= Utils =================
 function safe(v) {
   return String(v || "").trim();
 }
@@ -12,24 +13,223 @@ function fmtNumber(n) {
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-// mini conversion nombre→texte (fr) simple et robuste
+// ================= QR =================
+async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
+  const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
+  const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
+
+  const png = await QRCode.toBuffer(url, {
+    type: "png",
+    width: 140,
+    margin: 1,
+    errorCorrectionLevel: "M",
+  });
+
+  return { png, url };
+}
+
+// ================= PDF =================
+async function buildPdfBuffer({
+  docData = {},
+  businessProfile = null,
+  logoBuffer = null,
+}) {
+  const KADI_NUMBER = process.env.KADI_E164 || "22679239027";
+  const KADI_PREFILL =
+    process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
+
+  const qr = await makeKadiQrBuffer({
+    fullNumberE164: KADI_NUMBER,
+    prefillText: KADI_PREFILL,
+  });
+
+  return new Promise((resolve, reject) => {
+    try {
+      const pdf = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks = [];
+      pdf.on("data", (c) => chunks.push(c));
+      pdf.on("end", () => resolve(Buffer.concat(chunks)));
+
+      const pageWidth = pdf.page.width;
+      const pageHeight = pdf.page.height;
+      const left = 50;
+      const right = pageWidth - 50;
+
+      const type = String(docData.type || "DOCUMENT").toUpperCase();
+      const number = docData.docNumber || "—";
+      const date = docData.date || "—";
+      const client = docData.client || "—";
+      const items = docData.items || [];
+      const total = Number(docData.total || 0);
+
+      const bp = businessProfile || {};
+
+      // ================= HEADER =================
+      if (logoBuffer) {
+        pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
+      }
+
+      pdf
+        .font("Helvetica-Bold")
+        .fontSize(13)
+        .text(safe(bp.business_name) || "—", left + 70, 45);
+
+      pdf
+        .font("Helvetica")
+        .fontSize(9)
+        .text(
+          [
+            bp.address ? `Adresse : ${bp.address}` : null,
+            bp.phone ? `Tel : ${bp.phone}` : null,
+            bp.email ? `Email : ${bp.email}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          left + 70,
+          62
+        );
+
+      pdf
+        .font("Helvetica-Bold")
+        .fontSize(16)
+        .text(type, left, 45, { align: "right", width: right - left });
+
+      pdf
+        .font("Helvetica")
+        .fontSize(10)
+        .text(`N° : ${number}`, left, 65, {
+          align: "right",
+          width: right - left,
+        });
+
+      pdf.text(`Date : ${date}`, left, 80, {
+        align: "right",
+        width: right - left,
+      });
+
+      pdf.moveTo(left, 120).lineTo(right, 120).stroke();
+
+      // ================= CLIENT =================
+      let y = 135;
+      pdf.rect(left, y, right - left, 45).stroke();
+      pdf.font("Helvetica-Bold").text("Client", left + 10, y + 8);
+      pdf.font("Helvetica").text(client, left + 10, y + 25);
+
+      y += 65;
+
+      // ================= TABLE HEADER =================
+      const col = { idx: 30, des: 260, qty: 60, pu: 80, amt: 90 };
+      const rowH = 24;
+
+      pdf.rect(left, y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+      pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
+
+      pdf.text("#", left + 8, y + 7);
+      pdf.text("Désignation", left + col.idx + 8, y + 7);
+      pdf.text("Qté", left + col.idx + col.des + 8, y + 7, { width: 40, align: "right" });
+      pdf.text("PU", left + col.idx + col.des + col.qty + 8, y + 7, { width: 60, align: "right" });
+      pdf.text(
+        "Montant",
+        left + col.idx + col.des + col.qty + col.pu + 8,
+        y + 7,
+        { width: 80, align: "right" }
+      );
+
+      y += rowH;
+
+      // ================= ITEMS =================
+      pdf.font("Helvetica").fontSize(10);
+
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+
+        if (y + rowH > pageHeight - 120) {
+          pdf.addPage();
+          y = 60;
+        }
+
+        pdf.rect(left, y, right - left, rowH).stroke();
+
+        pdf.text(String(i + 1), left + 8, y + 7);
+        pdf.text(it.label, left + col.idx + 8, y + 7, {
+          width: col.des - 10,
+          ellipsis: true,
+        });
+        pdf.text(fmtNumber(it.qty), left + col.idx + col.des + 8, y + 7, {
+          width: 40,
+          align: "right",
+        });
+        pdf.text(fmtNumber(it.unitPrice), left + col.idx + col.des + col.qty + 8, y + 7, {
+          width: 60,
+          align: "right",
+        });
+        pdf.text(fmtNumber(it.amount), left + col.idx + col.des + col.qty + col.pu + 8, y + 7, {
+          width: 80,
+          align: "right",
+        });
+
+        y += rowH;
+      }
+
+      // ================= TOTAL =================
+      y += 20;
+      pdf.rect(right - 260, y, 260, 40).stroke();
+      pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", right - 250, y + 12);
+      pdf.text(`${fmtNumber(total)} FCFA`, right - 10, y + 12, {
+        align: "right",
+      });
+
+      // ================= FOOTER FIXÉ =================
+      const footerY = pageHeight - 60;
+
+      pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
+
+      pdf
+        .font("Helvetica")
+        .fontSize(8)
+        .fillColor("#555")
+        .text(
+          `Généré par KADI • WhatsApp +${KADI_NUMBER.replace(
+            /(\d{3})(\d{2})(\d{2})(\d{2})(\d{2})/,
+            "$1 $2 $3 $4 $5"
+          )}`,
+          left,
+          footerY,
+          { width: right - left - 60 }
+        );
+
+      pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
+
+      pdf.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+module.exports = { buildPdfBuffer };
+"use strict";
+
+const PDFDocument = require("pdfkit");
+const QRCode = require("qrcode");
+
+// ================= Utils =================
+function safe(v) {
+  return String(v || "").trim();
+}
+
+function fmtNumber(n) {
+  const x = Math.round(Number(n || 0));
+  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+// mini conversion nombre→texte (FR) robuste
 function numberToFrench(n) {
   n = Math.floor(Number(n) || 0);
   if (n === 0) return "zéro";
 
   const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
-  const teens = [
-    "dix",
-    "onze",
-    "douze",
-    "treize",
-    "quatorze",
-    "quinze",
-    "seize",
-    "dix-sept",
-    "dix-huit",
-    "dix-neuf",
-  ];
+  const teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
   const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
 
   function under100(x) {
@@ -39,22 +239,15 @@ function numberToFrench(n) {
     const t = Math.floor(x / 10);
     const u = x % 10;
 
-    // 70-79, 90-99
     if (t === 7 || t === 9) {
-      const base = tens[t]; // "soixante" ou "quatre-vingt"
+      const base = tens[t];
       const rest = x - t * 10; // 10..19
       return `${base}-${teens[rest - 10]}`;
     }
 
-    // 80 exact => "quatre-vingts"
     if (t === 8 && u === 0) return "quatre-vingts";
-
     if (u === 0) return tens[t];
-
-    // 81..89 => "quatre-vingt-un" (sans s)
     if (t === 8) return `quatre-vingt-${units[u]}`;
-
-    // 21,31,41,51,61 => "vingt et un"
     if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
 
     return `${tens[t]}-${units[u]}`;
@@ -68,7 +261,7 @@ function numberToFrench(n) {
     if (h > 0) {
       if (h === 1) s = "cent";
       else s = `${units[h]} cent`;
-      if (r === 0 && h > 1) s += "s"; // "deux cents"
+      if (r === 0 && h > 1) s += "s";
     }
 
     if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
@@ -80,13 +273,11 @@ function numberToFrench(n) {
     const r = x % value;
     if (q === 0) return { text: "", rest: r };
 
-    // ✅ "mille" est invariable
     if (name === "mille") {
       if (q === 1) return { text: "mille", rest: r };
       return { text: `${under1000(q)} mille`, rest: r };
     }
 
-    // million(s)
     const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
     return { text: t, rest: r };
   }
@@ -107,45 +298,36 @@ function numberToFrench(n) {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
-function normalizeDocTypeForFooter(typeUpper) {
+// ✅ phrase de clôture propre
+function closingPhrase(typeUpper) {
   const t = String(typeUpper || "").toUpperCase();
-
-  if (t.includes("FACTURE")) return { phrase: "Arrêtée la présente facture" };
-  if (t.includes("REÇU") || t.includes("RECU")) return { phrase: "Arrêté le présent reçu" };
-  if (t.includes("DEVIS")) return { phrase: "Arrêté le présent devis" };
-
-  return { phrase: "Arrêté le présent document" };
+  if (t.includes("FACTURE")) return "Arrêtée la présente facture";
+  if (t.includes("REÇU") || t.includes("RECU")) return "Arrêté le présent reçu";
+  if (t.includes("DEVIS")) return "Arrêté le présent devis";
+  return "Arrêté le présent document";
 }
 
-async function makeKadiQrPngBuffer({ fullNumberE164, prefillText }) {
+// ================= QR =================
+async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
   const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
   const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
 
   const png = await QRCode.toBuffer(url, {
     type: "png",
-    width: 220,
+    width: 140,
     margin: 1,
     errorCorrectionLevel: "M",
-    color: { dark: "#000000", light: "#FFFFFF" },
   });
 
-  return { url, png };
+  return { png, url };
 }
 
+// ================= PDF =================
 async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
-  // KADI WhatsApp: par défaut +226 79 23 90 27 => "22679239027"
-  const KADI_NUMBER_LOCAL = process.env.KADI_NUMBER || "79239027";
-  const KADI_COUNTRY = process.env.KADI_COUNTRY_CODE || "226";
-  const KADI_E164 = process.env.KADI_E164 || `${KADI_COUNTRY}${KADI_NUMBER_LOCAL}`;
+  const KADI_E164 = process.env.KADI_E164 || "22679239027";
   const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
 
-  // QR préparé avant
-  let qr = null;
-  try {
-    qr = await makeKadiQrPngBuffer({ fullNumberE164: KADI_E164, prefillText: KADI_PREFILL });
-  } catch (_) {
-    qr = null;
-  }
+  const qr = await makeKadiQrBuffer({ fullNumberE164: KADI_E164, prefillText: KADI_PREFILL });
 
   return new Promise((resolve, reject) => {
     try {
@@ -154,215 +336,145 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       pdf.on("data", (c) => chunks.push(c));
       pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
-      const typeUpper = String(docData.type || "DOCUMENT").toUpperCase();
-      const docNumber = docData.docNumber || "—";
+      const pageWidth = pdf.page.width;
+      const pageHeight = pdf.page.height;
+      const left = 50;
+      const right = pageWidth - 50;
+
+      const type = String(docData.type || "DOCUMENT").toUpperCase();
+      const number = docData.docNumber || "—";
       const date = docData.date || "—";
       const client = docData.client || "—";
       const items = Array.isArray(docData.items) ? docData.items : [];
       const total = Number(docData.total || 0);
 
       const bp = businessProfile || {};
-      const pageLeft = 50;
-      const pageRight = 545;
-      const topY = 45;
 
-      // ---- Header ----
-      if (logoBuffer) {
-        try {
-          pdf.image(logoBuffer, pageLeft, topY, { fit: [70, 70] });
-        } catch {}
+      // zones réservées bas de page (footer)
+      const FOOTER_H = 70;
+      const SAFE_BOTTOM = pageHeight - FOOTER_H;
+
+      // helper: si pas assez de place -> page suivante
+      function ensureSpace(needed) {
+        if (pdf.y + needed > SAFE_BOTTOM) {
+          pdf.addPage();
+          pdf.y = 60;
+        }
       }
 
-      const headerTextX = pageLeft + (logoBuffer ? 85 : 0);
-      const headerTop = topY;
+      // ================= HEADER =================
+      if (logoBuffer) {
+        try {
+          pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
+        } catch (_) {}
+      }
 
       pdf.fillColor("#000");
-      pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "KADI", headerTextX, headerTop, {
-        width: 280,
-      });
+      pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", left + 70, 45);
 
-      pdf.font("Helvetica").fontSize(9);
-      const bizLines = [
-        safe(bp.address) ? `Adresse : ${safe(bp.address)}` : null,
-        safe(bp.phone) ? `Tél : ${safe(bp.phone)}` : null,
-        safe(bp.email) ? `Email : ${safe(bp.email)}` : null,
-        safe(bp.ifu) ? `IFU : ${safe(bp.ifu)}` : null,
-        safe(bp.rccm) ? `RCCM : ${safe(bp.rccm)}` : null,
-      ].filter(Boolean);
+      pdf.font("Helvetica").fontSize(9).text(
+        [
+          bp.address ? `Adresse : ${bp.address}` : null,
+          bp.phone ? `Tel : ${bp.phone}` : null,
+          bp.email ? `Email : ${bp.email}` : null,
+          bp.ifu ? `IFU : ${bp.ifu}` : null,
+          bp.rccm ? `RCCM : ${bp.rccm}` : null,
+        ].filter(Boolean).join("\n"),
+        left + 70,
+        62
+      );
 
-      pdf.text(bizLines.join("\n"), headerTextX, headerTop + 18, { width: 280, lineGap: 2 });
-
-      pdf.font("Helvetica-Bold").fontSize(16).text(typeUpper, pageLeft, headerTop, {
-        width: pageRight - pageLeft,
-        align: "right",
-      });
+      pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, { align: "right", width: right - left });
 
       pdf.font("Helvetica").fontSize(10);
-      pdf.text(`N° : ${docNumber}`, pageLeft, headerTop + 20, { width: pageRight - pageLeft, align: "right" });
-      pdf.text(`Date : ${date}`, pageLeft, headerTop + 35, { width: pageRight - pageLeft, align: "right" });
+      pdf.text(`N° : ${number}`, left, 65, { align: "right", width: right - left });
+      pdf.text(`Date : ${date}`, left, 80, { align: "right", width: right - left });
 
-      pdf.moveTo(pageLeft, headerTop + 80).lineTo(pageRight, headerTop + 80).stroke();
+      pdf.moveTo(left, 120).lineTo(right, 120).stroke();
 
-      // ---- Client box ----
-      let y = headerTop + 95;
-      const clientBoxH = 50;
+      // ================= CLIENT =================
+      let y = 135;
+      pdf.rect(left, y, right - left, 45).stroke();
+      pdf.font("Helvetica-Bold").text("Client", left + 10, y + 8);
+      pdf.font("Helvetica").text(client, left + 10, y + 25);
 
-      pdf.rect(pageLeft, y, pageRight - pageLeft, clientBoxH).stroke();
-      pdf.font("Helvetica-Bold").fontSize(10).text("Client", pageLeft + 10, y + 8);
-      pdf.font("Helvetica").fontSize(10).text(client, pageLeft + 10, y + 26, {
-        width: pageRight - pageLeft - 20,
-        lineBreak: false,
-        ellipsis: true,
-      });
+      y += 65;
+      pdf.y = y;
 
-      y += clientBoxH + 18;
+      // ================= TABLE HEADER =================
+      const col = { idx: 30, des: 260, qty: 60, pu: 80, amt: 90 };
+      const rowH = 24;
 
-      // ---- Table layout ----
-      const tableX = pageLeft;
-      const tableW = pageRight - pageLeft;
+      pdf.rect(left, pdf.y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+      pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
 
-      const col = { idx: 30, des: 270, qty: 55, pu: 80, amt: 90 };
-      const sumW = col.idx + col.des + col.qty + col.pu + col.amt;
-      if (sumW !== tableW) col.des += (tableW - sumW);
+      pdf.text("#", left + 8, pdf.y + 7);
+      pdf.text("Désignation", left + col.idx + 8, pdf.y + 7);
+      pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
+      pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
+      pdf.text("Montant", left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
 
-      const rowH = 26;
-      const headH = 26;
-
-      pdf.rect(tableX, y, tableW, headH).fillAndStroke("#F2F2F2", "#000");
-      pdf.fillColor("#000");
-
-      let x = tableX;
-      const xIdxEnd = (x += col.idx);
-      const xDesEnd = (x += col.des);
-      const xQtyEnd = (x += col.qty);
-      const xPuEnd = (x += col.pu);
-
-      pdf.font("Helvetica-Bold").fontSize(10);
-      pdf.text("#", tableX + 8, y + 8, { width: col.idx - 16, align: "left", lineBreak: false });
-      pdf.text("Désignation", xIdxEnd + 8, y + 8, { width: col.des - 16, align: "left", lineBreak: false });
-      pdf.text("Qté", xDesEnd + 8, y + 8, { width: col.qty - 16, align: "right", lineBreak: false });
-      pdf.text("PU", xQtyEnd + 8, y + 8, { width: col.pu - 16, align: "right", lineBreak: false });
-      pdf.text("Montant", xPuEnd + 8, y + 8, { width: col.amt - 16, align: "right", lineBreak: false });
-
-      pdf.moveTo(xIdxEnd, y).lineTo(xIdxEnd, y + headH).stroke();
-      pdf.moveTo(xDesEnd, y).lineTo(xDesEnd, y + headH).stroke();
-      pdf.moveTo(xQtyEnd, y).lineTo(xQtyEnd, y + headH).stroke();
-      pdf.moveTo(xPuEnd, y).lineTo(xPuEnd, y + headH).stroke();
-
-      y += headH;
-
+      pdf.y += rowH;
       pdf.font("Helvetica").fontSize(10);
 
-      // zone safe bas + réserve (total + phrase + footer)
-      const bottomSafe = pdf.page.height - pdf.page.margins.bottom;
-      const reserved = 140;
-
+      // ================= ITEMS =================
       for (let i = 0; i < items.length; i++) {
+        ensureSpace(rowH + 10);
+
         const it = items[i] || {};
+        const label = safe(it.label || it.raw || "—");
         const qty = Number(it.qty || 0);
         const pu = Number(it.unitPrice || 0);
         const amt = Number(it.amount || (qty * pu) || 0);
 
-        // ✅ saut de page basé sur la zone SAFE, pas sur page.height
-        if (y + rowH + reserved > bottomSafe) {
-          pdf.addPage();
-          y = 80;
-        }
+        pdf.rect(left, pdf.y, right - left, rowH).stroke();
 
-        pdf.rect(tableX, y, tableW, rowH).stroke();
+        pdf.text(String(i + 1), left + 8, pdf.y + 7);
+        pdf.text(label, left + col.idx + 8, pdf.y + 7, { width: col.des - 10, ellipsis: true });
+        pdf.text(fmtNumber(qty), left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
+        pdf.text(fmtNumber(pu), left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
+        pdf.text(fmtNumber(amt), left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
 
-        pdf.moveTo(xIdxEnd, y).lineTo(xIdxEnd, y + rowH).stroke();
-        pdf.moveTo(xDesEnd, y).lineTo(xDesEnd, y + rowH).stroke();
-        pdf.moveTo(xQtyEnd, y).lineTo(xQtyEnd, y + rowH).stroke();
-        pdf.moveTo(xPuEnd, y).lineTo(xPuEnd, y + rowH).stroke();
-
-        pdf.text(String(i + 1), tableX + 8, y + 8, { width: col.idx - 16, align: "left", lineBreak: false });
-
-        const des = safe(it.label || it.raw || "—");
-        pdf.text(des, xIdxEnd + 8, y + 8, {
-          width: col.des - 16,
-          align: "left",
-          lineBreak: false,
-          ellipsis: true,
-        });
-
-        pdf.text(fmtNumber(qty), xDesEnd + 8, y + 8, { width: col.qty - 16, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(pu), xQtyEnd + 8, y + 8, { width: col.pu - 16, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(amt), xPuEnd + 8, y + 8, { width: col.amt - 16, align: "right", lineBreak: false });
-
-        y += rowH;
-      }
-      // ---- Total box ----
-      y += 18;
-
-      // ✅ Si on est trop bas, on passe page AVANT le total
-      const bottomSafe2 = pdf.page.height - pdf.page.margins.bottom;
-      const reservedAfterTotal = 90; // phrase + footer
-      if (y + 46 + reservedAfterTotal > bottomSafe2) {
-        pdf.addPage();
-        y = 80;
+        pdf.y += rowH;
       }
 
-      const totalBoxW = 260;
-      const totalBoxH = 46;
-      const totalX = pageRight - totalBoxW;
-      const totalY = y;
+      // ================= TOTAL + CLOSING =================
+      ensureSpace(120);
 
-      pdf.rect(totalX, totalY, totalBoxW, totalBoxH).stroke();
-      pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", totalX + 12, totalY + 14);
-      pdf.font("Helvetica-Bold").fontSize(12).text(`${fmtNumber(total)} FCFA`, totalX, totalY + 14, {
-        width: totalBoxW - 12,
-        align: "right",
-        lineBreak: false,
-      });
+      pdf.y += 18;
 
-      y += totalBoxH + 18;
+      const boxW = 260;
+      const boxH = 40;
+      pdf.rect(right - boxW, pdf.y, boxW, boxH).stroke();
+      pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
+      pdf.text("TOTAL", right - boxW + 10, pdf.y + 12);
+      pdf.text(`${fmtNumber(total)} FCFA`, right - 10, pdf.y + 12, { align: "right" });
 
-      // ---- Amount in words ----
+      pdf.y += boxH + 14;
+
+      const phrase = closingPhrase(type);
       const words = numberToFrench(total);
-      const phr = normalizeDocTypeForFooter(typeUpper);
 
-      pdf.fillColor("#000");
-      pdf.font("Helvetica-Bold").fontSize(10).text(`${phr.phrase} à la somme de : ${words} francs CFA.`, pageLeft, y, {
-        width: pageRight - pageLeft,
-      });
+      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
 
-      // ---- Footer (bas de page) + QR ----
-      // ✅ Footer fixé en bas, mais DANS la marge safe
-      const footerBase = pdf.page.height - pdf.page.margins.bottom; // zone safe
-      const footerY = footerBase - 52; // bloc footer (texte + QR) reste au-dessus
+      // ================= FOOTER FIXE (BAS) =================
+      const footerY = pageHeight - 55;
 
-      const qrSize = 55;
+      pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
 
-      // trait
-      pdf.moveTo(pageLeft, footerY - 6).lineTo(pageRight, footerY - 6).stroke();
-
-      // texte
-      pdf.font("Helvetica").fontSize(8).fillColor("#444");
-
-      const formattedLocal = String(KADI_NUMBER_LOCAL).replace(
-        /(\d{2})(\d{2})(\d{2})(\d{2})/,
-        "$1 $2 $3 $4"
+      pdf.font("Helvetica").fontSize(8).fillColor("#555");
+      pdf.text(
+        `Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`,
+        left,
+        footerY,
+        { width: right - left - 60, ellipsis: true }
       );
 
-      const footerText = `Généré par KADI • WhatsApp +${KADI_COUNTRY} ${formattedLocal} • Scannez pour essayer`;
-
-      // ✅ IMPORTANT: largeur calculée pour éviter chevauchement QR
-      const textW = (pageRight - pageLeft) - (qr?.png ? (qrSize + 10) : 0);
-
-      pdf.text(footerText, pageLeft, footerY + 18, {
-        width: textW,
-        align: "left",
-        lineBreak: false,
-        ellipsis: true,
-      });
-
       // QR à droite
-      if (qr?.png) {
-        try {
-          pdf.image(qr.png, pageRight - qrSize, footerY, { fit: [qrSize, qrSize] });
-        } catch {}
-      }
+      try {
+        pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
+      } catch (_) {}
 
       pdf.end();
     } catch (e) {

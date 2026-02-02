@@ -1,30 +1,43 @@
-// kadiState.js
 "use strict";
 
-// STATE MACHINE simple (en mémoire)
+// STATE MACHINE (en mémoire)
 const sessions = new Map();
 
+/**
+ * step possibles:
+ * - idle
+ * - onboarding
+ * - profile
+ * - collecting_doc
+ * - recharge_proof
+ * - awaiting_image_action   (image reçue -> demander: OCR / Logo / Preuve)
+ * - collecting_decharge     (décharge: questions guidées)
+ */
 function getSession(userId) {
   const id = String(userId || "").trim();
   if (!id) throw new Error("userId manquant");
 
   if (!sessions.has(id)) {
     sessions.set(id, {
-      step: "idle",           // idle | profile | collecting_doc | recharge_proof | decharge_collect | decharge_confirm
-      profileStep: null,      // business_name | address | phone | email | ifu | rccm | logo
+      step: "idle",
 
-      // documents classiques
-      mode: null,             // devis | facture | recu
-      factureKind: null,      // proforma | definitive
-      lastDocDraft: null,     // draft doc
+      // profil
+      profileStep: null, // business_name | address | phone | email | ifu | rccm | logo
 
-      // décharge
-      decharge: null,         // draft décharge
+      // documents
+      mode: null, // devis | facture | recu | decharge
+      factureKind: null, // proforma | definitive
+      lastDocDraft: null,
 
-      // context "image intent" (logo vs ocr/photo->pdf)
-      imageIntent: null,      // "logo" | "ocr_doc" | "proof" | null
-      imageContext: null,     // { kind, docType, ... } optionnel
+      // image routing
+      pendingImage: null, // { mediaId, mime, url, buffer? } (optionnel)
+      lastImagePurpose: null, // "logo" | "recharge" | "ocr"
 
+      // décharge flow
+      dechargeStep: null,
+      dechargeDraft: null,
+
+      // meta
       lastUpdated: Date.now(),
     });
   }
@@ -32,8 +45,14 @@ function getSession(userId) {
   return sessions.get(id);
 }
 
+function touchSession(userId) {
+  const s = getSession(userId);
+  s.lastUpdated = Date.now();
+  return s;
+}
+
 function resetSession(userId) {
   sessions.delete(String(userId || "").trim());
 }
 
-module.exports = { getSession, resetSession };
+module.exports = { getSession, touchSession, resetSession };

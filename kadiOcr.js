@@ -2,43 +2,101 @@
 "use strict";
 
 /**
- * OCR via Tesseract
- * Dépendance: npm i node-tesseract-ocr
- * Optionnel: installer tesseract dans l'OS (selon l'hébergeur)
+ * OCR robuste (FR) pour WhatsApp images:
+ * - prétraitement (sharp): grayscale + normalize + threshold léger
+ * - tesseract.js: lang = fra (et fallback eng)
+ *
+ * Dépendances:
+ *   npm i tesseract.js sharp
+ *
+ * Notes:
+ * - En production Render, tesseract.js est ok (mais ça consomme CPU).
+ * - Pour accélérer: réduire taille image (resize).
  */
 
-let tesseract;
-try {
-  tesseract = require("node-tesseract-ocr");
-} catch (e) {
-  tesseract = null;
+const sharp = require("sharp");
+const { createWorker } = require("tesseract.js");
+
+async function preprocessImage(buf) {
+  // On réduit et nettoie un peu l'image pour améliorer OCR
+  // (trop gros = lent, trop petit = illisible)
+  const img = sharp(buf, { failOnError: false });
+
+  const meta = await img.metadata().catch(() => null);
+  const width = meta?.width || 1200;
+
+  // Resize si trop large
+  const resized =
+    width > 1400 ? img.resize({ width: 1400, withoutEnlargement: true }) : img;
+
+  // Preprocess
+  // - grayscale
+  // - normalize
+  // - threshold léger
+  // - sharpen
+  const out = await resized
+    .grayscale()
+    .normalize()
+    .sharpen()
+    .threshold(170)
+    .toBuffer();
+
+  return out;
 }
 
-function normalizeOcrText(s) {
-  return String(s || "")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
+async function runTesseract(buffer, lang) {
+  const worker = await createWorker();
+  try {
+    await worker.loadLanguage(lang);
+    await worker.initialize(lang);
+
+    // Options utiles
+    await worker.setParameters({
+      tessedit_pageseg_mode: "6", // assume a uniform block of text
+      preserve_interword_spaces: "1",
+    });
+
+    const result = await worker.recognize(buffer);
+    const text = result?.data?.text || "";
+    return text;
+  } finally {
+    try {
+      await worker.terminate();
+    } catch (_) {}
+  }
+}
+
+async function ocrImageToText(imageBuffer) {
+  if (!imageBuffer || !Buffer.isBuffer(imageBuffer)) {
+    throw new Error("ocrImageToText: imageBuffer invalide");
+  }
+
+  // 1) preprocess
+  let pre = imageBuffer;
+  try {
+    pre = await preprocessImage(imageBuffer);
+  } catch (e) {
+    // si preprocess fail, on tente OCR direct
+    pre = imageBuffer;
+  }
+
+  // 2) OCR FR
+  let text = "";
+  try {
+    text = await runTesseract(pre, "fra");
+  } catch (e) {
+    // 3) fallback EN
+    text = await runTesseract(pre, "eng");
+  }
+
+  // Nettoyage léger
+  text = String(text || "")
+    .replace(/\u000c/g, "") // form feed
+    .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  return text;
 }
 
-async function ocrImageBuffer(buffer, lang = "fra") {
-  if (!tesseract) {
-    throw new Error("Tesseract non installé. Faites: npm i node-tesseract-ocr");
-  }
-  if (!buffer || !Buffer.isBuffer(buffer)) {
-    throw new Error("buffer invalide");
-  }
-
-  // config OCR: lisible + robuste
-  const config = {
-    lang, // "fra" ou "eng+fra"
-    oem: 1,
-    psm: 6, // bloc de texte uniforme
-  };
-
-  const text = await tesseract.recognize(buffer, config);
-  return normalizeOcrText(text);
-}
-
-module.exports = { ocrImageBuffer, normalizeOcrText };
+module.exports = { ocrImageToText };
