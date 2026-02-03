@@ -82,7 +82,7 @@ async function sendButtons(to, bodyText, buttons) {
 
   const safeButtons = (buttons || []).slice(0, 3).map((b) => ({
     type: "reply",
-    reply: { id: String(b.id), title: String(b.title).slice(0, 20) }, // WA limite title
+    reply: { id: String(b.id), title: String(b.title || "").slice(0, 20) }, // WA limite title
   }));
 
   const payload = {
@@ -95,6 +95,76 @@ async function sendButtons(to, bodyText, buttons) {
       action: { buttons: safeButtons },
     },
   };
+
+  const resp = await axios.post(url, payload, {
+    headers: waHeadersJson(),
+    timeout: 15000,
+  });
+
+  return resp.data;
+}
+
+/**
+ * ✅ Envoi d’une LIST (menu long, parfait pour Documents)
+ *
+ * shape:
+ * sendList(to, {
+ *   header: "Documents",
+ *   body: "Quel document voulez-vous créer ?",
+ *   footer: "KADI",
+ *   buttonText: "Choisir",
+ *   sections: [
+ *     { title: "Création", rows: [{id,title,description}] }
+ *   ]
+ * })
+ *
+ * WA limits (pratique):
+ * - header/body/footer: texte
+ * - buttonText: <= 20
+ * - row.title <= 24 (souvent), row.description <= 72 (selon clients)
+ */
+async function sendList(to, opts = {}) {
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+
+  const headerText = String(opts.header || "").slice(0, 60);
+  const bodyText = String(opts.body || "Choisissez une option");
+  const footerText = String(opts.footer || "").slice(0, 60);
+  const buttonText = String(opts.buttonText || "Choisir").slice(0, 20);
+
+  const sections = Array.isArray(opts.sections) ? opts.sections : [];
+  const safeSections = sections.slice(0, 10).map((sec) => {
+    const rows = Array.isArray(sec.rows) ? sec.rows : [];
+    return {
+      title: String(sec.title || "Options").slice(0, 24),
+      rows: rows.slice(0, 10).map((r) => ({
+        id: String(r.id || "").slice(0, 200),
+        title: String(r.title || "").slice(0, 24),
+        description: String(r.description || "").slice(0, 72),
+      })),
+    };
+  });
+
+  if (!safeSections.length || !safeSections[0].rows.length) {
+    throw new Error("sendList: sections/rows vides");
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: bodyText },
+      action: {
+        button: buttonText,
+        sections: safeSections,
+      },
+    },
+  };
+
+  // header/footer sont optionnels selon templates/clients
+  if (headerText) payload.interactive.header = { type: "text", text: headerText };
+  if (footerText) payload.interactive.footer = { text: footerText };
 
   const resp = await axios.post(url, payload, {
     headers: waHeadersJson(),
@@ -185,6 +255,7 @@ module.exports = {
   verifyRequestSignature,
   sendText,
   sendButtons,
+  sendList, // ✅ export
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,

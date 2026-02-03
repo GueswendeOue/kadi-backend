@@ -17,10 +17,7 @@ const logger = {
     );
   },
   metric: (name, duration, success = true, meta = {}) => {
-    console.log(
-      `[KADI/METRIC/${name}] ${duration}ms`,
-      { success, ...meta }
-    );
+    console.log(`[KADI/METRIC/${name}] ${duration}ms`, { success, ...meta });
   },
 };
 
@@ -51,6 +48,7 @@ const { ocrImageBuffer } = require("./kadiOcr");
 const {
   sendText,
   sendButtons,
+  sendList, // ✅ NOUVEAU: si absent, fallback automatique
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
@@ -99,21 +97,13 @@ const LIMITS = {
 
 const _WELCOME_CACHE = new Map(); // waId -> timestamp(ms)
 
-// ---------------- Utils ----------------
+// ================= Utils =================
 function safe(v) {
   return String(v || "").trim();
 }
 
 function norm(s) {
   return String(s || "").trim();
-}
-
-function nowISO() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
 }
 
 function formatDateISO() {
@@ -194,8 +184,7 @@ function extractNumbersSmart(text) {
 }
 
 function escapeCsvValue(str) {
-  if (typeof str !== 'string') return str;
-  // Si contient des virgules, guillemets ou retours à la ligne
+  if (typeof str !== "string") return str;
   if (/[",\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }
@@ -227,14 +216,24 @@ async function applyStampAndSignatureIfAny(pdfBuffer, profile) {
   return buf;
 }
 
+// ===============================
+// CATALOGUE DOCUMENTS (inline)
+// ===============================
+const DOC_CATALOG = [
+  { id: "DOC_DEVIS", title: "Devis", desc: "Proposition de prix", kind: "devis" },
+  { id: "DOC_FACTURE", title: "Facture", desc: "Facture client", kind: "facture" },
+  { id: "DOC_RECU", title: "Reçu", desc: "Reçu de paiement", kind: "recu" },
+  { id: "DOC_DECHARGE", title: "Décharge", desc: "Décharge simple", kind: "decharge" },
+  // Ajout facile plus tard:
+  // { id:"DOC_BON_LIVRAISON", title:"Bon de livraison", desc:"BL", kind:"bon_livraison" },
+];
+
 // ---------------- Parsing lignes ----------------
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
 
-  // dimension avec unité (cm/mm/m)
   if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
 
-  // dimension "nue" style 44x34
   const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
   if (m) {
     const a = cleanNumber(m[1]);
@@ -290,7 +289,6 @@ function parseItemLine(line) {
   const isDim = hasDimensionPattern(raw);
   let qty = null;
 
-  // "2x" / "x2" seulement si ce n'est pas une dimension
   if (!isDim) {
     const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i);
     const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i);
@@ -357,7 +355,7 @@ function computeFinance(doc) {
 }
 
 // ===============================
-// OCR helpers (photo -> texte -> draft)
+// OCR helpers
 // ===============================
 function guessDocTypeFromOcr(text) {
   const t = String(text || "").toLowerCase();
@@ -370,7 +368,9 @@ function guessDocTypeFromOcr(text) {
 
 function extractTotalFromOcr(text) {
   const t = String(text || "");
-  let m = t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) || t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
+  let m =
+    t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) ||
+    t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
   if (!m) return null;
   return cleanNumber(m[1]);
 }
@@ -426,7 +426,6 @@ function parseOcrToDraft(ocrText) {
 
   return { client, items, finance };
 }
-
 async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -442,16 +441,12 @@ async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries
 // ADMIN HANDLER
 // ===============================
 async function handleAdmin(from, text) {
-  const s = getSession(from);
-  
-  // Vérifier si l'utilisateur est admin
   if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) {
     return false;
   }
 
   const lower = String(text || "").toLowerCase().trim();
 
-  // Créer des codes de recharge
   if (lower.startsWith("admin create")) {
     const match = text.match(/^admin create\s+(\d+)\s+(\d+)$/i);
     if (!match) {
@@ -460,7 +455,7 @@ async function handleAdmin(from, text) {
     }
     const nb = parseInt(match[1], 10);
     const credits = parseInt(match[2], 10);
-    
+
     try {
       const codes = await createRechargeCodes(nb, credits);
       let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
@@ -475,7 +470,6 @@ async function handleAdmin(from, text) {
     return true;
   }
 
-  // Ajouter des crédits manuellement
   if (lower.startsWith("admin add")) {
     const match = text.match(/^admin add\s+(\d+)\s+(\d+)$/i);
     if (!match) {
@@ -484,12 +478,12 @@ async function handleAdmin(from, text) {
     }
     const targetWaId = match[1];
     const credits = parseInt(match[2], 10);
-    
+
     if (!isValidWhatsAppId(targetWaId)) {
       await sendText(from, "❌ WhatsApp ID invalide.");
       return true;
     }
-    
+
     try {
       await addCredits(targetWaId, credits, "admin_add");
       const newBalance = await getBalance(targetWaId);
@@ -501,19 +495,18 @@ async function handleAdmin(from, text) {
     return true;
   }
 
-  // Voir les stats (commande /stats déjà gérée)
   if (lower === "admin" || lower === "admin help") {
     await sendText(
       from,
       "👨‍💼 *Commandes Admin*\n\n" +
-      "📊 Voir stats:\n" +
-      "• /stats\n" +
-      "• /top 30 (par défaut)\n" +
-      "• /export 30\n\n" +
-      "💰 Gestion crédits:\n" +
-      "• ADMIN ADD <wa_id> <credits>\n\n" +
-      "🎫 Codes recharge:\n" +
-      "• ADMIN CREATE <nb_codes> <credits_par_code>"
+        "📊 Voir stats:\n" +
+        "• /stats\n" +
+        "• /top 30 (par défaut)\n" +
+        "• /export 30\n\n" +
+        "💰 Gestion crédits:\n" +
+        "• ADMIN ADD <wa_id> <credits>\n\n" +
+        "🎫 Codes recharge:\n" +
+        "• ADMIN CREATE <nb_codes> <credits_par_code>"
     );
     return true;
   }
@@ -521,7 +514,6 @@ async function handleAdmin(from, text) {
   return false;
 }
 
-// Helper pour vérifier si admin
 function ensureAdmin(waId) {
   return ADMIN_WA_ID && waId === ADMIN_WA_ID;
 }
@@ -534,10 +526,10 @@ function initDechargeFlow(session) {
   session.step = "decharge_collect";
   session.decharge = {
     step: 1,
-    a_name: null, // partie 1
+    a_name: null,
     a_piece: null,
     a_phone: null,
-    b_name: null, // partie 2 (celui qui remet)
+    b_name: null,
     b_piece: null,
     b_phone: null,
     story: null,
@@ -584,7 +576,6 @@ function buildDechargeClientName(session) {
 async function buildAndSendDecharge({ to, session }) {
   const profile = await getOrCreateProfile(to);
 
-  // Logo buffer (optionnel)
   let logoBuf = null;
   if (profile?.logo_path) {
     try {
@@ -620,17 +611,14 @@ async function buildAndSendDecharge({ to, session }) {
     },
   };
 
-  // PDF “propre” avec ton builder actuel
   let pdfBuf = await buildPdfBuffer({
     docData: payload,
     businessProfile: profile,
     logoBuffer: logoBuf,
   });
 
-  // ✅ Tampon/signature si branchés
   pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
 
-  // Envoi WhatsApp
   const fileName = `DECHARGE-${docNumber}-${formatDateISO()}.pdf`;
   const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
   if (!up?.id) throw new Error("Upload PDF échoué");
@@ -642,7 +630,6 @@ async function buildAndSendDecharge({ to, session }) {
     caption: `✅ Décharge prête — ${docNumber}`,
   });
 
-  // reset session
   session.step = "idle";
   session.mode = null;
   session.decharge = null;
@@ -697,14 +684,12 @@ async function maybeSendOnboarding(from) {
     const p = await getOrCreateProfile(from);
     if (p?.onboarding_done === true) return;
 
-    // ✅ Message simple + captivant
     const msg =
       `👋 Bienvenue sur *KADI*.\n\n` +
       `✅ *Devis / Facture / Reçu / Décharge* en 30 secondes.\n` +
       `📷 Envoyez aussi une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
       `👇 Choisissez :`;
 
-    // ✅ Un seul message (buttons) = plus propre
     await sendButtons(from, msg, [
       { id: "HOME_DOCS", title: "Créer document" },
       { id: "HOME_PROFILE", title: "Mon profil" },
@@ -718,7 +703,7 @@ async function maybeSendOnboarding(from) {
 }
 
 // ===============================
-// Menus (1 seul message)
+// Menus
 // ===============================
 async function sendHomeMenu(to) {
   return sendButtons(to, "🏠 *Menu KADI* — choisissez :", [
@@ -728,14 +713,31 @@ async function sendHomeMenu(to) {
   ]);
 }
 
+// ✅ Documents en LIST si possible, sinon fallback buttons
 async function sendDocsMenu(to) {
-  // ✅ PAS en 2 messages
-  return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
-    { id: "DOC_DEVIS", title: "Devis" },
-    { id: "DOC_FACTURE", title: "Facture" },
-    { id: "DOC_RECU", title: "Reçu" },
-    { id: "DOC_DECHARGE", title: "Décharge" }, // ✅ AJOUT
-  ]);
+  const canList = typeof sendList === "function";
+
+  if (!canList) {
+    return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
+      { id: "DOC_DEVIS", title: "Devis" },
+      { id: "DOC_FACTURE", title: "Facture" },
+      { id: "DOC_RECU", title: "Reçu" },
+      { id: "DOC_DECHARGE", title: "Décharge" },
+    ]);
+  }
+
+  const rows = DOC_CATALOG.map((d) => ({
+    id: d.id,
+    title: d.title,
+    description: d.desc || "",
+  }));
+
+  return sendList(to, {
+    header: "Documents",
+    body: "Quel document voulez-vous créer ?",
+    buttonText: "Choisir",
+    sections: [{ title: "Création de documents", rows }],
+  });
 }
 
 async function sendFactureKindMenu(to) {
@@ -952,6 +954,94 @@ async function replyBalance(from) {
 }
 
 // ===============================
+// OCR / IMAGE ROUTING
+// ===============================
+async function processOcrImageToDraft(from, mediaId) {
+  const s = getSession(from);
+
+  const info = await getMediaInfo(mediaId);
+  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+    await sendText(from, "❌ Image trop grande. Envoyez une photo plus légère.");
+    return;
+  }
+
+  const buf = await downloadMediaToBuffer(info.url);
+
+  await sendText(from, "🔎 Lecture de la photo…");
+
+  let ocrText = "";
+  try {
+    ocrText = await robustOcr(buf, "fra");
+  } catch (e) {
+    console.warn("OCR failed:", e?.message);
+    await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
+    return;
+  }
+
+  if (!s.lastDocDraft) {
+    const guessed = guessDocTypeFromOcr(ocrText) || "devis";
+    s.lastDocDraft = {
+      type: guessed,
+      factureKind: null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+    };
+    s.step = "collecting_doc";
+  } else {
+    s.lastDocDraft.source = "ocr";
+  }
+
+  const parsed = parseOcrToDraft(ocrText);
+
+  if (parsed.client && !s.lastDocDraft.client) s.lastDocDraft.client = parsed.client;
+
+  if (parsed.items?.length) {
+    const room = LIMITS.maxItems - s.lastDocDraft.items.length;
+    const toAdd = parsed.items.slice(0, Math.max(0, room));
+    s.lastDocDraft.items.push(...toAdd);
+
+    if (parsed.items.length > toAdd.length) {
+      await sendText(from, `⚠️ Limite ${LIMITS.maxItems} lignes. Certains items ont été ignorés.`);
+    }
+  }
+
+  s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
+
+  const profile = await getOrCreateProfile(from);
+  const preview = await buildPreviewMessage({ profile, doc: s.lastDocDraft });
+
+  await sendText(from, preview);
+  await sendAfterPreviewMenu(from);
+}
+
+async function handleIncomingImage(from, msg) {
+  const s = getSession(from);
+
+  if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
+  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
+
+  const mediaId = msg?.image?.id;
+  if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
+
+  if (s.step !== "collecting_doc" || !s.lastDocDraft) {
+    s.step = "ocr_choose_doc";
+    s.pendingOcrMediaId = mediaId;
+
+    return sendButtons(from, "📷 J'ai reçu une photo. Quel document voulez-vous générer ?", [
+      { id: "OCR_DEVIS", title: "Devis" },
+      { id: "OCR_FACTURE", title: "Facture" },
+      { id: "OCR_RECU", title: "Reçu" },
+      { id: "OCR_DECHARGE", title: "Décharge" },
+    ]);
+  }
+
+  return processOcrImageToDraft(from, mediaId);
+}
+// ===============================
 // Documents (texte)
 // ===============================
 async function startDocFlow(from, mode, factureKind = null) {
@@ -978,7 +1068,7 @@ async function startDocFlow(from, mode, factureKind = null) {
         : "🧾 Facture Définitive"
       : mode === "devis"
       ? "📝 Devis"
-      : mode === "decharge" // AJOUTER CE CAS
+      : mode === "decharge"
       ? "📄 Décharge"
       : "🧾 Reçu";
 
@@ -1032,7 +1122,7 @@ async function buildPreviewMessage({ profile, doc }) {
       ? doc.factureKind === "proforma"
         ? "FACTURE PRO FORMA"
         : "FACTURE DÉFINITIVE"
-      : doc.type === "decharge" // AJOUTER CE CAS
+      : doc.type === "decharge"
       ? "DÉCHARGE"
       : String(doc.type || "").toUpperCase();
 
@@ -1086,7 +1176,10 @@ async function handleDocText(from, text) {
         if (draft.items.length < LIMITS.maxItems) {
           draft.items.push(it);
         } else {
-          await sendText(from, `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`);
+          await sendText(
+            from,
+            `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`
+          );
           break;
         }
       }
@@ -1104,105 +1197,6 @@ async function handleDocText(from, text) {
 }
 
 // ===============================
-// OCR (photo → texte → draft)
-// ===============================
-async function processOcrImageToDraft(from, mediaId) {
-  const s = getSession(from);
-
-  const info = await getMediaInfo(mediaId);
-  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
-    await sendText(from, "❌ Image trop grande. Envoyez une photo plus légère.");
-    return;
-  }
-
-  const buf = await downloadMediaToBuffer(info.url);
-
-  await sendText(from, "🔎 Lecture de la photo…");
-
-  let ocrText = "";
-  try {
-    ocrText = await robustOcr(buf, "fra");
-  } catch (e) {
-    console.warn("OCR failed:", e?.message);
-    await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
-    return;
-  }
-
-  // si aucun doc en cours, on crée un draft
-  if (!s.lastDocDraft) {
-    const guessed = guessDocTypeFromOcr(ocrText) || "devis";
-    s.lastDocDraft = {
-      type: guessed,
-      factureKind: null,
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      finance: null,
-      source: "ocr",
-    };
-    s.step = "collecting_doc";
-  } else {
-    s.lastDocDraft.source = "ocr";
-  }
-
-  const parsed = parseOcrToDraft(ocrText);
-
-  if (parsed.client && !s.lastDocDraft.client) s.lastDocDraft.client = parsed.client;
-
-  if (parsed.items?.length) {
-    const room = LIMITS.maxItems - s.lastDocDraft.items.length;
-    const toAdd = parsed.items.slice(0, Math.max(0, room));
-    s.lastDocDraft.items.push(...toAdd);
-
-    if (parsed.items.length > toAdd.length) {
-      await sendText(from, `⚠️ Limite ${LIMITS.maxItems} lignes. Certains items ont été ignorés.`);
-    }
-  }
-
-  s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
-
-  const profile = await getOrCreateProfile(from);
-  const preview = await buildPreviewMessage({ profile, doc: s.lastDocDraft });
-
-  await sendText(from, preview);
-  await sendAfterPreviewMenu(from);
-}
-
-// ===============================
-// Route image intelligente
-// logo / preuve / OCR
-// ===============================
-async function handleIncomingImage(from, msg) {
-  const s = getSession(from);
-
-  // 1) logo
-  if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
-
-  // 2) preuve recharge
-  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
-
-  const mediaId = msg?.image?.id;
-  if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
-
-  // 3) si pas de doc en cours -> on demande quel doc (évite confusion)
-  if (s.step !== "collecting_doc" || !s.lastDocDraft) {
-    s.step = "ocr_choose_doc";
-    s.pendingOcrMediaId = mediaId;
-
-    return sendButtons(from, "📷 J'ai reçu une photo. Quel document voulez-vous générer ?", [
-      { id: "OCR_DEVIS", title: "Devis" },
-      { id: "OCR_FACTURE", title: "Facture" },
-      { id: "OCR_RECU", title: "Reçu" },
-      { id: "OCR_DECHARGE", title: "Décharge" }, // AJOUTER POUR DECHARGE
-    ]);
-  }
-
-  // 4) sinon OCR direct
-  return processOcrImageToDraft(from, mediaId);
-}
-
-// ===============================
 // Création PDF finale (1 crédit ou OCR_PDF_CREDITS)
 // ===============================
 async function createAndSendPdf(from) {
@@ -1214,7 +1208,6 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // Validation rapide
   try {
     validateDraft(draft);
   } catch (err) {
@@ -1222,7 +1215,6 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // Coût: OCR = plus cher au PDF final
   const cost = draft.source === "ocr" ? OCR_PDF_CREDITS : 1;
 
   const cons = await consumeCredit(from, cost, draft.source === "ocr" ? "ocr_pdf" : "pdf");
@@ -1234,11 +1226,9 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // ⚠️ si bug après débit crédits, on essaie un rollback (addCredits)
   let successAfterDebit = false;
 
   try {
-    // Numéro doc
     draft.docNumber = await nextDocNumber({
       waId: from,
       mode: draft.type,
@@ -1248,7 +1238,6 @@ async function createAndSendPdf(from) {
 
     const profile = await getOrCreateProfile(from);
 
-    // Logo buffer (optionnel)
     let logoBuf = null;
     if (profile?.logo_path) {
       try {
@@ -1264,13 +1253,12 @@ async function createAndSendPdf(from) {
         ? draft.factureKind === "proforma"
           ? "FACTURE PRO FORMA"
           : "FACTURE DÉFINITIVE"
-        : draft.type === "decharge" // AJOUTER CE CAS
+        : draft.type === "decharge"
         ? "DÉCHARGE"
         : String(draft.type || "").toUpperCase();
 
     const total = draft.finance?.gross ?? computeFinance(draft).gross;
 
-    // PDF buffer
     let pdfBuf = await buildPdfBuffer({
       docData: {
         type: title,
@@ -1284,17 +1272,15 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    // ✅ Tampon + signature
+    // ✅ Tampon + signature si disponibles (kadiStamp/kadiSignature)
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
 
-    // Save document (best effort)
     try {
       await saveDocument({ waId: from, doc: draft });
     } catch (e) {
       console.warn("saveDocument error:", e?.message);
     }
 
-    // Upload vers WhatsApp
     const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
     const up = await uploadMediaBuffer({
       buffer: pdfBuf,
@@ -1317,7 +1303,6 @@ async function createAndSendPdf(from) {
         `Solde: ${cons.balance} crédit(s)`,
     });
 
-    // Reset session
     s.step = "idle";
     s.mode = null;
     s.factureKind = null;
@@ -1327,7 +1312,6 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
-    // rollback crédits si on a débité mais on n'a pas livré le PDF
     if (!successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
@@ -1345,7 +1329,7 @@ async function confirmAndSendPdf(from) {
 }
 
 // ===============================
-// INTERACTIVE HANDLER (boutons)
+// INTERACTIVE HANDLER (boutons/lists)
 // ===============================
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
@@ -1362,24 +1346,37 @@ async function handleInteractiveReply(from, replyId) {
   // ---------- Documents ----------
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
-  
-  // ✅ AJOUT: Décharge
+
   if (replyId === "DOC_DECHARGE") {
-    const s = getSession(from);
     initDechargeFlow(s);
     return sendText(from, dechargeQuestion(1));
   }
 
   if (replyId === "DOC_FACTURE") {
+    s.step = "facture_kind";
     return sendFactureKindMenu(from);
   }
 
-  if (replyId === "FAC_PROFORMA") {
-    return startDocFlow(from, "facture", "proforma");
-  }
+  // ---------- Facture kind (⚠️ différencier contexte normal vs OCR) ----------
+  if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
+    const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
 
-  if (replyId === "FAC_DEFINITIVE") {
-    return startDocFlow(from, "facture", "definitive");
+    // si on attendait un type de facture pour OCR
+    if (s.step === "ocr_wait_facture_kind") {
+      const mediaId = s.pendingOcrMediaId;
+      s.pendingOcrMediaId = null;
+
+      if (!mediaId) {
+        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        return;
+      }
+
+      await startDocFlow(from, "facture", kind);
+      return processOcrImageToDraft(from, mediaId);
+    }
+
+    // sinon flow normal
+    return startDocFlow(from, "facture", kind);
   }
 
   // ---------- OCR : choix type doc ----------
@@ -1394,7 +1391,7 @@ async function handleInteractiveReply(from, replyId) {
 
     let mode = "devis";
     if (replyId === "OCR_RECU") mode = "recu";
-    if (replyId === "OCR_DECHARGE") mode = "decharge"; // AJOUTER POUR DECHARGE
+    if (replyId === "OCR_DECHARGE") mode = "decharge";
 
     await startDocFlow(from, mode);
     return processOcrImageToDraft(from, mediaId);
@@ -1403,28 +1400,6 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "OCR_FACTURE") {
     s.step = "ocr_wait_facture_kind";
     return sendFactureKindMenu(from);
-  }
-
-  // OCR + type facture
-  if (
-    (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") &&
-    s.step === "ocr_wait_facture_kind"
-  ) {
-    const mediaId = s.pendingOcrMediaId;
-    s.pendingOcrMediaId = null;
-
-    if (!mediaId) {
-      await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-      return;
-    }
-
-    await startDocFlow(
-      from,
-      "facture",
-      replyId === "FAC_PROFORMA" ? "proforma" : "definitive"
-    );
-
-    return processOcrImageToDraft(from, mediaId);
   }
 
   // ---------- Profil ----------
@@ -1463,7 +1438,6 @@ async function handleInteractiveReply(from, replyId) {
     return sendDocsMenu(from);
   }
 
-  // Fallback
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
 }
 
@@ -1567,12 +1541,10 @@ async function handleExportCommand(from, text) {
 async function handleCommand(from, text) {
   const lower = String(text || "").toLowerCase().trim();
 
-  // stats/top/export (admin)
   if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
   if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
   if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
 
-  // user quick commands
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     await replyBalance(from);
     return true;
@@ -1593,13 +1565,16 @@ async function handleCommand(from, text) {
     await startDocFlow(from, "recu");
     return true;
   }
-  if (lower === "decharge" || lower === "décharge") { // AJOUTER POUR DECHARGE
+  if (lower === "decharge" || lower === "décharge") {
     const s = getSession(from);
     initDechargeFlow(s);
     await sendText(from, dechargeQuestion(1));
     return true;
   }
   if (lower === "facture") {
+    // on demande type facture
+    const s = getSession(from);
+    s.step = "facture_kind";
     await sendFactureKindMenu(from);
     return true;
   }
@@ -1630,37 +1605,30 @@ async function handleIncomingMessage(value) {
       return;
     }
 
-    // activity
     try {
       await recordActivity(from);
     } catch (e) {
       logger.warn("activity_recording", e.message, { from });
     }
 
-    // welcome + onboarding (safe)
     await ensureWelcomeCredits(from);
     await maybeSendOnboarding(from);
 
-    // ✅ INTERACTIVE -> return direct (évite double messages)
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
       return;
     }
 
-    // ✅ IMAGE -> route intelligent (logo / preuve / OCR)
     if (msg.type === "image") {
       return handleIncomingImage(from, msg);
     }
 
-    // ✅ TEXT
     const text = norm(msg.text?.body);
     if (!text) return;
 
-    // admin
     if (await handleAdmin(from, text)) return;
 
-    // code recharge
     const mCode = text.match(REGEX.code);
     if (mCode) {
       const result = await redeemCode({ waId: from, code: mCode[1] });
@@ -1671,7 +1639,7 @@ async function handleIncomingMessage(value) {
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
 
-    // ✅ Décharge flow
+    // ✅ Décharge flow (questions 1..7)
     {
       const s = getSession(from);
       if (s.step === "decharge_collect" && s.decharge) {
@@ -1679,7 +1647,6 @@ async function handleIncomingMessage(value) {
         setDechargeField(s, step, text);
 
         if (step >= 7) {
-          // ✅ Ici on fabrique et envoie la décharge
           try {
             await buildAndSendDecharge({ to: from, session: s });
           } catch (e) {
@@ -1695,16 +1662,10 @@ async function handleIncomingMessage(value) {
       }
     }
 
-    // profile flow
     if (await handleProfileAnswer(from, text)) return;
-
-    // commands
     if (await handleCommand(from, text)) return;
-
-    // doc text
     if (await handleDocText(from, text)) return;
 
-    // fallback
     await sendText(from, "Tapez *MENU* pour commencer.");
   } catch (e) {
     logger.error("incoming_message", e, {

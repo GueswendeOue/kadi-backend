@@ -2,14 +2,15 @@
 "use strict";
 
 /**
- * Tampon circulaire BLEU (PNG) à partir du profil.
- * - Dépendance: npm i canvas
- * - Export: generateStampPngBuffer({ profile, logoBuffer?, title? })
- *   - title (optionnel): texte au centre (ex: "GERANT", "DIRECTEUR")
+ * Tampon circulaire BLEU (PNG) + application au PDF (overlay).
  *
- * Notes:
- * - Couleur: bleu officiel (#0B57D0)
- * - Fond transparent
+ * Dépendances:
+ * - npm i canvas
+ * - npm i pdf-lib
+ *
+ * Exports:
+ * - generateStampPngBuffer({ profile, logoBuffer?, title? }) -> Buffer(PNG)
+ * - applyStampToPdfBuffer(pdfBuffer, profile, opts?) -> Buffer(PDF)
  */
 
 let createCanvas, loadImage;
@@ -18,6 +19,13 @@ try {
 } catch (e) {
   createCanvas = null;
   loadImage = null;
+}
+
+let PDFLib;
+try {
+  PDFLib = require("pdf-lib");
+} catch (e) {
+  PDFLib = null;
 }
 
 const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
@@ -29,6 +37,12 @@ function safe(v) {
 function requireCanvas() {
   if (!createCanvas) {
     throw new Error("canvas non installé. Faites: npm i canvas");
+  }
+}
+
+function requirePdfLib() {
+  if (!PDFLib) {
+    throw new Error("pdf-lib non installé. Faites: npm i pdf-lib");
   }
 }
 
@@ -61,7 +75,6 @@ function makeStampTextLines(profile) {
  */
 function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
   const chars = String(text || "").split("");
-  const radius = Math.abs(radiusOffset);
   const angleStep = (Math.PI / 180) * spacingCoef;
 
   let angle = startAngle - (chars.length * angleStep) / 2;
@@ -82,11 +95,6 @@ function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0
 
 /**
  * Génère un tampon circulaire bleu (PNG)
- * @param {Object} params
- * @param {Object} params.profile business profile
- * @param {Buffer|null} params.logoBuffer optionnel
- * @param {string|null} params.title texte au centre (ex "GERANT", "DIRECTEUR")
- * @returns {Promise<Buffer>} PNG Buffer
  */
 async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
   requireCanvas();
@@ -95,14 +103,12 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
-  // fond transparent
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
   const outerR = 240;
   const innerR = 185;
 
-  // style bleu
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
 
@@ -118,7 +124,6 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   ctx.arc(center, center, innerR, 0, Math.PI * 2);
   ctx.stroke();
 
-  // texte
   const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
 
   // texte haut (circulaire)
@@ -149,17 +154,15 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
       const logoSize = 120;
       ctx.drawImage(img, -logoSize / 2, -logoSize / 2 - 35, logoSize, logoSize);
     } catch (_) {
-      // ignore logo error
+      // ignore
     }
   }
 
-  // titre au centre
   const centerTitle = safe(title) || safe(profile?.stamp_title) || "TAMPON";
   ctx.font = "bold 34px Arial";
   ctx.textAlign = "center";
   ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 40);
 
-  // adresse (optionnel)
   if (addr) {
     ctx.font = "bold 18px Arial";
     ctx.textAlign = "center";
@@ -171,4 +174,95 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   return canvas.toBuffer("image/png");
 }
 
-module.exports = { generateStampPngBuffer };
+/**
+ * Applique le tampon au PDF
+ *
+ * @param {Buffer} pdfBuffer
+ * @param {Object} profile
+ * @param {Object} [opts]
+ * @param {"all"|"last"} [opts.pages="all"] - toutes les pages ou uniquement la dernière
+ * @param {"bottom-right"|"bottom-left"|"top-right"|"top-left"|"center"} [opts.position="bottom-right"]
+ * @param {number} [opts.size=120] - taille du tampon sur le PDF (en points)
+ * @param {number} [opts.opacity=0.9] - 0..1
+ * @param {number} [opts.margin=18] - marge aux bords
+ * @param {string|null} [opts.title=null] - override texte central
+ * @returns {Promise<Buffer>}
+ */
+async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
+  requirePdfLib();
+  if (!Buffer.isBuffer(pdfBuffer)) throw new Error("applyStampToPdfBuffer: pdfBuffer doit être un Buffer");
+
+  // Si l’utilisateur veut désactiver le tampon via profil
+  // (optionnel, tu peux enlever si tu veux toujours tamponner)
+  if (profile?.stamp_enabled === false) return pdfBuffer;
+
+  const {
+    pages = "all",
+    position = "bottom-right",
+    size = 120,
+    opacity = 0.9,
+    margin = 18,
+    title = null,
+  } = opts;
+
+  const { PDFDocument } = PDFLib;
+
+  // Génère le PNG du tampon (sans logo pour l’instant)
+  // (si tu veux inclure le logo dans le tampon, tu peux passer logoBuffer)
+  const stampPng = await generateStampPngBuffer({ profile, logoBuffer: null, title });
+
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
+  const stampImg = await pdfDoc.embedPng(stampPng);
+
+  const allPages = pdfDoc.getPages();
+  if (!allPages.length) return pdfBuffer;
+
+  const targetPages =
+    pages === "last" ? [allPages[allPages.length - 1]] : allPages;
+
+  for (const page of targetPages) {
+    const { width, height } = page.getSize();
+
+    // conserve les proportions
+    const pngDims = stampImg.scale(1);
+    const ratio = pngDims.width / pngDims.height;
+    const drawW = Number(size) || 120;
+    const drawH = drawW / ratio;
+
+    let x = margin;
+    let y = margin;
+
+    if (position === "bottom-right") {
+      x = width - drawW - margin;
+      y = margin;
+    } else if (position === "bottom-left") {
+      x = margin;
+      y = margin;
+    } else if (position === "top-right") {
+      x = width - drawW - margin;
+      y = height - drawH - margin;
+    } else if (position === "top-left") {
+      x = margin;
+      y = height - drawH - margin;
+    } else if (position === "center") {
+      x = (width - drawW) / 2;
+      y = (height - drawH) / 2;
+    }
+
+    page.drawImage(stampImg, {
+      x,
+      y,
+      width: drawW,
+      height: drawH,
+      opacity: Math.max(0, Math.min(1, Number(opacity) || 0.9)),
+    });
+  }
+
+  const out = await pdfDoc.save();
+  return Buffer.from(out);
+}
+
+module.exports = {
+  generateStampPngBuffer,
+  applyStampToPdfBuffer, // ✅ ce que ton engine attend
+};
