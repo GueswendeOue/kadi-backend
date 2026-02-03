@@ -210,8 +210,6 @@ async function buildPdfBuffer({
 module.exports = { buildPdfBuffer };
 "use strict";
 
-const PDFDocument = require("pdfkit");
-const QRCode = require("qrcode");
 
 // ================= Utils =================
 function safe(v) {
