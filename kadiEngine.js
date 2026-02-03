@@ -1,1378 +1,208 @@
-// kadiEngine.js
 "use strict";
 
 // ================= Logger =================
 const logger = {
-  info: (context, message, meta = {}) => {
-    console.log(`[KADI/INFO/${context}]`, message, meta);
-  },
-  warn: (context, message, meta = {}) => {
-    console.warn(`[KADI/WARN/${context}]`, message, meta);
-  },
-  error: (context, error, meta = {}) => {
-    console.error(
-      `[KADI/ERROR/${context}]`,
-      error?.message || error,
-      { ...meta, stack: error?.stack }
-    );
-  },
-  metric: (name, duration, success = true, meta = {}) => {
-    console.log(`[KADI/METRIC/${name}] ${duration}ms`, { success, ...meta });
-  },
+  info: (c, m, meta = {}) => console.log(`[KADI/INFO/${c}]`, m, meta),
+  warn: (c, m, meta = {}) => console.warn(`[KADI/WARN/${c}]`, m, meta),
+  error: (c, e, meta = {}) =>
+    console.error(`[KADI/ERROR/${c}]`, e?.message || e, { ...meta, stack: e?.stack }),
 };
 
-// ================= Tampon & Signature (optionnels) =================
-let kadiStamp = null;
-let kadiSignature = null;
-
-try {
-  kadiStamp = require("./kadiStamp");
-} catch (e) {
-  console.warn("⚠️ kadiStamp module not found, stamp will be skipped");
-}
-
-try {
-  kadiSignature = require("./kadiSignature");
-} catch (e) {
-  console.warn("⚠️ kadiSignature module not found, signature will be skipped");
-}
-
-// ================= Broadcast (optionnel) =================
-let getBroadcastRecipients = null;
-try {
-  ({ getBroadcastRecipients } = require("./kadiBroadcastRepo"));
-} catch (e) {
-  console.warn("⚠️ kadiBroadcastRepo not found, broadcast disabled");
-}
-
-// ================= Imports internes =================
+// ================= Imports =================
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
 const { saveDocument } = require("./kadiRepo");
-const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
-const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
-const { ocrImageBuffer } = require("./kadiOcr");
-
-const {
-  sendText,
-  sendButtons,
-  sendList, // optionnel
-  getMediaInfo,
-  downloadMediaToBuffer,
-  uploadMediaBuffer,
-  sendDocument,
-} = require("./whatsappApi");
-
-const {
-  getBalance,
-  consumeCredit,
-  createRechargeCodes,
-  redeemCode,
-  addCredits,
-} = require("./kadiCreditsRepo");
-
+const { getOrCreateProfile, updateProfile } = require("./store");
+const { uploadMediaBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
+const { sendText, sendButtons, sendList, getMediaInfo, downloadMediaToBuffer, sendDocument } = require("./whatsappApi");
+const { getBalance, consumeCredit, addCredits } = require("./kadiCreditsRepo");
 const { recordActivity } = require("./kadiActivityRepo");
-const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
 
-// ---------------- Config ----------------
-const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
-const OM_NUMBER = process.env.OM_NUMBER || "76894642";
-const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
-const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
+let kadiStamp = null;
+try { kadiStamp = require("./kadiStamp"); } catch (_) {}
 
-const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
-const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
-
-const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
-const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
-
-const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 400);
-const BROADCAST_LIMIT = Number(process.env.BROADCAST_LIMIT || 5000);
-
-// ---------------- Regex ----------------
-const REGEX = {
-  client: /^client\s*[:\-]\s*(.+)$/i,
-  total: /total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i,
-  montantTotal: /montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i,
-  code: /^code\s+(kdi-[\w-]+)/i,
-};
-
-// ---------------- Limits ----------------
 const LIMITS = {
-  maxItems: 50,
-  maxImageSize: 5 * 1024 * 1024, // 5MB
-  maxOcrRetries: 3,
-  maxClientNameLength: 100,
+  maxItems: 100,
   maxItemLabelLength: 200,
+  maxClientNameLength: 100,
 };
-
-const _WELCOME_CACHE = new Map(); // waId -> timestamp(ms)
 
 // ================= Utils =================
-function safe(v) {
-  return String(v || "").trim();
-}
-
-function norm(s) {
-  return String(s || "").trim();
-}
-
-function formatDateISO() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function parseDaysArg(text, defDays) {
-  const m = String(text || "").trim().match(/(?:\s+)(\d{1,3})\b/);
-  if (!m) return defDays;
-  const d = Number(m[1]);
-  if (!Number.isFinite(d) || d <= 0) return defDays;
-  return Math.min(d, 365);
-}
-
-function isValidWhatsAppId(id) {
-  return /^\d+$/.test(id) && id.length >= 8 && id.length <= 15;
-}
-
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""));
-}
-
-function cleanNumber(str) {
-  if (str == null) return null;
-  let s = String(str).trim();
+const safe = (v) => String(v || "").trim();
+const norm = (v) => String(v || "").trim();
+const cleanNumber = (s) => {
   if (!s) return null;
-
-  const hasComma = s.includes(",");
-  const hasDot = s.includes(".");
-
-  if (hasComma && !hasDot) {
-    const parts = s.split(",");
-    if (parts.length === 2 && parts[1].length !== 3) s = `${parts[0]}.${parts[1]}`;
-    else s = s.replace(/,/g, "");
-  } else {
-    s = s.replace(/,/g, "");
-  }
-
-  s = s.replace(/\s/g, "");
-  const n = Number(s);
+  const n = Number(String(s).replace(/[^\d]/g, ""));
   return Number.isFinite(n) ? n : null;
-}
+};
 
-function extractNumbersSmart(text) {
-  const t = String(text || "");
-  const digitTokens = t.match(/\d+/g) || [];
+const REGEX = {
+  client: /^client\s*[:\-]\s*(.+)$/i,
+};
 
-  if (digitTokens.length === 0) {
-    const dec = t.match(/\d+(?:[.,]\d+)?/g) || [];
-    return dec.map(cleanNumber).filter((n) => typeof n === "number");
-  }
-
-  const merged = [];
-  for (let i = 0; i < digitTokens.length; i++) {
-    const cur = digitTokens[i];
-    const next = digitTokens[i + 1];
-
-    if (cur.length <= 3 && next && next.length === 3) {
-      let acc = cur;
-      let j = i + 1;
-      while (j < digitTokens.length && digitTokens[j].length === 3) {
-        acc += digitTokens[j];
-        j++;
-      }
-      merged.push(acc);
-      i = j - 1;
-      continue;
-    }
-
-    merged.push(cur);
-  }
-
-  return merged.map(cleanNumber).filter((n) => typeof n === "number");
-}
-
-function escapeCsvValue(str) {
-  if (typeof str !== "string") return str;
-  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
-}
-
-// ===============================
-// TAMPON & SIGNATURE (wrapper)
-// ===============================
-async function applyStampAndSignatureIfAny(pdfBuffer, profile) {
-  let buf = pdfBuffer;
-
+// ================= Stamp wrapper =================
+async function applyStampIfAny(pdfBuffer, profile) {
   if (kadiStamp?.applyStampToPdfBuffer) {
     try {
-      buf = await kadiStamp.applyStampToPdfBuffer(buf, profile);
+      return await kadiStamp.applyStampToPdfBuffer(pdfBuffer, profile);
     } catch (e) {
       logger.warn("stamp", e.message);
     }
   }
-
-  if (kadiSignature?.applySignatureToPdfBuffer) {
-    try {
-      buf = await kadiSignature.applySignatureToPdfBuffer(buf, profile);
-    } catch (e) {
-      logger.warn("signature", e.message);
-    }
-  }
-
-  return buf;
+  return pdfBuffer;
 }
 
-// ===============================
-// CATALOGUE DOCUMENTS (inline)
-// ===============================
-const DOC_CATALOG = [
-  { id: "DOC_DEVIS", title: "Devis", desc: "Proposition de prix", kind: "devis" },
-  { id: "DOC_FACTURE", title: "Facture", desc: "Facture client", kind: "facture" },
-  { id: "DOC_RECU", title: "Reçu", desc: "Reçu de paiement", kind: "recu" },
-  { id: "DOC_DECHARGE", title: "Décharge", desc: "Décharge simple", kind: "decharge" },
-];
-
-// ---------------- Parsing lignes ----------------
-function hasDimensionPattern(raw) {
-  const s = String(raw || "").toLowerCase();
-
-  if (/\b\d+(?:[.,]\d+)?\s*(cm|mm|m)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(cm|mm|m)?\b/.test(s)) return true;
-
-  const m = s.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\b/);
-  if (m) {
-    const a = cleanNumber(m[1]);
-    const b = cleanNumber(m[2]);
-    if (a != null && b != null) {
-      if (a <= 500 && b <= 500) return true;
-    }
-  }
-  return false;
-}
-
-function parseStructuredItemLine(line) {
-  const raw = String(line || "").trim();
-  if (!raw) return null;
-
-  const getField = (key) => {
-    const re = new RegExp(`\\b${key}\\b\\s*[:=]\\s*([^|;,]+)`, "i");
-    const m = raw.match(re);
-    return m ? m[1].trim() : null;
-  };
-
-  const d = getField("d") || getField("designation") || getField("désignation");
-  const qStr =
-    getField("q") ||
-    getField("qty") ||
-    getField("qte") ||
-    getField("qté") ||
-    getField("quantite") ||
-    getField("quantité");
-  const puStr = getField("pu") || getField("prix") || getField("prixunitaire") || getField("unitprice");
-
-  if (!d && !qStr && !puStr) return null;
-
-  const qty = cleanNumber(qStr) ?? 1;
-  const unitPrice = cleanNumber(puStr) ?? 0;
-  const label = (d || raw).substring(0, LIMITS.maxItemLabelLength);
-
-  const amount = Number(qty) * Number(unitPrice || 0);
-
-  return {
-    label,
-    qty: Number(qty) || 1,
-    unitPrice: Number(unitPrice) || 0,
-    amount: Number.isFinite(amount) ? amount : 0,
-    raw,
-  };
-}
-
-function parseItemLine(line) {
-  const raw = String(line || "").trim();
-  if (!raw) return null;
-
-  const isDim = hasDimensionPattern(raw);
-  let qty = null;
-
-  if (!isDim) {
-    const xAfter = raw.match(/(?:^|\s)x\s*(\d{1,3})\b/i);
-    const xBefore = raw.match(/(?:^|\s)(\d{1,3})\s*x\b/i);
-    if (xAfter) qty = Number(xAfter[1]);
-    else if (xBefore) qty = Number(xBefore[1]);
-  }
-
-  const numbers = extractNumbersSmart(raw).filter((n) => Number.isFinite(n));
-
-  let unitPrice = 0;
-  if (numbers.length === 1) unitPrice = numbers[0];
-  else if (numbers.length >= 2) {
-    const nonYear = numbers.filter((n) => !(n >= 1900 && n <= 2100));
-    const pool = nonYear.length ? nonYear : numbers;
-
-    if (isDim) {
-      const bigs = pool.filter((n) => n >= 500);
-      unitPrice = bigs.length ? Math.max(...bigs) : Math.max(...pool);
-    } else {
-      unitPrice = Math.max(...pool);
-    }
-  }
-
-  if (!qty) {
-    const smalls = numbers.filter((n) => Number.isInteger(n) && n > 0 && n <= 100);
-    qty = smalls.length ? smalls[0] : 1;
-  }
-
-  let label = raw;
-
-  if (!isDim) {
-    label = label
-      .replace(/(?:^|\s)(\d{1,3})\s*x\b/gi, " ")
-      .replace(/(?:^|\s)x\s*(\d{1,3})\b/gi, " ");
-  }
-
-  label = label.replace(/[-:]+/g, " ").replace(/\s+/g, " ").trim() || raw;
-  label = label.substring(0, LIMITS.maxItemLabelLength);
-
-  const amount = Number(qty) * Number(unitPrice || 0);
-
-  return {
-    label,
-    qty: Number(qty) || 1,
-    unitPrice: Number(unitPrice) || 0,
-    amount: Number.isFinite(amount) ? amount : 0,
-    raw,
-  };
-}
-
-function sumItems(items) {
-  let sum = 0;
-  for (const it of items || []) {
-    const a = Number(it?.amount);
-    if (Number.isFinite(a)) sum += a;
-  }
-  return sum;
-}
-
+// ================= Finance =================
 function computeFinance(doc) {
-  const subtotal = sumItems(doc.items || []);
-  const gross = subtotal;
-  return { subtotal, gross };
+  let sum = 0;
+  for (const it of doc.items || []) sum += Number(it.amount || 0);
+  return { gross: sum };
 }
 
-// ===============================
-// OCR helpers
-// ===============================
-function guessDocTypeFromOcr(text) {
-  const t = String(text || "").toLowerCase();
-  if (t.includes("facture")) return "facture";
-  if (t.includes("reçu") || t.includes("recu")) return "recu";
-  if (t.includes("devis") || t.includes("proforma") || t.includes("pro forma")) return "devis";
-  if (t.includes("décharge") || t.includes("decharge")) return "decharge";
-  return null;
-}
-
-function extractTotalFromOcr(text) {
-  const t = String(text || "");
-  const m =
-    t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) ||
-    t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
-  if (!m) return null;
-  return cleanNumber(m[1]);
-}
-
-function parseOcrToDraft(ocrText) {
-  const lines = String(ocrText || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  let client = null;
-  for (const line of lines) {
-    const m =
-      line.match(/^client\s*[:\-]\s*(.+)$/i) ||
-      line.match(/^nom\s*[:\-]\s*(.+)$/i) ||
-      line.match(/^doit\s*[:\-]\s*(.+)$/i);
-    if (m) {
-      client = (m[1] || "").trim().substring(0, LIMITS.maxClientNameLength);
-      break;
-    }
-  }
-
-  const items = [];
-  for (const line of lines) {
-    const low = line.toLowerCase();
-    if (
-      low.startsWith("total") ||
-      low.startsWith("date") ||
-      low.startsWith("facture") ||
-      low.startsWith("devis") ||
-      low.startsWith("reçu") ||
-      low.startsWith("recu") ||
-      low.startsWith("décharge") ||
-      low.startsWith("decharge") ||
-      low.startsWith("ifu") ||
-      low.startsWith("rccm") ||
-      low.startsWith("adresse") ||
-      low.startsWith("tél") ||
-      low.startsWith("tel") ||
-      low.startsWith("email")
-    ) continue;
-
-    if (/\d/.test(line)) {
-      const itStructured = parseStructuredItemLine(line);
-      const it = itStructured || parseItemLine(line);
-      if (it && items.length < LIMITS.maxItems) items.push(it);
-    }
-  }
-
-  const detected = extractTotalFromOcr(ocrText);
-  const calc = sumItems(items);
-  const finance = { subtotal: calc, gross: detected ?? calc };
-
-  return { client, items, finance };
-}
-
-async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await ocrImageBuffer(buffer, lang);
-    } catch (e) {
-      if (attempt === maxRetries) throw e;
-      await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
-    }
-  }
-}
-
-// ===============================
-// ADMIN HANDLER
-// ===============================
-function ensureAdmin(waId) {
-  return ADMIN_WA_ID && waId === ADMIN_WA_ID;
-}
-
-async function broadcastToMany({ fromAdmin, messageText }) {
-  if (!ensureAdmin(fromAdmin)) {
-    await sendText(fromAdmin, "❌ Commande réservée à l'administrateur.");
-    return;
-  }
-  if (typeof getBroadcastRecipients !== "function") {
-    await sendText(fromAdmin, "❌ Broadcast indisponible (kadiBroadcastRepo manquant).");
-    return;
-  }
-
-  const recipients = await getBroadcastRecipients({ limit: BROADCAST_LIMIT });
-  if (!recipients.length) {
-    await sendText(fromAdmin, "⚠️ Aucun destinataire trouvé.");
-    return;
-  }
-
-  await sendText(fromAdmin, `📣 Broadcast en cours… Destinataires: ${recipients.length}`);
-
-  let ok = 0;
-  let fail = 0;
-
-  for (const waId of recipients) {
-    try {
-      if (!isValidWhatsAppId(waId)) continue;
-      if (waId === fromAdmin) continue;
-
-      await sendText(
-        waId,
-        `📢 *Mise à jour KADI*\n\n${messageText}\n\nPour ne plus recevoir: répondez *STOP*`
-      );
-      ok += 1;
-
-      await new Promise((r) => setTimeout(r, BROADCAST_DELAY_MS));
-    } catch (e) {
-      fail += 1;
-    }
-  }
-
-  await sendText(fromAdmin, `✅ Broadcast terminé.\nOK: ${ok}\nÉchecs: ${fail}`);
-}
-
-async function handleAdmin(from, text) {
-  if (!ensureAdmin(from)) return false;
-
-  const lower = String(text || "").toLowerCase().trim();
-
-  // ADMIN BROADCAST <message>
-  if (lower.startsWith("admin broadcast ")) {
-    const msg = text.replace(/^admin broadcast\s+/i, "").trim();
-    if (!msg) {
-      await sendText(from, "❌ Format: ADMIN BROADCAST <message>");
-      return true;
-    }
-    await broadcastToMany({ fromAdmin: from, messageText: msg });
-    return true;
-  }
-
-  if (lower.startsWith("admin create")) {
-    const match = text.match(/^admin create\s+(\d+)\s+(\d+)$/i);
-    if (!match) {
-      await sendText(from, "❌ Format: ADMIN CREATE <nb_codes> <credits_par_code>");
-      return true;
-    }
-    const nb = parseInt(match[1], 10);
-    const credits = parseInt(match[2], 10);
-
-    try {
-      const codes = await createRechargeCodes(nb, credits);
-      let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
-      codes.forEach((code, i) => {
-        response += `${i + 1}. ${code}\n`;
-      });
-      await sendText(from, response);
-    } catch (e) {
-      logger.error("admin_create_codes", e, { from, nb, credits });
-      await sendText(from, "❌ Erreur création codes.");
-    }
-    return true;
-  }
-
-  if (lower.startsWith("admin add")) {
-    const match = text.match(/^admin add\s+(\d+)\s+(\d+)$/i);
-    if (!match) {
-      await sendText(from, "❌ Format: ADMIN ADD <wa_id> <credits>");
-      return true;
-    }
-    const targetWaId = match[1];
-    const credits = parseInt(match[2], 10);
-
-    if (!isValidWhatsAppId(targetWaId)) {
-      await sendText(from, "❌ WhatsApp ID invalide.");
-      return true;
-    }
-
-    try {
-      await addCredits(targetWaId, credits, "admin_add");
-      const newBalance = await getBalance(targetWaId);
-      await sendText(from, `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`);
-    } catch (e) {
-      logger.error("admin_add_credits", e, { from, targetWaId, credits });
-      await sendText(from, "❌ Erreur lors de l'ajout de crédits.");
-    }
-    return true;
-  }
-
-  if (lower === "admin" || lower === "admin help") {
-    await sendText(
-      from,
-      "👨‍💼 *Commandes Admin*\n\n" +
-        "📊 Stats:\n" +
-        "• /stats\n" +
-        "• /top 30\n" +
-        "• /export 30\n\n" +
-        "📣 Broadcast:\n" +
-        "• ADMIN BROADCAST <message>\n\n" +
-        "💰 Crédits:\n" +
-        "• ADMIN ADD <wa_id> <credits>\n\n" +
-        "🎫 Codes recharge:\n" +
-        "• ADMIN CREATE <nb_codes> <credits_par_code>"
-    );
-    return true;
-  }
-
-  return false;
-}
-
-// ===============================
-// DÉCHARGE (FLOW SIMPLE)
-// ===============================
-function initDechargeFlow(session) {
-  session.mode = "decharge";
-  session.step = "decharge_collect";
-  session.decharge = {
-    step: 1,
-    a_name: null,
-    a_piece: null,
-    a_phone: null,
-    b_name: null,
-    b_piece: null,
-    b_phone: null,
-    story: null,
-  };
-}
-
-function isZero(v) {
-  const s = safe(v).toLowerCase();
-  return s === "0" || s === "non" || s === "n/a";
-}
-
-function dechargeQuestion(step) {
-  switch (step) {
-    case 1: return "1/7 — Partie 1 : Nom complet ? (ou 0)";
-    case 2: return "2/7 — Partie 1 : Numéro de pièce (CNIB / Passeport) ? (ou 0)";
-    case 3: return "3/7 — Partie 1 : Téléphone WhatsApp ? (ou 0)";
-    case 4: return "4/7 — Partie 2 (celui qui remet) : Nom complet ? (ou 0)";
-    case 5: return "5/7 — Partie 2 : Numéro de pièce (CNIB / Passeport) ? (ou 0)";
-    case 6: return "6/7 — Partie 2 : Téléphone WhatsApp ? (ou 0)";
-    case 7: return "7/7 — Story : Décris en 1 phrase le contexte (ex: « Remise de … »)";
-    default: return null;
-  }
-}
-
-function setDechargeField(session, step, answer) {
-  const d = session.decharge;
-  const v = safe(answer);
-  const val = isZero(v) ? null : v;
-
-  if (step === 1) d.a_name = val;
-  if (step === 2) d.a_piece = val;
-  if (step === 3) d.a_phone = val;
-  if (step === 4) d.b_name = val;
-  if (step === 5) d.b_piece = val;
-  if (step === 6) d.b_phone = val;
-  if (step === 7) d.story = val || "";
-}
-
-function buildDechargeClientName(session) {
-  const d = session.decharge || {};
-  return d.a_name || "—";
-}
-
-async function buildAndSendDecharge({ to, session }) {
-  const profile = await getOrCreateProfile(to);
-
-  let logoBuf = null;
-  if (profile?.logo_path) {
-    try {
-      const signed = await getSignedLogoUrl(profile.logo_path);
-      logoBuf = await downloadSignedUrlToBuffer(signed);
-    } catch (_) {}
-  }
-
-  const dateISO = formatDateISO();
-  const docNumber = await nextDocNumber({ waId: to, mode: "decharge", factureKind: null, dateISO });
-
-  const d = session.decharge || {};
-
-  const payload = {
-    type: "DÉCHARGE",
-    docNumber,
-    date: dateISO,
-    client: buildDechargeClientName(session),
-    items: [
-      { label: "Partie 1 — Nom", qty: 1, unitPrice: 0, amount: 0, raw: d.a_name || "—" },
-      { label: "Partie 1 — Pièce", qty: 1, unitPrice: 0, amount: 0, raw: d.a_piece || "—" },
-      { label: "Partie 1 — Téléphone", qty: 1, unitPrice: 0, amount: 0, raw: d.a_phone || "—" },
-      { label: "Partie 2 — Nom", qty: 1, unitPrice: 0, amount: 0, raw: d.b_name || "—" },
-      { label: "Partie 2 — Pièce", qty: 1, unitPrice: 0, amount: 0, raw: d.b_piece || "—" },
-      { label: "Partie 2 — Téléphone", qty: 1, unitPrice: 0, amount: 0, raw: d.b_phone || "—" },
-      { label: "Contexte", qty: 1, unitPrice: 0, amount: 0, raw: d.story || "—" },
-    ],
-    total: 0,
-    decharge: {
-      partie1: { nom: d.a_name, piece: d.a_piece, phone: d.a_phone },
-      partie2: { nom: d.b_name, piece: d.b_piece, phone: d.b_phone },
-      story: d.story || "",
-    },
-  };
-
-  let pdfBuf = await buildPdfBuffer({
-    docData: payload,
-    businessProfile: profile,
-    logoBuffer: logoBuf,
-  });
-
-  pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
-
-  const fileName = `DECHARGE-${docNumber}-${formatDateISO()}.pdf`;
-  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
-  if (!up?.id) throw new Error("Upload PDF échoué");
-
-  await sendDocument({
-    to,
-    mediaId: up.id,
-    filename: fileName,
-    caption: `✅ Décharge prête — ${docNumber}`,
-  });
-
-  session.step = "idle";
-  session.mode = null;
-  session.decharge = null;
-
-  await sendHomeMenu(to);
-}
-
-// ===============================
-// Welcome credits + Onboarding
-// ===============================
-async function ensureWelcomeCredits(waId) {
-  try {
-    if (!isValidWhatsAppId(waId)) return;
-
-    const cached = _WELCOME_CACHE.get(waId);
-    if (cached && Date.now() - cached < 24 * 60 * 60 * 1000) return;
-
-    const p = await getOrCreateProfile(waId);
-
-    if (p && p.welcome_credits_granted === true) {
-      _WELCOME_CACHE.set(waId, Date.now());
-      return;
-    }
-
-    const bal = await getBalance(waId);
-    if (bal > 0) {
-      _WELCOME_CACHE.set(waId, Date.now());
-      try {
-        await updateProfile(waId, { welcome_credits_granted: true });
-      } catch (_) {}
-      return;
-    }
-
-    await addCredits(waId, WELCOME_CREDITS, "welcome");
-    _WELCOME_CACHE.set(waId, Date.now());
-
-    try {
-      await updateProfile(waId, { welcome_credits_granted: true });
-    } catch (_) {}
-
-    await sendText(
-      waId,
-      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`
-    );
-  } catch (e) {
-    console.warn("⚠️ ensureWelcomeCredits:", e?.message);
-  }
-}
-
-async function maybeSendOnboarding(from) {
-  try {
-    const p = await getOrCreateProfile(from);
-    if (p?.onboarding_done === true) return;
-
-    const msg =
-      `👋 Bienvenue sur *KADI*.\n\n` +
-      `✅ *Devis / Facture / Reçu / Décharge* en 30 secondes.\n` +
-      `📷 Envoyez une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
-      `👇 Choisissez :`;
-
-    await sendButtons(from, msg, [
-      { id: "HOME_DOCS", title: "Créer" },
-      { id: "HOME_PROFILE", title: "Profil" },
-      { id: "HOME_CREDITS", title: "Crédits" },
-    ]);
-
-    await markOnboardingDone(from, 1);
-  } catch (e) {
-    console.warn("⚠️ onboarding:", e?.message);
-  }
-}
-
-// ===============================
-// Menus
-// ===============================
+// ================= Menus =================
 async function sendHomeMenu(to) {
-  return sendButtons(to, "🏠 *Menu KADI* — choisissez :", [
+  return sendButtons(to, "🏠 *Menu KADI*", [
     { id: "HOME_DOCS", title: "Documents" },
-    { id: "HOME_CREDITS", title: "Crédits" },
     { id: "HOME_PROFILE", title: "Profil" },
+    { id: "HOME_CREDITS", title: "Crédits" },
   ]);
 }
 
-// ✅ Documents en LIST si possible, sinon fallback buttons
 async function sendDocsMenu(to) {
-  const canList = typeof sendList === "function";
-
-  if (!canList) {
-    return sendButtons(to, "📄 Quel document voulez-vous créer ?", [
-      { id: "DOC_DEVIS", title: "Devis" },
-      { id: "DOC_FACTURE", title: "Facture" },
-      { id: "DOC_RECU", title: "Reçu" },
-      { id: "DOC_DECHARGE", title: "Décharge" },
-    ]);
-  }
-
-  const rows = DOC_CATALOG.map((d) => ({
-    id: d.id,
-    title: d.title,
-    description: d.desc || "",
-  }));
-
-  return sendList(to, {
-    header: "Documents",
-    body: "Quel document voulez-vous créer ?",
-    buttonText: "Choisir",
-    sections: [{ title: "Création de documents", rows }],
-  });
-}
-
-async function sendFactureKindMenu(to) {
-  return sendButtons(to, "🧾 Quel type de facture ?", [
-    { id: "FAC_PROFORMA", title: "Pro forma" },
-    { id: "FAC_DEFINITIVE", title: "Définitive" },
-    { id: "BACK_DOCS", title: "Retour" },
+  return sendButtons(to, "📄 Quel document ?", [
+    { id: "DOC_DEVIS", title: "Devis" },
+    { id: "DOC_FACTURE", title: "Facture" },
+    { id: "DOC_RECU", title: "Reçu" },
+    { id: "DOC_DECHARGE", title: "Décharge" },
   ]);
 }
 
-async function sendCreditsMenu(to) {
-  return sendButtons(to, "💳 Crédits KADI", [
-    { id: "CREDITS_SOLDE", title: "Voir solde" },
-    { id: "CREDITS_RECHARGE", title: "Recharger" },
-    { id: "BACK_HOME", title: "Menu" },
+async function sendAddMoreMenu(to) {
+  return sendButtons(to, "✅ Produit ajouté. Que faire ?", [
+    { id: "ITEM_ADD_MORE", title: "Ajouter" },
+    { id: "ITEM_FINISH", title: "Terminer" },
+    { id: "BACK_DOCS", title: "Annuler" },
   ]);
 }
 
-async function sendProfileMenu(to) {
-  return sendButtons(to, "🏢 Profil entreprise", [
-    { id: "PROFILE_EDIT", title: "Configurer" },
-    { id: "PROFILE_STAMP", title: "Tampon" },
-    { id: "BACK_HOME", title: "Menu" },
-  ]);
-}
-
-async function sendAfterPreviewMenu(to) {
-  return sendButtons(to, "✅ Vérifiez. Que souhaitez-vous faire ?", [
-    { id: "DOC_CONFIRM", title: "Confirmer (PDF)" },
-    { id: "DOC_RESTART", title: "Recommencer" },
-    { id: "BACK_HOME", title: "Menu" },
-  ]);
-}
-
-// ===============================
-// Menu Tampon (WhatsApp-friendly, 3 boutons)
-// ===============================
-function stampPosLabel(pos) {
-  if (pos === "bottom-left") return "Bas gauche";
-  if (pos === "top-right") return "Haut droite";
-  if (pos === "top-left") return "Haut gauche";
-  return "Bas droite";
-}
-
-function stampSizeLabel(size) {
-  const n = Number(size || 170);
-  if (n <= 150) return "Petit";
-  if (n >= 200) return "Grand";
-  return "Normal";
-}
-
-async function sendStampMenu(to) {
-  const p = await getOrCreateProfile(to);
-
-  const enabled = p?.stamp_enabled !== false; // default ON
-  const pos = p?.stamp_position || "bottom-right";
-  const size = p?.stamp_size || 170;
-  const title = p?.stamp_title || "—";
-
-  const header =
-    `🟦 *Tampon (PDF)*\n\n` +
-    `• Statut : *${enabled ? "ON ✅" : "OFF ❌"}*\n` +
-    `• Fonction : *${title}*\n` +
-    `• Position : *${stampPosLabel(pos)}*\n` +
-    `• Taille : *${stampSizeLabel(size)}*`;
-
-  return sendButtons(to, header + "\n\n👇 Choisissez :", [
-    { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },
-    { id: "STAMP_EDIT_TITLE", title: "Fonction" },
-    { id: "STAMP_MORE", title: "Position/Taille" },
-  ]);
-}
-
-async function sendStampMoreMenu(to) {
-  const p = await getOrCreateProfile(to);
-  const pos = p?.stamp_position || "bottom-right";
-  const size = p?.stamp_size || 170;
-
-  const txt =
-    `🟦 *Réglages tampon*\n\n` +
-    `• Position : *${stampPosLabel(pos)}*\n` +
-    `• Taille : *${stampSizeLabel(size)}*`;
-
-  return sendButtons(to, txt + "\n\n👇 Choisissez :", [
-    { id: "STAMP_POS", title: "Position" },
-    { id: "STAMP_SIZE", title: "Taille" },
-    { id: "PROFILE_STAMP", title: "Retour" },
-  ]);
-}
-
-async function sendStampPositionMenu(to) {
-  return sendButtons(to, "📍 *Position du tampon* :", [
-    { id: "STAMP_POS_BR", title: "Bas droite" },
-    { id: "STAMP_POS_TR", title: "Haut droite" },
-    { id: "STAMP_MORE", title: "Retour" },
-  ]);
-}
-
-async function sendStampPositionMenu2(to) {
-  return sendButtons(to, "📍 *Position du tampon* (suite) :", [
-    { id: "STAMP_POS_BL", title: "Bas gauche" },
-    { id: "STAMP_POS_TL", title: "Haut gauche" },
-    { id: "STAMP_MORE", title: "Retour" },
-  ]);
-}
-
-async function sendStampSizeMenu(to) {
-  return sendButtons(to, "📏 *Taille du tampon* :", [
-    { id: "STAMP_SIZE_S", title: "Petit" },
-    { id: "STAMP_SIZE_M", title: "Normal" },
-    { id: "STAMP_SIZE_L", title: "Grand" },
-  ]);
-}
-
-// ===============================
-// Profil (7 étapes)
-// ===============================
-async function startProfileFlow(from) {
-  const s = getSession(from);
-  s.step = "profile";
-  s.profileStep = "business_name";
-  await getOrCreateProfile(from);
-
-  await sendText(
-    from,
-    "🏢 *Profil entreprise*\n\n1/7 — Nom de l'entreprise ?\nEx: GUESWENDE Technologies\n\n📌 Tapez 0 pour ignorer un champ."
-  );
-}
-
-async function handleProfileAnswer(from, text) {
-  const s = getSession(from);
-  if (s.step !== "profile" || !s.profileStep) return false;
-
-  const t = norm(text);
-  const skip = t === "0";
-  const step = s.profileStep;
-
-  if (step === "business_name") {
-    await updateProfile(from, { business_name: skip ? null : t });
-    s.profileStep = "address";
-    await sendText(from, "2/7 — Adresse ? (ou 0)");
-    return true;
-  }
-  if (step === "address") {
-    await updateProfile(from, { address: skip ? null : t });
-    s.profileStep = "phone";
-    await sendText(from, "3/7 — Téléphone pro ? (ou 0)");
-    return true;
-  }
-  if (step === "phone") {
-    await updateProfile(from, { phone: skip ? null : t });
-    s.profileStep = "email";
-    await sendText(from, "4/7 — Email ? (ou 0)");
-    return true;
-  }
-  if (step === "email") {
-    const email = skip ? null : t;
-    if (email && !isValidEmail(email)) {
-      await sendText(from, "❌ Format email invalide. Réessayez ou tapez 0.");
-      return true;
-    }
-    await updateProfile(from, { email });
-    s.profileStep = "ifu";
-    await sendText(from, "5/7 — IFU ? (ou 0)");
-    return true;
-  }
-  if (step === "ifu") {
-    await updateProfile(from, { ifu: skip ? null : t });
-    s.profileStep = "rccm";
-    await sendText(from, "6/7 — RCCM ? (ou 0)");
-    return true;
-  }
-  if (step === "rccm") {
-    await updateProfile(from, { rccm: skip ? null : t });
-    s.profileStep = "logo";
-    await sendText(from, "7/7 — Envoyez votre logo en *image* (ou tapez 0)");
-    return true;
-  }
-  if (step === "logo") {
-    if (skip) {
-      s.step = "idle";
-      s.profileStep = null;
-      await sendText(from, "✅ Profil enregistré (sans logo).");
-      await sendHomeMenu(from);
-      return true;
-    }
-    await sendText(from, "⚠️ Pour le logo, envoyez une *image*. Ou tapez 0.");
-    return true;
-  }
-
-  return false;
-}
-
-// ===============================
-// Recharge + preuve (image)
-// ===============================
-async function replyRechargeInfo(from) {
-  const s = getSession(from);
-  s.step = "recharge_proof";
-
-  await sendText(
-    from,
-    `💰 *Recharger vos crédits KADI*\n\n✅ Orange Money\n📌 Numéro : *${OM_NUMBER}*\n👤 Nom : *${OM_NAME}*\n💳 Offre : *${PRICE_LABEL}*\n\n📎 Après paiement, envoyez ici une *preuve* (capture d'écran).\n\n🔑 Si vous avez un code: *CODE KDI-XXXX-XXXX*`
-  );
-}
-
-async function handleRechargeProofImage(from, msg) {
-  try {
-    if (!ADMIN_WA_ID) {
-      await sendText(from, "✅ Preuve reçue. Le support vous contactera.");
-      return;
-    }
-
-    const mediaId = msg?.image?.id;
-    if (!mediaId) {
-      await sendText(from, "❌ Preuve reçue mais sans media_id. Réessayez.");
-      return;
-    }
-
-    const info = await getMediaInfo(mediaId);
-    if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
-      await sendText(from, "❌ Image trop grande. Envoyez une capture plus légère.");
-      return;
-    }
-
-    const mime = info.mime_type || "image/jpeg";
-    const buf = await downloadMediaToBuffer(info.url);
-
-    const filename = `preuve-${from}-${Date.now()}.jpg`;
-    const up = await uploadMediaBuffer({ buffer: buf, filename, mimeType: mime });
-
-    if (up?.id) {
-      await sendDocument({
-        to: ADMIN_WA_ID,
-        mediaId: up.id,
-        filename,
-        caption:
-          `🧾 *Preuve de paiement reçue*\nClient WA: ${from}\nOffre: ${PRICE_LABEL}\n\n✅ Action admin:\nADMIN ADD ${from} ${PACK_CREDITS}`,
-      });
-    } else {
-      await sendText(ADMIN_WA_ID, `🧾 Preuve paiement reçue (upload fail). Client: ${from}`);
-    }
-
-    await sendText(from, "✅ Merci. Preuve transmise au support. ⏳");
-    const s = getSession(from);
-    s.step = "idle";
-    await sendHomeMenu(from);
-  } catch (e) {
-    console.error("handleRechargeProofImage:", e?.message);
-    await sendText(from, "❌ Désolé, la preuve n'a pas pu être traitée. Réessayez.");
-  }
-}
-
-// ===============================
-// Logo upload (image)
-// ===============================
-async function handleLogoImage(from, msg) {
-  const mediaId = msg?.image?.id;
-  if (!mediaId) {
-    await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
-    return;
-  }
-
-  const info = await getMediaInfo(mediaId);
-  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
-    await sendText(from, "❌ Image trop grande. Envoyez une image plus légère.");
-    return;
-  }
-
-  const mime = info.mime_type || "image/jpeg";
-  const buf = await downloadMediaToBuffer(info.url);
-
-  const { filePath } = await uploadLogoBuffer({ userId: from, buffer: buf, mimeType: mime });
-  await updateProfile(from, { logo_path: filePath });
-
-  const s = getSession(from);
-  if (s.step === "profile" && s.profileStep === "logo") {
-    s.step = "idle";
-    s.profileStep = null;
-    await sendText(from, "✅ Logo enregistré. Profil terminé.");
-    await sendHomeMenu(from);
-    return;
-  }
-
-  await sendText(from, "✅ Logo enregistré.");
-}
-
-// ===============================
-// Crédits
-// ===============================
-async function replyBalance(from) {
-  const bal = await getBalance(from);
-  await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
-}
-
-// ===============================
-// OCR / IMAGE ROUTING
-// ===============================
-async function processOcrImageToDraft(from, mediaId) {
+// ================= DOC FLOW =================
+async function startDocFlow(from, mode) {
   const s = getSession(from);
 
-  const info = await getMediaInfo(mediaId);
-  if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
-    await sendText(from, "❌ Image trop grande. Envoyez une photo plus légère.");
-    return;
-  }
-
-  const buf = await downloadMediaToBuffer(info.url);
-
-  await sendText(from, "🔎 Lecture de la photo…");
-
-  let ocrText = "";
-  try {
-    ocrText = await robustOcr(buf, "fra");
-  } catch (e) {
-    console.warn("OCR failed:", e?.message);
-    await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
-    return;
-  }
-
-  if (!s.lastDocDraft) {
-    const guessed = guessDocTypeFromOcr(ocrText) || "devis";
-    s.lastDocDraft = {
-      type: guessed,
-      factureKind: null,
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      finance: null,
-      source: "ocr",
-    };
-    s.step = "collecting_doc";
-  } else {
-    s.lastDocDraft.source = "ocr";
-  }
-
-  const parsed = parseOcrToDraft(ocrText);
-
-  if (parsed.client && !s.lastDocDraft.client) s.lastDocDraft.client = parsed.client;
-
-  if (parsed.items?.length) {
-    const room = LIMITS.maxItems - s.lastDocDraft.items.length;
-    const toAdd = parsed.items.slice(0, Math.max(0, room));
-    s.lastDocDraft.items.push(...toAdd);
-
-    if (parsed.items.length > toAdd.length) {
-      await sendText(from, `⚠️ Limite ${LIMITS.maxItems} lignes. Certains items ont été ignorés.`);
-    }
-  }
-
-  s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
-
-  const profile = await getOrCreateProfile(from);
-  const preview = await buildPreviewMessage({ profile, doc: s.lastDocDraft });
-
-  await sendText(from, preview);
-  await sendAfterPreviewMenu(from);
-}
-
-async function handleIncomingImage(from, msg) {
-  const s = getSession(from);
-
-  if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
-  if (s.step === "recharge_proof") return handleRechargeProofImage(from, msg);
-
-  const mediaId = msg?.image?.id;
-  if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
-
-  if (s.step !== "collecting_doc" || !s.lastDocDraft) {
-    s.step = "ocr_choose_doc";
-    s.pendingOcrMediaId = mediaId;
-
-    return sendButtons(from, "📷 J'ai reçu une photo. Quel document voulez-vous générer ?", [
-      { id: "OCR_DEVIS", title: "Devis" },
-      { id: "OCR_FACTURE", title: "Facture" },
-      { id: "OCR_RECU", title: "Reçu" },
-      { id: "OCR_DECHARGE", title: "Décharge" },
-    ]);
-  }
-
-  return processOcrImageToDraft(from, mediaId);
-}
-
-// ===============================
-// Documents (texte)
-// ===============================
-async function startDocFlow(from, mode, factureKind = null) {
-  const s = getSession(from);
-  s.step = "collecting_doc";
+  s.step = "item_label";
   s.mode = mode;
-  s.factureKind = factureKind;
-
+  s.itemDraft = { label: null, qty: null, unitPrice: null };
   s.lastDocDraft = {
-    type: mode, // devis | facture | recu | decharge
-    factureKind,
-    docNumber: null,
-    date: formatDateISO(),
+    type: mode,
+    date: new Date().toISOString().slice(0, 10),
     client: null,
     items: [],
-    finance: null,
-    source: "text", // text | ocr
+    source: "wizard",
   };
-
-  const prefix =
-    mode === "facture"
-      ? factureKind === "proforma"
-        ? "🧾 Facture Pro forma"
-        : "🧾 Facture Définitive"
-      : mode === "devis"
-      ? "📝 Devis"
-      : mode === "decharge"
-      ? "📄 Décharge"
-      : "🧾 Reçu";
 
   await sendText(
     from,
-    `${prefix}\n\n` +
-      `✅ Envoyez les lignes comme ceci :\n` +
-      `Client: Awa\nDesign logo x1 30000\nImpression x2 5000\n\n` +
-      `✅ Format conseillé (plus précis) :\n` +
-      `D: Verre clair 44x34 cm | Q: 2 | PU: 7120\n` +
-      `D: Silicone | Q: 1 | PU: 12000\n\n` +
-      `📷 Vous pouvez aussi envoyer une *photo* d'un document (KADI extrait le texte et fait un PDF propre).`
+    `🧾 *${mode.toUpperCase()}*\n\n` +
+    `👤 Vous pouvez taper *Client: Nom* à tout moment.\n\n` +
+    `➡️ *Nom du produit 1 ?*`
   );
 }
-
-function validateDraft(draft) {
-  if (!draft) throw new Error("Draft manquant");
-  if (!Array.isArray(draft.items)) draft.items = [];
-  if (!draft.date) draft.date = formatDateISO();
-
-  for (let i = 0; i < draft.items.length; i++) {
-    const it = draft.items[i] || {};
-    if (Number(it.amount) < 0) throw new Error(`Montant négatif ligne ${i + 1}`);
-    if (Number(it.qty) <= 0) throw new Error(`Quantité invalide ligne ${i + 1}`);
-  }
-  return true;
+// ================= ITEM WIZARD =================
+async function askQty(from) {
+  const s = getSession(from);
+  const label = s.itemDraft?.label || "—";
+  await sendText(from, `📦 Produit : *${label}*\n\n➡️ Quantité ? (ex: 2)`);
 }
 
-async function buildPreviewMessage({ profile, doc }) {
-  try {
-    validateDraft(doc);
-  } catch (_) {}
+async function askUnitPrice(from) {
+  const s = getSession(from);
+  const label = s.itemDraft?.label || "—";
+  const qty = s.itemDraft?.qty || 1;
+  await sendText(from, `📦 Produit : *${label}*\nQté : *${qty}*\n\n➡️ Prix unitaire ? (ex: 5000)`);
+}
 
-  const bp = profile || {};
+function pushItem(session) {
+  const d = session.itemDraft || {};
+  const label = safe(d.label).slice(0, LIMITS.maxItemLabelLength) || "—";
+  const qty = Number(d.qty || 1);
+  const unitPrice = Number(d.unitPrice || 0);
+  const amount = qty * unitPrice;
+
+  session.lastDocDraft.items.push({
+    label,
+    qty,
+    unitPrice,
+    amount,
+    raw: `${label} x${qty} ${unitPrice}`,
+  });
+
+  session.itemDraft = { label: null, qty: null, unitPrice: null };
+}
+
+// ================= Preview =================
+async function sendPreview(from) {
+  const s = getSession(from);
+  const doc = s.lastDocDraft;
+  if (!doc) return;
+
   const f = computeFinance(doc);
 
-  const header = [
-    bp.business_name ? `🏢 ${bp.business_name}` : null,
-    bp.address ? `📍 ${bp.address}` : null,
-    bp.phone ? `📞 ${bp.phone}` : null,
-    bp.email ? `✉️ ${bp.email}` : null,
-    bp.ifu ? `IFU: ${bp.ifu}` : null,
-    bp.rccm ? `RCCM: ${bp.rccm}` : null,
-    bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: 0`,
-    (bp.stamp_enabled === false) ? `🟦 Tampon: OFF` : `🟦 Tampon: ON`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const title =
-    doc.type === "facture"
-      ? doc.factureKind === "proforma"
-        ? "FACTURE PRO FORMA"
-        : "FACTURE DÉFINITIVE"
-      : doc.type === "decharge"
-      ? "DÉCHARGE"
-      : String(doc.type || "").toUpperCase();
-
   const lines = (doc.items || [])
-    .slice(0, LIMITS.maxItems)
-    .map(
-      (it, idx) =>
-        `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Montant:${money(it.amount)}`
-    )
+    .slice(0, 20)
+    .map((it, i) => `${i + 1}) ${it.label} | Qté:${it.qty} | PU:${it.unitPrice} | Mt:${it.amount}`)
     .join("\n");
 
-  const src = doc?.source === "ocr" ? "📷 Source: OCR (photo)" : "⌨️ Source: texte";
+  await sendText(
+    from,
+    `📄 *APERÇU*\n` +
+      `Type: *${String(doc.type || "").toUpperCase()}*\n` +
+      `Date: ${doc.date}\n` +
+      `Client: ${doc.client || "—"}\n\n` +
+      `*Lignes (${doc.items.length})*\n${lines || "—"}\n\n` +
+      `TOTAL: *${f.gross} FCFA*`
+  );
 
-  return [
-    header,
-    "",
-    `📄 *${title}*`,
-    `Date : ${doc.date || "-"}`,
-    `Client : ${doc.client || "-"}`,
-    src,
-    "",
-    "*Lignes :*",
-    lines || "0",
-    "",
-    `Total : ${money(f.gross)} FCFA`,
-  ].join("\n");
+  return sendButtons(from, "✅ Valider ?", [
+    { id: "DOC_CONFIRM", title: "Générer PDF" },
+    { id: "ITEM_ADD_MORE", title: "Ajouter" },
+    { id: "BACK_DOCS", title: "Annuler" },
+  ]);
 }
 
-async function handleDocText(from, text) {
-  const s = getSession(from);
-  if (s.step !== "collecting_doc" || !s.lastDocDraft) return false;
-
-  const draft = s.lastDocDraft;
-  const lines = String(text || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    const m = REGEX.client.exec(line);
-    if (m && !draft.client) {
-      draft.client = (m[1] || "").trim().slice(0, LIMITS.maxClientNameLength) || null;
-      continue;
-    }
-
-    if (/\d/.test(line) && !/^client\s*[:\-]/i.test(line)) {
-      const itStructured = parseStructuredItemLine(line);
-      const it = itStructured || parseItemLine(line);
-
-      if (it) {
-        if (draft.items.length < LIMITS.maxItems) {
-          draft.items.push(it);
-        } else {
-          await sendText(from, `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`);
-          break;
-        }
-      }
-    }
-  }
-
-  draft.finance = computeFinance(draft);
-
-  const profile = await getOrCreateProfile(from);
-  const preview = await buildPreviewMessage({ profile, doc: draft });
-
-  await sendText(from, preview);
-  await sendAfterPreviewMenu(from);
-  return true;
-}
-
-// ===============================
-// Création PDF finale (1 crédit ou OCR_PDF_CREDITS)
-// ===============================
+// ================= PDF =================
 async function createAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
 
   if (!draft) {
-    await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
+    await sendText(from, "❌ Aucun document en cours.");
+    return sendHomeMenu(from);
+  }
+
+  if (!draft.client) {
+    await sendText(from, "⚠️ Client manquant. Tapez: *Client: Nom*");
     return;
   }
 
-  try {
-    validateDraft(draft);
-  } catch (err) {
-    await sendText(from, `❌ Erreur dans le document: ${err.message}`);
+  if (!draft.items?.length) {
+    await sendText(from, "⚠️ Ajoutez au moins 1 produit.");
     return;
   }
 
-  const cost = draft.source === "ocr" ? OCR_PDF_CREDITS : 1;
-
-  const cons = await consumeCredit(from, cost, draft.source === "ocr" ? "ocr_pdf" : "pdf");
+  // 1 crédit par PDF
+  const cons = await consumeCredit(from, 1, "pdf");
   if (!cons.ok) {
-    await sendText(
-      from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe PDF coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
-    );
+    await sendText(from, `❌ Solde insuffisant (${cons.balance}). Tapez *RECHARGE*`);
     return;
   }
 
-  let successAfterDebit = false;
-
   try {
-    draft.docNumber = await nextDocNumber({
+    // doc number
+    const docNumber = await nextDocNumber({
       waId: from,
       mode: draft.type,
-      factureKind: draft.factureKind,
+      factureKind: null,
       dateISO: draft.date,
     });
 
@@ -1383,45 +213,32 @@ async function createAndSendPdf(from) {
       try {
         const signed = await getSignedLogoUrl(profile.logo_path);
         logoBuf = await downloadSignedUrlToBuffer(signed);
-      } catch (e) {
-        console.warn("logo download error:", e?.message);
-      }
+      } catch (_) {}
     }
 
-    const title =
-      draft.type === "facture"
-        ? draft.factureKind === "proforma"
-          ? "FACTURE PRO FORMA"
-          : "FACTURE DÉFINITIVE"
-        : draft.type === "decharge"
-        ? "DÉCHARGE"
-        : String(draft.type || "").toUpperCase();
-
-    const total = draft.finance?.gross ?? computeFinance(draft).gross;
+    const total = computeFinance(draft).gross;
 
     let pdfBuf = await buildPdfBuffer({
       docData: {
-        type: title,
-        docNumber: draft.docNumber,
+        type: String(draft.type || "").toUpperCase(),
+        docNumber,
         date: draft.date,
         client: draft.client,
-        items: draft.items || [],
+        items: draft.items,
         total,
       },
       businessProfile: profile,
       logoBuffer: logoBuf,
     });
 
-    // ✅ Tampon + signature si disponibles
-    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
+    // ✅ tampon (si activé)
+    pdfBuf = await applyStampIfAny(pdfBuf, profile);
 
     try {
-      await saveDocument({ waId: from, doc: draft });
-    } catch (e) {
-      console.warn("saveDocument error:", e?.message);
-    }
+      await saveDocument({ waId: from, doc: { ...draft, docNumber, total } });
+    } catch (_) {}
 
-    const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
+    const fileName = `${docNumber}-${draft.date}.pdf`;
     const up = await uploadMediaBuffer({
       buffer: pdfBuf,
       filename: fileName,
@@ -1430,328 +247,127 @@ async function createAndSendPdf(from) {
 
     if (!up?.id) throw new Error("Upload PDF échoué");
 
-    successAfterDebit = true;
-
     await sendDocument({
       to: from,
       mediaId: up.id,
       filename: fileName,
-      caption:
-        `✅ ${title} ${draft.docNumber}\n` +
-        `Total: ${money(total)} FCFA\n` +
-        `Coût: ${cost} crédit(s)\n` +
-        `Solde: ${cons.balance} crédit(s)`,
+      caption: `✅ ${String(draft.type).toUpperCase()} ${docNumber}\nTotal: ${total} FCFA\nSolde: ${cons.balance}`,
     });
 
+    // reset
     s.step = "idle";
     s.mode = null;
-    s.factureKind = null;
+    s.itemDraft = null;
     s.lastDocDraft = null;
 
-    await sendHomeMenu(from);
+    return sendHomeMenu(from);
   } catch (e) {
-    console.error("createAndSendPdf error:", e?.message);
-
-    // rollback si échec avant envoi (meilleur effort)
-    if (!successAfterDebit) {
-      try {
-        await addCredits(from, cost, "rollback_pdf_failed");
-      } catch (rb) {
-        console.error("rollback credits failed:", rb?.message);
-      }
-    }
-
-    await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
+    // rollback credit if fail early? (optionnel)
+    try { await addCredits(from, 1, "rollback_pdf_fail"); } catch (_) {}
+    await sendText(from, "❌ Erreur PDF. Réessayez.");
   }
 }
 
-async function confirmAndSendPdf(from) {
-  return createAndSendPdf(from);
-}
-
-// ===============================
-// INTERACTIVE HANDLER (boutons/lists)
-// ===============================
+// ================= Interactive handler =================
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
 
-  // ---------- Navigation ----------
   if (replyId === "BACK_HOME") return sendHomeMenu(from);
-  if (replyId === "BACK_DOCS") return sendDocsMenu(from);
-
-  // ---------- Home ----------
-  if (replyId === "HOME_DOCS") return sendDocsMenu(from);
-  if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
-  if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
-
-  // ---------- Documents ----------
-  if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
-  if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
-
-  if (replyId === "DOC_DECHARGE") {
-    initDechargeFlow(s);
-    return sendText(from, dechargeQuestion(1));
-  }
-
-  if (replyId === "DOC_FACTURE") {
-    s.step = "facture_kind";
-    return sendFactureKindMenu(from);
-  }
-
-  // ---------- Facture kind (normal vs OCR) ----------
-  if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
-    const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
-
-    if (s.step === "ocr_wait_facture_kind") {
-      const mediaId = s.pendingOcrMediaId;
-      s.pendingOcrMediaId = null;
-
-      if (!mediaId) {
-        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-        return;
-      }
-
-      await startDocFlow(from, "facture", kind);
-      return processOcrImageToDraft(from, mediaId);
-    }
-
-    return startDocFlow(from, "facture", kind);
-  }
-
-  // ---------- OCR : choix type doc ----------
-  if (replyId === "OCR_DEVIS" || replyId === "OCR_RECU" || replyId === "OCR_DECHARGE") {
-    const mediaId = s.pendingOcrMediaId;
-    s.pendingOcrMediaId = null;
-
-    if (!mediaId) {
-      await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-      return;
-    }
-
-    let mode = "devis";
-    if (replyId === "OCR_RECU") mode = "recu";
-    if (replyId === "OCR_DECHARGE") mode = "decharge";
-
-    await startDocFlow(from, mode);
-    return processOcrImageToDraft(from, mediaId);
-  }
-
-  if (replyId === "OCR_FACTURE") {
-    s.step = "ocr_wait_facture_kind";
-    return sendFactureKindMenu(from);
-  }
-
-  // ---------- Profil ----------
-  if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
-  if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
-
-  // Tampon : toggle
-  if (replyId === "STAMP_TOGGLE") {
-    const p = await getOrCreateProfile(from);
-    const enabled = p?.stamp_enabled !== false;
-    await updateProfile(from, { stamp_enabled: !enabled });
-    return sendStampMenu(from);
-  }
-
-  // Tampon : fonction
-  if (replyId === "STAMP_EDIT_TITLE") {
-    s.step = "stamp_title";
-    await sendText(from, "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer.");
-    return;
-  }
-
-  // Tampon : sous-menus
-  if (replyId === "STAMP_MORE") return sendStampMoreMenu(from);
-
-  if (replyId === "STAMP_POS") {
-    // 2 écrans (car 4 positions)
-    await sendStampPositionMenu(from);
-    return sendStampPositionMenu2(from);
-  }
-
-  if (replyId === "STAMP_SIZE") return sendStampSizeMenu(from);
-
-  // Tampon : positions
-  if (replyId === "STAMP_POS_BR") { await updateProfile(from, { stamp_position: "bottom-right" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_BL") { await updateProfile(from, { stamp_position: "bottom-left" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_TR") { await updateProfile(from, { stamp_position: "top-right" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_TL") { await updateProfile(from, { stamp_position: "top-left" }); return sendStampMenu(from); }
-
-  // Tampon : tailles
-  if (replyId === "STAMP_SIZE_S") { await updateProfile(from, { stamp_size: 150 }); return sendStampMenu(from); }
-  if (replyId === "STAMP_SIZE_M") { await updateProfile(from, { stamp_size: 170 }); return sendStampMenu(from); }
-  if (replyId === "STAMP_SIZE_L") { await updateProfile(from, { stamp_size: 200 }); return sendStampMenu(from); }
-
-  // ---------- Crédits ----------
-  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
-  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
-
-  // ---------- PDF ----------
-  if (replyId === "DOC_CONFIRM") return confirmAndSendPdf(from);
-
-  if (replyId === "DOC_RESTART") {
+  if (replyId === "BACK_DOCS") {
     s.step = "idle";
     s.mode = null;
-    s.factureKind = null;
+    s.itemDraft = null;
     s.lastDocDraft = null;
-
-    await sendText(from, "🔁 Recommençons.");
     return sendDocsMenu(from);
   }
 
-  await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
+  if (replyId === "HOME_DOCS") return sendDocsMenu(from);
+  if (replyId === "HOME_PROFILE") return sendText(from, "🏢 Profil: (à garder ton flow existant)");
+  if (replyId === "HOME_CREDITS") {
+    const bal = await getBalance(from);
+    return sendText(from, `💳 Solde: ${bal} crédit(s)`);
+  }
+
+  if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
+  if (replyId === "DOC_FACTURE") return startDocFlow(from, "facture");
+  if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
+  if (replyId === "DOC_DECHARGE") return startDocFlow(from, "decharge");
+
+  if (replyId === "ITEM_ADD_MORE") {
+    s.step = "item_label";
+    s.itemDraft = { label: null, qty: null, unitPrice: null };
+    return sendText(from, "➡️ Nom du prochain produit ?");
+  }
+
+  if (replyId === "ITEM_FINISH") {
+    return sendPreview(from);
+  }
+
+  if (replyId === "DOC_CONFIRM") {
+    return createAndSendPdf(from);
+  }
+
+  return sendText(from, "⚠️ Action inconnue. Tapez MENU.");
 }
 
-// ===============================
-// COMMANDS (texte)
-// ===============================
-async function handleStatsCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
+// ================= Text router (wizard) =================
+async function handleWizardText(from, text) {
+  const s = getSession(from);
+  const t = norm(text);
 
-  try {
-    const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
-
-    const msgTxt =
-      `📊 *KADI — STATISTIQUES*\n\n` +
-      `👥 *Utilisateurs*\n` +
-      `• Total : ${stats.users.totalUsers}\n` +
-      `• Actifs 7j : ${stats.users.active7}\n` +
-      `• Actifs 30j : ${stats.users.active30}\n\n` +
-      `📄 *Documents*\n` +
-      `• Total : ${stats.docs.total}\n` +
-      `• 7 derniers jours : ${stats.docs.last7}\n` +
-      `• 30 derniers jours : ${stats.docs.last30}\n\n` +
-      `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${stats.credits.consumed7}\n` +
-      `• Ajoutés : ${stats.credits.added7}\n\n` +
-      `💰 *Revenu estimé (30j)*\n` +
-      `• ≈ ${stats.revenue.est30} FCFA\n` +
-      `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
-
-    return sendText(from, msgTxt);
-  } catch (e) {
-    logger.error("stats_command", e, { from });
-    return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
-  }
-}
-
-async function handleTopCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
-
-  const days = parseDaysArg(text, 30);
-  const top = await getTopClients({ days, limit: 5 });
-
-  if (!top.length) return sendText(from, `🏆 TOP CLIENTS — ${days}j\nAucune donnée.`);
-
-  const lines = top
-    .map((r, i) => `${i + 1}) ${r.client} — ${r.doc_count} doc • ${money(r.total_sum)} FCFA`)
-    .join("\n");
-
-  return sendText(from, `🏆 *TOP 5 CLIENTS* — ${days} jours\n\n${lines}`);
-}
-
-async function handleExportCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
-
-  const days = parseDaysArg(text, 30);
-  const rows = await getDocsForExport({ days });
-
-  const header = [
-    "created_at",
-    "wa_id",
-    "doc_number",
-    "doc_type",
-    "facture_kind",
-    "client",
-    "date",
-    "total",
-    "items_count",
-  ];
-
-  const csvLines = [header.join(",")].concat(
-    rows.map((r) => {
-      const vals = [
-        r.created_at || "",
-        r.wa_id || "",
-        r.doc_number || "",
-        r.doc_type || "",
-        r.facture_kind || "",
-        escapeCsvValue(r.client || ""),
-        r.date || "",
-        String(r.total ?? ""),
-        String(Array.isArray(r.items) ? r.items.length : 0),
-      ];
-      return vals.join(",");
-    })
-  );
-
-  const buf = Buffer.from(csvLines.join("\n"), "utf8");
-  const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
-
-  const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
-  if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
-
-  return sendDocument({
-    to: from,
-    mediaId: up.id,
-    filename: fileName,
-    caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
-  });
-}
-
-async function handleCommand(from, text) {
-  const lower = String(text || "").toLowerCase().trim();
-
-  if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
-  if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
-  if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
-
-  if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
-    await replyBalance(from);
+  // client à tout moment
+  const mClient = REGEX.client.exec(t);
+  if (mClient && s.lastDocDraft) {
+    s.lastDocDraft.client = safe(mClient[1]).slice(0, LIMITS.maxClientNameLength);
+    await sendText(from, `✅ Client défini: *${s.lastDocDraft.client}*`);
+    // on continue le step en cours sans casser
+    if (s.step === "item_label") return sendText(from, "➡️ Nom du produit ?");
+    if (s.step === "item_qty") return askQty(from);
+    if (s.step === "item_pu") return askUnitPrice(from);
     return true;
   }
-  if (lower === "recharge") {
-    await replyRechargeInfo(from);
+
+  if (s.step === "item_label") {
+    if (!s.lastDocDraft) return false;
+    s.itemDraft.label = safe(t);
+    s.step = "item_qty";
+    await askQty(from);
     return true;
   }
-  if (lower === "menu" || lower === "m") {
-    await sendHomeMenu(from);
+
+  if (s.step === "item_qty") {
+    const q = cleanNumber(t);
+    if (!q || q <= 0) {
+      await sendText(from, "❌ Quantité invalide. Ex: 2");
+      return true;
+    }
+    s.itemDraft.qty = q;
+    s.step = "item_pu";
+    await askUnitPrice(from);
     return true;
   }
-  if (lower === "devis") {
-    await startDocFlow(from, "devis");
-    return true;
-  }
-  if (lower === "recu" || lower === "reçu") {
-    await startDocFlow(from, "recu");
-    return true;
-  }
-  if (lower === "decharge" || lower === "décharge") {
-    const s = getSession(from);
-    initDechargeFlow(s);
-    await sendText(from, dechargeQuestion(1));
-    return true;
-  }
-  if (lower === "facture") {
-    const s = getSession(from);
-    s.step = "facture_kind";
-    await sendFactureKindMenu(from);
-    return true;
-  }
-  if (lower === "profil" || lower === "profile") {
-    await sendProfileMenu(from);
+
+  if (s.step === "item_pu") {
+    const pu = cleanNumber(t);
+    if (pu == null || pu < 0) {
+      await sendText(from, "❌ Prix invalide. Ex: 5000");
+      return true;
+    }
+    s.itemDraft.unitPrice = pu;
+    pushItem(s);
+
+    // proposition UX: afficher aperçu mini puis menu ajouter/terminer
+    const last = s.lastDocDraft.items[s.lastDocDraft.items.length - 1];
+    await sendText(from, `✅ Ajouté: ${last.label} | Qté:${last.qty} | PU:${last.unitPrice} | Mt:${last.amount}`);
+    await sendAddMoreMenu(from);
     return true;
   }
 
   return false;
 }
 
-// ===============================
-// MAIN ENTRY — handleIncomingMessage
-// ===============================
+// ================= MAIN ENTRY =================
 async function handleIncomingMessage(value) {
-  const start = Date.now();
-
   try {
     if (!value) return;
     if (value.statuses?.length) return;
@@ -1760,118 +376,42 @@ async function handleIncomingMessage(value) {
     const msg = value.messages[0];
     const from = msg.from;
 
-    if (!isValidWhatsAppId(from)) {
-      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { from });
-      return;
-    }
+    // activity
+    try { await recordActivity(from); } catch (_) {}
 
-    try {
-      await recordActivity(from);
-    } catch (e) {
-      logger.warn("activity_recording", e.message, { from });
-    }
-
-    await ensureWelcomeCredits(from);
-    await maybeSendOnboarding(from);
-
+    // interactive
     if (msg.type === "interactive") {
       const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
       if (replyId) return handleInteractiveReply(from, replyId);
       return;
     }
 
+    // image (pour l’instant on ne touche pas OCR ici)
     if (msg.type === "image") {
-      return handleIncomingImage(from, msg);
+      await sendText(from, "📷 OCR: garde ton module OCR existant (on le recolle ensuite proprement).");
+      return;
     }
 
+    // text
     const text = norm(msg.text?.body);
     if (!text) return;
 
-    // ✅ Broadcast opt-out/opt-in (avant le reste)
-    {
-      const lower = text.toLowerCase().trim();
-      if (lower === "stop") {
-        await updateProfile(from, { broadcast_optout: true });
-        await sendText(from, "✅ OK. Vous ne recevrez plus de messages d’annonce.\nPour réactiver: *START*");
-        return;
-      }
-      if (lower === "start") {
-        await updateProfile(from, { broadcast_optout: false });
-        await sendText(from, "✅ OK. Vous recevrez à nouveau les annonces KADI.");
-        return;
-      }
-    }
+    const lower = text.toLowerCase().trim();
+    if (lower === "menu" || lower === "m") return sendHomeMenu(from);
+    if (lower === "docs" || lower === "documents") return sendDocsMenu(from);
 
-    // ✅ Step texte: fonction tampon
-    {
-      const s = getSession(from);
-      if (s.step === "stamp_title") {
-        const t = norm(text);
-        const val = t === "0" ? null : t;
-        await updateProfile(from, { stamp_title: val });
-        s.step = "idle";
-        await sendText(from, "✅ Fonction tampon mise à jour.");
-        await sendStampMenu(from);
-        return;
-      }
-    }
+    // wizard
+    if (await handleWizardText(from, text)) return;
 
-    // Admin
-    if (await handleAdmin(from, text)) return;
-
-    // Redeem code
-    const mCode = text.match(REGEX.code);
-    if (mCode) {
-      const result = await redeemCode({ waId: from, code: mCode[1] });
-      if (!result.ok) {
-        if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
-        return sendText(from, "❌ Code invalide.");
-      }
-      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
-    }
-
-    // ✅ Décharge flow (questions 1..7)
-    {
-      const s = getSession(from);
-      if (s.step === "decharge_collect" && s.decharge) {
-        const step = s.decharge.step || 1;
-        setDechargeField(s, step, text);
-
-        if (step >= 7) {
-          try {
-            await buildAndSendDecharge({ to: from, session: s });
-          } catch (e) {
-            logger.error("decharge_pdf", e, { from });
-            await sendText(from, "❌ Erreur lors de la création de la décharge. Réessayez.");
-          }
-          return;
-        }
-
-        s.decharge.step = step + 1;
-        await sendText(from, dechargeQuestion(s.decharge.step));
-        return;
-      }
-    }
-
-    if (await handleProfileAnswer(from, text)) return;
-    if (await handleCommand(from, text)) return;
-    if (await handleDocText(from, text)) return;
-
+    // fallback
     await sendText(from, "Tapez *MENU* pour commencer.");
   } catch (e) {
-    logger.error("incoming_message", e, { messageType: value?.messages?.[0]?.type });
-  } finally {
-    const duration = Date.now() - start;
-    logger.metric("message_processing", duration, true, { messageType: value?.messages?.[0]?.type });
+    logger.error("incoming_message", e);
   }
 }
 
-// ===============================
-// EXPORTS
-// ===============================
+// ================= EXPORTS =================
 module.exports = {
   handleIncomingMessage,
   cleanNumber,
-  isValidWhatsAppId,
-  isValidEmail,
 };
