@@ -1,5 +1,4 @@
 // kadiEngine.js
-
 "use strict";
 
 // ================= Logger =================
@@ -65,6 +64,14 @@ const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
+// ---------------- Regex ----------------
+const REGEX = {
+  client: /^client\s*[:\-]\s*(.+)$/i,
+  total: /total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i,
+  montantTotal: /montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i,
+  code: /^code\s+(kdi-[\w-]+)/i,
+};
+
 // ---------------- Limits ----------------
 const LIMITS = {
   maxItems: 50,
@@ -86,6 +93,14 @@ function norm(s) {
 }
 
 function nowISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateISO() {
   const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -160,6 +175,15 @@ function extractNumbersSmart(text) {
   }
 
   return merged.map(cleanNumber).filter((n) => typeof n === "number");
+}
+
+function escapeCsvValue(str) {
+  if (typeof str !== 'string') return str;
+  // Si contient des virgules, guillemets ou retours à la ligne
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
 }
 
 // ---------------- Parsing lignes ----------------
@@ -369,6 +393,95 @@ async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries
     }
   }
 }
+
+// ===============================
+// ADMIN HANDLER
+// ===============================
+async function handleAdmin(from, text) {
+  const s = getSession(from);
+  
+  // Vérifier si l'utilisateur est admin
+  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) {
+    return false;
+  }
+
+  const lower = String(text || "").toLowerCase().trim();
+
+  // Créer des codes de recharge
+  if (lower.startsWith("admin create")) {
+    const match = text.match(/^admin create\s+(\d+)\s+(\d+)$/i);
+    if (!match) {
+      await sendText(from, "❌ Format: ADMIN CREATE <nb_codes> <credits_par_code>");
+      return true;
+    }
+    const nb = parseInt(match[1], 10);
+    const credits = parseInt(match[2], 10);
+    
+    try {
+      const codes = await createRechargeCodes(nb, credits);
+      let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
+      codes.forEach((code, i) => {
+        response += `${i + 1}. ${code}\n`;
+      });
+      await sendText(from, response);
+    } catch (e) {
+      logger.error("admin_create_codes", e, { from, nb, credits });
+      await sendText(from, "❌ Erreur création codes.");
+    }
+    return true;
+  }
+
+  // Ajouter des crédits manuellement
+  if (lower.startsWith("admin add")) {
+    const match = text.match(/^admin add\s+(\d+)\s+(\d+)$/i);
+    if (!match) {
+      await sendText(from, "❌ Format: ADMIN ADD <wa_id> <credits>");
+      return true;
+    }
+    const targetWaId = match[1];
+    const credits = parseInt(match[2], 10);
+    
+    if (!isValidWhatsAppId(targetWaId)) {
+      await sendText(from, "❌ WhatsApp ID invalide.");
+      return true;
+    }
+    
+    try {
+      await addCredits(targetWaId, credits, "admin_add");
+      const newBalance = await getBalance(targetWaId);
+      await sendText(from, `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`);
+    } catch (e) {
+      logger.error("admin_add_credits", e, { from, targetWaId, credits });
+      await sendText(from, "❌ Erreur lors de l'ajout de crédits.");
+    }
+    return true;
+  }
+
+  // Voir les stats (commande /stats déjà gérée)
+  if (lower === "admin" || lower === "admin help") {
+    await sendText(
+      from,
+      "👨‍💼 *Commandes Admin*\n\n" +
+      "📊 Voir stats:\n" +
+      "• /stats\n" +
+      "• /top 30 (par défaut)\n" +
+      "• /export 30\n\n" +
+      "💰 Gestion crédits:\n" +
+      "• ADMIN ADD <wa_id> <credits>\n\n" +
+      "🎫 Codes recharge:\n" +
+      "• ADMIN CREATE <nb_codes> <credits_par_code>"
+    );
+    return true;
+  }
+
+  return false;
+}
+
+// Helper pour vérifier si admin
+function ensureAdmin(waId) {
+  return ADMIN_WA_ID && waId === ADMIN_WA_ID;
+}
+
 // ===============================
 // Welcome credits + Onboarding
 // ===============================
@@ -420,7 +533,7 @@ async function maybeSendOnboarding(from) {
     const msg =
       `👋 Bienvenue sur *KADI*.\n\n` +
       `✅ *Devis / Facture / Reçu* en 30 secondes.\n` +
-      `📷 Envoyez aussi une *photo* d’un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
+      `📷 Envoyez aussi une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
       `👇 Choisissez :`;
 
     // ✅ Un seul message (buttons) = plus propre
@@ -576,7 +689,7 @@ async function replyRechargeInfo(from) {
 
   await sendText(
     from,
-    `💰 *Recharger vos crédits KADI*\n\n✅ Orange Money\n📌 Numéro : *${OM_NUMBER}*\n👤 Nom : *${OM_NAME}*\n💳 Offre : *${PRICE_LABEL}*\n\n📎 Après paiement, envoyez ici une *preuve* (capture d’écran).\n\n🔑 Si vous avez un code: *CODE KDI-XXXX-XXXX*`
+    `💰 *Recharger vos crédits KADI*\n\n✅ Orange Money\n📌 Numéro : *${OM_NUMBER}*\n👤 Nom : *${OM_NAME}*\n💳 Offre : *${PRICE_LABEL}*\n\n📎 Après paiement, envoyez ici une *preuve* (capture d'écran).\n\n🔑 Si vous avez un code: *CODE KDI-XXXX-XXXX*`
   );
 }
 
@@ -623,7 +736,7 @@ async function handleRechargeProofImage(from, msg) {
     await sendHomeMenu(from);
   } catch (e) {
     console.error("handleRechargeProofImage:", e?.message);
-    await sendText(from, "❌ Désolé, la preuve n’a pas pu être traitée. Réessayez.");
+    await sendText(from, "❌ Désolé, la preuve n'a pas pu être traitée. Réessayez.");
   }
 }
 
@@ -668,6 +781,7 @@ async function replyBalance(from) {
   const bal = await getBalance(from);
   await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
 }
+
 // ===============================
 // Documents (texte)
 // ===============================
@@ -705,7 +819,7 @@ async function startDocFlow(from, mode, factureKind = null) {
       `✅ Format conseillé (plus précis) :\n` +
       `D: Verre clair 44x34 cm | Q: 2 | PU: 7120\n` +
       `D: Silicone | Q: 1 | PU: 12000\n\n` +
-      `📷 Vous pouvez aussi envoyer une *photo* d’un document (KADI extrait le texte et fait un PDF propre).`
+      `📷 Vous pouvez aussi envoyer une *photo* d'un document (KADI extrait le texte et fait un PDF propre).`
   );
 }
 
@@ -819,84 +933,6 @@ async function handleDocText(from, text) {
 // ===============================
 // OCR (photo → texte → draft)
 // ===============================
-function guessDocTypeFromOcr(text) {
-  const t = String(text || "").toLowerCase();
-  if (t.includes("facture")) return "facture";
-  if (t.includes("reçu") || t.includes("recu")) return "recu";
-  if (t.includes("devis") || t.includes("proforma") || t.includes("pro forma")) return "devis";
-  return null;
-}
-
-function extractTotalFromOcr(text) {
-  const t = String(text || "");
-  const m = t.match(REGEX.total) || t.match(REGEX.montantTotal);
-  if (!m) return null;
-  return cleanNumber(m[1]);
-}
-
-function parseOcrToDraft(ocrText) {
-  const lines = String(ocrText || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  let client = null;
-  for (const line of lines) {
-    const m =
-      line.match(REGEX.client) ||
-      line.match(/^nom\s*[:\-]\s*(.+)$/i) ||
-      line.match(/^doit\s*[:\-]\s*(.+)$/i);
-    if (m) {
-      client = (m[1] || "").trim().slice(0, LIMITS.maxClientNameLength);
-      break;
-    }
-  }
-
-  const items = [];
-  for (const line of lines) {
-    const low = line.toLowerCase();
-    // on skippe les lignes "meta"
-    if (
-      low.startsWith("total") ||
-      low.startsWith("montant total") ||
-      low.startsWith("date") ||
-      low.startsWith("facture") ||
-      low.startsWith("devis") ||
-      low.startsWith("reçu") ||
-      low.startsWith("recu") ||
-      low.startsWith("ifu") ||
-      low.startsWith("rccm") ||
-      low.startsWith("adresse") ||
-      low.startsWith("tél") ||
-      low.startsWith("tel") ||
-      low.startsWith("email")
-    ) continue;
-
-    if (/\d/.test(line)) {
-      const itStructured = parseStructuredItemLine(line);
-      const it = itStructured || parseItemLine(line);
-      if (it && items.length < LIMITS.maxItems) items.push(it);
-    }
-  }
-
-  const detected = extractTotalFromOcr(ocrText);
-  const calc = sumItems(items);
-  const finance = { subtotal: calc, gross: detected ?? calc };
-
-  return { client, items, finance };
-}
-
-async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await ocrImageBuffer(buffer, lang);
-    } catch (e) {
-      if (attempt === maxRetries) throw e;
-      await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
-    }
-  }
-}
-
 async function processOcrImageToDraft(from, mediaId) {
   const s = getSession(from);
 
@@ -981,7 +1017,7 @@ async function handleIncomingImage(from, msg) {
     s.step = "ocr_choose_doc";
     s.pendingOcrMediaId = mediaId;
 
-    return sendButtons(from, "📷 J’ai reçu une photo. Quel document voulez-vous générer ?", [
+    return sendButtons(from, "📷 J'ai reçu une photo. Quel document voulez-vous générer ?", [
       { id: "OCR_DEVIS", title: "Devis" },
       { id: "OCR_FACTURE", title: "Facture" },
       { id: "OCR_RECU", title: "Reçu" },
@@ -991,6 +1027,7 @@ async function handleIncomingImage(from, msg) {
   // 4) sinon OCR direct
   return processOcrImageToDraft(from, mediaId);
 }
+
 // ===============================
 // Création PDF finale (1 crédit ou OCR_PDF_CREDITS)
 // ===============================
@@ -1111,7 +1148,7 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
-    // rollback crédits si on a débité mais on n’a pas livré le PDF
+    // rollback crédits si on a débité mais on n'a pas livré le PDF
     if (!successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
@@ -1127,6 +1164,7 @@ async function createAndSendPdf(from) {
 async function confirmAndSendPdf(from) {
   return createAndSendPdf(from);
 }
+
 // ===============================
 // INTERACTIVE HANDLER (boutons)
 // ===============================
@@ -1238,11 +1276,12 @@ async function handleInteractiveReply(from, replyId) {
   // Fallback
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
 }
+
 // ===============================
 // COMMANDS (texte)
 // ===============================
 async function handleStatsCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
 
   try {
     const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
@@ -1272,7 +1311,7 @@ async function handleStatsCommand(from, text) {
 }
 
 async function handleTopCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
 
   const days = parseDaysArg(text, 30);
   const top = await getTopClients({ days, limit: 5 });
@@ -1287,7 +1326,7 @@ async function handleTopCommand(from, text) {
 }
 
 async function handleExportCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l’administrateur.");
+  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
 
   const days = parseDaysArg(text, 30);
   const rows = await getDocsForExport({ days });
@@ -1426,7 +1465,7 @@ async function handleIncomingMessage(value) {
     if (await handleAdmin(from, text)) return;
 
     // code recharge
-    const mCode = text.match(CONFIG.regex.code);
+    const mCode = text.match(REGEX.code);
     if (mCode) {
       const result = await redeemCode({ waId: from, code: mCode[1] });
       if (!result.ok) {
