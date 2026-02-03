@@ -37,6 +37,15 @@ try {
   console.warn("⚠️ kadiSignature module not found, signature will be skipped");
 }
 
+// ================= Broadcast (optionnel) =================
+let getBroadcastRecipients = null;
+try {
+  ({ getBroadcastRecipients } = require("./kadiBroadcastRepo"));
+} catch (e) {
+  console.warn("⚠️ kadiBroadcastRepo not found, broadcast disabled");
+}
+
+// ================= Imports internes =================
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
@@ -48,7 +57,7 @@ const { ocrImageBuffer } = require("./kadiOcr");
 const {
   sendText,
   sendButtons,
-  sendList, // ✅ NOUVEAU: si absent, fallback automatique
+  sendList, // optionnel
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
@@ -77,6 +86,9 @@ const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
+
+const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 400);
+const BROADCAST_LIMIT = Number(process.env.BROADCAST_LIMIT || 5000);
 
 // ---------------- Regex ----------------
 const REGEX = {
@@ -185,9 +197,7 @@ function extractNumbersSmart(text) {
 
 function escapeCsvValue(str) {
   if (typeof str !== "string") return str;
-  if (/[",\n]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
+  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
   return str;
 }
 
@@ -224,8 +234,6 @@ const DOC_CATALOG = [
   { id: "DOC_FACTURE", title: "Facture", desc: "Facture client", kind: "facture" },
   { id: "DOC_RECU", title: "Reçu", desc: "Reçu de paiement", kind: "recu" },
   { id: "DOC_DECHARGE", title: "Décharge", desc: "Décharge simple", kind: "decharge" },
-  // Ajout facile plus tard:
-  // { id:"DOC_BON_LIVRAISON", title:"Bon de livraison", desc:"BL", kind:"bon_livraison" },
 ];
 
 // ---------------- Parsing lignes ----------------
@@ -368,7 +376,7 @@ function guessDocTypeFromOcr(text) {
 
 function extractTotalFromOcr(text) {
   const t = String(text || "");
-  let m =
+  const m =
     t.match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) ||
     t.match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
   if (!m) return null;
@@ -426,6 +434,7 @@ function parseOcrToDraft(ocrText) {
 
   return { client, items, finance };
 }
+
 async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -440,12 +449,66 @@ async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries
 // ===============================
 // ADMIN HANDLER
 // ===============================
-async function handleAdmin(from, text) {
-  if (!ADMIN_WA_ID || from !== ADMIN_WA_ID) {
-    return false;
+function ensureAdmin(waId) {
+  return ADMIN_WA_ID && waId === ADMIN_WA_ID;
+}
+
+async function broadcastToMany({ fromAdmin, messageText }) {
+  if (!ensureAdmin(fromAdmin)) {
+    await sendText(fromAdmin, "❌ Commande réservée à l'administrateur.");
+    return;
+  }
+  if (typeof getBroadcastRecipients !== "function") {
+    await sendText(fromAdmin, "❌ Broadcast indisponible (kadiBroadcastRepo manquant).");
+    return;
   }
 
+  const recipients = await getBroadcastRecipients({ limit: BROADCAST_LIMIT });
+  if (!recipients.length) {
+    await sendText(fromAdmin, "⚠️ Aucun destinataire trouvé.");
+    return;
+  }
+
+  await sendText(fromAdmin, `📣 Broadcast en cours… Destinataires: ${recipients.length}`);
+
+  let ok = 0;
+  let fail = 0;
+
+  for (const waId of recipients) {
+    try {
+      if (!isValidWhatsAppId(waId)) continue;
+      if (waId === fromAdmin) continue;
+
+      await sendText(
+        waId,
+        `📢 *Mise à jour KADI*\n\n${messageText}\n\nPour ne plus recevoir: répondez *STOP*`
+      );
+      ok += 1;
+
+      await new Promise((r) => setTimeout(r, BROADCAST_DELAY_MS));
+    } catch (e) {
+      fail += 1;
+    }
+  }
+
+  await sendText(fromAdmin, `✅ Broadcast terminé.\nOK: ${ok}\nÉchecs: ${fail}`);
+}
+
+async function handleAdmin(from, text) {
+  if (!ensureAdmin(from)) return false;
+
   const lower = String(text || "").toLowerCase().trim();
+
+  // ADMIN BROADCAST <message>
+  if (lower.startsWith("admin broadcast ")) {
+    const msg = text.replace(/^admin broadcast\s+/i, "").trim();
+    if (!msg) {
+      await sendText(from, "❌ Format: ADMIN BROADCAST <message>");
+      return true;
+    }
+    await broadcastToMany({ fromAdmin: from, messageText: msg });
+    return true;
+  }
 
   if (lower.startsWith("admin create")) {
     const match = text.match(/^admin create\s+(\d+)\s+(\d+)$/i);
@@ -499,11 +562,13 @@ async function handleAdmin(from, text) {
     await sendText(
       from,
       "👨‍💼 *Commandes Admin*\n\n" +
-        "📊 Voir stats:\n" +
+        "📊 Stats:\n" +
         "• /stats\n" +
-        "• /top 30 (par défaut)\n" +
+        "• /top 30\n" +
         "• /export 30\n\n" +
-        "💰 Gestion crédits:\n" +
+        "📣 Broadcast:\n" +
+        "• ADMIN BROADCAST <message>\n\n" +
+        "💰 Crédits:\n" +
         "• ADMIN ADD <wa_id> <credits>\n\n" +
         "🎫 Codes recharge:\n" +
         "• ADMIN CREATE <nb_codes> <credits_par_code>"
@@ -512,10 +577,6 @@ async function handleAdmin(from, text) {
   }
 
   return false;
-}
-
-function ensureAdmin(waId) {
-  return ADMIN_WA_ID && waId === ADMIN_WA_ID;
 }
 
 // ===============================
@@ -687,12 +748,12 @@ async function maybeSendOnboarding(from) {
     const msg =
       `👋 Bienvenue sur *KADI*.\n\n` +
       `✅ *Devis / Facture / Reçu / Décharge* en 30 secondes.\n` +
-      `📷 Envoyez aussi une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
+      `📷 Envoyez une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
       `👇 Choisissez :`;
 
     await sendButtons(from, msg, [
-      { id: "HOME_DOCS", title: "Créer document" },
-      { id: "HOME_PROFILE", title: "Mon profil" },
+      { id: "HOME_DOCS", title: "Créer" },
+      { id: "HOME_PROFILE", title: "Profil" },
       { id: "HOME_CREDITS", title: "Crédits" },
     ]);
 
@@ -759,7 +820,7 @@ async function sendCreditsMenu(to) {
 async function sendProfileMenu(to) {
   return sendButtons(to, "🏢 Profil entreprise", [
     { id: "PROFILE_EDIT", title: "Configurer" },
-    { id: "PROFILE_VIEW", title: "Voir" },
+    { id: "PROFILE_STAMP", title: "Tampon" },
     { id: "BACK_HOME", title: "Menu" },
   ]);
 }
@@ -769,6 +830,86 @@ async function sendAfterPreviewMenu(to) {
     { id: "DOC_CONFIRM", title: "Confirmer (PDF)" },
     { id: "DOC_RESTART", title: "Recommencer" },
     { id: "BACK_HOME", title: "Menu" },
+  ]);
+}
+
+// ===============================
+// Menu Tampon (WhatsApp-friendly, 3 boutons)
+// ===============================
+function stampPosLabel(pos) {
+  if (pos === "bottom-left") return "Bas gauche";
+  if (pos === "top-right") return "Haut droite";
+  if (pos === "top-left") return "Haut gauche";
+  return "Bas droite";
+}
+
+function stampSizeLabel(size) {
+  const n = Number(size || 170);
+  if (n <= 150) return "Petit";
+  if (n >= 200) return "Grand";
+  return "Normal";
+}
+
+async function sendStampMenu(to) {
+  const p = await getOrCreateProfile(to);
+
+  const enabled = p?.stamp_enabled !== false; // default ON
+  const pos = p?.stamp_position || "bottom-right";
+  const size = p?.stamp_size || 170;
+  const title = p?.stamp_title || "—";
+
+  const header =
+    `🟦 *Tampon (PDF)*\n\n` +
+    `• Statut : *${enabled ? "ON ✅" : "OFF ❌"}*\n` +
+    `• Fonction : *${title}*\n` +
+    `• Position : *${stampPosLabel(pos)}*\n` +
+    `• Taille : *${stampSizeLabel(size)}*`;
+
+  return sendButtons(to, header + "\n\n👇 Choisissez :", [
+    { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },
+    { id: "STAMP_EDIT_TITLE", title: "Fonction" },
+    { id: "STAMP_MORE", title: "Position/Taille" },
+  ]);
+}
+
+async function sendStampMoreMenu(to) {
+  const p = await getOrCreateProfile(to);
+  const pos = p?.stamp_position || "bottom-right";
+  const size = p?.stamp_size || 170;
+
+  const txt =
+    `🟦 *Réglages tampon*\n\n` +
+    `• Position : *${stampPosLabel(pos)}*\n` +
+    `• Taille : *${stampSizeLabel(size)}*`;
+
+  return sendButtons(to, txt + "\n\n👇 Choisissez :", [
+    { id: "STAMP_POS", title: "Position" },
+    { id: "STAMP_SIZE", title: "Taille" },
+    { id: "PROFILE_STAMP", title: "Retour" },
+  ]);
+}
+
+async function sendStampPositionMenu(to) {
+  return sendButtons(to, "📍 *Position du tampon* :", [
+    { id: "STAMP_POS_BR", title: "Bas droite" },
+    { id: "STAMP_POS_TR", title: "Haut droite" },
+    { id: "STAMP_MORE", title: "Retour" },
+  ]);
+}
+
+async function sendStampPositionMenu2(to) {
+  return sendButtons(to, "📍 *Position du tampon* (suite) :", [
+    { id: "STAMP_POS_BL", title: "Bas gauche" },
+    { id: "STAMP_POS_TL", title: "Haut gauche" },
+    { id: "STAMP_MORE", title: "Retour" },
+  ]);
+}
+
+async function sendStampSizeMenu(to) {
+  return sendButtons(to, "📏 *Taille du tampon* :", [
+    { id: "STAMP_SIZE_S", title: "Petit" },
+    { id: "STAMP_SIZE_M", title: "Normal" },
+    { id: "STAMP_SIZE_L", title: "Grand" },
   ]);
 }
 
@@ -1041,6 +1182,7 @@ async function handleIncomingImage(from, msg) {
 
   return processOcrImageToDraft(from, mediaId);
 }
+
 // ===============================
 // Documents (texte)
 // ===============================
@@ -1113,6 +1255,7 @@ async function buildPreviewMessage({ profile, doc }) {
     bp.ifu ? `IFU: ${bp.ifu}` : null,
     bp.rccm ? `RCCM: ${bp.rccm}` : null,
     bp.logo_path ? `🖼️ Logo: OK ✅` : `🖼️ Logo: 0`,
+    (bp.stamp_enabled === false) ? `🟦 Tampon: OFF` : `🟦 Tampon: ON`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -1176,10 +1319,7 @@ async function handleDocText(from, text) {
         if (draft.items.length < LIMITS.maxItems) {
           draft.items.push(it);
         } else {
-          await sendText(
-            from,
-            `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`
-          );
+          await sendText(from, `⚠️ Limite de ${LIMITS.maxItems} lignes atteinte. Les lignes suivantes sont ignorées.`);
           break;
         }
       }
@@ -1272,7 +1412,7 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    // ✅ Tampon + signature si disponibles (kadiStamp/kadiSignature)
+    // ✅ Tampon + signature si disponibles
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
 
     try {
@@ -1312,6 +1452,7 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
+    // rollback si échec avant envoi (meilleur effort)
     if (!successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
@@ -1357,11 +1498,10 @@ async function handleInteractiveReply(from, replyId) {
     return sendFactureKindMenu(from);
   }
 
-  // ---------- Facture kind (⚠️ différencier contexte normal vs OCR) ----------
+  // ---------- Facture kind (normal vs OCR) ----------
   if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
     const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
 
-    // si on attendait un type de facture pour OCR
     if (s.step === "ocr_wait_facture_kind") {
       const mediaId = s.pendingOcrMediaId;
       s.pendingOcrMediaId = null;
@@ -1375,7 +1515,6 @@ async function handleInteractiveReply(from, replyId) {
       return processOcrImageToDraft(from, mediaId);
     }
 
-    // sinon flow normal
     return startDocFlow(from, "facture", kind);
   }
 
@@ -1404,22 +1543,44 @@ async function handleInteractiveReply(from, replyId) {
 
   // ---------- Profil ----------
   if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
+  if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
-  if (replyId === "PROFILE_VIEW") {
+  // Tampon : toggle
+  if (replyId === "STAMP_TOGGLE") {
     const p = await getOrCreateProfile(from);
-    await sendText(
-      from,
-      `🏢 *Profil*\n` +
-        `Nom: ${p.business_name || "—"}\n` +
-        `Adresse: ${p.address || "—"}\n` +
-        `Tel: ${p.phone || "—"}\n` +
-        `Email: ${p.email || "—"}\n` +
-        `IFU: ${p.ifu || "—"}\n` +
-        `RCCM: ${p.rccm || "—"}\n` +
-        `Logo: ${p.logo_path ? "OK ✅" : "—"}`
-    );
+    const enabled = p?.stamp_enabled !== false;
+    await updateProfile(from, { stamp_enabled: !enabled });
+    return sendStampMenu(from);
+  }
+
+  // Tampon : fonction
+  if (replyId === "STAMP_EDIT_TITLE") {
+    s.step = "stamp_title";
+    await sendText(from, "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer.");
     return;
   }
+
+  // Tampon : sous-menus
+  if (replyId === "STAMP_MORE") return sendStampMoreMenu(from);
+
+  if (replyId === "STAMP_POS") {
+    // 2 écrans (car 4 positions)
+    await sendStampPositionMenu(from);
+    return sendStampPositionMenu2(from);
+  }
+
+  if (replyId === "STAMP_SIZE") return sendStampSizeMenu(from);
+
+  // Tampon : positions
+  if (replyId === "STAMP_POS_BR") { await updateProfile(from, { stamp_position: "bottom-right" }); return sendStampMenu(from); }
+  if (replyId === "STAMP_POS_BL") { await updateProfile(from, { stamp_position: "bottom-left" }); return sendStampMenu(from); }
+  if (replyId === "STAMP_POS_TR") { await updateProfile(from, { stamp_position: "top-right" }); return sendStampMenu(from); }
+  if (replyId === "STAMP_POS_TL") { await updateProfile(from, { stamp_position: "top-left" }); return sendStampMenu(from); }
+
+  // Tampon : tailles
+  if (replyId === "STAMP_SIZE_S") { await updateProfile(from, { stamp_size: 150 }); return sendStampMenu(from); }
+  if (replyId === "STAMP_SIZE_M") { await updateProfile(from, { stamp_size: 170 }); return sendStampMenu(from); }
+  if (replyId === "STAMP_SIZE_L") { await updateProfile(from, { stamp_size: 200 }); return sendStampMenu(from); }
 
   // ---------- Crédits ----------
   if (replyId === "CREDITS_SOLDE") return replyBalance(from);
@@ -1572,7 +1733,6 @@ async function handleCommand(from, text) {
     return true;
   }
   if (lower === "facture") {
-    // on demande type facture
     const s = getSession(from);
     s.step = "facture_kind";
     await sendFactureKindMenu(from);
@@ -1627,8 +1787,39 @@ async function handleIncomingMessage(value) {
     const text = norm(msg.text?.body);
     if (!text) return;
 
+    // ✅ Broadcast opt-out/opt-in (avant le reste)
+    {
+      const lower = text.toLowerCase().trim();
+      if (lower === "stop") {
+        await updateProfile(from, { broadcast_optout: true });
+        await sendText(from, "✅ OK. Vous ne recevrez plus de messages d’annonce.\nPour réactiver: *START*");
+        return;
+      }
+      if (lower === "start") {
+        await updateProfile(from, { broadcast_optout: false });
+        await sendText(from, "✅ OK. Vous recevrez à nouveau les annonces KADI.");
+        return;
+      }
+    }
+
+    // ✅ Step texte: fonction tampon
+    {
+      const s = getSession(from);
+      if (s.step === "stamp_title") {
+        const t = norm(text);
+        const val = t === "0" ? null : t;
+        await updateProfile(from, { stamp_title: val });
+        s.step = "idle";
+        await sendText(from, "✅ Fonction tampon mise à jour.");
+        await sendStampMenu(from);
+        return;
+      }
+    }
+
+    // Admin
     if (await handleAdmin(from, text)) return;
 
+    // Redeem code
     const mCode = text.match(REGEX.code);
     if (mCode) {
       const result = await redeemCode({ waId: from, code: mCode[1] });
@@ -1668,14 +1859,10 @@ async function handleIncomingMessage(value) {
 
     await sendText(from, "Tapez *MENU* pour commencer.");
   } catch (e) {
-    logger.error("incoming_message", e, {
-      messageType: value?.messages?.[0]?.type,
-    });
+    logger.error("incoming_message", e, { messageType: value?.messages?.[0]?.type });
   } finally {
     const duration = Date.now() - start;
-    logger.metric("message_processing", duration, true, {
-      messageType: value?.messages?.[0]?.type,
-    });
+    logger.metric("message_processing", duration, true, { messageType: value?.messages?.[0]?.type });
   }
 }
 

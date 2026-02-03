@@ -32,7 +32,6 @@ async function detectIdCol(table) {
     }
   }
 
-  // fallback (au cas où)
   _ID_COL_CACHE.set(table, "user_id");
   return "user_id";
 }
@@ -40,6 +39,9 @@ async function detectIdCol(table) {
 /**
  * Somme d'un champ numeric via Supabase:
  * on récupère les lignes et on somme côté Node (simple & fiable)
+ *
+ * ⚠️ Pour "lifetime" ça peut devenir lourd si tu as des dizaines de milliers de docs.
+ * Si ça grossit, on migrera vers une RPC SQL côté Supabase (plus performant).
  */
 async function sumField({ table, field, fromISO, selectExtra = [], filterFn }) {
   const cols = [field].concat(selectExtra).join(",");
@@ -79,6 +81,31 @@ async function distinctCount({ table, filterCol, fromISO }) {
   return set.size;
 }
 
+/**
+ * Group docs by type (count) + sum totals per type
+ * fromISO optionnel
+ */
+async function docsByType({ fromISO }) {
+  let q = supabase.from("kadi_documents").select("doc_type,total");
+  if (fromISO) q = q.gte("created_at", fromISO);
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  const map = new Map(); // doc_type -> { doc_type, count, total_sum }
+  for (const r of data || []) {
+    const t = String(r?.doc_type || "unknown").trim() || "unknown";
+    const total = Number(r?.total || 0);
+
+    const cur = map.get(t) || { doc_type: t, count: 0, total_sum: 0 };
+    cur.count += 1;
+    if (Number.isFinite(total)) cur.total_sum += total;
+    map.set(t, cur);
+  }
+
+  return Array.from(map.values()).sort((a, b) => b.count - a.count);
+}
+
 // -------- main --------
 
 /**
@@ -88,6 +115,11 @@ async function distinctCount({ table, filterCol, fromISO }) {
  * - docs = kadi_documents (created_at)
  * - credits = kadi_credit_tx (created_at)
  * - revenue = UNIQUEMENT tags de paiement réels (sinon 0)
+ *
+ * ✅ Ajouts:
+ * - docs_total_sum lifetime / 7j / 30j
+ * - docs_by_type lifetime
+ * - credits lifetime (added/consumed)
  */
 async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const from7 = isoDaysAgo(7);
@@ -98,15 +130,13 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const { count: totalUsers, error: eUsers } = await supabase
     .from("business_profiles")
     .select(bpIdCol, { count: "exact", head: true });
-
   if (eUsers) throw eUsers;
 
   // USERS ACTIVE (via kadi_activity.last_seen)
-  // (kadi_activity peut être en wa_id OU user_id -> auto detect)
   const active7 = await distinctCount({ table: "kadi_activity", filterCol: "last_seen", fromISO: from7 });
   const active30 = await distinctCount({ table: "kadi_activity", filterCol: "last_seen", fromISO: from30 });
 
-  // DOCS
+  // DOCS counts
   const { count: docsTotal, error: eDocsTotal } = await supabase
     .from("kadi_documents")
     .select("id", { count: "exact", head: true });
@@ -123,6 +153,14 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     .select("id", { count: "exact", head: true })
     .gte("created_at", from30);
   if (eDocs30) throw eDocs30;
+
+  // DOCS sums (FCFA)
+  const docsSumAll = await sumField({ table: "kadi_documents", field: "total" });
+  const docsSum7 = await sumField({ table: "kadi_documents", field: "total", fromISO: from7 });
+  const docsSum30 = await sumField({ table: "kadi_documents", field: "total", fromISO: from30 });
+
+  // DOCS by type (lifetime)
+  const byType = await docsByType({});
 
   // CREDITS (7j)
   const added7 = await sumField({
@@ -141,14 +179,25 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     })
   );
 
+  // CREDITS lifetime (added/consumed)
+  const addedAll = await sumField({
+    table: "kadi_credit_tx",
+    field: "delta",
+    filterFn: (r) => Number(r?.delta) > 0,
+  });
+
+  const consumedAll = Math.abs(
+    await sumField({
+      table: "kadi_credit_tx",
+      field: "delta",
+      filterFn: (r) => Number(r?.delta) < 0,
+    })
+  );
+
   /**
    * REVENUE (30j)
-   * Très important: ne PAS compter welcome/admin/tests.
    * On compte UNIQUEMENT si reason est clairement un paiement:
    * - "payment:" , "om_payment:" , "paid:" , "orange_money:" etc.
-   *
-   * (Si tu veux considérer "redeem" comme revenu plus tard, on l’ajoute,
-   * mais pour l’instant tu as dit: personne n’a payé => revenu doit rester 0)
    */
   const paidCredits30 = await sumField({
     table: "kadi_credit_tx",
@@ -189,10 +238,16 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       total: Number(docsTotal || 0),
       last7: Number(docs7 || 0),
       last30: Number(docs30 || 0),
+      sumAll: Math.round(docsSumAll || 0),
+      sum7: Math.round(docsSum7 || 0),
+      sum30: Math.round(docsSum30 || 0),
+      byType, // [{doc_type,count,total_sum}, ...]
     },
     credits: {
       consumed7: Math.round(consumed7 || 0),
       added7: Math.round(added7 || 0),
+      addedAll: Math.round(addedAll || 0),
+      consumedAll: Math.round(consumedAll || 0),
       addedPaid30: Math.round(paidCredits30 || 0),
     },
     revenue: {
@@ -230,16 +285,24 @@ async function getTopClients({ days = 30, limit = 5 } = {}) {
 }
 
 // Export docs
+// ✅ days = 30 par défaut
+// ✅ days = 0 ou "all" => TOUS les docs
 async function getDocsForExport({ days = 30 } = {}) {
-  const fromISO = isoDaysAgo(days);
+  const wantAll = days === 0 || String(days).toLowerCase() === "all";
 
-  const { data, error } = await supabase
+  let q = supabase
     .from("kadi_documents")
     .select("created_at,wa_id,doc_number,doc_type,facture_kind,client,date,total,items")
-    .gte("created_at", fromISO)
     .order("created_at", { ascending: false });
 
+  if (!wantAll) {
+    const fromISO = isoDaysAgo(Number(days || 30));
+    q = q.gte("created_at", fromISO);
+  }
+
+  const { data, error } = await q;
   if (error) throw error;
+
   return data || [];
 }
 
