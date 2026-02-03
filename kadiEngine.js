@@ -24,6 +24,22 @@ const logger = {
   },
 };
 
+// ================= Tampon & Signature (optionnels) =================
+let kadiStamp = null;
+let kadiSignature = null;
+
+try {
+  kadiStamp = require("./kadiStamp");
+} catch (e) {
+  console.warn("⚠️ kadiStamp module not found, stamp will be skipped");
+}
+
+try {
+  kadiSignature = require("./kadiSignature");
+} catch (e) {
+  console.warn("⚠️ kadiSignature module not found, signature will be skipped");
+}
+
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
@@ -186,6 +202,31 @@ function escapeCsvValue(str) {
   return str;
 }
 
+// ===============================
+// TAMPON & SIGNATURE (wrapper)
+// ===============================
+async function applyStampAndSignatureIfAny(pdfBuffer, profile) {
+  let buf = pdfBuffer;
+
+  if (kadiStamp?.applyStampToPdfBuffer) {
+    try {
+      buf = await kadiStamp.applyStampToPdfBuffer(buf, profile);
+    } catch (e) {
+      logger.warn("stamp", e.message);
+    }
+  }
+
+  if (kadiSignature?.applySignatureToPdfBuffer) {
+    try {
+      buf = await kadiSignature.applySignatureToPdfBuffer(buf, profile);
+    } catch (e) {
+      logger.warn("signature", e.message);
+    }
+  }
+
+  return buf;
+}
+
 // ---------------- Parsing lignes ----------------
 function hasDimensionPattern(raw) {
   const s = String(raw || "").toLowerCase();
@@ -323,6 +364,7 @@ function guessDocTypeFromOcr(text) {
   if (t.includes("facture")) return "facture";
   if (t.includes("reçu") || t.includes("recu")) return "recu";
   if (t.includes("devis") || t.includes("proforma") || t.includes("pro forma")) return "devis";
+  if (t.includes("décharge") || t.includes("decharge")) return "decharge";
   return null;
 }
 
@@ -361,6 +403,8 @@ function parseOcrToDraft(ocrText) {
       low.startsWith("devis") ||
       low.startsWith("reçu") ||
       low.startsWith("recu") ||
+      low.startsWith("décharge") ||
+      low.startsWith("decharge") ||
       low.startsWith("ifu") ||
       low.startsWith("rccm") ||
       low.startsWith("adresse") ||
@@ -483,6 +527,130 @@ function ensureAdmin(waId) {
 }
 
 // ===============================
+// DÉCHARGE (FLOW SIMPLE)
+// ===============================
+function initDechargeFlow(session) {
+  session.mode = "decharge";
+  session.step = "decharge_collect";
+  session.decharge = {
+    step: 1,
+    a_name: null, // partie 1
+    a_piece: null,
+    a_phone: null,
+    b_name: null, // partie 2 (celui qui remet)
+    b_piece: null,
+    b_phone: null,
+    story: null,
+  };
+}
+
+function isZero(v) {
+  const s = safe(v).toLowerCase();
+  return s === "0" || s === "non" || s === "n/a";
+}
+
+function dechargeQuestion(step) {
+  switch (step) {
+    case 1: return "1/7 — Partie 1 : Nom complet ? (ou 0)";
+    case 2: return "2/7 — Partie 1 : Numéro de pièce (CNIB / Passeport) ? (ou 0)";
+    case 3: return "3/7 — Partie 1 : Téléphone WhatsApp ? (ou 0)";
+    case 4: return "4/7 — Partie 2 (celui qui remet) : Nom complet ? (ou 0)";
+    case 5: return "5/7 — Partie 2 : Numéro de pièce (CNIB / Passeport) ? (ou 0)";
+    case 6: return "6/7 — Partie 2 : Téléphone WhatsApp ? (ou 0)";
+    case 7: return "7/7 — Story : Décris en 1 phrase le contexte (ex: « Remise de … »)";
+    default: return null;
+  }
+}
+
+function setDechargeField(session, step, answer) {
+  const d = session.decharge;
+  const v = safe(answer);
+  const val = isZero(v) ? null : v;
+
+  if (step === 1) d.a_name = val;
+  if (step === 2) d.a_piece = val;
+  if (step === 3) d.a_phone = val;
+  if (step === 4) d.b_name = val;
+  if (step === 5) d.b_piece = val;
+  if (step === 6) d.b_phone = val;
+  if (step === 7) d.story = val || "";
+}
+
+function buildDechargeClientName(session) {
+  const d = session.decharge || {};
+  return d.a_name || "—";
+}
+
+async function buildAndSendDecharge({ to, session }) {
+  const profile = await getOrCreateProfile(to);
+
+  // Logo buffer (optionnel)
+  let logoBuf = null;
+  if (profile?.logo_path) {
+    try {
+      const signed = await getSignedLogoUrl(profile.logo_path);
+      logoBuf = await downloadSignedUrlToBuffer(signed);
+    } catch (_) {}
+  }
+
+  const dateISO = formatDateISO();
+  const docNumber = await nextDocNumber({ waId: to, mode: "decharge", factureKind: null, dateISO });
+
+  const d = session.decharge || {};
+
+  const payload = {
+    type: "DÉCHARGE",
+    docNumber,
+    date: dateISO,
+    client: buildDechargeClientName(session),
+    items: [
+      { label: "Partie 1 — Nom", qty: 1, unitPrice: 0, amount: 0, raw: d.a_name || "—" },
+      { label: "Partie 1 — Pièce", qty: 1, unitPrice: 0, amount: 0, raw: d.a_piece || "—" },
+      { label: "Partie 1 — Téléphone", qty: 1, unitPrice: 0, amount: 0, raw: d.a_phone || "—" },
+      { label: "Partie 2 — Nom", qty: 1, unitPrice: 0, amount: 0, raw: d.b_name || "—" },
+      { label: "Partie 2 — Pièce", qty: 1, unitPrice: 0, amount: 0, raw: d.b_piece || "—" },
+      { label: "Partie 2 — Téléphone", qty: 1, unitPrice: 0, amount: 0, raw: d.b_phone || "—" },
+      { label: "Contexte", qty: 1, unitPrice: 0, amount: 0, raw: d.story || "—" },
+    ],
+    total: 0,
+    decharge: {
+      partie1: { nom: d.a_name, piece: d.a_piece, phone: d.a_phone },
+      partie2: { nom: d.b_name, piece: d.b_piece, phone: d.b_phone },
+      story: d.story || "",
+    },
+  };
+
+  // PDF “propre” avec ton builder actuel
+  let pdfBuf = await buildPdfBuffer({
+    docData: payload,
+    businessProfile: profile,
+    logoBuffer: logoBuf,
+  });
+
+  // ✅ Tampon/signature si branchés
+  pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
+
+  // Envoi WhatsApp
+  const fileName = `DECHARGE-${docNumber}-${formatDateISO()}.pdf`;
+  const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+  if (!up?.id) throw new Error("Upload PDF échoué");
+
+  await sendDocument({
+    to,
+    mediaId: up.id,
+    filename: fileName,
+    caption: `✅ Décharge prête — ${docNumber}`,
+  });
+
+  // reset session
+  session.step = "idle";
+  session.mode = null;
+  session.decharge = null;
+
+  await sendHomeMenu(to);
+}
+
+// ===============================
 // Welcome credits + Onboarding
 // ===============================
 async function ensureWelcomeCredits(waId) {
@@ -532,7 +700,7 @@ async function maybeSendOnboarding(from) {
     // ✅ Message simple + captivant
     const msg =
       `👋 Bienvenue sur *KADI*.\n\n` +
-      `✅ *Devis / Facture / Reçu* en 30 secondes.\n` +
+      `✅ *Devis / Facture / Reçu / Décharge* en 30 secondes.\n` +
       `📷 Envoyez aussi une *photo* d'un document → KADI extrait le texte et fait un PDF *propre*.\n\n` +
       `👇 Choisissez :`;
 
@@ -566,6 +734,7 @@ async function sendDocsMenu(to) {
     { id: "DOC_DEVIS", title: "Devis" },
     { id: "DOC_FACTURE", title: "Facture" },
     { id: "DOC_RECU", title: "Reçu" },
+    { id: "DOC_DECHARGE", title: "Décharge" }, // ✅ AJOUT
   ]);
 }
 
@@ -792,7 +961,7 @@ async function startDocFlow(from, mode, factureKind = null) {
   s.factureKind = factureKind;
 
   s.lastDocDraft = {
-    type: mode, // devis | facture | recu
+    type: mode, // devis | facture | recu | decharge
     factureKind,
     docNumber: null,
     date: formatDateISO(),
@@ -809,6 +978,8 @@ async function startDocFlow(from, mode, factureKind = null) {
         : "🧾 Facture Définitive"
       : mode === "devis"
       ? "📝 Devis"
+      : mode === "decharge" // AJOUTER CE CAS
+      ? "📄 Décharge"
       : "🧾 Reçu";
 
   await sendText(
@@ -861,6 +1032,8 @@ async function buildPreviewMessage({ profile, doc }) {
       ? doc.factureKind === "proforma"
         ? "FACTURE PRO FORMA"
         : "FACTURE DÉFINITIVE"
+      : doc.type === "decharge" // AJOUTER CE CAS
+      ? "DÉCHARGE"
       : String(doc.type || "").toUpperCase();
 
   const lines = (doc.items || [])
@@ -1021,6 +1194,7 @@ async function handleIncomingImage(from, msg) {
       { id: "OCR_DEVIS", title: "Devis" },
       { id: "OCR_FACTURE", title: "Facture" },
       { id: "OCR_RECU", title: "Reçu" },
+      { id: "OCR_DECHARGE", title: "Décharge" }, // AJOUTER POUR DECHARGE
     ]);
   }
 
@@ -1090,12 +1264,14 @@ async function createAndSendPdf(from) {
         ? draft.factureKind === "proforma"
           ? "FACTURE PRO FORMA"
           : "FACTURE DÉFINITIVE"
+        : draft.type === "decharge" // AJOUTER CE CAS
+        ? "DÉCHARGE"
         : String(draft.type || "").toUpperCase();
 
     const total = draft.finance?.gross ?? computeFinance(draft).gross;
 
     // PDF buffer
-    const pdfBuf = await buildPdfBuffer({
+    let pdfBuf = await buildPdfBuffer({
       docData: {
         type: title,
         docNumber: draft.docNumber,
@@ -1107,6 +1283,9 @@ async function createAndSendPdf(from) {
       businessProfile: profile,
       logoBuffer: logoBuf,
     });
+
+    // ✅ Tampon + signature
+    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
 
     // Save document (best effort)
     try {
@@ -1183,6 +1362,13 @@ async function handleInteractiveReply(from, replyId) {
   // ---------- Documents ----------
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
+  
+  // ✅ AJOUT: Décharge
+  if (replyId === "DOC_DECHARGE") {
+    const s = getSession(from);
+    initDechargeFlow(s);
+    return sendText(from, dechargeQuestion(1));
+  }
 
   if (replyId === "DOC_FACTURE") {
     return sendFactureKindMenu(from);
@@ -1197,7 +1383,7 @@ async function handleInteractiveReply(from, replyId) {
   }
 
   // ---------- OCR : choix type doc ----------
-  if (replyId === "OCR_DEVIS" || replyId === "OCR_RECU") {
+  if (replyId === "OCR_DEVIS" || replyId === "OCR_RECU" || replyId === "OCR_DECHARGE") {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
 
@@ -1206,7 +1392,11 @@ async function handleInteractiveReply(from, replyId) {
       return;
     }
 
-    await startDocFlow(from, replyId === "OCR_DEVIS" ? "devis" : "recu");
+    let mode = "devis";
+    if (replyId === "OCR_RECU") mode = "recu";
+    if (replyId === "OCR_DECHARGE") mode = "decharge"; // AJOUTER POUR DECHARGE
+
+    await startDocFlow(from, mode);
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -1403,6 +1593,12 @@ async function handleCommand(from, text) {
     await startDocFlow(from, "recu");
     return true;
   }
+  if (lower === "decharge" || lower === "décharge") { // AJOUTER POUR DECHARGE
+    const s = getSession(from);
+    initDechargeFlow(s);
+    await sendText(from, dechargeQuestion(1));
+    return true;
+  }
   if (lower === "facture") {
     await sendFactureKindMenu(from);
     return true;
@@ -1473,6 +1669,30 @@ async function handleIncomingMessage(value) {
         return sendText(from, "❌ Code invalide.");
       }
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
+    }
+
+    // ✅ Décharge flow
+    {
+      const s = getSession(from);
+      if (s.step === "decharge_collect" && s.decharge) {
+        const step = s.decharge.step || 1;
+        setDechargeField(s, step, text);
+
+        if (step >= 7) {
+          // ✅ Ici on fabrique et envoie la décharge
+          try {
+            await buildAndSendDecharge({ to: from, session: s });
+          } catch (e) {
+            logger.error("decharge_pdf", e, { from });
+            await sendText(from, "❌ Erreur lors de la création de la décharge. Réessayez.");
+          }
+          return;
+        }
+
+        s.decharge.step = step + 1;
+        await sendText(from, dechargeQuestion(s.decharge.step));
+        return;
+      }
     }
 
     // profile flow
