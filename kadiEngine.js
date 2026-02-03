@@ -1,6 +1,29 @@
 // kadiEngine.js
 "use strict";
 
+// ================= Logger =================
+const logger = {
+  info: (context, message, meta = {}) => {
+    console.log(`[KADI/INFO/${context}]`, message, meta);
+  },
+  warn: (context, message, meta = {}) => {
+    console.warn(`[KADI/WARN/${context}]`, message, meta);
+  },
+  error: (context, error, meta = {}) => {
+    console.error(
+      `[KADI/ERROR/${context}]`,
+      error?.message || error,
+      { ...meta, stack: error?.stack }
+    );
+  },
+  metric: (name, duration, success = true, meta = {}) => {
+    console.log(
+      `[KADI/METRIC/${name}] ${duration}ms`,
+      { success, ...meta }
+    );
+  },
+};
+
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 const { buildPdfBuffer } = require("./kadiPdf");
