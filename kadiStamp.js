@@ -1,3 +1,4 @@
+// kadiStamp.js
 "use strict";
 
 /**
@@ -10,6 +11,10 @@
  * Exports:
  * - generateStampPngBuffer({ profile, logoBuffer?, title? }) -> Buffer(PNG)
  * - applyStampToPdfBuffer(pdfBuffer, profile, opts?) -> Buffer(PDF)
+ *
+ * Fix:
+ * - Tampon uniquement sur la DERNIERE page par défaut
+ * - Si page rotation != 0 => on SKIP (évite PDF cassé / inversé)
  */
 
 let createCanvas, loadImage;
@@ -36,15 +41,13 @@ function safe(v) {
 function requireCanvas() {
   if (!createCanvas) throw new Error("canvas non installé. Faites: npm i canvas");
 }
-
 function requirePdfLib() {
   if (!PDFLib) throw new Error("pdf-lib non installé. Faites: npm i pdf-lib");
 }
 
 function normalizePhone(p) {
-  return safe(p).replace(/\s/g, "") || "";
+  return safe(p).replace(/\s/g, "");
 }
-
 function truncate(s, max) {
   const x = safe(s);
   if (x.length <= max) return x;
@@ -56,11 +59,9 @@ function makeStampTextLines(profile) {
   const ifu = safe(profile?.ifu);
   const rccm = safe(profile?.rccm);
   const phone = normalizePhone(profile?.phone);
-
   const idLine = ifu ? `IFU: ${ifu}` : rccm ? `RCCM: ${rccm}` : "";
   const phoneLine = phone ? `TEL: ${phone}` : "";
   const addr = safe(profile?.address);
-
   return { name, idLine, phoneLine, addr };
 }
 
@@ -79,7 +80,6 @@ function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0
     ctx.textAlign = "center";
     ctx.fillText(ch, 0, 0);
     ctx.restore();
-
     angle += reverse ? -angleStep : angleStep;
   }
 }
@@ -90,7 +90,6 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   const size = 520;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
-
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
@@ -112,12 +111,14 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
 
   const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
 
+  // texte haut
   ctx.save();
   ctx.translate(center, center);
   ctx.font = "bold 32px Arial";
   drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
   ctx.restore();
 
+  // texte bas
   const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
   if (bottom) {
     ctx.save();
@@ -127,6 +128,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
     ctx.restore();
   }
 
+  // centre
   ctx.save();
   ctx.translate(center, center);
 
@@ -138,7 +140,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
     } catch (_) {}
   }
 
-  const centerTitle = safe(title) || safe(profile?.stamp_title) || "TAMPON";
+  const centerTitle = safe(title) || safe(profile?.stamp_title) || "—";
   ctx.font = "bold 34px Arial";
   ctx.textAlign = "center";
   ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 40);
@@ -154,33 +156,27 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
 }
 
 /**
- * Applique le tampon au PDF (overlay stable iOS/WhatsApp)
+ * Applique le tampon au PDF (SAFE)
  */
 async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   requirePdfLib();
   if (!Buffer.isBuffer(pdfBuffer)) throw new Error("applyStampToPdfBuffer: pdfBuffer doit être un Buffer");
 
-  // OFF si profil le demande
+  // OFF via profil
   if (profile?.stamp_enabled === false) return pdfBuffer;
+
+  const pages = opts.pages || "last"; // ✅ défaut last (SAFE)
+  const position = opts.position || profile?.stamp_position || "bottom-right";
+  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? 0.9)));
+  const margin = Number(opts.margin ?? 18);
+  const title = opts.title ?? null;
 
   const { PDFDocument } = PDFLib;
 
-  // ✅ Defaults basés profil
-  const pages = opts.pages || "last"; // plus safe: uniquement dernière page
-  const opacity = Number(opts.opacity ?? 0.9);
-  const margin = Number(opts.margin ?? 18);
-
-  const position = opts.position || profile?.stamp_position || "bottom-right";
-
-  // taille du tampon sur le PDF (points)
-  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
-
-  const title = opts.title ?? null;
-
-  // PNG tampon
   const stampPng = await generateStampPngBuffer({ profile, logoBuffer: null, title });
 
-  const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
   const stampImg = await pdfDoc.embedPng(stampPng);
 
   const allPages = pdfDoc.getPages();
@@ -189,55 +185,44 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   const targetPages = pages === "all" ? allPages : [allPages[allPages.length - 1]];
 
   for (const page of targetPages) {
+    // ✅ si rotation != 0 => skip (évite PDF “mélangé”)
+    const rot = page.getRotation ? page.getRotation().angle : 0;
+    if (rot && rot !== 0) continue;
+
     const { width, height } = page.getSize();
 
-    // SAFE zones (évite header/footer)
-    const SAFE_BOTTOM = 70; // footer zone réservée
-    const SAFE_TOP = 120;   // header zone réservée
-
-    // conserve proportions
     const pngDims = stampImg.scale(1);
     const ratio = pngDims.width / pngDims.height;
-
-    const drawW = Math.max(80, Math.min(260, size || 170));
+    const drawW = size;
     const drawH = drawW / ratio;
 
-    // coords pdf-lib: origin en bas à gauche
+    // positions
     let x = margin;
-    let y = margin + SAFE_BOTTOM; // ne pas toucher footer
+    let y = margin;
 
+    // Y=margin => bas (pdf-lib origine en bas-gauche)
     if (position === "bottom-right") {
       x = width - drawW - margin;
-      y = margin + SAFE_BOTTOM;
+      y = margin;
     } else if (position === "bottom-left") {
       x = margin;
-      y = margin + SAFE_BOTTOM;
+      y = margin;
     } else if (position === "top-right") {
       x = width - drawW - margin;
-      y = height - drawH - margin - SAFE_TOP;
+      y = height - drawH - margin;
     } else if (position === "top-left") {
       x = margin;
-      y = height - drawH - margin - SAFE_TOP;
+      y = height - drawH - margin;
     } else if (position === "center") {
       x = (width - drawW) / 2;
       y = (height - drawH) / 2;
     }
 
-    page.drawImage(stampImg, {
-      x,
-      y,
-      width: drawW,
-      height: drawH,
-      opacity: Math.max(0, Math.min(1, opacity || 0.9)),
-    });
+    page.drawImage(stampImg, { x, y, width: drawW, height: drawH, opacity });
   }
 
-  // ✅ FIX compat iOS/WhatsApp : éviter object streams
-  const out = await pdfDoc.save({ useObjectStreams: false });
+  const out = await pdfDoc.save();
   return Buffer.from(out);
 }
 
-module.exports = {
-  generateStampPngBuffer,
-  applyStampToPdfBuffer,
-};
+module.exports = { generateStampPngBuffer, applyStampToPdfBuffer };
