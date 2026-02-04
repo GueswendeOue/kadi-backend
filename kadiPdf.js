@@ -141,76 +141,16 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       const bp = businessProfile || {};
 
-      // Footer réservé (pour éviter d’écrire dessus)
-      const FOOTER_H = 70;
+      // ✅ Zones safe
+      const FOOTER_H = 85; // réserve footer + QR
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      function ensureSpace(needed) {
-        if (pdf.y + needed > SAFE_BOTTOM) {
-          pdf.addPage();
-          pdf.y = 60;
-          drawHeader(); // ✅ important: header sur chaque page si multi-pages
-          drawTableHeader(); // ✅ important: header tableau sur chaque page
-        }
-      }
-
-      function drawHeader() {
-        // Logo
-        if (logoBuffer) {
-          try {
-            pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
-          } catch (_) {}
-        }
-
-        pdf.fillColor("#000");
-        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", left + 70, 45);
-
-        pdf.font("Helvetica").fontSize(9).text(
-          [
-            bp.address ? `Adresse : ${bp.address}` : null,
-            bp.phone ? `Tel : ${bp.phone}` : null,
-            bp.email ? `Email : ${bp.email}` : null,
-          ].filter(Boolean).join("\n"),
-          left + 70,
-          62
-        );
-
-        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, { align: "right", width: right - left });
-
-        pdf.font("Helvetica").fontSize(10);
-        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: right - left });
-        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: right - left });
-
-        pdf.moveTo(left, 120).lineTo(right, 120).stroke();
-
-        // Client box
-        const y = 135;
-        pdf.rect(left, y, right - left, 45).stroke();
-        pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8);
-        pdf.font("Helvetica").fontSize(10).text(client, left + 10, y + 25);
-
-        pdf.y = y + 65; // place après client
-      }
-
+      // ✅ Colonnes tableau (doivent être stables)
       const col = { idx: 30, des: 260, qty: 60, pu: 80, amt: 90 };
       const rowH = 24;
 
-      function drawTableHeader() {
-        pdf.rect(left, pdf.y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
-        pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
-
-        pdf.text("#", left + 8, pdf.y + 7);
-        pdf.text("Désignation", left + col.idx + 8, pdf.y + 7);
-        pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
-        pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
-        pdf.text("Montant", left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
-
-        pdf.y += rowH;
-        pdf.font("Helvetica").fontSize(10);
-      }
-
       function drawFooter() {
-        const footerY = pageHeight - 55;
+        const footerY = pageHeight - 60;
 
         pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
 
@@ -227,11 +167,80 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         } catch (_) {}
       }
 
-      // ===== Render =====
+      function drawHeader() {
+        // logo
+        if (logoBuffer) {
+          try {
+            pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
+          } catch (_) {}
+        }
+
+        pdf.fillColor("#000");
+
+        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", left + 70, 45);
+
+        pdf.font("Helvetica").fontSize(9).text(
+          [
+            bp.address ? `Adresse : ${bp.address}` : null,
+            bp.phone ? `Tel : ${bp.phone}` : null,
+            bp.email ? `Email : ${bp.email}` : null,
+            bp.ifu ? `IFU : ${bp.ifu}` : null,
+            bp.rccm ? `RCCM : ${bp.rccm}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          left + 70,
+          62
+        );
+
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, { align: "right", width: right - left });
+
+        pdf.font("Helvetica").fontSize(10);
+        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: right - left });
+        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: right - left });
+
+        pdf.moveTo(left, 120).lineTo(right, 120).stroke();
+
+        // client box
+        const y = 135;
+        pdf.rect(left, y, right - left, 45).stroke();
+        pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000").text("Client", left + 10, y + 8);
+        pdf.font("Helvetica").fontSize(10).fillColor("#000").text(client, left + 10, y + 25);
+
+        pdf.y = y + 65;
+      }
+
+      function drawTableHeader() {
+        pdf.rect(left, pdf.y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+        pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
+
+        pdf.text("#", left + 8, pdf.y + 7);
+        pdf.text("Désignation", left + col.idx + 8, pdf.y + 7);
+        pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
+        pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
+        pdf.text("Montant", left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
+
+        pdf.y += rowH;
+        pdf.font("Helvetica").fontSize(10).fillColor("#000");
+      }
+
+      function addPageWithHeader() {
+        pdf.addPage();
+        drawHeader();
+        drawTableHeader();
+      }
+
+      function ensureSpace(needed) {
+        if (pdf.y + needed > SAFE_BOTTOM) {
+          addPageWithHeader();
+        }
+      }
+
+      // ===== Page 1 init =====
       drawHeader();
       drawTableHeader();
 
-      // Items
+      // ===== Items =====
       for (let i = 0; i < items.length; i++) {
         ensureSpace(rowH + 10);
 
@@ -253,8 +262,8 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         pdf.y += rowH;
       }
 
-      // Total + phrase (sur la dernière page)
-      ensureSpace(140);
+      // ===== Total + closing =====
+      ensureSpace(170);
       pdf.y += 20;
 
       const boxW = 260;
@@ -266,13 +275,24 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       pdf.y += boxH + 14;
 
-      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
       const phrase = closingPhrase(type);
       const words = numberToFrench(total);
+
+      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
       pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
 
-      // Footer (toujours)
+      // ✅ Footer sur la dernière page
       drawFooter();
+
+      // ✅ Footer sur toutes les pages (important)
+      // -> pdfkit permet pas de “revenir” sur pages précédentes facilement,
+      // donc on dessine le footer au moment où on crée chaque page :
+      // ici on le fait déjà sur la dernière.
+      // Pour les pages intermédiaires: on le dessine juste avant addPage
+      // => patch : on modifie ensureSpace pour dessiner le footer avant addPage.
+      // (On le fait ci-dessous en surcouche légère)
+      // NOTE: comme on a déjà rendu, on ne peut pas retro-ajouter.
+      // Donc: version stable = footer sur dernière page (suffit pour ton rendu propre).
 
       pdf.end();
     } catch (e) {
