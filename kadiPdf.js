@@ -1,7 +1,7 @@
-// kadiPdf.js — FIXED GRID (cells aligned + stable y + no vertical wrapping)
+// kadiPdf.js — FIXED GRID (cells + stable y + no vertical wrapping) + load logs
 "use strict";
 
-console.log("[KADI] kadiPdf.js LOADED — grid version");
+console.log("[KADI_PDF] LOADED FROM ✅", __filename);
 
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
@@ -10,16 +10,12 @@ const QRCode = require("qrcode");
 function safe(v) {
   return String(v || "").trim();
 }
-
 function fmtNumber(n) {
-  // support decimals but print nicely (no crazy long floats)
-  const num = Number(n || 0);
-  if (!Number.isFinite(num)) return "0";
-  const x = Math.round(num); // FCFA usually integer
+  const x = Math.round(Number(n || 0));
+  if (!Number.isFinite(x)) return "0";
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-// mini conversion nombre→texte (FR) robuste
 function numberToFrench(n) {
   n = Math.floor(Number(n) || 0);
   if (n === 0) return "zéro";
@@ -99,14 +95,7 @@ function closingPhrase(typeUpper) {
 async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
   const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
   const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
-
-  const png = await QRCode.toBuffer(url, {
-    type: "png",
-    width: 140,
-    margin: 1,
-    errorCorrectionLevel: "M",
-  });
-
+  const png = await QRCode.toBuffer(url, { type: "png", width: 140, margin: 1, errorCorrectionLevel: "M" });
   return { png, url };
 }
 
@@ -118,9 +107,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
   return new Promise((resolve, reject) => {
     try {
-      // bufferPages: allow footer on each page (we draw footer before addPage + after all)
-      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: false });
-
+      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: true });
       const chunks = [];
       pdf.on("data", (c) => chunks.push(c));
       pdf.on("end", () => resolve(Buffer.concat(chunks)));
@@ -138,14 +125,14 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const total = Number(docData.total || 0);
       const bp = businessProfile || {};
 
-      // ----- SAFE AREAS -----
+      // footer safe area
       const FOOTER_H = 85;
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ----- TABLE GRID CONFIG (STABLE) -----
+      // ===== TABLE GRID CONFIG (stable) =====
       const rowH = 26;
 
-      // widths MUST sum to (right-left)
+      // widths must sum to (right-left)
       const W = right - left;
       const col = {
         idx: 40,
@@ -164,7 +151,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         end: right,
       };
 
-      // ----- DRAW HELPERS -----
       function drawFooter() {
         const footerY = pageHeight - 60;
 
@@ -176,7 +162,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         pdf.text(`Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`, left, footerY, {
           width: right - left - 60,
           lineBreak: false,
-          ellipsis: true,
         });
 
         try {
@@ -204,8 +189,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
           bp.address ? `Adresse : ${bp.address}` : null,
           bp.phone ? `Tel : ${bp.phone}` : null,
           bp.email ? `Email : ${bp.email}` : null,
-          bp.ifu ? `IFU : ${bp.ifu}` : null,
-          bp.rccm ? `RCCM : ${bp.rccm}` : null,
         ].filter(Boolean);
 
         pdf.font("Helvetica").fontSize(9).text(lines.join("\n"), infoX, topY + 17);
@@ -220,8 +203,8 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         if (isFirstPage) {
           const y = 135;
           pdf.rect(left, y, right - left, 45).stroke();
-          pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000").text("Client", left + 10, y + 8);
-          pdf.font("Helvetica").fontSize(10).fillColor("#000").text(client, left + 10, y + 25);
+          pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8);
+          pdf.font("Helvetica").fontSize(10).text(client, left + 10, y + 25);
           pdf.y = y + 65;
         } else {
           pdf.y = 140;
@@ -231,7 +214,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       function drawRowGrid(y0, height) {
         // outer
         pdf.rect(left, y0, right - left, height).stroke();
-        // vertical lines (stable)
+        // vertical lines
         pdf.moveTo(x.des, y0).lineTo(x.des, y0 + height).stroke();
         pdf.moveTo(x.qty, y0).lineTo(x.qty, y0 + height).stroke();
         pdf.moveTo(x.pu, y0).lineTo(x.pu, y0 + height).stroke();
@@ -256,7 +239,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         pdf.text("Montant", x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
 
         pdf.y = y0 + rowH;
-        pdf.font("Helvetica").fontSize(10).fillColor("#000");
+        pdf.font("Helvetica").fontSize(10);
       }
 
       function drawItemRow(i, it) {
@@ -270,17 +253,15 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         drawRowGrid(y0, rowH);
 
         pdf.fillColor("#000").font("Helvetica").fontSize(10);
-
         pdf.text(String(i + 1), x.idx, y0 + 8, { width: col.idx, align: "center", lineBreak: false });
 
-        // designation stays inside (no wrap, ellipsis)
+        // designation must stay inside cell
         pdf.text(label, x.des + 6, y0 + 8, {
           width: col.des - 12,
           lineBreak: false,
           ellipsis: true,
         });
 
-        // numeric columns (no wrap)
         pdf.text(fmtNumber(qty), x.qty, y0 + 8, { width: col.qty - 10, align: "right", lineBreak: false });
         pdf.text(fmtNumber(pu), x.pu, y0 + 8, { width: col.pu - 10, align: "right", lineBreak: false });
         pdf.text(fmtNumber(amt), x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
@@ -289,7 +270,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       function addPageWithHeader() {
-        // draw footer on current page BEFORE page break
         drawFooter();
         pdf.addPage();
         drawHeader(false);
@@ -300,7 +280,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         if (pdf.y + needed > SAFE_BOTTOM) addPageWithHeader();
       }
 
-      // ===== RENDER =====
+      // ===== Render =====
       drawHeader(true);
       drawTableHeader();
 
@@ -309,7 +289,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         drawItemRow(i, items[i] || {});
       }
 
-      // ===== TOTAL + closing =====
+      // ===== Total + closing =====
       ensureSpace(190);
       pdf.y += 18;
 
@@ -323,7 +303,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
       pdf.text("TOTAL", boxX + 10, boxY + 12, { width: 70, lineBreak: false });
 
-      // IMPORTANT: give width so it stays on one line, right aligned
       pdf.text(`${fmtNumber(total)} FCFA`, boxX + 80, boxY + 12, {
         width: boxW - 90,
         align: "right",
@@ -336,13 +315,9 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const words = numberToFrench(total);
 
       pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, {
-        width: right - left,
-      });
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
 
-      // footer on last page
       drawFooter();
-
       pdf.end();
     } catch (e) {
       reject(e);
@@ -350,4 +325,4 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
   });
 }
 
-module.exports = { buildPdfBuffer };
+module.exports = { buildPdfBuffer, __file: __filename };

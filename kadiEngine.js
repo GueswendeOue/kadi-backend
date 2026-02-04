@@ -35,11 +35,20 @@ try {
 }
 
 // ================= Imports core =================
+const path = require("path");
+
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
-const { buildPdfBuffer } = require("./kadiPdf");
-const { saveDocument } = require("./kadiRepo");
 
+// ✅ DEBUG: prouver quel fichier PDF est chargé
+const pdfMod = require("./kadiPdf");
+console.log("[KADI] PDF MODULE RESOLVED ✅", require.resolve("./kadiPdf"));
+console.log("[KADI] PDF MODULE PATH ✅", pdfMod?.__file || "(no __file)");
+console.log("[KADI] PDF MODULE KEYS ✅", Object.keys(pdfMod || {}));
+
+const { buildPdfBuffer } = pdfMod;
+
+const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
 
 const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
