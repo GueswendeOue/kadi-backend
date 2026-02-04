@@ -1,4 +1,8 @@
-// kadiPdf.js
+// kadiPdf.js (ou KadiPdf.js si ton fichier s'appelle exactement "Kadipdf" sur disque)
+// ✅ Fix: valeurs toujours dans les cases (width + lineBreak:false + y0 figé)
+// ✅ Saut de page propre si beaucoup d'items (répète header du tableau)
+// ✅ Footer propre (au moins sur la dernière page — option bufferPages en bonus)
+
 "use strict";
 
 const PDFDocument = require("pdfkit");
@@ -15,112 +19,374 @@ function fmtNumber(n) {
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-function closingPhrase(type) {
-  const t = String(type || "").toUpperCase();
-  if (t.includes("DEVIS")) return "Arrêté le présent devis";
+// mini conversion nombre→texte (FR) robuste
+function numberToFrench(n) {
+  n = Math.floor(Number(n) || 0);
+  if (n === 0) return "zéro";
+
+  const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
+  const teens = [
+    "dix",
+    "onze",
+    "douze",
+    "treize",
+    "quatorze",
+    "quinze",
+    "seize",
+    "dix-sept",
+    "dix-huit",
+    "dix-neuf",
+  ];
+  const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
+
+  function under100(x) {
+    if (x < 10) return units[x];
+    if (x < 20) return teens[x - 10];
+
+    const t = Math.floor(x / 10);
+    const u = x % 10;
+
+    if (t === 7 || t === 9) {
+      const base = tens[t];
+      const rest = x - t * 10; // 10..19
+      return `${base}-${teens[rest - 10]}`;
+    }
+
+    if (t === 8 && u === 0) return "quatre-vingts";
+    if (u === 0) return tens[t];
+    if (t === 8) return `quatre-vingt-${units[u]}`;
+    if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
+
+    return `${tens[t]}-${units[u]}`;
+  }
+
+  function under1000(x) {
+    const h = Math.floor(x / 100);
+    const r = x % 100;
+    let s = "";
+
+    if (h > 0) {
+      if (h === 1) s = "cent";
+      else s = `${units[h]} cent`;
+      if (r === 0 && h > 1) s += "s";
+    }
+    if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
+    return s;
+  }
+
+  function chunk(x, value, name) {
+    const q = Math.floor(x / value);
+    const r = x % value;
+    if (q === 0) return { text: "", rest: r };
+
+    if (name === "mille") {
+      if (q === 1) return { text: "mille", rest: r };
+      return { text: `${under1000(q)} mille`, rest: r };
+    }
+
+    const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
+    return { text: t, rest: r };
+  }
+
+  let x = n;
+  const parts = [];
+
+  const m = chunk(x, 1_000_000, "million");
+  if (m.text) parts.push(m.text);
+  x = m.rest;
+
+  const k = chunk(x, 1_000, "mille");
+  if (k.text) parts.push(k.text);
+  x = k.rest;
+
+  if (x > 0) parts.push(under1000(x));
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function closingPhrase(typeUpper) {
+  const t = String(typeUpper || "").toUpperCase();
   if (t.includes("FACTURE")) return "Arrêtée la présente facture";
   if (t.includes("REÇU") || t.includes("RECU")) return "Arrêté le présent reçu";
+  if (t.includes("DEVIS")) return "Arrêté le présent devis";
+  if (t.includes("DÉCHARGE") || t.includes("DECHARGE")) return "Arrêtée la présente décharge";
   return "Arrêté le présent document";
 }
 
 // ================= QR =================
-async function makeQr({ e164 }) {
-  const url = `https://wa.me/${e164}`;
-  const png = await QRCode.toBuffer(url, { width: 120, margin: 1 });
-  return png;
+async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
+  const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
+  const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
+
+  const png = await QRCode.toBuffer(url, {
+    type: "png",
+    width: 140,
+    margin: 1,
+    errorCorrectionLevel: "M",
+  });
+
+  return { png, url };
 }
 
 // ================= PDF =================
-async function buildPdfBuffer({ docData, businessProfile, logoBuffer }) {
+async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
   const KADI_E164 = process.env.KADI_E164 || "22679239027";
-  const qr = await makeQr({ e164: KADI_E164 });
+  const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
 
-  return new Promise((resolve) => {
-    const pdf = new PDFDocument({ size: "A4", margin: 50 });
-    const chunks = [];
-    pdf.on("data", (c) => chunks.push(c));
-    pdf.on("end", () => resolve(Buffer.concat(chunks)));
+  const qr = await makeKadiQrBuffer({
+    fullNumberE164: KADI_E164,
+    prefillText: KADI_PREFILL,
+  });
 
-    const left = 50;
-    const right = pdf.page.width - 50;
+  return new Promise((resolve, reject) => {
+    try {
+      // bufferPages=true -> on peut dessiner le footer sur toutes les pages à la fin
+      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: true });
 
-    // ===== HEADER =====
-    if (logoBuffer) {
-      pdf.image(logoBuffer, left, 45, { width: 55 });
+      const chunks = [];
+      pdf.on("data", (c) => chunks.push(c));
+      pdf.on("error", reject);
+      pdf.on("end", () => resolve(Buffer.concat(chunks)));
+
+      const pageWidth = pdf.page.width;
+      const pageHeight = pdf.page.height;
+      const left = 50;
+      const right = pageWidth - 50;
+
+      const type = String(docData.type || "DOCUMENT").toUpperCase();
+      const number = docData.docNumber || "—";
+      const date = docData.date || "—";
+      const client = docData.client || "—";
+      const items = Array.isArray(docData.items) ? docData.items : [];
+      const total = Number(docData.total || 0);
+
+      const bp = businessProfile || {};
+
+      // ✅ Réserves bas de page
+      const FOOTER_H = 85;
+      const SAFE_BOTTOM = pageHeight - FOOTER_H;
+
+      // ✅ Tableau stable
+      const col = { idx: 30, des: 260, qty: 60, pu: 80, amt: 90 };
+      const rowH = 24;
+      const CELL_PAD_Y = 7;
+
+      function drawFooter() {
+        const footerY = pageHeight - 60;
+
+        pdf.save();
+        pdf.strokeColor("#000").lineWidth(1);
+        pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
+
+        pdf.font("Helvetica").fontSize(8).fillColor("#555");
+        pdf.text(`Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`, left, footerY, {
+          width: right - left - 60,
+          lineBreak: false,
+          ellipsis: true,
+        });
+
+        try {
+          pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
+        } catch (_) {}
+
+        pdf.restore();
+      }
+
+      function drawHeader(isFirstPage = true) {
+        // logo
+        if (logoBuffer && isFirstPage) {
+          try {
+            pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
+          } catch (_) {}
+        }
+
+        pdf.fillColor("#000");
+
+        const infoX = logoBuffer && isFirstPage ? left + 70 : left;
+
+        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", infoX, 45);
+
+        pdf.font("Helvetica").fontSize(9).text(
+          [
+            bp.address ? `Adresse : ${bp.address}` : null,
+            bp.phone ? `Tel : ${bp.phone}` : null,
+            bp.email ? `Email : ${bp.email}` : null,
+            bp.ifu ? `IFU : ${bp.ifu}` : null,
+            bp.rccm ? `RCCM : ${bp.rccm}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          infoX,
+          62
+        );
+
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, {
+          align: "right",
+          width: right - left,
+          lineBreak: false,
+        });
+
+        pdf.font("Helvetica").fontSize(10);
+        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: right - left, lineBreak: false });
+        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: right - left, lineBreak: false });
+
+        pdf.moveTo(left, 120).lineTo(right, 120).stroke();
+
+        // client box seulement page 1
+        if (isFirstPage) {
+          const y = 135;
+          pdf.rect(left, y, right - left, 45).stroke();
+          pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000").text("Client", left + 10, y + 8);
+          pdf.font("Helvetica").fontSize(10).fillColor("#000").text(client, left + 10, y + 25);
+          pdf.y = y + 65;
+        } else {
+          pdf.y = 140;
+        }
+      }
+
+      function drawTableHeader() {
+        const y0 = pdf.y;
+
+        pdf.rect(left, y0, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+        pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
+
+        // chaque cellule: width + lineBreak:false
+        pdf.text("#", left + 8, y0 + CELL_PAD_Y, {
+          width: col.idx - 16,
+          align: "center",
+          lineBreak: false,
+        });
+
+        pdf.text("Désignation", left + col.idx + 8, y0 + CELL_PAD_Y, {
+          width: col.des - 16,
+          lineBreak: false,
+        });
+
+        pdf.text("Qté", left + col.idx + col.des + 8, y0 + CELL_PAD_Y, {
+          width: col.qty - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.text("PU", left + col.idx + col.des + col.qty + 8, y0 + CELL_PAD_Y, {
+          width: col.pu - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.text("Montant", left + col.idx + col.des + col.qty + col.pu + 8, y0 + CELL_PAD_Y, {
+          width: col.amt - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.y = y0 + rowH;
+        pdf.font("Helvetica").fontSize(10).fillColor("#000");
+      }
+
+      function addPageWithHeader() {
+        pdf.addPage();
+        drawHeader(false);
+        drawTableHeader();
+      }
+
+      function ensureSpace(needed) {
+        if (pdf.y + needed > SAFE_BOTTOM) addPageWithHeader();
+      }
+
+      function drawItemRow(i, it) {
+        ensureSpace(rowH + 10);
+
+        const y0 = pdf.y;
+
+        const label = safe(it?.label || it?.raw || "—");
+        const qty = Number(it?.qty || 0);
+        const pu = Number(it?.unitPrice || 0);
+        const amt = Number(it?.amount || (qty * pu) || 0);
+
+        pdf.rect(left, y0, right - left, rowH).stroke();
+        pdf.fillColor("#000").font("Helvetica").fontSize(10);
+
+        pdf.text(String(i + 1), left + 8, y0 + CELL_PAD_Y, {
+          width: col.idx - 16,
+          align: "center",
+          lineBreak: false,
+        });
+
+        pdf.text(label, left + col.idx + 8, y0 + CELL_PAD_Y, {
+          width: col.des - 16,
+          ellipsis: true,
+          lineBreak: false,
+        });
+
+        pdf.text(fmtNumber(qty), left + col.idx + col.des + 8, y0 + CELL_PAD_Y, {
+          width: col.qty - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.text(fmtNumber(pu), left + col.idx + col.des + col.qty + 8, y0 + CELL_PAD_Y, {
+          width: col.pu - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.text(fmtNumber(amt), left + col.idx + col.des + col.qty + col.pu + 8, y0 + CELL_PAD_Y, {
+          width: col.amt - 16,
+          align: "right",
+          lineBreak: false,
+        });
+
+        pdf.y = y0 + rowH;
+      }
+
+      // ===== RENDER =====
+      drawHeader(true);
+      drawTableHeader();
+
+      for (let i = 0; i < items.length; i++) {
+        drawItemRow(i, items[i]);
+      }
+
+      // TOTAL + closing
+      ensureSpace(170);
+      pdf.y += 20;
+
+      const boxW = 260;
+      const boxH = 40;
+
+      const yBox = pdf.y;
+      pdf.rect(right - boxW, yBox, boxW, boxH).stroke();
+      pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
+      pdf.text("TOTAL", right - boxW + 10, yBox + 12, { width: 120, lineBreak: false });
+
+      // ✅ IMPORTANT: width + lineBreak:false (sinon ça part en vertical)
+      pdf.text(`${fmtNumber(total)} FCFA`, right - boxW + 10, yBox + 12, {
+        width: boxW - 20,
+        align: "right",
+        lineBreak: false,
+      });
+
+      pdf.y = yBox + boxH + 14;
+
+      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
+      const phrase = closingPhrase(type);
+      const words = numberToFrench(total);
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, {
+        width: right - left,
+      });
+
+      // Footer sur toutes les pages (bufferPages=true)
+      const range = pdf.bufferedPageRange(); // { start, count }
+      for (let i = range.start; i < range.start + range.count; i++) {
+        pdf.switchToPage(i);
+        drawFooter();
+      }
+
+      pdf.end();
+    } catch (e) {
+      reject(e);
     }
-
-    pdf.font("Helvetica-Bold").fontSize(13)
-      .text(businessProfile?.business_name || "—", left + 70, 45);
-
-    pdf.font("Helvetica").fontSize(9)
-      .text(`Adresse : ${businessProfile?.address || "—"}`, left + 70, 62)
-      .text(`Tel : ${businessProfile?.phone || "—"}`, left + 70, 75);
-
-    pdf.font("Helvetica-Bold").fontSize(16)
-      .text(docData.type, left, 45, { width: right - left, align: "right" });
-
-    pdf.font("Helvetica").fontSize(10)
-      .text(`N° : ${docData.docNumber}`, left, 65, { width: right - left, align: "right" })
-      .text(`Date : ${docData.date}`, left, 80, { width: right - left, align: "right" });
-
-    pdf.moveTo(left, 120).lineTo(right, 120).stroke();
-
-    // ===== CLIENT =====
-    pdf.rect(left, 135, right - left, 45).stroke();
-    pdf.font("Helvetica-Bold").text("Client", left + 10, 143);
-    pdf.font("Helvetica").text(docData.client, left + 10, 160);
-
-    // ===== TABLE =====
-    const yStart = 210;
-    const rowH = 26;
-
-    const cols = {
-      idx: { x: left, w: 30 },
-      label: { x: left + 30, w: 260 },
-      qty: { x: left + 290, w: 60 },
-      pu: { x: left + 350, w: 80 },
-      amt: { x: left + 430, w: 90 },
-    };
-
-    // Header row
-    pdf.rect(left, yStart, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
-    pdf.font("Helvetica-Bold").fontSize(10);
-    pdf.text("#", cols.idx.x, yStart + 8, { width: cols.idx.w, align: "center" });
-    pdf.text("Désignation", cols.label.x + 5, yStart + 8);
-    pdf.text("Qté", cols.qty.x, yStart + 8, { width: cols.qty.w, align: "right" });
-    pdf.text("PU", cols.pu.x, yStart + 8, { width: cols.pu.w, align: "right" });
-    pdf.text("Montant", cols.amt.x, yStart + 8, { width: cols.amt.w, align: "right" });
-
-    // Rows
-    let y = yStart + rowH;
-    pdf.font("Helvetica").fontSize(10);
-
-    docData.items.forEach((it, i) => {
-      pdf.rect(left, y, right - left, rowH).stroke();
-
-      pdf.text(String(i + 1), cols.idx.x, y + 8, { width: cols.idx.w, align: "center" });
-      pdf.text(safe(it.label), cols.label.x + 5, y + 8, { width: cols.label.w - 10 });
-      pdf.text(fmtNumber(it.qty), cols.qty.x, y + 8, { width: cols.qty.w, align: "right" });
-      pdf.text(fmtNumber(it.unitPrice), cols.pu.x, y + 8, { width: cols.pu.w, align: "right" });
-      pdf.text(fmtNumber(it.amount), cols.amt.x, y + 8, { width: cols.amt.w, align: "right" });
-
-      y += rowH;
-    });
-
-    // ===== TOTAL =====
-    pdf.rect(right - 260, y + 20, 260, 40).stroke();
-    pdf.font("Helvetica-Bold").fontSize(12)
-      .text("TOTAL", right - 250, y + 32)
-      .text(`${fmtNumber(docData.total)} FCFA`, right - 10, y + 32, { align: "right" });
-
-    // ===== FOOTER =====
-    const footerY = pdf.page.height - 70;
-    pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
-    pdf.font("Helvetica").fontSize(8).fillColor("#555")
-      .text(`Généré par KADI • WhatsApp +${KADI_E164}`, left, footerY);
-    pdf.image(qr, right - 45, footerY - 5, { width: 40 });
-
-    pdf.end();
   });
 }
 
