@@ -32,7 +32,7 @@ function numberToFrench(n) {
 
     if (t === 7 || t === 9) {
       const base = tens[t];
-      const rest = x - t * 10; // 10..19
+      const rest = x - t * 10;
       return `${base}-${teens[rest - 10]}`;
     }
 
@@ -105,7 +105,7 @@ async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
 
   const png = await QRCode.toBuffer(url, {
     type: "png",
-    width: 140,
+    width: 160,
     margin: 1,
     errorCorrectionLevel: "M",
   });
@@ -122,15 +122,28 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
   return new Promise((resolve, reject) => {
     try {
-      const pdf = new PDFDocument({ size: "A4", margin: 50 });
+      const pdf = new PDFDocument({
+        size: "A4",
+        margin: 50,
+        bufferPages: true, // ✅ permet footer sur toutes les pages
+      });
+
       const chunks = [];
       pdf.on("data", (c) => chunks.push(c));
-      pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
-      const pageWidth = pdf.page.width;
-      const pageHeight = pdf.page.height;
-      const left = 50;
-      const right = pageWidth - 50;
+      pdf.on("end", () => {
+        try {
+          resolve(Buffer.concat(chunks));
+        } catch (e) {
+          reject(e);
+        }
+      });
+
+      const pageWidth = pdf.page.width;   // ~595
+      const pageHeight = pdf.page.height; // ~842
+      const left = pdf.page.margins.left;  // 50
+      const right = pageWidth - pdf.page.margins.right; // 545
+      const usableW = right - left; // 495 ✅
 
       const type = String(docData.type || "DOCUMENT").toUpperCase();
       const number = docData.docNumber || "—";
@@ -141,57 +154,53 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       const bp = businessProfile || {};
 
-      // ✅ Zones safe
-      const FOOTER_H = 85; // réserve footer + QR
+      // ✅ Footer réservé: on n’écrit jamais dans cette zone
+      const FOOTER_H = 80;
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ✅ Colonnes tableau (DYNAMIQUES pour rentrer dans la page)
-      const tableW = right - left;
+      // ✅ Colonnes EXACTES: somme = usableW = 495 (sinon ça casse)
+      const COL = {
+        idx: 30,
+        des: 235, // 🔥 ajusté pour rentrer pile
+        qty: 60,
+        pu: 80,
+        amt: 90,
+      };
+      const ROW_H = 24;
 
-      // colonnes fixes
-      const colIdx = 28;
-      const colQty = 55;
-      const colPu = 75;
-      const colAmt = 87;
-
-      // reste pour désignation
-      const colDes = Math.max(180, tableW - (colIdx + colQty + colPu + colAmt));
-
-      // Si jamais (cas extrême) ça dépasse encore, on rabote un peu Montant / PU
-      const totalCols = colIdx + colDes + colQty + colPu + colAmt;
-      let adjPu = colPu;
-      let adjAmt = colAmt;
-      if (totalCols > tableW) {
-        const over = totalCols - tableW;
-        const cut = Math.min(over, 20);
-        adjAmt = Math.max(70, colAmt - cut);
-        const over2 = (colIdx + colDes + colQty + adjPu + adjAmt) - tableW;
-        if (over2 > 0) adjPu = Math.max(60, adjPu - over2);
-      }
-
-      const col = { idx: colIdx, des: colDes, qty: colQty, pu: adjPu, amt: adjAmt };
-      const rowH = 24;
+      // positions x (stables)
+      const X = {
+        idx: left,
+        des: left + COL.idx,
+        qty: left + COL.idx + COL.des,
+        pu: left + COL.idx + COL.des + COL.qty,
+        amt: left + COL.idx + COL.des + COL.qty + COL.pu,
+      };
 
       function drawFooter() {
-        const footerY = pageHeight - 60;
+        const footerY = pageHeight - 55;
 
+        pdf.save();
+        pdf.strokeColor("#000").lineWidth(1);
         pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
 
-        pdf.font("Helvetica").fontSize(8).fillColor("#555");
+        pdf.fillColor("#555").font("Helvetica").fontSize(8);
         pdf.text(
           `Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`,
           left,
           footerY,
-          { width: right - left - 60, ellipsis: true }
+          { width: usableW - 60, ellipsis: true }
         );
 
         try {
           pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
         } catch (_) {}
+
+        pdf.restore();
       }
 
-      function drawHeader() {
-        // logo
+      function drawHeader({ showClientBox }) {
+        // Logo
         if (logoBuffer) {
           try {
             pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
@@ -200,6 +209,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.fillColor("#000");
 
+        // Business info
         pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", left + 70, 45);
 
         pdf.font("Helvetica").fontSize(9).text(
@@ -207,115 +217,115 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
             bp.address ? `Adresse : ${bp.address}` : null,
             bp.phone ? `Tel : ${bp.phone}` : null,
             bp.email ? `Email : ${bp.email}` : null,
-            bp.ifu ? `IFU : ${bp.ifu}` : null,
-            bp.rccm ? `RCCM : ${bp.rccm}` : null,
-          ]
-            .filter(Boolean)
-            .join("\n"),
+          ].filter(Boolean).join("\n"),
           left + 70,
           62
         );
 
-        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, { align: "right", width: right - left });
+        // Doc title (right)
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, {
+          align: "right",
+          width: usableW,
+        });
 
         pdf.font("Helvetica").fontSize(10);
-        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: right - left });
-        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: right - left });
+        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: usableW });
+        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: usableW });
 
+        // Separator
         pdf.moveTo(left, 120).lineTo(right, 120).stroke();
 
-        // client box
-        const y = 135;
-        pdf.rect(left, y, right - left, 45).stroke();
-        pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000").text("Client", left + 10, y + 8);
-        pdf.font("Helvetica").fontSize(10).fillColor("#000").text(client, left + 10, y + 25);
-
-        pdf.y = y + 65;
+        // Client box (only first page by default)
+        if (showClientBox) {
+          const y = 135;
+          pdf.rect(left, y, usableW, 45).stroke();
+          pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8);
+          pdf.font("Helvetica").fontSize(10).text(client, left + 10, y + 25);
+          pdf.y = y + 65;
+        } else {
+          pdf.y = 140;
+        }
       }
 
       function drawTableHeader() {
-        pdf.rect(left, pdf.y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+        // header row background
+        pdf.save();
+        pdf.fillColor("#F2F2F2");
+        pdf.rect(left, pdf.y, usableW, ROW_H).fill();
+        pdf.restore();
+
+        pdf.rect(left, pdf.y, usableW, ROW_H).stroke();
+
         pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
+        pdf.text("#", X.idx + 8, pdf.y + 7);
+        pdf.text("Désignation", X.des + 8, pdf.y + 7);
+        pdf.text("Qté", X.qty + 8, pdf.y + 7, { width: COL.qty - 16, align: "right" });
+        pdf.text("PU", X.pu + 8, pdf.y + 7, { width: COL.pu - 16, align: "right" });
+        pdf.text("Montant", X.amt + 8, pdf.y + 7, { width: COL.amt - 16, align: "right" });
 
-        pdf.text("#", left + 8, pdf.y + 7);
-        pdf.text("Désignation", left + col.idx + 8, pdf.y + 7);
-
-        // on aligne avec les LARGEURS réelles
-        pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: col.qty - 16, align: "right" });
-        pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: col.pu - 16, align: "right" });
-        pdf.text(
-          "Montant",
-          left + col.idx + col.des + col.qty + col.pu + 8,
-          pdf.y + 7,
-          { width: col.amt - 16, align: "right" }
-        );
-
-        pdf.y += rowH;
+        pdf.y += ROW_H;
         pdf.font("Helvetica").fontSize(10).fillColor("#000");
-      }
-
-      function addPageWithHeader() {
-        // ✅ footer sur la page qu’on quitte
-        drawFooter();
-
-        pdf.addPage();
-        drawHeader();
-        drawTableHeader();
       }
 
       function ensureSpace(needed) {
         if (pdf.y + needed > SAFE_BOTTOM) {
-          addPageWithHeader();
+          // nouvelle page
+          pdf.addPage();
+          drawHeader({ showClientBox: false });
+          drawTableHeader();
         }
       }
 
-      // ===== Page 1 init =====
-      drawHeader();
-      drawTableHeader();
+      function drawRow(i, it) {
+        ensureSpace(ROW_H + 2);
 
-      // ===== Items =====
-      for (let i = 0; i < items.length; i++) {
-        ensureSpace(rowH + 10);
+        const label = safe(it?.label || it?.raw || "—");
+        const qty = Number(it?.qty || 0);
+        const pu = Number(it?.unitPrice || 0);
+        const amt = Number(it?.amount || (qty * pu) || 0);
 
-        const it = items[i] || {};
-        const label = safe(it.label || it.raw || "—");
-        const qty = Number(it.qty || 0);
-        const pu = Number(it.unitPrice || 0);
-        const amt = Number(it.amount || (qty * pu) || 0);
+        pdf.rect(left, pdf.y, usableW, ROW_H).stroke();
 
-        pdf.rect(left, pdf.y, right - left, rowH).stroke();
+        pdf.text(String(i + 1), X.idx + 8, pdf.y + 7);
+        pdf.text(label, X.des + 8, pdf.y + 7, { width: COL.des - 16, ellipsis: true });
+        pdf.text(fmtNumber(qty), X.qty + 8, pdf.y + 7, { width: COL.qty - 16, align: "right" });
+        pdf.text(fmtNumber(pu), X.pu + 8, pdf.y + 7, { width: COL.pu - 16, align: "right" });
+        pdf.text(fmtNumber(amt), X.amt + 8, pdf.y + 7, { width: COL.amt - 16, align: "right" });
 
-        pdf.fillColor("#000");
-        pdf.text(String(i + 1), left + 8, pdf.y + 7);
-        pdf.text(label, left + col.idx + 8, pdf.y + 7, { width: col.des - 16, ellipsis: true });
-        pdf.text(fmtNumber(qty), left + col.idx + col.des + 8, pdf.y + 7, { width: col.qty - 16, align: "right" });
-        pdf.text(fmtNumber(pu), left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: col.pu - 16, align: "right" });
-        pdf.text(fmtNumber(amt), left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: col.amt - 16, align: "right" });
-
-        pdf.y += rowH;
+        pdf.y += ROW_H;
       }
 
-      // ===== Total + closing =====
-      ensureSpace(170);
-      pdf.y += 20;
+      // ===== Render page 1 =====
+      drawHeader({ showClientBox: true });
+      drawTableHeader();
+
+      for (let i = 0; i < items.length; i++) {
+        drawRow(i, items[i]);
+      }
+
+      // Total + closing
+      ensureSpace(160);
+      pdf.y += 18;
 
       const boxW = 260;
       const boxH = 40;
       pdf.rect(right - boxW, pdf.y, boxW, boxH).stroke();
-      pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
-      pdf.text("TOTAL", right - boxW + 10, pdf.y + 12);
+      pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", right - boxW + 10, pdf.y + 12);
       pdf.text(`${fmtNumber(total)} FCFA`, right - 10, pdf.y + 12, { align: "right" });
 
       pdf.y += boxH + 14;
 
       const phrase = closingPhrase(type);
       const words = numberToFrench(total);
+      pdf.font("Helvetica-Bold").fontSize(10);
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: usableW });
 
-      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
-
-      // ✅ Footer sur la DERNIÈRE page
-      drawFooter();
+      // ✅ Footer sur toutes les pages
+      const range = pdf.bufferedPageRange(); // {start, count}
+      for (let p = range.start; p < range.start + range.count; p++) {
+        pdf.switchToPage(p);
+        drawFooter();
+      }
 
       pdf.end();
     } catch (e) {
