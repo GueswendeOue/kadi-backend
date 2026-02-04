@@ -145,8 +145,31 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const FOOTER_H = 85; // réserve footer + QR
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ✅ Colonnes tableau (doivent être stables)
-      const col = { idx: 30, des: 260, qty: 60, pu: 80, amt: 90 };
+      // ✅ Colonnes tableau (DYNAMIQUES pour rentrer dans la page)
+      const tableW = right - left;
+
+      // colonnes fixes
+      const colIdx = 28;
+      const colQty = 55;
+      const colPu = 75;
+      const colAmt = 87;
+
+      // reste pour désignation
+      const colDes = Math.max(180, tableW - (colIdx + colQty + colPu + colAmt));
+
+      // Si jamais (cas extrême) ça dépasse encore, on rabote un peu Montant / PU
+      const totalCols = colIdx + colDes + colQty + colPu + colAmt;
+      let adjPu = colPu;
+      let adjAmt = colAmt;
+      if (totalCols > tableW) {
+        const over = totalCols - tableW;
+        const cut = Math.min(over, 20);
+        adjAmt = Math.max(70, colAmt - cut);
+        const over2 = (colIdx + colDes + colQty + adjPu + adjAmt) - tableW;
+        if (over2 > 0) adjPu = Math.max(60, adjPu - over2);
+      }
+
+      const col = { idx: colIdx, des: colDes, qty: colQty, pu: adjPu, amt: adjAmt };
       const rowH = 24;
 
       function drawFooter() {
@@ -216,15 +239,25 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.text("#", left + 8, pdf.y + 7);
         pdf.text("Désignation", left + col.idx + 8, pdf.y + 7);
-        pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
-        pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
-        pdf.text("Montant", left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
+
+        // on aligne avec les LARGEURS réelles
+        pdf.text("Qté", left + col.idx + col.des + 8, pdf.y + 7, { width: col.qty - 16, align: "right" });
+        pdf.text("PU", left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: col.pu - 16, align: "right" });
+        pdf.text(
+          "Montant",
+          left + col.idx + col.des + col.qty + col.pu + 8,
+          pdf.y + 7,
+          { width: col.amt - 16, align: "right" }
+        );
 
         pdf.y += rowH;
         pdf.font("Helvetica").fontSize(10).fillColor("#000");
       }
 
       function addPageWithHeader() {
+        // ✅ footer sur la page qu’on quitte
+        drawFooter();
+
         pdf.addPage();
         drawHeader();
         drawTableHeader();
@@ -254,10 +287,10 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.fillColor("#000");
         pdf.text(String(i + 1), left + 8, pdf.y + 7);
-        pdf.text(label, left + col.idx + 8, pdf.y + 7, { width: col.des - 10, ellipsis: true });
-        pdf.text(fmtNumber(qty), left + col.idx + col.des + 8, pdf.y + 7, { width: 40, align: "right" });
-        pdf.text(fmtNumber(pu), left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: 60, align: "right" });
-        pdf.text(fmtNumber(amt), left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: 80, align: "right" });
+        pdf.text(label, left + col.idx + 8, pdf.y + 7, { width: col.des - 16, ellipsis: true });
+        pdf.text(fmtNumber(qty), left + col.idx + col.des + 8, pdf.y + 7, { width: col.qty - 16, align: "right" });
+        pdf.text(fmtNumber(pu), left + col.idx + col.des + col.qty + 8, pdf.y + 7, { width: col.pu - 16, align: "right" });
+        pdf.text(fmtNumber(amt), left + col.idx + col.des + col.qty + col.pu + 8, pdf.y + 7, { width: col.amt - 16, align: "right" });
 
         pdf.y += rowH;
       }
@@ -281,18 +314,8 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
       pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
 
-      // ✅ Footer sur la dernière page
+      // ✅ Footer sur la DERNIÈRE page
       drawFooter();
-
-      // ✅ Footer sur toutes les pages (important)
-      // -> pdfkit permet pas de “revenir” sur pages précédentes facilement,
-      // donc on dessine le footer au moment où on crée chaque page :
-      // ici on le fait déjà sur la dernière.
-      // Pour les pages intermédiaires: on le dessine juste avant addPage
-      // => patch : on modifie ensureSpace pour dessiner le footer avant addPage.
-      // (On le fait ci-dessous en surcouche légère)
-      // NOTE: comme on a déjà rendu, on ne peut pas retro-ajouter.
-      // Donc: version stable = footer sur dernière page (suffit pour ton rendu propre).
 
       pdf.end();
     } catch (e) {

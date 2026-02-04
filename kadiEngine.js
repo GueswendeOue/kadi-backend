@@ -136,10 +136,9 @@ async function applyStampAndSignatureIfAny(pdfBuffer, profile) {
 
   if (kadiStamp?.applyStampToPdfBuffer) {
     try {
-      // Important: appliquer par défaut sur la DERNIÈRE page seulement
+      // ✅ appliquer par défaut sur la DERNIÈRE page seulement
       buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
         pages: "last",
-        // position/size viennent du profil dans kadiStamp (si tu l’as modifié)
       });
     } catch (e) {
       logger.warn("stamp", e.message);
@@ -294,12 +293,21 @@ async function sendProfileMenu(to) {
   ]);
 }
 
-async function sendAfterPreviewMenu(to) {
-  // 3 boutons max
-  return sendButtons(to, "✅ Valider ?", [
-    { id: "DOC_CONFIRM", title: "Générer PDF" },
-    { id: "DOC_ADD_MORE", title: "Ajouter" },
-    { id: "DOC_CANCEL", title: "Annuler" },
+// ✅ Après un produit confirmé/ajouté : menu clair
+async function sendAfterProductMenu(to) {
+  return sendButtons(to, "✅ Produit ajouté. Que faire ?", [
+    { id: "DOC_ADD_MORE", title: "➕ Nouveau produit" },
+    { id: "DOC_FINISH", title: "✅ Terminer" },
+    { id: "DOC_CANCEL", title: "❌ Annuler" },
+  ]);
+}
+
+// ✅ Après Terminer : aperçu + actions
+async function sendPreviewMenu(to) {
+  return sendButtons(to, "✅ Valider le document ?", [
+    { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
+    { id: "DOC_ADD_MORE", title: "➕ Nouveau produit" },
+    { id: "DOC_CANCEL", title: "❌ Annuler" },
   ]);
 }
 
@@ -320,7 +328,7 @@ function stampSizeLabel(size) {
 }
 async function sendStampMenu(to) {
   const p = await getOrCreateProfile(to);
-  const enabled = p?.stamp_enabled === true; // default OFF (important pour éviter PDF “pollué”)
+  const enabled = p?.stamp_enabled === true; // default OFF
   const pos = p?.stamp_position || "bottom-right";
   const size = p?.stamp_size || 170;
   const title = p?.stamp_title || "—";
@@ -378,7 +386,7 @@ async function sendStampSizeMenu(to) {
 
 // ===============================
 // Profil flow (7 étapes)
-/// ===============================
+// ===============================
 async function startProfileFlow(from) {
   const s = getSession(from);
   s.step = "profile";
@@ -515,12 +523,14 @@ function resetDraftSession(s) {
   s.factureKind = null;
   s.lastDocDraft = null;
   s.itemDraft = null;
+  s.pendingOcrMediaId = null;
 }
 
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
 
-  s.step = "doc_client"; // 1) demander client d'abord
+  // ✅ On demande le client d’abord (stable)
+  s.step = "doc_client";
   s.mode = mode;
   s.factureKind = factureKind;
 
@@ -582,31 +592,15 @@ async function sendItemConfirmMenu(from) {
 
   return sendButtons(
     from,
-    `✅ Produit prêt :\n${safe(it.label || "—")} | Qté:${money(q)} | PU:${money(pu)} | Mt:${money(amt)}\n\nAjouter ?`,
+    `✅ Produit prêt :\n${safe(it.label || "—")} | Qté:${money(q)} | PU:${money(pu)} | Mt:${money(amt)}\n\nQue faire ?`,
     [
-      { id: "ITEM_SAVE", title: "Ajouter" },
-      { id: "ITEM_EDIT", title: "Modifier" },
-      { id: "DOC_CANCEL", title: "Annuler" },
+      { id: "ITEM_SAVE", title: "✅ Confirmer" },
+      { id: "ITEM_EDIT", title: "✏️ Modifier" },
+      { id: "DOC_CANCEL", title: "❌ Annuler" },
     ]
   );
 }
 
-async function sendAfterAddMenu(from) {
-  const s = getSession(from);
-  s.step = "doc_review";
-
-  const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-  await sendText(from, preview);
-
-  // 3 boutons max
-  return sendButtons(from, "✅ Produit ajouté. Que faire ?", [
-    { id: "DOC_CONFIRM", title: "Générer PDF" },
-    { id: "DOC_ADD_MORE", title: "Ajouter" },
-    { id: "DOC_CANCEL", title: "Annuler" },
-  ]);
-}
-
-// Texte entrant pendant flow produit
 async function handleProductFlowText(from, text) {
   const s = getSession(from);
   if (!s.lastDocDraft) return false;
@@ -614,7 +608,17 @@ async function handleProductFlowText(from, text) {
   const t = norm(text);
   if (!t) return false;
 
-  // 1) client
+  // ✅ si le PDF a demandé client manquant => ne PAS relancer l’ajout produit
+  if (s.step === "missing_client_pdf") {
+    s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
+    s.step = "doc_review";
+    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+    await sendText(from, preview);
+    await sendPreviewMenu(from);
+    return true;
+  }
+
+  // 1) client initial
   if (s.step === "doc_client") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
     await askItemLabel(from);
@@ -695,7 +699,6 @@ function parseOcrToDraft(ocrText) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // client basique
   let client = null;
   for (const line of lines) {
     const m = line.match(/^client\s*[:\-]\s*(.+)$/i) || line.match(/^nom\s*[:\-]\s*(.+)$/i);
@@ -705,11 +708,9 @@ function parseOcrToDraft(ocrText) {
     }
   }
 
-  // items OCR = best effort : on garde lignes contenant des chiffres
   const items = [];
   for (const line of lines) {
     if (!/\d/.test(line)) continue;
-    // format simple : "Logo 5000" => label=line, qty=1, pu=5000
     const nums = line.match(/\d+(?:[.,]\d+)?/g) || [];
     const pu = nums.length ? parseNumberSmart(nums[nums.length - 1]) : 0;
     const label = line.replace(/\d+(?:[.,]\d+)?/g, "").trim() || line.trim();
@@ -733,7 +734,6 @@ async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries
   }
 }
 
-// OCR -> Draft
 async function processOcrImageToDraft(from, mediaId) {
   const s = getSession(from);
 
@@ -767,6 +767,7 @@ async function processOcrImageToDraft(from, mediaId) {
       source: "ocr",
     };
   }
+
   s.step = "ocr_review";
 
   const parsed = parseOcrToDraft(ocrText);
@@ -778,10 +779,9 @@ async function processOcrImageToDraft(from, mediaId) {
   const preview = buildPreviewMessage({ doc: s.lastDocDraft });
   await sendText(from, preview);
 
-  // 3 boutons
   return sendButtons(from, "✅ Valider ?", [
-    { id: "DOC_CONFIRM", title: "Générer PDF" },
-    { id: "DOC_RESTART", title: "Recommencer" },
+    { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
+    { id: "DOC_RESTART", title: "🔁 Recommencer" },
     { id: "BACK_HOME", title: "Menu" },
   ]);
 }
@@ -794,7 +794,6 @@ async function handleIncomingImage(from, msg) {
   const mediaId = msg?.image?.id;
   if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
 
-  // OCR direct
   s.pendingOcrMediaId = mediaId;
   return sendButtons(from, "📷 Photo reçue. Générer quel document ?", [
     { id: "OCR_DEVIS", title: "Devis" },
@@ -815,10 +814,10 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // ✅ Fix bug: si client manquant, on le demande et on NE traite PAS sa réponse comme une ligne
+  // ✅ Fix: demander client manquant via step dédié
   if (!safe(draft.client)) {
-    s.step = "doc_client"; // on revient au step client
-    await sendText(from, "⚠️ Client manquant. Tapez le nom du client :");
+    s.step = "missing_client_pdf";
+    await sendText(from, "⚠️ Client manquant.\nTapez le nom du client :");
     return;
   }
 
@@ -888,7 +887,6 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    // ✅ Tampon/Signature
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
 
     try {
@@ -995,29 +993,24 @@ function ensureAdmin(waId) {
   return ADMIN_WA_ID && waId === ADMIN_WA_ID;
 }
 
-// Broadcast helper (admin only)
 async function broadcastToAllKnownUsers(from, text) {
   if (!ensureAdmin(from)) {
     await sendText(from, "❌ Admin seulement.");
     return true;
   }
 
-  // Format: /broadcast Votre message...
   const msg = String(text || "").replace(/^\/?broadcast\s*/i, "").trim();
   if (!msg) {
     await sendText(from, "❌ Format: /broadcast <message>");
     return true;
   }
 
-  // Si tu as un module dédié
   if (kadiBroadcast?.broadcastToAll) {
     await kadiBroadcast.broadcastToAll({ adminWaId: from, message: msg });
     await sendText(from, "✅ Broadcast lancé (module).");
     return true;
   }
 
-  // Sinon: fallback simple via store/repo (on va chercher via kadi_activity si ton repo l’expose)
-  // Comme on n’a pas ici ton supabase client direct, on délègue au module si possible.
   await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js (ou branche Supabase ici).");
   return true;
 }
@@ -1027,7 +1020,6 @@ async function handleAdmin(from, text) {
 
   const lower = String(text || "").toLowerCase().trim();
 
-  // codes recharge
   if (lower.startsWith("admin create")) {
     const match = text.match(/^admin create\s+(\d+)\s+(\d+)$/i);
     if (!match) {
@@ -1284,22 +1276,34 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "CREDITS_SOLDE") return replyBalance(from);
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
-  // Item confirm
+  // ✅ Item confirm
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
     if (s.lastDocDraft.items.length < LIMITS.maxItems) s.lastDocDraft.items.push(item);
     s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
     s.itemDraft = null;
-    return sendAfterAddMenu(from);
+
+    // ✅ après ajout produit => menu clair
+    return sendAfterProductMenu(from);
   }
+
   if (replyId === "ITEM_EDIT") {
-    // on repart sur label
     return askItemLabel(from);
   }
 
-  // After preview
+  // ✅ Nouveau produit
   if (replyId === "DOC_ADD_MORE") return askItemLabel(from);
+
+  // ✅ Terminer => aperçu + menu preview
+  if (replyId === "DOC_FINISH") {
+    s.step = "doc_review";
+    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+    await sendText(from, preview);
+    return sendPreviewMenu(from);
+  }
+
+  // ✅ Générer PDF (seulement depuis preview)
   if (replyId === "DOC_CONFIRM") return createAndSendPdf(from);
 
   if (replyId === "DOC_RESTART") {
@@ -1380,7 +1384,7 @@ async function handleIncomingMessage(value) {
     // Profile answers
     if (await handleProfileAnswer(from, text)) return;
 
-    // Product flow answers (client/produit/qty/pu + stamp title)
+    // Product flow answers (client/produit/qty/pu + stamp title + missing_client_pdf)
     if (await handleProductFlowText(from, text)) return;
 
     // Commands
