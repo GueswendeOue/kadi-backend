@@ -1,142 +1,110 @@
-// KadiPdf.js
+// KadiPdf.js — VERSION STABLE TABLEAU FIXE
 "use strict";
 
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
 
-// ================= Utils =================
-function safe(v) {
-  return String(v || "").trim();
+function fmt(n) {
+  return Number(n || 0).toLocaleString("fr-FR");
 }
 
-function fmtNumber(n) {
-  const x = Math.round(Number(n || 0));
-  if (!Number.isFinite(x)) return "0";
-  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
+async function buildPdfBuffer({ docData, businessProfile, logoBuffer }) {
+  const qr = await QRCode.toBuffer("https://wa.me/22679239027", { width: 100 });
 
-// ================= QR =================
-async function makeQr(e164) {
-  return QRCode.toBuffer(`https://wa.me/${e164}`, {
-    width: 100,
-    margin: 1,
-  });
-}
+  return new Promise((resolve) => {
+    const pdf = new PDFDocument({ size: "A4", margin: 50 });
+    const chunks = [];
+    pdf.on("data", c => chunks.push(c));
+    pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
-// ================= PDF =================
-async function buildPdfBuffer({ docData = {}, businessProfile = {}, logoBuffer = null }) {
-  const KADI_E164 = process.env.KADI_E164 || "22679239027";
-  const qr = await makeQr(KADI_E164);
+    const left = 50;
+    const right = pdf.page.width - 50;
+    let y = 50;
 
-  return new Promise((resolve, reject) => {
-    try {
-      const pdf = new PDFDocument({ size: "A4", margin: 50 });
-      const chunks = [];
-      pdf.on("data", (c) => chunks.push(c));
-      pdf.on("end", () => resolve(Buffer.concat(chunks)));
+    /* ================= HEADER ================= */
+    if (logoBuffer) pdf.image(logoBuffer, left, y, { width: 50 });
 
-      const pageW = pdf.page.width;
-      const pageH = pdf.page.height;
-      const left = 50;
-      const right = pageW - 50;
-      let y = 50;
+    pdf.font("Helvetica-Bold").fontSize(13)
+      .text(businessProfile?.business_name || "", left + 70, y);
 
-      // ================= HEADER =================
-      if (logoBuffer) {
-        pdf.image(logoBuffer, left, y, { width: 55 });
-      }
+    pdf.fontSize(9).font("Helvetica")
+      .text(`Adresse : ${businessProfile?.address || ""}`, left + 70, y + 15)
+      .text(`Tel : ${businessProfile?.phone || ""}`, left + 70, y + 28);
 
-      pdf.font("Helvetica-Bold").fontSize(13)
-        .text(safe(businessProfile.business_name), left + 70, y);
+    pdf.font("Helvetica-Bold").fontSize(16)
+      .text(docData.type, left, y, { width: right - left, align: "right" });
 
-      pdf.font("Helvetica").fontSize(9)
-        .text(`Adresse : ${safe(businessProfile.address)}`, left + 70, y + 16)
-        .text(`Tel : ${safe(businessProfile.phone)}`, left + 70, y + 28);
+    pdf.font("Helvetica").fontSize(10)
+      .text(`N° : ${docData.docNumber}`, left, y + 22, { width: right - left, align: "right" })
+      .text(`Date : ${docData.date}`, left, y + 36, { width: right - left, align: "right" });
 
-      pdf.font("Helvetica-Bold").fontSize(16)
-        .text(docData.type || "DEVIS", left, y, { width: right - left, align: "right" });
+    y += 80;
+    pdf.moveTo(left, y).lineTo(right, y).stroke();
+    y += 15;
 
-      pdf.font("Helvetica").fontSize(10)
-        .text(`N° : ${docData.docNumber}`, left, y + 22, { width: right - left, align: "right" })
-        .text(`Date : ${docData.date}`, left, y + 36, { width: right - left, align: "right" });
+    /* ================= CLIENT ================= */
+    pdf.rect(left, y, right - left, 40).stroke();
+    pdf.font("Helvetica-Bold").text("Client", left + 10, y + 8);
+    pdf.font("Helvetica").text(docData.client, left + 10, y + 22);
+    y += 60;
 
-      y += 75;
-      pdf.moveTo(left, y).lineTo(right, y).stroke();
-      y += 15;
+    /* ================= TABLE ================= */
+    const cols = [
+      { label: "#", x: left, w: 30 },
+      { label: "Désignation", x: left + 30, w: 260 },
+      { label: "Qté", x: left + 290, w: 60 },
+      { label: "PU", x: left + 350, w: 80 },
+      { label: "Montant", x: left + 430, w: 90 },
+    ];
+    const rowH = 26;
 
-      // ================= CLIENT =================
-      pdf.rect(left, y, right - left, 45).stroke();
-      pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8);
-      pdf.font("Helvetica").fontSize(10).text(docData.client, left + 10, y + 25);
-      y += 65;
+    // Header
+    pdf.rect(left, y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
+    pdf.font("Helvetica-Bold").fontSize(10);
+    cols.forEach(c =>
+      pdf.text(c.label, c.x + 5, y + 8, { width: c.w - 10, align: "center" })
+    );
+    y += rowH;
 
-      // ================= TABLE =================
-      const cols = {
-        idx: { x: left, w: 30 },
-        label: { x: left + 30, w: 260 },
-        qty: { x: left + 290, w: 60 },
-        pu: { x: left + 350, w: 80 },
-        amt: { x: left + 430, w: 90 },
-      };
+    pdf.font("Helvetica").fontSize(10);
 
-      const rowH = 26;
-      const tableBottom = pageH - 140;
+    // Rows
+    docData.items.forEach((it, i) => {
+      pdf.rect(left, y, right - left, rowH).stroke();
 
-      function drawTableHeader() {
-        pdf.rect(left, y, right - left, rowH).fillAndStroke("#F2F2F2", "#000");
-        pdf.font("Helvetica-Bold").fontSize(10);
-        pdf.text("#", cols.idx.x, y + 8, { width: cols.idx.w, align: "center" });
-        pdf.text("Désignation", cols.label.x + 6, y + 8);
-        pdf.text("Qté", cols.qty.x, y + 8, { width: cols.qty.w - 6, align: "right" });
-        pdf.text("PU", cols.pu.x, y + 8, { width: cols.pu.w - 6, align: "right" });
-        pdf.text("Montant", cols.amt.x, y + 8, { width: cols.amt.w - 6, align: "right" });
-        y += rowH;
-      }
+      // Vertical lines
+      cols.slice(1).forEach(c =>
+        pdf.moveTo(c.x, y).lineTo(c.x, y + rowH).stroke()
+      );
 
-      drawTableHeader();
+      pdf.text(i + 1, cols[0].x + 5, y + 8, { width: cols[0].w - 10, align: "center" });
+      pdf.text(it.label, cols[1].x + 5, y + 8, { width: cols[1].w - 10 });
+      pdf.text(fmt(it.qty), cols[2].x + 5, y + 8, { width: cols[2].w - 10, align: "right" });
+      pdf.text(fmt(it.unitPrice), cols[3].x + 5, y + 8, { width: cols[3].w - 10, align: "right" });
+      pdf.text(fmt(it.amount), cols[4].x + 5, y + 8, { width: cols[4].w - 10, align: "right" });
 
-      docData.items.forEach((it, i) => {
-        if (y + rowH > tableBottom) {
-          pdf.addPage();
-          y = 50;
-          drawTableHeader();
-        }
+      y += rowH;
+    });
 
-        pdf.rect(left, y, right - left, rowH).stroke();
-        pdf.font("Helvetica").fontSize(10);
-
-        pdf.text(i + 1, cols.idx.x, y + 8, { width: cols.idx.w, align: "center" });
-        pdf.text(safe(it.label), cols.label.x + 6, y + 8, { width: cols.label.w - 12 });
-        pdf.text(fmtNumber(it.qty), cols.qty.x, y + 8, { width: cols.qty.w - 6, align: "right" });
-        pdf.text(fmtNumber(it.unitPrice), cols.pu.x, y + 8, { width: cols.pu.w - 6, align: "right" });
-        pdf.text(fmtNumber(it.amount), cols.amt.x, y + 8, { width: cols.amt.w - 6, align: "right" });
-
-        y += rowH;
+    /* ================= TOTAL ================= */
+    y += 20;
+    const boxW = 260;
+    pdf.rect(right - boxW, y, boxW, 40).stroke();
+    pdf.font("Helvetica-Bold").fontSize(12)
+      .text("TOTAL", right - boxW + 10, y + 12)
+      .text(`${fmt(docData.total)} FCFA`, right - 10, y + 12, {
+        width: boxW - 20,
+        align: "right"
       });
 
-      // ================= TOTAL =================
-      if (y + 80 > pageH - 80) {
-        pdf.addPage();
-        y = 60;
-      }
+    /* ================= FOOTER ================= */
+    const fy = pdf.page.height - 50;
+    pdf.moveTo(left, fy - 10).lineTo(right, fy - 10).stroke();
+    pdf.fontSize(8).fillColor("#555")
+      .text("Généré par KADI • WhatsApp +226 79 23 90 27", left, fy);
+    pdf.image(qr, right - 45, fy - 5, { width: 40 });
 
-      pdf.rect(right - 260, y + 20, 260, 40).stroke();
-      pdf.font("Helvetica-Bold").fontSize(12);
-      pdf.text("TOTAL", right - 250, y + 32);
-      pdf.text(`${fmtNumber(docData.total)} FCFA`, right - 10, y + 32, { align: "right" });
-
-      // ================= FOOTER =================
-      const fy = pageH - 50;
-      pdf.moveTo(left, fy - 10).lineTo(right, fy - 10).stroke();
-      pdf.font("Helvetica").fontSize(8).fillColor("#555")
-        .text(`Généré par KADI • WhatsApp +${KADI_E164}`, left, fy);
-
-      pdf.image(qr, right - 45, fy - 5, { width: 40 });
-
-      pdf.end();
-    } catch (e) {
-      reject(e);
-    }
+    pdf.end();
   });
 }
 
