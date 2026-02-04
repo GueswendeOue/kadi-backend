@@ -3,6 +3,7 @@
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
 
+// ================= Utils =================
 function safe(v) {
   return String(v || "").trim();
 }
@@ -13,6 +14,7 @@ function fmtNumber(n) {
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
+// mini conversion nombre→texte (FR) robuste
 function numberToFrench(n) {
   n = Math.floor(Number(n) || 0);
   if (n === 0) return "zéro";
@@ -28,11 +30,16 @@ function numberToFrench(n) {
     const t = Math.floor(x / 10);
     const u = x % 10;
 
-    if (t === 7 || t === 9) return `${tens[t]}-${teens[(x - t * 10) - 10]}`;
+    if (t === 7 || t === 9) {
+      const base = tens[t];
+      const rest = x - t * 10; // 10..19
+      return `${base}-${teens[rest - 10]}`;
+    }
+
     if (t === 8 && u === 0) return "quatre-vingts";
     if (u === 0) return tens[t];
     if (t === 8) return `quatre-vingt-${units[u]}`;
-    if (u === 1 && (t >= 2 && t <= 6)) return `${tens[t]} et un`;
+    if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
     return `${tens[t]}-${units[u]}`;
   }
 
@@ -40,8 +47,10 @@ function numberToFrench(n) {
     const h = Math.floor(x / 100);
     const r = x % 100;
     let s = "";
+
     if (h > 0) {
-      s = h === 1 ? "cent" : `${units[h]} cent`;
+      if (h === 1) s = "cent";
+      else s = `${units[h]} cent`;
       if (r === 0 && h > 1) s += "s";
     }
     if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
@@ -57,7 +66,8 @@ function numberToFrench(n) {
       if (q === 1) return { text: "mille", rest: r };
       return { text: `${under1000(q)} mille`, rest: r };
     }
-    return { text: q === 1 ? name : `${under1000(q)} ${name}s`, rest: r };
+    const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
+    return { text: t, rest: r };
   }
 
   let x = n;
@@ -72,6 +82,7 @@ function numberToFrench(n) {
   x = k.rest;
 
   if (x > 0) parts.push(under1000(x));
+
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
@@ -84,13 +95,14 @@ function closingPhrase(typeUpper) {
   return "Arrêté le présent document";
 }
 
+// ================= QR =================
 async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
   const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
   const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
 
   const png = await QRCode.toBuffer(url, {
     type: "png",
-    width: 160,
+    width: 140,
     margin: 1,
     errorCorrectionLevel: "M",
   });
@@ -98,6 +110,7 @@ async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
   return { png, url };
 }
 
+// ================= PDF =================
 async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
   const KADI_E164 = process.env.KADI_E164 || "22679239027";
   const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
@@ -106,16 +119,16 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
   return new Promise((resolve, reject) => {
     try {
-      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: true });
+      const pdf = new PDFDocument({ size: "A4", margin: 50 });
       const chunks = [];
       pdf.on("data", (c) => chunks.push(c));
       pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
       const pageWidth = pdf.page.width;
       const pageHeight = pdf.page.height;
-      const left = pdf.page.margins.left;
-      const right = pageWidth - pdf.page.margins.right;
-      const usableW = right - left;
+
+      const left = 50;
+      const right = pageWidth - 50;
 
       const type = String(docData.type || "DOCUMENT").toUpperCase();
       const number = docData.docNumber || "—";
@@ -126,158 +139,183 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       const bp = businessProfile || {};
 
-      const FOOTER_H = 80;
+      // Réserve footer (évite que le tableau/total descende dedans)
+      const FOOTER_H = 85;
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ✅ largeur totale = usableW (495)
-      const COL = { idx: 30, des: 235, qty: 60, pu: 80, amt: 90 };
-      const ROW_H = 24;
+      // ===== Table grid fixe (comme ton PDF propre) =====
+      const pad = 8;
+      const rowH = 28;
 
-      const X = {
-        idx: left,
-        des: left + COL.idx,
-        qty: left + COL.idx + COL.des,
-        pu: left + COL.idx + COL.des + COL.qty,
-        amt: left + COL.idx + COL.des + COL.qty + COL.pu,
-      };
+      const x0 = left;          // bord gauche
+      const x1 = left + 35;     // après #
+      const x2 = x1 + 260;      // après Désignation
+      const x3 = x2 + 60;       // après Qté
+      const x4 = x3 + 80;       // après PU
+      const x5 = right;         // bord droit
 
       function drawFooter() {
-        const footerY = pageHeight - 55;
-        pdf.save();
-        pdf.strokeColor("#000").lineWidth(1);
+        const footerY = pageHeight - 60;
+
         pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
 
-        pdf.fillColor("#555").font("Helvetica").fontSize(8);
+        pdf.font("Helvetica").fontSize(8).fillColor("#555");
         pdf.text(
           `Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`,
           left,
           footerY,
-          { width: usableW - 60, lineBreak: false, ellipsis: true }
+          { width: right - left - 60, ellipsis: true }
         );
 
         try {
           pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
         } catch (_) {}
-
-        pdf.restore();
       }
 
-      function drawHeader({ showClientBox }) {
-        if (logoBuffer) {
+      function drawHeader(isFirstPage = true) {
+        const topY = 45;
+
+        if (logoBuffer && isFirstPage) {
           try {
-            pdf.image(logoBuffer, left, 45, { fit: [60, 60] });
+            pdf.image(logoBuffer, left, topY, { fit: [60, 60] });
           } catch (_) {}
         }
 
+        const infoX = (logoBuffer && isFirstPage) ? left + 70 : left;
+
         pdf.fillColor("#000");
-        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", left + 70, 45);
+        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", infoX, topY);
 
         pdf.font("Helvetica").fontSize(9).text(
-          [bp.address ? `Adresse : ${bp.address}` : null, bp.phone ? `Tel : ${bp.phone}` : null, bp.email ? `Email : ${bp.email}` : null]
-            .filter(Boolean)
-            .join("\n"),
-          left + 70,
-          62
+          [
+            bp.address ? `Adresse : ${bp.address}` : null,
+            bp.phone ? `Tel : ${bp.phone}` : null,
+            bp.email ? `Email : ${bp.email}` : null,
+          ].filter(Boolean).join("\n"),
+          infoX,
+          topY + 17
         );
 
-        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, 45, { align: "right", width: usableW });
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, topY, {
+          align: "right",
+          width: right - left
+        });
+
         pdf.font("Helvetica").fontSize(10);
-        pdf.text(`N° : ${number}`, left, 65, { align: "right", width: usableW });
-        pdf.text(`Date : ${date}`, left, 80, { align: "right", width: usableW });
+        pdf.text(`N° : ${number}`, left, topY + 22, { align: "right", width: right - left });
+        pdf.text(`Date : ${date}`, left, topY + 37, { align: "right", width: right - left });
 
-        pdf.moveTo(left, 120).lineTo(right, 120).stroke();
+        const sepY = topY + 75;
+        pdf.moveTo(left, sepY).lineTo(right, sepY).stroke();
 
-        if (showClientBox) {
-          const y = 135;
-          pdf.rect(left, y, usableW, 45).stroke();
-          pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8, { lineBreak: false });
-          pdf.font("Helvetica").fontSize(10).text(client, left + 10, y + 25, { lineBreak: false });
-          pdf.y = y + 65;
+        if (isFirstPage) {
+          const boxY = sepY + 15;
+          pdf.rect(left, boxY, right - left, 45).stroke();
+          pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, boxY + 8);
+          pdf.font("Helvetica").fontSize(10).text(client, left + 10, boxY + 25);
+          pdf.y = boxY + 65;
         } else {
-          pdf.y = 140;
+          pdf.y = sepY + 20;
         }
       }
 
       function drawTableHeader() {
-        const y0 = pdf.y;
-
-        pdf.save();
-        pdf.fillColor("#F2F2F2");
-        pdf.rect(left, y0, usableW, ROW_H).fill();
-        pdf.restore();
-
-        pdf.rect(left, y0, usableW, ROW_H).stroke();
+        // ligne header
+        pdf.rect(x0, pdf.y, x5 - x0, rowH).fillAndStroke("#F2F2F2", "#000");
+        // traits verticaux
+        pdf.moveTo(x1, pdf.y).lineTo(x1, pdf.y + rowH).stroke();
+        pdf.moveTo(x2, pdf.y).lineTo(x2, pdf.y + rowH).stroke();
+        pdf.moveTo(x3, pdf.y).lineTo(x3, pdf.y + rowH).stroke();
+        pdf.moveTo(x4, pdf.y).lineTo(x4, pdf.y + rowH).stroke();
 
         pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
 
-        pdf.text("#", X.idx + 8, y0 + 7, { lineBreak: false });
-        pdf.text("Désignation", X.des + 8, y0 + 7, { lineBreak: false });
-        pdf.text("Qté", X.qty + 8, y0 + 7, { width: COL.qty - 16, align: "right", lineBreak: false });
-        pdf.text("PU", X.pu + 8, y0 + 7, { width: COL.pu - 16, align: "right", lineBreak: false });
-        pdf.text("Montant", X.amt + 8, y0 + 7, { width: COL.amt - 16, align: "right", lineBreak: false });
+        pdf.text("#", x0 + pad, pdf.y + 9, { width: (x1 - x0) - 2 * pad });
+        pdf.text("Désignation", x1 + pad, pdf.y + 9, { width: (x2 - x1) - 2 * pad });
+        pdf.text("Qté", x2 + pad, pdf.y + 9, { width: (x3 - x2) - 2 * pad, align: "right" });
+        pdf.text("PU", x3 + pad, pdf.y + 9, { width: (x4 - x3) - 2 * pad, align: "right" });
+        pdf.text("Montant", x4 + pad, pdf.y + 9, { width: (x5 - x4) - 2 * pad, align: "right" });
 
-        pdf.y = y0 + ROW_H;
-        pdf.font("Helvetica").fontSize(10).fillColor("#000");
-      }
-
-      function ensureSpace(needed) {
-        if (pdf.y + needed > SAFE_BOTTOM) {
-          pdf.addPage();
-          drawHeader({ showClientBox: false });
-          drawTableHeader();
-        }
+        pdf.y += rowH;
+        pdf.font("Helvetica").fontSize(10);
       }
 
       function drawRow(i, it) {
-        ensureSpace(ROW_H + 2);
-
-        const y0 = pdf.y; // ✅ figer la ligne
         const label = safe(it?.label || it?.raw || "—");
         const qty = Number(it?.qty || 0);
         const pu = Number(it?.unitPrice || 0);
         const amt = Number(it?.amount || (qty * pu) || 0);
 
-        pdf.rect(left, y0, usableW, ROW_H).stroke();
+        // contour + colonnes
+        pdf.rect(x0, pdf.y, x5 - x0, rowH).stroke();
+        pdf.moveTo(x1, pdf.y).lineTo(x1, pdf.y + rowH).stroke();
+        pdf.moveTo(x2, pdf.y).lineTo(x2, pdf.y + rowH).stroke();
+        pdf.moveTo(x3, pdf.y).lineTo(x3, pdf.y + rowH).stroke();
+        pdf.moveTo(x4, pdf.y).lineTo(x4, pdf.y + rowH).stroke();
 
-        pdf.text(String(i + 1), X.idx + 8, y0 + 7, { lineBreak: false });
-        pdf.text(label, X.des + 8, y0 + 7, { width: COL.des - 16, ellipsis: true, lineBreak: false });
-        pdf.text(fmtNumber(qty), X.qty + 8, y0 + 7, { width: COL.qty - 16, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(pu), X.pu + 8, y0 + 7, { width: COL.pu - 16, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(amt), X.amt + 8, y0 + 7, { width: COL.amt - 16, align: "right", lineBreak: false });
+        pdf.fillColor("#000").font("Helvetica").fontSize(10);
 
-        pdf.y = y0 + ROW_H; // ✅ avancer proprement
+        pdf.text(String(i + 1), x0 + pad, pdf.y + 9, { width: (x1 - x0) - 2 * pad });
+        pdf.text(label, x1 + pad, pdf.y + 9, {
+          width: (x2 - x1) - 2 * pad,
+          ellipsis: true,
+          lineBreak: false
+        });
+
+        pdf.text(fmtNumber(qty), x2 + pad, pdf.y + 9, { width: (x3 - x2) - 2 * pad, align: "right" });
+        pdf.text(fmtNumber(pu), x3 + pad, pdf.y + 9, { width: (x4 - x3) - 2 * pad, align: "right" });
+        pdf.text(fmtNumber(amt), x4 + pad, pdf.y + 9, { width: (x5 - x4) - 2 * pad, align: "right" });
+
+        pdf.y += rowH;
       }
 
-      // Render
-      drawHeader({ showClientBox: true });
+      function ensureSpace(needed) {
+        if (pdf.y + needed > SAFE_BOTTOM) {
+          // footer sur la page qui se termine
+          drawFooter();
+          pdf.addPage();
+          drawHeader(false);
+          drawTableHeader();
+        }
+      }
+
+      // ===== Render =====
+      drawHeader(true);
       drawTableHeader();
 
-      for (let i = 0; i < items.length; i++) drawRow(i, items[i]);
+      for (let i = 0; i < items.length; i++) {
+        ensureSpace(rowH + 10);
+        drawRow(i, items[i]);
+      }
 
-      ensureSpace(160);
+      // total + phrase
+      ensureSpace(170);
       pdf.y += 18;
 
       const boxW = 260;
       const boxH = 40;
-      const yTotal = pdf.y;
+      const boxX = right - boxW;
 
-      pdf.rect(right - boxW, yTotal, boxW, boxH).stroke();
-      pdf.font("Helvetica-Bold").fontSize(12).text("TOTAL", right - boxW + 10, yTotal + 12, { lineBreak: false });
-      pdf.text(`${fmtNumber(total)} FCFA`, right - 10, yTotal + 12, { align: "right", lineBreak: false });
+      pdf.rect(boxX, pdf.y, boxW, boxH).stroke();
+      pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
+      pdf.text("TOTAL", boxX + 10, pdf.y + 12, { width: boxW - 20 });
 
-      pdf.y = yTotal + boxH + 14;
+      // ✅ IMPORTANT: on donne une largeur → plus de texte vertical
+      pdf.text(`${fmtNumber(total)} FCFA`, boxX + 10, pdf.y + 12, {
+        width: boxW - 20,
+        align: "right",
+      });
+
+      pdf.y += boxH + 14;
 
       const phrase = closingPhrase(type);
       const words = numberToFrench(total);
-      pdf.font("Helvetica-Bold").fontSize(10);
-      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: usableW });
 
-      // footer sur toutes les pages
-      const range = pdf.bufferedPageRange();
-      for (let p = range.start; p < range.start + range.count; p++) {
-        pdf.switchToPage(p);
-        drawFooter();
-      }
+      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
+
+      // footer dernière page
+      drawFooter();
 
       pdf.end();
     } catch (e) {
