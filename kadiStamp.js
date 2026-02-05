@@ -1,14 +1,16 @@
 "use strict";
 
 /**
- * kadiStamp.js — Render safe (UPDATED)
- * - If canvas is available: generate circular stamp PNG dynamically
- * - If canvas is NOT available (Render): fallback to ./assets/stamp.png
- * - Apply stamp with pdf-lib on LAST page by default
+ * kadiStamp.js — PRO Circular Stamp (UPDATED)
+ * ✅ Goals:
+ * - Professional circular stamp (no "TAMPON" text ever)
+ * - Logo rendered cleanly (NO blue square): contain + circular clip
+ * - Realistic stamp opacity (default ~0.28)
+ * - Apply with pdf-lib on LAST page by default
  *
- * ✅ UPDATE:
- * - Logo can be passed in opts.logoBuffer (Buffer)
- * - Logo is rendered in the SAME COLOR as the stamp (STAMP_BLUE) using canvas compositing
+ * Notes:
+ * - If canvas is available: stamp PNG generated dynamically
+ * - If canvas is NOT available: fallback to ./assets/stamp.png
  * - Safety: if profile.stamp_paid exists and is NOT true => do NOT apply stamp
  */
 
@@ -33,6 +35,12 @@ try {
 const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
 const FOOTER_RESERVED_H = Number(process.env.KADI_PDF_FOOTER_H || 85);
 const DEFAULT_MARGIN = Number(process.env.KADI_STAMP_MARGIN || 18);
+
+// ✅ realistic default (was 0.9 too strong)
+const DEFAULT_OPACITY = Number(process.env.KADI_STAMP_OPACITY || 0.28);
+
+// Size of stamp drawn on PDF (points)
+const DEFAULT_STAMP_SIZE = Number(process.env.KADI_STAMP_SIZE || 210);
 
 function safe(v) {
   return String(v || "").trim();
@@ -85,49 +93,57 @@ function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0
 }
 
 /**
- * Draw logo and tint it to STAMP_BLUE
- * - Works best with transparent PNG/SVG raster
- * - If logo has white background, it will still be tinted (square block) => better to upload transparent logo
+ * Draw logo in "contain" mode inside a given box.
+ * ✅ No tinting: prevents the "blue square" when logo has white background.
  */
-async function drawTintedLogo(ctx, logoBuffer, x, y, w, h) {
+async function drawLogoContain(ctx, logoBuffer, x, y, w, h) {
   if (!logoBuffer || !loadImage) return;
 
   const img = await loadImage(logoBuffer);
 
+  const ir = img.width / img.height;
+  const br = w / h;
+
+  let dw = w,
+    dh = h;
+
+  if (ir > br) {
+    dh = w / ir;
+  } else {
+    dw = h * ir;
+  }
+
+  const dx = x + (w - dw) / 2;
+  const dy = y + (h - dh) / 2;
+
   ctx.save();
-
-  // draw the logo
-  ctx.drawImage(img, x, y, w, h);
-
-  // tint to stamp color using the logo as a mask
-  ctx.globalCompositeOperation = "source-in";
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.fillRect(x, y, w, h);
-
-  // reset
+  ctx.drawImage(img, dx, dy, dw, dh);
   ctx.restore();
 }
 
 async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
-  const size = 520;
+  // Big source canvas => sharper when scaled down in PDF
+  const size = 560;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
-  const outerR = 240;
-  const innerR = 185;
+  const outerR = 250;
+  const innerR = 195;
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
 
+  // Outer ring
   ctx.lineWidth = 10;
   ctx.beginPath();
   ctx.arc(center, center, outerR, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Inner ring
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.arc(center, center, innerR, 0, Math.PI * 2);
@@ -135,60 +151,79 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
 
   const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
 
-  // top arc
+  // Top arc: company name
   ctx.save();
   ctx.translate(center, center);
-  ctx.font = "bold 32px Arial";
-  drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
+  ctx.font = "bold 34px Arial";
+  drawCircularText(ctx, truncate(name.toUpperCase(), 28), 0, -214, 2.15);
   ctx.restore();
 
-  // bottom arc
-  const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
+  // Bottom arc: IFU/RCCM + phone
+  const bottomRaw = [idLine, phoneLine].filter(Boolean).join(" • ");
+  const bottom = truncate(bottomRaw, 38);
+
   if (bottom) {
     ctx.save();
     ctx.translate(center, center);
     ctx.font = "bold 22px Arial";
-    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -205, 2.0, true);
+    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -214, 1.95, true);
     ctx.restore();
   }
 
-  // center block
+  // Center block
   ctx.save();
   ctx.translate(center, center);
 
-  // ✅ Logo centered + tinted BLUE
+  // ✅ Logo (clean) inside circular clip (pro look)
   if (logoBuffer) {
     try {
-      const logoSize = 130; // adjust if you want
-      const lx = -logoSize / 2;
-      const ly = -logoSize / 2 - 35;
+      const cy = -38;
+      const r = 72;
 
-      await drawTintedLogo(ctx, logoBuffer, lx, ly, logoSize, logoSize);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(0, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+
+      // contain inside the clipped circle
+      await drawLogoContain(ctx, logoBuffer, -r, cy - r, r * 2, r * 2);
+      ctx.restore();
+
+      // optional ring
+      ctx.strokeStyle = STAMP_BLUE;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, cy, r + 2, 0, Math.PI * 2);
+      ctx.stroke();
     } catch (_) {
       // ignore logo errors
     }
   }
 
-  const centerTitle = safe(title) || safe(profile?.stamp_title) || "TAMPON";
-  ctx.font = "bold 34px Arial";
-  ctx.textAlign = "center";
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 40);
+  // ✅ Center title: NEVER default to "TAMPON"
+  const centerTitle = safe(title) || safe(profile?.stamp_title) || "";
+  if (centerTitle) {
+    ctx.font = "bold 34px Arial";
+    ctx.textAlign = "center";
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 70);
+  }
 
+  // Address line (optional)
   if (addr) {
     ctx.font = "bold 18px Arial";
     ctx.textAlign = "center";
     ctx.fillStyle = STAMP_BLUE;
-    ctx.fillText(truncate(addr.toUpperCase(), 34), 0, 130);
+    ctx.fillText(truncate(addr.toUpperCase(), 34), 0, 128);
   }
 
   ctx.restore();
+
   return canvas.toBuffer("image/png");
 }
 
 // -------- Stamp PNG fallback (Render friendly) --------
 function getFallbackStampPngBuffer(profile) {
-  // you can override by DB path if you want later
   const p = profile?.stamp_image_path
     ? path.resolve(profile.stamp_image_path)
     : path.join(__dirname, "assets", "stamp.png");
@@ -207,24 +242,25 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   // ✅ Apply only when enabled === true
   if (profile?.stamp_enabled !== true) return pdfBuffer;
 
-  // ✅ Safety for Model B (one-time paid stamp): if field exists and not paid => skip
+  // ✅ Model B safety: if stamp_paid exists and not true => skip
   if (Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") && profile?.stamp_paid !== true) {
     return pdfBuffer;
   }
 
   const { PDFDocument } = PDFLib;
 
-  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
-  const position = String(opts.position || profile?.stamp_position || "bottom-left");
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.9))));
+  const size = Number(opts.size || profile?.stamp_size || DEFAULT_STAMP_SIZE);
+  const position = String(opts.position || profile?.stamp_position || "bottom-right");
+
+  // ✅ realistic default opacity
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? DEFAULT_OPACITY))));
+
   const margin = Number(opts.margin || DEFAULT_MARGIN);
 
   // ✅ last page by default
   const pages = String(opts.pages || profile?.stamp_pages || "last");
 
   const title = opts.title || null;
-
-  // ✅ logo buffer can be provided by engine
   const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
 
   // PNG tampon: canvas if available else fallback
@@ -235,8 +271,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     } else {
       stampPng = getFallbackStampPngBuffer(profile);
     }
-  } catch (e) {
-    // if canvas fails -> fallback
+  } catch (_) {
     stampPng = getFallbackStampPngBuffer(profile);
   }
 
@@ -254,10 +289,10 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     const pngDims = stampImg.scale(1);
     const ratio = pngDims.width / pngDims.height;
 
-    const drawW = Number.isFinite(size) && size > 10 ? size : 170;
+    const drawW = Number.isFinite(size) && size > 10 ? size : DEFAULT_STAMP_SIZE;
     const drawH = drawW / ratio;
 
-    // zone safe au-dessus footer
+    // safe zone above footer
     const safeBottomY = FOOTER_RESERVED_H + margin;
     const safeTopY = height - margin - drawH;
 
@@ -270,7 +305,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     }
     if (position === "bottom-right") {
       x = width - drawW - margin;
-      y = safeBottomY + 25; // anti-collision QR
+      y = safeBottomY + 25; // avoid QR collision
       if (y > safeTopY) y = safeTopY;
     }
     if (position === "top-left") {
