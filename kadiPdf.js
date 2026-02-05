@@ -1,4 +1,5 @@
-// kadiPdf.js — Unified PDF generator (devis/facture/reçu/décharge) with FIXED GRID
+// kadiPdf.js — Unified PDF generator (devis/facture/reçu/décharge)
+// FIXED GRID + SMART ROWS (wrap designation + auto row height)
 "use strict";
 
 const PDFDocument = require("pdfkit");
@@ -85,7 +86,6 @@ function numberToFrench(n) {
 function normalizeDocType(typeUpper) {
   const t = String(typeUpper || "").toUpperCase().trim();
   if (!t) return "DOCUMENT";
-  // support "FACTURE PRO FORMA" etc.
   if (t.includes("PRO FORMA")) return "FACTURE PRO FORMA";
   if (t.includes("FACTURE")) return "FACTURE";
   if (t.includes("DEVIS")) return "DEVIS";
@@ -142,17 +142,23 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const FOOTER_H = 85;
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ===== TABLE GRID CONFIG (stable) =====
-      const rowH = 26;
+      // ===== TABLE CONFIG =====
+      const ROW_MIN_H = 26;
+      const CELL_PAD_Y = 7;
+      const CELL_PAD_X = 6;
+      const MAX_LABEL_LINES = 3; // augmente à 4 si tu veux
 
-      // widths must sum to (right-left)
+      // usable width
       const W = right - left;
+
+      // ✅ IMPORTANT: donner assez de largeur à "Montant"
+      // (ton ancien des=300 faisait amt ~ 15px => "Montant" vertical)
       const col = {
-        idx: 40,
-        des: 300,
-        qty: 60,
-        pu: 80,
-        amt: W - (40 + 300 + 60 + 80), // remainder
+        idx: 38,
+        des: 235,
+        qty: 55,
+        pu: 70,
+        amt: W - (38 + 235 + 55 + 70), // reste => ~97px sur A4 (bon)
       };
 
       const x = {
@@ -163,6 +169,25 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         amt: left + col.idx + col.des + col.qty + col.pu,
         end: right,
       };
+
+      function clamp(n, a, b) {
+        return Math.max(a, Math.min(b, n));
+      }
+
+      function getLineH() {
+        return pdf.currentLineHeight(true);
+      }
+
+      function measureLabelHeight(text, width) {
+        const lineH = getLineH();
+        const maxH = MAX_LABEL_LINES * lineH;
+        const h = pdf.heightOfString(text, { width, lineBreak: true });
+        return clamp(h, lineH, maxH);
+      }
+
+      function vCenterY(rowY, rowH, contentH) {
+        return rowY + Math.max(0, (rowH - contentH) / 2);
+      }
 
       function drawFooter() {
         const footerY = pageHeight - 60;
@@ -206,13 +231,11 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.font("Helvetica").fontSize(9).text(lines.join("\n"), infoX, topY + 17);
 
-        // Right title block
         pdf.font("Helvetica-Bold").fontSize(16).text(type, left, topY, { width: right - left, align: "right" });
         pdf.font("Helvetica").fontSize(10);
         pdf.text(`N° : ${number}`, left, topY + 20, { width: right - left, align: "right" });
         pdf.text(`Date : ${date}`, left, topY + 35, { width: right - left, align: "right" });
 
-        // line separator
         pdf.moveTo(left, 120).lineTo(right, 120).stroke();
 
         if (isFirstPage) {
@@ -227,9 +250,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       function drawRowGrid(y0, height) {
-        // outer
         pdf.rect(left, y0, right - left, height).stroke();
-        // vertical lines
         pdf.moveTo(x.des, y0).lineTo(x.des, y0 + height).stroke();
         pdf.moveTo(x.qty, y0).lineTo(x.qty, y0 + height).stroke();
         pdf.moveTo(x.pu, y0).lineTo(x.pu, y0 + height).stroke();
@@ -237,6 +258,7 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       function drawTableHeader() {
+        const rowH = ROW_MIN_H;
         const y0 = pdf.y;
 
         pdf.save();
@@ -247,45 +269,23 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
 
-        pdf.text("#", x.idx, y0 + 8, { width: col.idx, align: "center", lineBreak: false });
-        pdf.text("Désignation", x.des + 6, y0 + 8, { width: col.des - 12, lineBreak: false });
-        pdf.text("Qté", x.qty, y0 + 8, { width: col.qty - 10, align: "right", lineBreak: false });
-        pdf.text("PU", x.pu, y0 + 8, { width: col.pu - 10, align: "right", lineBreak: false });
-        pdf.text("Montant", x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
+        const lineH = getLineH();
+        const yy = vCenterY(y0, rowH, lineH);
+
+        pdf.text("#", x.idx, yy, { width: col.idx, align: "center", lineBreak: false });
+        pdf.text("Désignation", x.des + CELL_PAD_X, yy, { width: col.des - (CELL_PAD_X * 2), lineBreak: false });
+        pdf.text("Qté", x.qty, yy, { width: col.qty - 10, align: "right", lineBreak: false });
+        pdf.text("PU", x.pu, yy, { width: col.pu - 10, align: "right", lineBreak: false });
+
+        // ✅ "Montant" ne doit plus se casser
+        pdf.text("Montant", x.amt, yy, { width: col.amt - 10, align: "right", lineBreak: false });
 
         pdf.y = y0 + rowH;
         pdf.font("Helvetica").fontSize(10);
       }
 
-      function drawItemRow(i, it) {
-        const y0 = pdf.y;
-
-        const label = safe(it.label || it.raw || "—");
-        const qty = Number(it.qty || 0);
-        const pu = Number(it.unitPrice || 0);
-        const amt = Number(it.amount || (qty * pu) || 0);
-
-        drawRowGrid(y0, rowH);
-
-        pdf.fillColor("#000").font("Helvetica").fontSize(10);
-        pdf.text(String(i + 1), x.idx, y0 + 8, { width: col.idx, align: "center", lineBreak: false });
-
-        // designation (truncate to stay inside)
-        pdf.text(label, x.des + 6, y0 + 8, {
-          width: col.des - 12,
-          lineBreak: false,
-          ellipsis: true,
-        });
-
-        pdf.text(fmtNumber(qty), x.qty, y0 + 8, { width: col.qty - 10, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(pu), x.pu, y0 + 8, { width: col.pu - 10, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(amt), x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
-
-        pdf.y = y0 + rowH;
-      }
-
       function addPageWithHeader() {
-        drawFooter(); // footer page précédente
+        drawFooter();
         pdf.addPage();
         drawHeader(false);
         if (type !== "DÉCHARGE") drawTableHeader();
@@ -293,6 +293,49 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
       function ensureSpace(needed) {
         if (pdf.y + needed > SAFE_BOTTOM) addPageWithHeader();
+      }
+
+      function drawItemRow(i, it) {
+        // set font before measuring
+        pdf.fillColor("#000").font("Helvetica").fontSize(10);
+
+        const label = safe(it.label || it.raw || "—");
+        const qty = Number(it.qty || 0);
+        const pu = Number(it.unitPrice || 0);
+        const amt = Number(it.amount || (qty * pu) || 0);
+
+        const labelW = col.des - (CELL_PAD_X * 2);
+        const labelH = measureLabelHeight(label, labelW);
+        const rowH = Math.max(ROW_MIN_H, labelH + (CELL_PAD_Y * 2));
+
+        // ✅ ensure space with computed rowH
+        ensureSpace(rowH + 8);
+
+        const y0 = pdf.y;
+        drawRowGrid(y0, rowH);
+
+        const lineH = getLineH();
+        const cy = vCenterY(y0, rowH, lineH);
+
+        pdf.text(String(i + 1), x.idx, cy, {
+          width: col.idx,
+          align: "center",
+          lineBreak: false,
+        });
+
+        // ✅ Désignation wrap + ellipsis (limit height)
+        pdf.text(label, x.des + CELL_PAD_X, y0 + CELL_PAD_Y, {
+          width: labelW,
+          lineBreak: true,
+          height: rowH - (CELL_PAD_Y * 2),
+          ellipsis: true,
+        });
+
+        pdf.text(fmtNumber(qty), x.qty, cy, { width: col.qty - 10, align: "right", lineBreak: false });
+        pdf.text(fmtNumber(pu), x.pu, cy, { width: col.pu - 10, align: "right", lineBreak: false });
+        pdf.text(fmtNumber(amt), x.amt, cy, { width: col.amt - 10, align: "right", lineBreak: false });
+
+        pdf.y = y0 + rowH;
       }
 
       // ===== Render =====
@@ -347,7 +390,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       drawTableHeader();
 
       for (let i = 0; i < items.length; i++) {
-        ensureSpace(rowH + 8);
         drawItemRow(i, items[i] || {});
       }
 
