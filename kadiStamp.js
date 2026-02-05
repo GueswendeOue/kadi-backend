@@ -1,353 +1,308 @@
-// kadiPdf.js — FIXED GRID (cells aligned + stable y + no vertical wrapping)
 "use strict";
 
-console.log("[KADI] kadiPdf.js LOADED — grid version");
+/**
+ * kadiStamp.js — Render safe (UPDATED)
+ * - If canvas is available: generate circular stamp PNG dynamically
+ * - If canvas is NOT available (Render): fallback to ./assets/stamp.png
+ * - Apply stamp with pdf-lib on LAST page by default
+ *
+ * ✅ UPDATE:
+ * - Logo can be passed in opts.logoBuffer (Buffer)
+ * - Logo is rendered in the SAME COLOR as the stamp (STAMP_BLUE) using canvas compositing
+ * - Safety: if profile.stamp_paid exists and is NOT true => do NOT apply stamp
+ */
 
-const PDFDocument = require("pdfkit");
-const QRCode = require("qrcode");
+const fs = require("fs");
+const path = require("path");
 
-// ================= Utils =================
+let createCanvas, loadImage;
+try {
+  ({ createCanvas, loadImage } = require("canvas"));
+} catch (e) {
+  createCanvas = null;
+  loadImage = null;
+}
+
+let PDFLib;
+try {
+  PDFLib = require("pdf-lib");
+} catch (e) {
+  PDFLib = null;
+}
+
+const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
+const FOOTER_RESERVED_H = Number(process.env.KADI_PDF_FOOTER_H || 85);
+const DEFAULT_MARGIN = Number(process.env.KADI_STAMP_MARGIN || 18);
+
 function safe(v) {
   return String(v || "").trim();
 }
-
-function fmtNumber(n) {
-  // support decimals but print nicely (no crazy long floats)
-  const num = Number(n || 0);
-  if (!Number.isFinite(num)) return "0";
-  const x = Math.round(num); // FCFA usually integer
-  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+function truncate(s, max) {
+  const x = safe(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
+}
+function normalizePhone(p) {
+  return safe(p).replace(/\s/g, "");
 }
 
-// mini conversion nombre→texte (FR) robuste
-function numberToFrench(n) {
-  n = Math.floor(Number(n) || 0);
-  if (n === 0) return "zéro";
+function requirePdfLib() {
+  if (!PDFLib) throw new Error("pdf-lib non installé. Faites: npm i pdf-lib");
+}
 
-  const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
-  const teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
-  const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
+function makeStampTextLines(profile) {
+  const name = safe(profile?.business_name) || "ENTREPRISE";
+  const ifu = safe(profile?.ifu);
+  const rccm = safe(profile?.rccm);
+  const phone = normalizePhone(profile?.phone);
 
-  function under100(x) {
-    if (x < 10) return units[x];
-    if (x < 20) return teens[x - 10];
+  const idLine = ifu ? `IFU: ${ifu}` : rccm ? `RCCM: ${rccm}` : "";
+  const phoneLine = phone ? `TEL: ${phone}` : "";
+  const addr = safe(profile?.address);
 
-    const t = Math.floor(x / 10);
-    const u = x % 10;
+  return { name, idLine, phoneLine, addr };
+}
 
-    if (t === 7 || t === 9) {
-      const base = tens[t];
-      const rest = x - t * 10;
-      return `${base}-${teens[rest - 10]}`;
-    }
-    if (t === 8 && u === 0) return "quatre-vingts";
-    if (u === 0) return tens[t];
-    if (t === 8) return `quatre-vingt-${units[u]}`;
-    if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
-    return `${tens[t]}-${units[u]}`;
+// -------- Canvas stamp generation (optional) --------
+function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
+  const chars = String(text || "").split("");
+  const angleStep = (Math.PI / 180) * spacingCoef;
+
+  let angle = startAngle - (chars.length * angleStep) / 2;
+  if (reverse) angle = startAngle + (chars.length * angleStep) / 2;
+
+  for (const ch of chars) {
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.translate(0, radiusOffset);
+    ctx.rotate(reverse ? Math.PI : 0);
+    ctx.textAlign = "center";
+    ctx.fillText(ch, 0, 0);
+    ctx.restore();
+
+    angle += reverse ? -angleStep : angleStep;
+  }
+}
+
+/**
+ * Draw logo and tint it to STAMP_BLUE
+ * - Works best with transparent PNG/SVG raster
+ * - If logo has white background, it will still be tinted (square block) => better to upload transparent logo
+ */
+async function drawTintedLogo(ctx, logoBuffer, x, y, w, h) {
+  if (!logoBuffer || !loadImage) return;
+
+  const img = await loadImage(logoBuffer);
+
+  ctx.save();
+
+  // draw the logo
+  ctx.drawImage(img, x, y, w, h);
+
+  // tint to stamp color using the logo as a mask
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.fillRect(x, y, w, h);
+
+  // reset
+  ctx.restore();
+}
+
+async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
+  if (!createCanvas) throw new Error("canvas non dispo");
+
+  const size = 520;
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, size, size);
+
+  const center = size / 2;
+  const outerR = 240;
+  const innerR = 185;
+
+  ctx.strokeStyle = STAMP_BLUE;
+  ctx.fillStyle = STAMP_BLUE;
+
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(center, center, outerR, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(center, center, innerR, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
+
+  // top arc
+  ctx.save();
+  ctx.translate(center, center);
+  ctx.font = "bold 32px Arial";
+  drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
+  ctx.restore();
+
+  // bottom arc
+  const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
+  if (bottom) {
+    ctx.save();
+    ctx.translate(center, center);
+    ctx.font = "bold 22px Arial";
+    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -205, 2.0, true);
+    ctx.restore();
   }
 
-  function under1000(x) {
-    const h = Math.floor(x / 100);
-    const r = x % 100;
-    let s = "";
-    if (h > 0) {
-      s = h === 1 ? "cent" : `${units[h]} cent`;
-      if (r === 0 && h > 1) s += "s";
-    }
-    if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
-    return s;
-  }
+  // center block
+  ctx.save();
+  ctx.translate(center, center);
 
-  function chunk(x, value, name) {
-    const q = Math.floor(x / value);
-    const r = x % value;
-    if (q === 0) return { text: "", rest: r };
-
-    if (name === "mille") {
-      if (q === 1) return { text: "mille", rest: r };
-      return { text: `${under1000(q)} mille`, rest: r };
-    }
-    const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
-    return { text: t, rest: r };
-  }
-
-  let x = n;
-  const parts = [];
-  const m = chunk(x, 1_000_000, "million");
-  if (m.text) parts.push(m.text);
-  x = m.rest;
-
-  const k = chunk(x, 1_000, "mille");
-  if (k.text) parts.push(k.text);
-  x = k.rest;
-
-  if (x > 0) parts.push(under1000(x));
-  return parts.join(" ").replace(/\s+/g, " ").trim();
-}
-
-function closingPhrase(typeUpper) {
-  const t = String(typeUpper || "").toUpperCase();
-  if (t.includes("FACTURE")) return "Arrêtée la présente facture";
-  if (t.includes("REÇU") || t.includes("RECU")) return "Arrêté le présent reçu";
-  if (t.includes("DEVIS")) return "Arrêté le présent devis";
-  if (t.includes("DÉCHARGE") || t.includes("DECHARGE")) return "Arrêtée la présente décharge";
-  return "Arrêté le présent document";
-}
-
-// ================= QR =================
-async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
-  const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
-  const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
-
-  const png = await QRCode.toBuffer(url, {
-    type: "png",
-    width: 140,
-    margin: 1,
-    errorCorrectionLevel: "M",
-  });
-
-  return { png, url };
-}
-
-// ================= PDF =================
-async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
-  const KADI_E164 = process.env.KADI_E164 || "22679239027";
-  const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
-  const qr = await makeKadiQrBuffer({ fullNumberE164: KADI_E164, prefillText: KADI_PREFILL });
-
-  return new Promise((resolve, reject) => {
+  // ✅ Logo centered + tinted BLUE
+  if (logoBuffer) {
     try {
-      // bufferPages: allow footer on each page (we draw footer before addPage + after all)
-      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: false });
+      const logoSize = 130; // adjust if you want
+      const lx = -logoSize / 2;
+      const ly = -logoSize / 2 - 35;
 
-      const chunks = [];
-      pdf.on("data", (c) => chunks.push(c));
-      pdf.on("end", () => resolve(Buffer.concat(chunks)));
-
-      const pageWidth = pdf.page.width;
-      const pageHeight = pdf.page.height;
-      const left = 50;
-      const right = pageWidth - 50;
-
-      const type = String(docData.type || "DOCUMENT").toUpperCase();
-      const number = docData.docNumber || "—";
-      const date = docData.date || "—";
-      const client = docData.client || "—";
-      const items = Array.isArray(docData.items) ? docData.items : [];
-      const total = Number(docData.total || 0);
-      const bp = businessProfile || {};
-
-      // ----- SAFE AREAS -----
-      const FOOTER_H = 85;
-      const SAFE_BOTTOM = pageHeight - FOOTER_H;
-
-      // ----- TABLE GRID CONFIG (STABLE) -----
-      const rowH = 26;
-
-      // widths MUST sum to (right-left)
-      const W = right - left;
-      const col = {
-        idx: 40,
-        des: 300,
-        qty: 60,
-        pu: 80,
-        amt: W - (40 + 300 + 60 + 80),
-      };
-
-      const x = {
-        idx: left,
-        des: left + col.idx,
-        qty: left + col.idx + col.des,
-        pu: left + col.idx + col.des + col.qty,
-        amt: left + col.idx + col.des + col.qty + col.pu,
-        end: right,
-      };
-
-      // ----- DRAW HELPERS -----
-      function drawFooter() {
-        const footerY = pageHeight - 60;
-
-        pdf.save();
-        pdf.strokeColor("#000").lineWidth(1);
-        pdf.moveTo(left, footerY - 10).lineTo(right, footerY - 10).stroke();
-
-        pdf.font("Helvetica").fontSize(8).fillColor("#555");
-        pdf.text(`Généré par KADI • WhatsApp +${KADI_E164} • Scannez pour essayer`, left, footerY, {
-          width: right - left - 60,
-          lineBreak: false,
-          ellipsis: true,
-        });
-
-        try {
-          pdf.image(qr.png, right - 50, footerY - 5, { fit: [45, 45] });
-        } catch (_) {}
-
-        pdf.restore();
-      }
-
-      function drawHeader(isFirstPage = true) {
-        const topY = 45;
-
-        if (logoBuffer) {
-          try {
-            pdf.image(logoBuffer, left, topY, { fit: [60, 60] });
-          } catch (_) {}
-        }
-
-        const infoX = logoBuffer ? left + 70 : left;
-
-        pdf.fillColor("#000");
-        pdf.font("Helvetica-Bold").fontSize(13).text(safe(bp.business_name) || "—", infoX, topY);
-
-        const lines = [
-          bp.address ? `Adresse : ${bp.address}` : null,
-          bp.phone ? `Tel : ${bp.phone}` : null,
-          bp.email ? `Email : ${bp.email}` : null,
-          bp.ifu ? `IFU : ${bp.ifu}` : null,
-          bp.rccm ? `RCCM : ${bp.rccm}` : null,
-        ].filter(Boolean);
-
-        pdf.font("Helvetica").fontSize(9).text(lines.join("\n"), infoX, topY + 17);
-
-        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, topY, { width: right - left, align: "right" });
-        pdf.font("Helvetica").fontSize(10);
-        pdf.text(`N° : ${number}`, left, topY + 20, { width: right - left, align: "right" });
-        pdf.text(`Date : ${date}`, left, topY + 35, { width: right - left, align: "right" });
-
-        pdf.moveTo(left, 120).lineTo(right, 120).stroke();
-
-        if (isFirstPage) {
-          const y = 135;
-          pdf.rect(left, y, right - left, 45).stroke();
-          pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000").text("Client", left + 10, y + 8);
-          pdf.font("Helvetica").fontSize(10).fillColor("#000").text(client, left + 10, y + 25);
-          pdf.y = y + 65;
-        } else {
-          pdf.y = 140;
-        }
-      }
-
-      function drawRowGrid(y0, height) {
-        // outer
-        pdf.rect(left, y0, right - left, height).stroke();
-        // vertical lines (stable)
-        pdf.moveTo(x.des, y0).lineTo(x.des, y0 + height).stroke();
-        pdf.moveTo(x.qty, y0).lineTo(x.qty, y0 + height).stroke();
-        pdf.moveTo(x.pu, y0).lineTo(x.pu, y0 + height).stroke();
-        pdf.moveTo(x.amt, y0).lineTo(x.amt, y0 + height).stroke();
-      }
-
-      function drawTableHeader() {
-        const y0 = pdf.y;
-
-        pdf.save();
-        pdf.rect(left, y0, right - left, rowH).fill("#F2F2F2");
-        pdf.restore();
-
-        drawRowGrid(y0, rowH);
-
-        pdf.fillColor("#000").font("Helvetica-Bold").fontSize(10);
-
-        pdf.text("#", x.idx, y0 + 8, { width: col.idx, align: "center", lineBreak: false });
-        pdf.text("Désignation", x.des + 6, y0 + 8, { width: col.des - 12, lineBreak: false });
-        pdf.text("Qté", x.qty, y0 + 8, { width: col.qty - 10, align: "right", lineBreak: false });
-        pdf.text("PU", x.pu, y0 + 8, { width: col.pu - 10, align: "right", lineBreak: false });
-        pdf.text("Montant", x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
-
-        pdf.y = y0 + rowH;
-        pdf.font("Helvetica").fontSize(10).fillColor("#000");
-      }
-
-      function drawItemRow(i, it) {
-        const y0 = pdf.y;
-
-        const label = safe(it.label || it.raw || "—");
-        const qty = Number(it.qty || 0);
-        const pu = Number(it.unitPrice || 0);
-        const amt = Number(it.amount || (qty * pu) || 0);
-
-        drawRowGrid(y0, rowH);
-
-        pdf.fillColor("#000").font("Helvetica").fontSize(10);
-
-        pdf.text(String(i + 1), x.idx, y0 + 8, { width: col.idx, align: "center", lineBreak: false });
-
-        // designation stays inside (no wrap, ellipsis)
-        pdf.text(label, x.des + 6, y0 + 8, {
-          width: col.des - 12,
-          lineBreak: false,
-          ellipsis: true,
-        });
-
-        // numeric columns (no wrap)
-        pdf.text(fmtNumber(qty), x.qty, y0 + 8, { width: col.qty - 10, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(pu), x.pu, y0 + 8, { width: col.pu - 10, align: "right", lineBreak: false });
-        pdf.text(fmtNumber(amt), x.amt, y0 + 8, { width: col.amt - 10, align: "right", lineBreak: false });
-
-        pdf.y = y0 + rowH;
-      }
-
-      function addPageWithHeader() {
-        // draw footer on current page BEFORE page break
-        drawFooter();
-        pdf.addPage();
-        drawHeader(false);
-        drawTableHeader();
-      }
-
-      function ensureSpace(needed) {
-        if (pdf.y + needed > SAFE_BOTTOM) addPageWithHeader();
-      }
-
-      // ===== RENDER =====
-      drawHeader(true);
-      drawTableHeader();
-
-      for (let i = 0; i < items.length; i++) {
-        ensureSpace(rowH + 8);
-        drawItemRow(i, items[i] || {});
-      }
-
-      // ===== TOTAL + closing =====
-      ensureSpace(190);
-      pdf.y += 18;
-
-      const boxW = 260;
-      const boxH = 40;
-      const boxX = right - boxW;
-      const boxY = pdf.y;
-
-      pdf.rect(boxX, boxY, boxW, boxH).stroke();
-
-      pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
-      pdf.text("TOTAL", boxX + 10, boxY + 12, { width: 70, lineBreak: false });
-
-      // IMPORTANT: give width so it stays on one line, right aligned
-      pdf.text(`${fmtNumber(total)} FCFA`, boxX + 80, boxY + 12, {
-        width: boxW - 90,
-        align: "right",
-        lineBreak: false,
-      });
-
-      pdf.y = boxY + boxH + 14;
-
-      const phrase = closingPhrase(type);
-      const words = numberToFrench(total);
-
-      pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, {
-        width: right - left,
-      });
-
-      // footer on last page
-      drawFooter();
-
-      pdf.end();
-    } catch (e) {
-      reject(e);
+      await drawTintedLogo(ctx, logoBuffer, lx, ly, logoSize, logoSize);
+    } catch (_) {
+      // ignore logo errors
     }
-  });
+  }
+
+  const centerTitle = safe(title) || safe(profile?.stamp_title) || "TAMPON";
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 40);
+
+  if (addr) {
+    ctx.font = "bold 18px Arial";
+    ctx.textAlign = "center";
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.fillText(truncate(addr.toUpperCase(), 34), 0, 130);
+  }
+
+  ctx.restore();
+  return canvas.toBuffer("image/png");
 }
 
-module.exports = { buildPdfBuffer };
+// -------- Stamp PNG fallback (Render friendly) --------
+function getFallbackStampPngBuffer(profile) {
+  // you can override by DB path if you want later
+  const p = profile?.stamp_image_path
+    ? path.resolve(profile.stamp_image_path)
+    : path.join(__dirname, "assets", "stamp.png");
+
+  if (!fs.existsSync(p)) {
+    throw new Error(`Fallback stamp PNG not found: ${p}`);
+  }
+  return fs.readFileSync(p);
+}
+
+// -------- Apply on PDF (pdf-lib) --------
+async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
+  requirePdfLib();
+  if (!Buffer.isBuffer(pdfBuffer)) throw new Error("applyStampToPdfBuffer: pdfBuffer doit être un Buffer");
+
+  // ✅ Apply only when enabled === true
+  if (profile?.stamp_enabled !== true) return pdfBuffer;
+
+  // ✅ Safety for Model B (one-time paid stamp): if field exists and not paid => skip
+  if (Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") && profile?.stamp_paid !== true) {
+    return pdfBuffer;
+  }
+
+  const { PDFDocument } = PDFLib;
+
+  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
+  const position = String(opts.position || profile?.stamp_position || "bottom-left");
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.9))));
+  const margin = Number(opts.margin || DEFAULT_MARGIN);
+
+  // ✅ last page by default
+  const pages = String(opts.pages || profile?.stamp_pages || "last");
+
+  const title = opts.title || null;
+
+  // ✅ logo buffer can be provided by engine
+  const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
+
+  // PNG tampon: canvas if available else fallback
+  let stampPng;
+  try {
+    if (createCanvas) {
+      stampPng = await generateStampPngBuffer({ profile, logoBuffer, title });
+    } else {
+      stampPng = getFallbackStampPngBuffer(profile);
+    }
+  } catch (e) {
+    // if canvas fails -> fallback
+    stampPng = getFallbackStampPngBuffer(profile);
+  }
+
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
+  const stampImg = await pdfDoc.embedPng(stampPng);
+
+  const allPages = pdfDoc.getPages();
+  if (!allPages.length) return pdfBuffer;
+
+  const targetPages = pages === "all" ? allPages : [allPages[allPages.length - 1]];
+
+  for (const page of targetPages) {
+    const { width, height } = page.getSize();
+
+    const pngDims = stampImg.scale(1);
+    const ratio = pngDims.width / pngDims.height;
+
+    const drawW = Number.isFinite(size) && size > 10 ? size : 170;
+    const drawH = drawW / ratio;
+
+    // zone safe au-dessus footer
+    const safeBottomY = FOOTER_RESERVED_H + margin;
+    const safeTopY = height - margin - drawH;
+
+    let x = margin;
+    let y = safeBottomY;
+
+    if (position === "bottom-left") {
+      x = margin;
+      y = safeBottomY;
+    }
+    if (position === "bottom-right") {
+      x = width - drawW - margin;
+      y = safeBottomY + 25; // anti-collision QR
+      if (y > safeTopY) y = safeTopY;
+    }
+    if (position === "top-left") {
+      x = margin;
+      y = safeTopY;
+    }
+    if (position === "top-right") {
+      x = width - drawW - margin;
+      y = safeTopY;
+    }
+    if (position === "center") {
+      x = (width - drawW) / 2;
+      y = (height - drawH) / 2;
+      if (y < safeBottomY) y = safeBottomY;
+      if (y > safeTopY) y = safeTopY;
+    }
+
+    // clamp final
+    if (x < margin) x = margin;
+    if (x + drawW > width - margin) x = width - margin - drawW;
+
+    if (y < safeBottomY) y = safeBottomY;
+    if (y > safeTopY) y = safeTopY;
+
+    page.drawImage(stampImg, { x, y, width: drawW, height: drawH, opacity });
+  }
+
+  const out = await pdfDoc.save();
+  return Buffer.from(out);
+}
+
+module.exports = {
+  generateStampPngBuffer,
+  applyStampToPdfBuffer,
+};

@@ -21,6 +21,9 @@ async function getOrCreateProfile(userId) {
           welcome_credits_granted: false,
           onboarding_done: false,
           onboarding_version: 1,
+
+          // ✅ si colonnes existent, ça passera; sinon Supabase ignorera pas -> donc on ne met pas ici.
+          // stamp_paid: false,
         },
       ])
       .select("*")
@@ -51,7 +54,6 @@ async function updateProfile(userId, patch) {
 
 /**
  * ✅ NEW: Onboarding flag helper
- * Marque onboarding_done=true (si colonne existe) sans casser si elle n’existe pas.
  */
 async function markOnboardingDone(userId, version = 1) {
   try {
@@ -60,14 +62,12 @@ async function markOnboardingDone(userId, version = 1) {
       onboarding_version: Number(version) || 1,
     });
   } catch (e) {
-    // si colonnes pas encore créées, on n'échoue pas l'app
     return null;
   }
 }
 
 /**
  * ✅ NEW: Profil "suffisant" pour personnaliser un PDF
- * (Tu peux durcir après: IFU/RCCM etc.)
  */
 function isProfileBasicComplete(p) {
   if (!p) return false;
@@ -77,9 +77,33 @@ function isProfileBasicComplete(p) {
   return hasName && hasPhoneOrEmail;
 }
 
+/**
+ * ✅ NEW: helpers paiement tampon (paiement unique)
+ */
+function isStampPaid(profile) {
+  return profile?.stamp_paid === true;
+}
+
+async function markStampPaid(userId, plan = "stamp_logo") {
+  // plan est optionnel (si tu ajoutes stamp_paid_plan en DB)
+  const patch = {
+    stamp_paid: true,
+    stamp_paid_at: new Date().toISOString(),
+  };
+
+  // si tu as créé la colonne stamp_paid_plan, tu peux décommenter :
+  // patch.stamp_paid_plan = String(plan || "stamp_logo");
+
+  return updateProfile(userId, patch);
+}
+
 module.exports = {
   getOrCreateProfile,
   updateProfile,
   markOnboardingDone,
   isProfileBasicComplete,
+
+  // ✅ new exports
+  isStampPaid,
+  markStampPaid,
 };

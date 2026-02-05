@@ -1,4 +1,5 @@
-// kadiEngine.js
+// kadiEngine.js — UPDATED (Model B)
+// ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
 "use strict";
 
 // ================= Logger =================
@@ -26,7 +27,7 @@ try {
   console.warn("⚠️ kadiSignature module not found, signature will be skipped");
 }
 
-// Broadcast module optionnel (si tu l’as créé)
+// Broadcast module optionnel
 let kadiBroadcast = null;
 try {
   kadiBroadcast = require("./kadiBroadcast");
@@ -35,17 +36,15 @@ try {
 }
 
 // ================= Imports core =================
-const path = require("path");
-
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 
-// ✅ DEBUG: prouver quel fichier PDF est chargé
+// ✅ Debug PDF module (optionnel)
 const pdfMod = require("./kadiPdf");
-console.log("[KADI] PDF MODULE RESOLVED ✅", require.resolve("./kadiPdf"));
-console.log("[KADI] PDF MODULE PATH ✅", pdfMod?.__file || "(no __file)");
-console.log("[KADI] PDF MODULE KEYS ✅", Object.keys(pdfMod || {}));
-
+if (process.env.KADI_DEBUG_PDF_MODULE === "1") {
+  console.log("[KADI] PDF MODULE RESOLVED ✅", require.resolve("./kadiPdf"));
+  console.log("[KADI] PDF MODULE KEYS ✅", Object.keys(pdfMod || {}));
+}
 const { buildPdfBuffer } = pdfMod;
 
 const { saveDocument } = require("./kadiRepo");
@@ -57,7 +56,7 @@ const { ocrImageBuffer } = require("./kadiOcr");
 const {
   sendText,
   sendButtons,
-  sendList, // (optionnel)
+  sendList,
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
@@ -67,6 +66,7 @@ const {
 const {
   getBalance,
   consumeCredit,
+  consumeFeature, // ✅ utilisé pour le tampon (paiement unique)
   createRechargeCodes,
   redeemCode,
   addCredits,
@@ -82,7 +82,6 @@ const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
-const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
@@ -90,6 +89,17 @@ const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 // Anti-spam broadcast
 const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 25);
 const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 450);
+
+// ================= Pricing / Credits =================
+// ✅ Règles (Model B):
+// - PDF simple (devis/facture/reçu) = 1 crédit
+// - OCR (photo -> PDF) = 2 crédits
+// - Décharge = 2 crédits (même sans OCR)
+// - Tampon = 15 crédits (paiement UNIQUE) puis GRATUIT sur les PDF
+const PDF_SIMPLE_CREDITS = Number(process.env.PDF_SIMPLE_CREDITS || 1);
+const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
+const DECHARGE_CREDITS = Number(process.env.DECHARGE_CREDITS || 2);
+const STAMP_ONE_TIME_COST = Number(process.env.STAMP_ONE_TIME_COST || 15);
 
 // ================= Regex / Limits =================
 const REGEX = {
@@ -137,17 +147,47 @@ function parseDaysArg(text, defDays) {
   return Math.min(d, 365);
 }
 
+function getDocTitle(draft) {
+  return draft.type === "facture"
+    ? draft.factureKind === "proforma"
+      ? "FACTURE PRO FORMA"
+      : "FACTURE DÉFINITIVE"
+    : draft.type === "decharge"
+    ? "DÉCHARGE"
+    : String(draft.type || "").toUpperCase();
+}
+
+function computeBasePdfCost(draft) {
+  // OCR always costs OCR_PDF_CREDITS (whatever doc)
+  if (draft?.source === "ocr") return OCR_PDF_CREDITS;
+
+  // Décharge can be priced separately (even without OCR)
+  if (draft?.type === "decharge") return DECHARGE_CREDITS;
+
+  // default simple docs
+  return PDF_SIMPLE_CREDITS;
+}
+
+function formatBaseCostLine(cost) {
+  return `💳 Coût: *${cost} crédit(s)*`;
+}
+
 // ===============================
 // Tampon & Signature (wrapper)
 // ===============================
-async function applyStampAndSignatureIfAny(pdfBuffer, profile) {
+// ✅ UPDATED: pass logoBuffer to stamp so it can render logo centered + tinted blue
+async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null) {
   let buf = pdfBuffer;
 
-  if (kadiStamp?.applyStampToPdfBuffer) {
+  // ✅ Appliquer le tampon seulement si ON + payé (sécurité)
+  const canStamp = profile?.stamp_enabled === true && profile?.stamp_paid === true;
+
+  if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
     try {
       // ✅ appliquer par défaut sur la DERNIÈRE page seulement
       buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
         pages: "last",
+        logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
       });
     } catch (e) {
       logger.warn("stamp", e.message);
@@ -198,15 +238,7 @@ function validateDraft(draft) {
 }
 
 function buildPreviewMessage({ doc }) {
-  const title =
-    doc.type === "facture"
-      ? doc.factureKind === "proforma"
-        ? "FACTURE PRO FORMA"
-        : "FACTURE DÉFINITIVE"
-      : doc.type === "decharge"
-      ? "DÉCHARGE"
-      : String(doc.type || "").toUpperCase();
-
+  const title = getDocTitle(doc);
   const f = computeFinance(doc);
 
   const lines = (doc.items || [])
@@ -266,6 +298,7 @@ async function sendDocsMenu(to) {
       { id: "DOC_DEVIS", title: "Devis" },
       { id: "DOC_FACTURE", title: "Facture" },
       { id: "DOC_RECU", title: "Reçu" },
+      { id: "DOC_DECHARGE", title: "Décharge" },
     ]);
   }
 
@@ -302,7 +335,6 @@ async function sendProfileMenu(to) {
   ]);
 }
 
-// ✅ Après un produit confirmé/ajouté : menu clair
 async function sendAfterProductMenu(to) {
   return sendButtons(to, "✅ Produit ajouté. Que faire ?", [
     { id: "DOC_ADD_MORE", title: "➕ Nouveau produit" },
@@ -311,7 +343,6 @@ async function sendAfterProductMenu(to) {
   ]);
 }
 
-// ✅ Après Terminer : aperçu + actions
 async function sendPreviewMenu(to) {
   return sendButtons(to, "✅ Valider le document ?", [
     { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
@@ -335,19 +366,29 @@ function stampSizeLabel(size) {
   if (n >= 200) return "Grand";
   return "Normal";
 }
+
 async function sendStampMenu(to) {
   const p = await getOrCreateProfile(to);
-  const enabled = p?.stamp_enabled === true; // default OFF
+
+  const enabled = p?.stamp_enabled === true;
+  const paid = p?.stamp_paid === true;
+
   const pos = p?.stamp_position || "bottom-right";
   const size = p?.stamp_size || 170;
   const title = p?.stamp_title || "—";
 
+  const pricingLine = paid
+    ? `💳 Prix: *Payé ✅* (tampon gratuit sur tous vos PDF)`
+    : `💳 Prix: *${STAMP_ONE_TIME_COST} crédits (paiement unique)*`;
+
   const header =
     `🟦 *Tampon (PDF)*\n\n` +
     `• Statut : *${enabled ? "ON ✅" : "OFF ❌"}*\n` +
+    `• Paiement : *${paid ? "OK ✅" : "Non ❌"}*\n` +
     `• Fonction : *${title}*\n` +
     `• Position : *${stampPosLabel(pos)}*\n` +
-    `• Taille : *${stampSizeLabel(size)}*`;
+    `• Taille : *${stampSizeLabel(size)}*\n\n` +
+    `${pricingLine}`;
 
   return sendButtons(to, header + "\n\n👇 Choisissez :", [
     { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },
@@ -355,15 +396,13 @@ async function sendStampMenu(to) {
     { id: "STAMP_MORE", title: "Position/Taille" },
   ]);
 }
+
 async function sendStampMoreMenu(to) {
   const p = await getOrCreateProfile(to);
   const pos = p?.stamp_position || "bottom-right";
   const size = p?.stamp_size || 170;
 
-  const txt =
-    `🟦 *Réglages tampon*\n\n` +
-    `• Position : *${stampPosLabel(pos)}*\n` +
-    `• Taille : *${stampSizeLabel(size)}*`;
+  const txt = `🟦 *Réglages tampon*\n\n• Position : *${stampPosLabel(pos)}*\n• Taille : *${stampSizeLabel(size)}*`;
 
   return sendButtons(to, txt + "\n\n👇 Choisissez :", [
     { id: "STAMP_POS", title: "Position" },
@@ -371,6 +410,7 @@ async function sendStampMoreMenu(to) {
     { id: "PROFILE_STAMP", title: "Retour" },
   ]);
 }
+
 async function sendStampPositionMenu(to) {
   return sendButtons(to, "📍 *Position du tampon* :", [
     { id: "STAMP_POS_BR", title: "Bas droite" },
@@ -511,7 +551,14 @@ async function handleLogoImage(from, msg) {
 // ===============================
 async function replyBalance(from) {
   const bal = await getBalance(from);
-  await sendText(from, `💳 *Votre solde KADI* : ${bal} crédit(s)\n📄 1 crédit = 1 PDF`);
+  await sendText(
+    from,
+    `💳 *Votre solde KADI* : ${bal} crédit(s)\n\n` +
+      `📄 PDF simple (devis/facture/reçu) = ${PDF_SIMPLE_CREDITS} crédit\n` +
+      `📷 OCR (photo -> PDF) = ${OCR_PDF_CREDITS} crédits\n` +
+      `📄 Décharge = ${DECHARGE_CREDITS} crédits\n` +
+      `🟦 Tampon officiel = ${STAMP_ONE_TIME_COST} crédits (paiement unique)`
+  );
 }
 
 async function replyRechargeInfo(from) {
@@ -524,7 +571,7 @@ async function replyRechargeInfo(from) {
 }
 
 // ===============================
-// Product-by-product flow (LE flow qu’on voulait)
+// Product-by-product flow
 // ===============================
 function resetDraftSession(s) {
   s.step = "idle";
@@ -538,7 +585,6 @@ function resetDraftSession(s) {
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
 
-  // ✅ On demande le client d’abord (stable)
   s.step = "doc_client";
   s.mode = mode;
   s.factureKind = factureKind;
@@ -617,24 +663,26 @@ async function handleProductFlowText(from, text) {
   const t = norm(text);
   if (!t) return false;
 
-  // ✅ si le PDF a demandé client manquant => ne PAS relancer l’ajout produit
   if (s.step === "missing_client_pdf") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
     s.step = "doc_review";
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
+
+    // ✅ coût avant génération (base seulement)
+    const cost = computeBasePdfCost(s.lastDocDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
     await sendPreviewMenu(from);
     return true;
   }
 
-  // 1) client initial
   if (s.step === "doc_client") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
     await askItemLabel(from);
     return true;
   }
 
-  // 2) label
   if (s.step === "item_label") {
     s.itemDraft = s.itemDraft || {};
     s.itemDraft.label = t.slice(0, LIMITS.maxItemLabelLength);
@@ -642,7 +690,6 @@ async function handleProductFlowText(from, text) {
     return true;
   }
 
-  // 3) qty
   if (s.step === "item_qty") {
     const n = parseNumberSmart(t);
     if (!n || n <= 0) {
@@ -655,7 +702,6 @@ async function handleProductFlowText(from, text) {
     return true;
   }
 
-  // 4) PU
   if (s.step === "item_pu") {
     const n = parseNumberSmart(t);
     if (n == null || n < 0) {
@@ -668,7 +714,6 @@ async function handleProductFlowText(from, text) {
     return true;
   }
 
-  // Si on attend "fonction tampon"
   if (s.step === "stamp_title") {
     const val = t === "0" ? null : t;
     await updateProfile(from, { stamp_title: val });
@@ -788,6 +833,10 @@ async function processOcrImageToDraft(from, mediaId) {
   const preview = buildPreviewMessage({ doc: s.lastDocDraft });
   await sendText(from, preview);
 
+  // ✅ coût avant génération (base seulement)
+  const cost = computeBasePdfCost(s.lastDocDraft);
+  await sendText(from, formatBaseCostLine(cost));
+
   return sendButtons(from, "✅ Valider ?", [
     { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
     { id: "DOC_RESTART", title: "🔁 Recommencer" },
@@ -823,7 +872,6 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // ✅ Fix: demander client manquant via step dédié
   if (!safe(draft.client)) {
     s.step = "missing_client_pdf";
     await sendText(from, "⚠️ Client manquant.\nTapez le nom du client :");
@@ -837,13 +885,15 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  const cost = draft.source === "ocr" ? OCR_PDF_CREDITS : 1;
+  // ✅ coût = base seulement (tampon gratuit si déjà payé)
+  const cost = computeBasePdfCost(draft);
+  const reason = draft.source === "ocr" ? "ocr_pdf" : draft.type === "decharge" ? "decharge_pdf" : "pdf";
 
-  const cons = await consumeCredit(from, cost, draft.source === "ocr" ? "ocr_pdf" : "pdf");
+  const cons = await consumeCredit(from, cost, reason);
   if (!cons.ok) {
     await sendText(
       from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe PDF coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
+      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
     );
     return;
   }
@@ -872,15 +922,7 @@ async function createAndSendPdf(from) {
       }
     }
 
-    const title =
-      draft.type === "facture"
-        ? draft.factureKind === "proforma"
-          ? "FACTURE PRO FORMA"
-          : "FACTURE DÉFINITIVE"
-        : draft.type === "decharge"
-        ? "DÉCHARGE"
-        : String(draft.type || "").toUpperCase();
-
+    const title = getDocTitle(draft);
     const total = draft.finance?.gross ?? computeFinance(draft).gross;
 
     let pdfBuf = await buildPdfBuffer({
@@ -896,7 +938,8 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile);
+    // ✅ tampon dernière page si activé + payé + logo bleu centré (passé au stamp)
+    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
 
     try {
       await saveDocument({ waId: from, doc: draft });
@@ -966,7 +1009,10 @@ async function ensureWelcomeCredits(waId) {
       await updateProfile(waId, { welcome_credits_granted: true });
     } catch (_) {}
 
-    await sendText(waId, `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 1 crédit = 1 PDF`);
+    await sendText(
+      waId,
+      `🎁 Bienvenue sur KADI !\nVous recevez *${WELCOME_CREDITS} crédits gratuits*.\n📄 PDF simple = ${PDF_SIMPLE_CREDITS} crédit`
+    );
   } catch (e) {
     console.warn("⚠️ ensureWelcomeCredits:", e?.message);
   }
@@ -980,7 +1026,8 @@ async function maybeSendOnboarding(from) {
     const msg =
       `👋 Bienvenue sur *KADI*.\n\n` +
       `✅ *Devis / Facture / Reçu* en 30 secondes.\n` +
-      `📷 Envoyez une *photo* → KADI extrait et refait un PDF propre.\n\n` +
+      `📷 Envoyez une *photo* → KADI extrait et refait un PDF propre.\n` +
+      `🟦 Tampon officiel: *${STAMP_ONE_TIME_COST} crédits (paiement unique)*.\n\n` +
       `👇 Choisissez :`;
 
     await sendButtons(from, msg, [
@@ -1039,7 +1086,7 @@ async function handleAdmin(from, text) {
     const credits = parseInt(match[2], 10);
 
     try {
-      const codes = await createRechargeCodes(nb, credits);
+      const codes = await createRechargeCodes({ count: nb, creditsEach: credits, createdBy: from });
       let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
       codes.forEach((code, i) => (response += `${i + 1}. ${code}\n`));
       await sendText(from, response);
@@ -1219,6 +1266,7 @@ async function handleInteractiveReply(from, replyId) {
   // Docs
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
+  if (replyId === "DOC_DECHARGE") return startDocFlow(from, "decharge");
 
   if (replyId === "DOC_FACTURE") {
     s.step = "facture_kind";
@@ -1237,7 +1285,16 @@ async function handleInteractiveReply(from, replyId) {
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
     s.lastDocDraft = null;
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-    s.lastDocDraft = { type: mode, factureKind: null, docNumber: null, date: formatDateISO(), client: null, items: [], finance: null, source: "ocr" };
+    s.lastDocDraft = {
+      type: mode,
+      factureKind: null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+    };
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -1245,7 +1302,16 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-    s.lastDocDraft = { type: "facture", factureKind: "definitive", docNumber: null, date: formatDateISO(), client: null, items: [], finance: null, source: "ocr" };
+    s.lastDocDraft = {
+      type: "facture",
+      factureKind: "definitive",
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+    };
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -1253,13 +1319,51 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
   if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
-  // Tampon actions
+  // ================= Tampon actions (Model B) =================
   if (replyId === "STAMP_TOGGLE") {
     const p = await getOrCreateProfile(from);
-    const enabled = p?.stamp_enabled === true;
-    await updateProfile(from, { stamp_enabled: !enabled });
+
+    // Si déjà ON -> OFF gratuit
+    if (p?.stamp_enabled === true) {
+      await updateProfile(from, { stamp_enabled: false });
+      await sendText(from, "🟦 Tampon désactivé.");
+      return sendStampMenu(from);
+    }
+
+    // Si OFF -> ON : si pas payé, débiter UNE FOIS
+    if (p?.stamp_paid !== true) {
+      // 15 crédits (paiement unique)
+      // On utilise consumeFeature pour rester aligné au repo (stamp_logo = 15)
+      const res = await consumeFeature(from, "stamp_logo");
+
+      if (!res?.ok) {
+        await sendText(
+          from,
+          `❌ Solde insuffisant.\nLe tampon coûte *${STAMP_ONE_TIME_COST} crédits* (paiement unique).\n👉 Tapez RECHARGE.`
+        );
+        return sendStampMenu(from);
+      }
+
+      await updateProfile(from, {
+        stamp_paid: true,
+        stamp_paid_at: new Date().toISOString(),
+        stamp_enabled: true,
+      });
+
+      await sendText(
+        from,
+        `🟦 *Tampon activé !*\n✅ Paiement unique effectué: *${STAMP_ONE_TIME_COST} crédits*\n📄 Le tampon sera ajouté gratuitement à vos PDF.`
+      );
+
+      return sendStampMenu(from);
+    }
+
+    // Déjà payé -> ON gratuit
+    await updateProfile(from, { stamp_enabled: true });
+    await sendText(from, "🟦 Tampon activé.");
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_EDIT_TITLE") {
     s.step = "stamp_title";
     await sendText(from, "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer.");
@@ -1272,47 +1376,65 @@ async function handleInteractiveReply(from, replyId) {
   }
   if (replyId === "STAMP_SIZE") return sendStampSizeMenu(from);
 
-  if (replyId === "STAMP_POS_BR") { await updateProfile(from, { stamp_position: "bottom-right" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_BL") { await updateProfile(from, { stamp_position: "bottom-left" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_TR") { await updateProfile(from, { stamp_position: "top-right" }); return sendStampMenu(from); }
-  if (replyId === "STAMP_POS_TL") { await updateProfile(from, { stamp_position: "top-left" }); return sendStampMenu(from); }
+  if (replyId === "STAMP_POS_BR") {
+    await updateProfile(from, { stamp_position: "bottom-right" });
+    return sendStampMenu(from);
+  }
+  if (replyId === "STAMP_POS_BL") {
+    await updateProfile(from, { stamp_position: "bottom-left" });
+    return sendStampMenu(from);
+  }
+  if (replyId === "STAMP_POS_TR") {
+    await updateProfile(from, { stamp_position: "top-right" });
+    return sendStampMenu(from);
+  }
+  if (replyId === "STAMP_POS_TL") {
+    await updateProfile(from, { stamp_position: "top-left" });
+    return sendStampMenu(from);
+  }
 
-  if (replyId === "STAMP_SIZE_S") { await updateProfile(from, { stamp_size: 150 }); return sendStampMenu(from); }
-  if (replyId === "STAMP_SIZE_M") { await updateProfile(from, { stamp_size: 170 }); return sendStampMenu(from); }
-  if (replyId === "STAMP_SIZE_L") { await updateProfile(from, { stamp_size: 200 }); return sendStampMenu(from); }
+  if (replyId === "STAMP_SIZE_S") {
+    await updateProfile(from, { stamp_size: 150 });
+    return sendStampMenu(from);
+  }
+  if (replyId === "STAMP_SIZE_M") {
+    await updateProfile(from, { stamp_size: 170 });
+    return sendStampMenu(from);
+  }
+  if (replyId === "STAMP_SIZE_L") {
+    await updateProfile(from, { stamp_size: 200 });
+    return sendStampMenu(from);
+  }
 
   // Credits
   if (replyId === "CREDITS_SOLDE") return replyBalance(from);
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
-  // ✅ Item confirm
+  // Item confirm
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
     if (s.lastDocDraft.items.length < LIMITS.maxItems) s.lastDocDraft.items.push(item);
     s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
     s.itemDraft = null;
-
-    // ✅ après ajout produit => menu clair
     return sendAfterProductMenu(from);
   }
 
-  if (replyId === "ITEM_EDIT") {
-    return askItemLabel(from);
-  }
-
-  // ✅ Nouveau produit
+  if (replyId === "ITEM_EDIT") return askItemLabel(from);
   if (replyId === "DOC_ADD_MORE") return askItemLabel(from);
 
-  // ✅ Terminer => aperçu + menu preview
   if (replyId === "DOC_FINISH") {
     s.step = "doc_review";
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
+
+    // ✅ coût avant génération (base seulement)
+    const cost = computeBasePdfCost(s.lastDocDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
     return sendPreviewMenu(from);
   }
 
-  // ✅ Générer PDF (seulement depuis preview)
   if (replyId === "DOC_CONFIRM") return createAndSendPdf(from);
 
   if (replyId === "DOC_RESTART") {
@@ -1393,7 +1515,7 @@ async function handleIncomingMessage(value) {
     // Profile answers
     if (await handleProfileAnswer(from, text)) return;
 
-    // Product flow answers (client/produit/qty/pu + stamp title + missing_client_pdf)
+    // Product flow answers
     if (await handleProductFlowText(from, text)) return;
 
     // Commands
