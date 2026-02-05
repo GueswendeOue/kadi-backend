@@ -1480,11 +1480,41 @@ async function handleIncomingMessage(value) {
     await ensureWelcomeCredits(from);
     await maybeSendOnboarding(from);
 
-    // Interactive
-    if (msg.type === "interactive") {
-      const replyId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
-      if (replyId) return handleInteractiveReply(from, replyId);
-      return;
+    // ===============================
+    // ✅ PATCH: Support interactive + button
+    // ===============================
+    const replyIdInteractive =
+      msg.interactive?.button_reply?.id ||
+      msg.interactive?.list_reply?.id ||
+      null;
+
+    const replyIdButton =
+      msg.button?.payload || // certains providers
+      msg.button?.text ||    // parfois seulement le texte
+      null;
+
+    if (replyIdInteractive || replyIdButton) {
+      console.log("[KADI] BUTTON CLICK", {
+        from,
+        msgType: msg.type,
+        replyIdInteractive,
+        replyIdButton,
+      });
+    }
+
+    // Meta Cloud API standard
+    if (msg.type === "interactive" && replyIdInteractive) {
+      return handleInteractiveReply(from, replyIdInteractive);
+    }
+
+    // Fallback providers (msg.type === "button")
+    if (msg.type === "button" && replyIdButton) {
+      const mapped =
+        replyIdButton === "Activer" || replyIdButton === "Désactiver"
+          ? "STAMP_TOGGLE"
+          : replyIdButton;
+
+      return handleInteractiveReply(from, mapped);
     }
 
     // Image
