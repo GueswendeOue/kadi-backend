@@ -1333,8 +1333,8 @@ async function handleInteractiveReply(from, replyId) {
     // Si OFF -> ON : si pas payé, débiter UNE FOIS
     if (p?.stamp_paid !== true) {
       // 15 crédits (paiement unique)
-      // On utilise consumeFeature pour rester aligné au repo (stamp_logo = 15)
-      const res = await consumeFeature(from, "stamp_logo");
+      // On utilise consumeFeature pour rester aligné au repo (stamp_addon = 15)
+      const res = await consumeFeature(from, "stamp_addon");
 
       if (!res?.ok) {
         await sendText(

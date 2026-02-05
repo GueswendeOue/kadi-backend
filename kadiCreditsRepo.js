@@ -10,6 +10,7 @@ const CREDIT_COSTS = {
   ocr_pdf: 2,
   decharge: 2,
   stamp_addon: 15,
+  stamp_logo:15,
 };
 
 function makeCode() {
