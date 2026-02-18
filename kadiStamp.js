@@ -1,16 +1,15 @@
 "use strict";
 
 /**
- * kadiStamp.js — PRO Circular Stamp (UPDATED)
- * ✅ Goals:
- * - Professional circular stamp (no "TAMPON" text ever)
- * - Logo rendered cleanly (NO blue square): contain + circular clip
- * - Realistic stamp opacity (default ~0.28)
- * - Apply with pdf-lib on LAST page by default
+ * kadiStamp.js — Render safe (UPDATED PRO)
+ * - Canvas available: generate circular stamp PNG dynamically
+ * - Canvas NOT available: fallback to ./assets/stamp.png
+ * - Apply stamp with pdf-lib on LAST page by default
  *
- * Notes:
- * - If canvas is available: stamp PNG generated dynamically
- * - If canvas is NOT available: fallback to ./assets/stamp.png
+ * ✅ PRO UPDATES:
+ * - Accept opts.logoBuffer (Buffer)
+ * - Auto-remove white/light background from logo (so PNG transparent not required)
+ * - Tint logo to STAMP_BLUE
  * - Safety: if profile.stamp_paid exists and is NOT true => do NOT apply stamp
  */
 
@@ -27,7 +26,7 @@ try {
 
 let PDFLib;
 try {
-  PDFLib = require("pdf-lib");
+  PDFLib = require("pdf-lib"));
 } catch (e) {
   PDFLib = null;
 }
@@ -36,11 +35,9 @@ const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
 const FOOTER_RESERVED_H = Number(process.env.KADI_PDF_FOOTER_H || 85);
 const DEFAULT_MARGIN = Number(process.env.KADI_STAMP_MARGIN || 18);
 
-// ✅ realistic default (was 0.9 too strong)
-const DEFAULT_OPACITY = Number(process.env.KADI_STAMP_OPACITY || 0.28);
-
-// Size of stamp drawn on PDF (points)
-const DEFAULT_STAMP_SIZE = Number(process.env.KADI_STAMP_SIZE || 210);
+// 🎯 background removal tuning
+const BG_REMOVE_THRESHOLD = Number(process.env.KADI_LOGO_BG_THRESHOLD || 242); // 0..255
+const BG_REMOVE_SOFTNESS = Number(process.env.KADI_LOGO_BG_SOFTNESS || 18);    // 0..60
 
 function safe(v) {
   return String(v || "").trim();
@@ -93,57 +90,100 @@ function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0
 }
 
 /**
- * Draw logo in "contain" mode inside a given box.
- * ✅ No tinting: prevents the "blue square" when logo has white background.
+ * Removes near-white background pixels by setting alpha based on threshold.
+ * - threshold ~242 = remove very bright pixels
+ * - softness adds fade around threshold to avoid harsh edges
  */
-async function drawLogoContain(ctx, logoBuffer, x, y, w, h) {
+function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness = 18) {
+  const img = ctx.getImageData(Math.max(0, x), Math.max(0, y), w, h);
+  const data = img.data;
+
+  // helper: luminance
+  const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3];
+
+    if (a === 0) continue;
+
+    const L = lum(r, g, b);
+
+    // Fully remove above threshold
+    if (L >= threshold) {
+      data[i + 3] = 0;
+      continue;
+    }
+
+    // Soft fade zone: threshold-softness -> threshold
+    if (softness > 0 && L >= threshold - softness) {
+      const t = (L - (threshold - softness)) / softness; // 0..1
+      // reduce alpha gradually
+      const newA = Math.round(a * (1 - t));
+      data[i + 3] = Math.max(0, Math.min(255, newA));
+    }
+  }
+
+  ctx.putImageData(img, Math.max(0, x), Math.max(0, y));
+}
+
+/**
+ * Draw logo then:
+ * - remove light background (so JPG ok)
+ * - tint to STAMP_BLUE using source-in
+ */
+async function drawTintedLogo(ctx, logoBuffer, x, y, w, h, opts = {}) {
   if (!logoBuffer || !loadImage) return;
 
   const img = await loadImage(logoBuffer);
 
-  const ir = img.width / img.height;
-  const br = w / h;
-
-  let dw = w,
-    dh = h;
-
-  if (ir > br) {
-    dh = w / ir;
-  } else {
-    dw = h * ir;
-  }
-
-  const dx = x + (w - dw) / 2;
-  const dy = y + (h - dh) / 2;
-
   ctx.save();
-  ctx.drawImage(img, dx, dy, dw, dh);
+
+  // draw raw logo
+  ctx.drawImage(img, x, y, w, h);
+
+  // remove near-white bg in the logo box (auto-transparency)
+  removeLightBackgroundInRect(
+    ctx,
+    Math.round(x),
+    Math.round(y),
+    Math.round(w),
+    Math.round(h),
+    Number(opts.threshold ?? BG_REMOVE_THRESHOLD),
+    Number(opts.softness ?? BG_REMOVE_SOFTNESS)
+  );
+
+  // tint to stamp color using the logo alpha as mask
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.fillRect(x, y, w, h);
+
+  // reset composite
   ctx.restore();
 }
 
 async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
-  // Big source canvas => sharper when scaled down in PDF
-  const size = 560;
+  const size = 520;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
-  const outerR = 250;
-  const innerR = 195;
+  const outerR = 240;
+  const innerR = 185;
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
 
-  // Outer ring
   ctx.lineWidth = 10;
   ctx.beginPath();
   ctx.arc(center, center, outerR, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Inner ring
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.arc(center, center, innerR, 0, Math.PI * 2);
@@ -151,65 +191,45 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
 
   const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
 
-  // Top arc: company name
+  // top arc
   ctx.save();
   ctx.translate(center, center);
-  ctx.font = "bold 34px Arial";
-  drawCircularText(ctx, truncate(name.toUpperCase(), 28), 0, -214, 2.15);
+  ctx.font = "bold 32px Arial";
+  drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
   ctx.restore();
 
-  // Bottom arc: IFU/RCCM + phone
-  const bottomRaw = [idLine, phoneLine].filter(Boolean).join(" • ");
-  const bottom = truncate(bottomRaw, 38);
-
+  // bottom arc
+  const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
   if (bottom) {
     ctx.save();
     ctx.translate(center, center);
     ctx.font = "bold 22px Arial";
-    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -214, 1.95, true);
+    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -205, 2.0, true);
     ctx.restore();
   }
 
-  // Center block
+  // center block
   ctx.save();
   ctx.translate(center, center);
 
-  // ✅ Logo (clean) inside circular clip (pro look)
+  // ✅ Logo centered + auto-transparent + tinted BLUE
   if (logoBuffer) {
     try {
-      const cy = -38;
-      const r = 72;
+      const logoSize = 140; // a bit bigger than before
+      const lx = -logoSize / 2;
+      const ly = -logoSize / 2 - 40;
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(0, cy, r, 0, Math.PI * 2);
-      ctx.clip();
-
-      // contain inside the clipped circle
-      await drawLogoContain(ctx, logoBuffer, -r, cy - r, r * 2, r * 2);
-      ctx.restore();
-
-      // optional ring
-      ctx.strokeStyle = STAMP_BLUE;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(0, cy, r + 2, 0, Math.PI * 2);
-      ctx.stroke();
-    } catch (_) {
-      // ignore logo errors
-    }
+      await drawTintedLogo(ctx, logoBuffer, lx, ly, logoSize, logoSize);
+    } catch (_) {}
   }
 
-  // ✅ Center title: NEVER default to "TAMPON"
-  const centerTitle = safe(title) || safe(profile?.stamp_title) || "";
-  if (centerTitle) {
-    ctx.font = "bold 34px Arial";
-    ctx.textAlign = "center";
-    ctx.fillStyle = STAMP_BLUE;
-    ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 70);
-  }
+  // ✅ Replace "TAMPON" by the function/title (no word "TAMPON" on final)
+  const centerTitle = safe(title) || safe(profile?.stamp_title) || "—";
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 48);
 
-  // Address line (optional)
   if (addr) {
     ctx.font = "bold 18px Arial";
     ctx.textAlign = "center";
@@ -218,7 +238,6 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   }
 
   ctx.restore();
-
   return canvas.toBuffer("image/png");
 }
 
@@ -242,28 +261,24 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   // ✅ Apply only when enabled === true
   if (profile?.stamp_enabled !== true) return pdfBuffer;
 
-  // ✅ Model B safety: if stamp_paid exists and not true => skip
+  // ✅ Safety for Model B (one-time paid stamp): if field exists and not paid => skip
   if (Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") && profile?.stamp_paid !== true) {
     return pdfBuffer;
   }
 
   const { PDFDocument } = PDFLib;
 
-  const size = Number(opts.size || profile?.stamp_size || DEFAULT_STAMP_SIZE);
+  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
-
-  // ✅ realistic default opacity
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? DEFAULT_OPACITY))));
-
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.9))));
   const margin = Number(opts.margin || DEFAULT_MARGIN);
 
   // ✅ last page by default
   const pages = String(opts.pages || profile?.stamp_pages || "last");
-
   const title = opts.title || null;
   const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
 
-  // PNG tampon: canvas if available else fallback
+  // PNG stamp: canvas if available else fallback
   let stampPng;
   try {
     if (createCanvas) {
@@ -289,7 +304,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     const pngDims = stampImg.scale(1);
     const ratio = pngDims.width / pngDims.height;
 
-    const drawW = Number.isFinite(size) && size > 10 ? size : DEFAULT_STAMP_SIZE;
+    const drawW = Number.isFinite(size) && size > 10 ? size : 170;
     const drawH = drawW / ratio;
 
     // safe zone above footer
