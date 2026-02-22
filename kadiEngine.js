@@ -1,7 +1,6 @@
-// kadiEngine.js — COMPLETE (Model B) — Render friendly
+// kadiEngine.js — UPDATED (Model B + OCR HYBRID)
 // ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
-// ✅ OCR = via ./kadiOcr.js (tesseract.js + sharp) => export: ocrImageToText()
-
+// ✅ OCR hybride: Tesseract d'abord, puis Gemini fallback si lecture faible/échoue
 "use strict";
 
 // ================= Logger =================
@@ -37,6 +36,64 @@ try {
   // ok
 }
 
+// ================= Gemini (optional) =================
+let GeminiGenAI = null;
+try {
+  // npm i @google/generative-ai
+  GeminiGenAI = require("@google/generative-ai").GoogleGenerativeAI;
+} catch (_) {
+  // ok
+}
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = tesseract -> gemini fallback
+const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20); // si text < 20 => fallback gemini
+const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 3); // si digits < 3 => fallback gemini
+
+const _geminiClient =
+  GEMINI_API_KEY && GeminiGenAI
+    ? new GeminiGenAI(GEMINI_API_KEY)
+    : null;
+
+async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
+  if (!_geminiClient) throw new Error("Gemini not configured");
+  const model = _geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
+
+  const prompt =
+    "Tu es un OCR. Extrait tout le texte visible de l'image, en conservant les lignes. " +
+    "Ne commente pas. Ne reformule pas. Retourne UNIQUEMENT le texte extrait.";
+
+  const result = await model.generateContent([
+    { text: prompt },
+    {
+      inlineData: {
+        mimeType: mimeType || "image/jpeg",
+        data: Buffer.from(imageBuffer).toString("base64"),
+      },
+    },
+  ]);
+
+  const text = result?.response?.text?.() || "";
+  return String(text).trim();
+}
+
+function ocrLooksGood(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (t.length < OCR_GEMINI_MIN_CHARS) return false;
+
+  const digits = (t.match(/\d/g) || []).length;
+  if (digits < OCR_GEMINI_MIN_DIGITS) return false;
+
+  // trop de symboles / bruit
+  const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
+  const ratio = lettersOrDigits / Math.max(1, t.length);
+  if (ratio < 0.25) return false;
+
+  return true;
+}
+
 // ================= Imports core =================
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
@@ -54,7 +111,7 @@ const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./sto
 
 const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
 
-// ✅ OCR (Render only): your kadiOcr exports ocrImageToText()
+// ✅ IMPORTANT: ton kadiOcr.js (tesseract+sharp) exporte ocrImageToText
 const { ocrImageToText } = require("./kadiOcr");
 
 const {
@@ -85,14 +142,15 @@ const OM_NUMBER = process.env.OM_NUMBER || "76894642";
 const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 
-const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 50);
+// ✅ WELCOME = 10 par défaut (tu peux changer via ENV WELCOME_CREDITS)
+const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 10);
 
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
 // Anti-spam broadcast
-const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 20);
-const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 900);
+const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 25);
+const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 450);
 
 // ================= Pricing / Credits =================
 // ✅ Règles (Model B):
@@ -144,9 +202,7 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 function parseDaysArg(text, defDays) {
-  const m = String(text || "")
-    .trim()
-    .match(/(?:\s+)(\d{1,3})\b/);
+  const m = String(text || "").trim().match(/(?:\s+)(\d{1,3})\b/);
   if (!m) return defDays;
   const d = Number(m[1]);
   if (!Number.isFinite(d) || d <= 0) return defDays;
@@ -249,10 +305,7 @@ function buildPreviewMessage({ doc }) {
 
   const lines = (doc.items || [])
     .slice(0, 50)
-    .map(
-      (it, idx) =>
-        `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Mt:${money(it.amount)}`
-    )
+    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Mt:${money(it.amount)}`)
     .join("\n");
 
   return [
@@ -786,10 +839,23 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
 }
 
-async function robustOcr(buffer, maxRetries = LIMITS.maxOcrRetries) {
+async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.maxOcrRetries) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await ocrImageToText(buffer); // ✅ Render OCR
+      // 1) Tesseract (ton kadiOcr.js)
+      const tText = await ocrImageToText(buffer);
+
+      // Si OCR est bon, on retourne direct
+      if (!OCR_HYBRID || ocrLooksGood(tText)) return tText;
+
+      // 2) Fallback Gemini si dispo
+      if (_geminiClient) {
+        const gText = await geminiOcrImageBuffer(buffer, mimeType);
+        if (gText && gText.trim().length) return gText;
+      }
+
+      // Sinon on retourne quand même tesseract
+      return tText;
     } catch (e) {
       if (attempt === maxRetries) throw e;
       await sleep(Math.pow(2, attempt) * 1000);
@@ -806,12 +872,13 @@ async function processOcrImageToDraft(from, mediaId) {
     return;
   }
 
+  const mime = info?.mime_type || "image/jpeg";
   const buf = await downloadMediaToBuffer(info.url);
   await sendText(from, "🔎 Lecture de la photo…");
 
   let ocrText = "";
   try {
-    ocrText = await robustOcr(buf);
+    ocrText = await robustOcr(buf, mime);
   } catch (e) {
     await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
@@ -974,7 +1041,6 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
-    // rollback credits si on a échoué AVANT d'envoyer le PDF
     if (!successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
@@ -1072,13 +1138,12 @@ async function broadcastToAllKnownUsers(from, text) {
   }
 
   if (kadiBroadcast?.broadcastToAll) {
-    // Tu peux passer days/limit si tu veux: /broadcast <msg> (par défaut 30j côté module)
     await kadiBroadcast.broadcastToAll({ adminWaId: from, message: msg });
-    await sendText(from, `✅ Broadcast lancé.\nBatch=${BROADCAST_BATCH} delay=${BROADCAST_DELAY_MS}ms`);
+    await sendText(from, "✅ Broadcast lancé (module).");
     return true;
   }
 
-  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js");
+  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js (ou branche Supabase ici).");
   return true;
 }
 
@@ -1294,7 +1359,7 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-
+    s.lastDocDraft = null;
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
     s.lastDocDraft = {
       type: mode,
@@ -1313,7 +1378,6 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-
     s.lastDocDraft = {
       type: "facture",
       factureKind: "definitive",
@@ -1344,7 +1408,8 @@ async function handleInteractiveReply(from, replyId) {
 
     // Si OFF -> ON : si pas payé, débiter UNE FOIS
     if (p?.stamp_paid !== true) {
-      const res = await consumeFeature(from, "stamp_addon"); // doit coûter 15 dans repo
+      const res = await consumeFeature(from, "stamp_addon");
+
       if (!res?.ok) {
         await sendText(
           from,
@@ -1492,11 +1557,14 @@ async function handleIncomingMessage(value) {
     // ===============================
     // ✅ PATCH: Support interactive + button
     // ===============================
-    const replyIdInteractive = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
+    const replyIdInteractive =
+      msg.interactive?.button_reply?.id ||
+      msg.interactive?.list_reply?.id ||
+      null;
 
     const replyIdButton =
       msg.button?.payload || // certains providers
-      msg.button?.text || // parfois seulement le texte
+      msg.button?.text ||    // parfois seulement le texte
       null;
 
     if (replyIdInteractive || replyIdButton) {
@@ -1515,7 +1583,11 @@ async function handleIncomingMessage(value) {
 
     // Fallback providers (msg.type === "button")
     if (msg.type === "button" && replyIdButton) {
-      const mapped = replyIdButton === "Activer" || replyIdButton === "Désactiver" ? "STAMP_TOGGLE" : replyIdButton;
+      const mapped =
+        replyIdButton === "Activer" || replyIdButton === "Désactiver"
+          ? "STAMP_TOGGLE"
+          : replyIdButton;
+
       return handleInteractiveReply(from, mapped);
     }
 
