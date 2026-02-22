@@ -1,5 +1,7 @@
-// kadiEngine.js — UPDATED (Model B)
+// kadiEngine.js — COMPLETE (Model B) — Render friendly
 // ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
+// ✅ OCR = via ./kadiOcr.js (tesseract.js + sharp) => export: ocrImageToText()
+
 "use strict";
 
 // ================= Logger =================
@@ -51,7 +53,9 @@ const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
 
 const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
-const { ocrImageBuffer } = require("./kadiOcr");
+
+// ✅ OCR (Render only): your kadiOcr exports ocrImageToText()
+const { ocrImageToText } = require("./kadiOcr");
 
 const {
   sendText,
@@ -87,8 +91,8 @@ const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
 // Anti-spam broadcast
-const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 25);
-const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 450);
+const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 20);
+const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 900);
 
 // ================= Pricing / Credits =================
 // ✅ Règles (Model B):
@@ -140,7 +144,9 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 function parseDaysArg(text, defDays) {
-  const m = String(text || "").trim().match(/(?:\s+)(\d{1,3})\b/);
+  const m = String(text || "")
+    .trim()
+    .match(/(?:\s+)(\d{1,3})\b/);
   if (!m) return defDays;
   const d = Number(m[1]);
   if (!Number.isFinite(d) || d <= 0) return defDays;
@@ -243,7 +249,10 @@ function buildPreviewMessage({ doc }) {
 
   const lines = (doc.items || [])
     .slice(0, 50)
-    .map((it, idx) => `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Mt:${money(it.amount)}`)
+    .map(
+      (it, idx) =>
+        `${idx + 1}) ${it.label} | Qté:${money(it.qty)} | PU:${money(it.unitPrice)} | Mt:${money(it.amount)}`
+    )
     .join("\n");
 
   return [
@@ -777,10 +786,10 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
 }
 
-async function robustOcr(buffer, lang = "fra", maxRetries = LIMITS.maxOcrRetries) {
+async function robustOcr(buffer, maxRetries = LIMITS.maxOcrRetries) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await ocrImageBuffer(buffer, lang);
+      return await ocrImageToText(buffer); // ✅ Render OCR
     } catch (e) {
       if (attempt === maxRetries) throw e;
       await sleep(Math.pow(2, attempt) * 1000);
@@ -802,7 +811,7 @@ async function processOcrImageToDraft(from, mediaId) {
 
   let ocrText = "";
   try {
-    ocrText = await robustOcr(buf, "fra");
+    ocrText = await robustOcr(buf);
   } catch (e) {
     await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
@@ -965,6 +974,7 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
+    // rollback credits si on a échoué AVANT d'envoyer le PDF
     if (!successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
@@ -1062,12 +1072,13 @@ async function broadcastToAllKnownUsers(from, text) {
   }
 
   if (kadiBroadcast?.broadcastToAll) {
+    // Tu peux passer days/limit si tu veux: /broadcast <msg> (par défaut 30j côté module)
     await kadiBroadcast.broadcastToAll({ adminWaId: from, message: msg });
-    await sendText(from, "✅ Broadcast lancé (module).");
+    await sendText(from, `✅ Broadcast lancé.\nBatch=${BROADCAST_BATCH} delay=${BROADCAST_DELAY_MS}ms`);
     return true;
   }
 
-  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js (ou branche Supabase ici).");
+  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js");
   return true;
 }
 
@@ -1283,7 +1294,7 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-    s.lastDocDraft = null;
+
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
     s.lastDocDraft = {
       type: mode,
@@ -1302,6 +1313,7 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+
     s.lastDocDraft = {
       type: "facture",
       factureKind: "definitive",
@@ -1332,10 +1344,7 @@ async function handleInteractiveReply(from, replyId) {
 
     // Si OFF -> ON : si pas payé, débiter UNE FOIS
     if (p?.stamp_paid !== true) {
-      // 15 crédits (paiement unique)
-      // On utilise consumeFeature pour rester aligné au repo (stamp_addon = 15)
-      const res = await consumeFeature(from, "stamp_addon");
-
+      const res = await consumeFeature(from, "stamp_addon"); // doit coûter 15 dans repo
       if (!res?.ok) {
         await sendText(
           from,
@@ -1483,14 +1492,11 @@ async function handleIncomingMessage(value) {
     // ===============================
     // ✅ PATCH: Support interactive + button
     // ===============================
-    const replyIdInteractive =
-      msg.interactive?.button_reply?.id ||
-      msg.interactive?.list_reply?.id ||
-      null;
+    const replyIdInteractive = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
 
     const replyIdButton =
       msg.button?.payload || // certains providers
-      msg.button?.text ||    // parfois seulement le texte
+      msg.button?.text || // parfois seulement le texte
       null;
 
     if (replyIdInteractive || replyIdButton) {
@@ -1509,11 +1515,7 @@ async function handleIncomingMessage(value) {
 
     // Fallback providers (msg.type === "button")
     if (msg.type === "button" && replyIdButton) {
-      const mapped =
-        replyIdButton === "Activer" || replyIdButton === "Désactiver"
-          ? "STAMP_TOGGLE"
-          : replyIdButton;
-
+      const mapped = replyIdButton === "Activer" || replyIdButton === "Désactiver" ? "STAMP_TOGGLE" : replyIdButton;
       return handleInteractiveReply(from, mapped);
     }
 
