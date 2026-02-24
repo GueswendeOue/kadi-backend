@@ -1,4 +1,4 @@
-// kadiStatsRepo.js — robust (wa_id OR user_id)
+// kadiStatsRepo.js — robust (wa_id OR wa_id)
 "use strict";
 
 const { supabase } = require("./supabaseClient");
@@ -15,13 +15,13 @@ function isoDaysAgo(days) {
   return d.toISOString();
 }
 
-// -------- detect id col (wa_id / user_id) --------
+// -------- detect id col (wa_id / wa_id) --------
 const _ID_COL_CACHE = new Map();
 
 async function detectIdCol(table) {
   if (_ID_COL_CACHE.has(table)) return _ID_COL_CACHE.get(table);
 
-  const candidates = ["wa_id", "user_id"];
+  const candidates = ["wa_id", "wa_id"];
   for (const col of candidates) {
     const { error } = await supabase.from(table).select(col, { head: true, count: "exact" });
     if (!error) {
@@ -30,8 +30,8 @@ async function detectIdCol(table) {
     }
   }
 
-  _ID_COL_CACHE.set(table, "user_id");
-  return "user_id";
+  _ID_COL_CACHE.set(table, "wa_id");
+  return "wa_id";
 }
 
 /**

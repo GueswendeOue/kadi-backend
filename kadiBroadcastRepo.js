@@ -9,8 +9,8 @@ const _ID_COL_CACHE = new Map();
 async function detectIdCol(table) {
   if (_ID_COL_CACHE.has(table)) return _ID_COL_CACHE.get(table);
 
-  // On tente wa_id puis user_id
-  const candidates = ["wa_id", "user_id"];
+  // On tente wa_id puis wa_id
+  const candidates = ["wa_id", "wa_id"];
   for (const col of candidates) {
     const { error } = await supabase.from(table).select(col, { head: true, count: "exact" });
     if (!error) {
@@ -20,8 +20,8 @@ async function detectIdCol(table) {
   }
 
   // fallback
-  _ID_COL_CACHE.set(table, "user_id");
-  return "user_id";
+  _ID_COL_CACHE.set(table, "wa_id");
+  return "wa_id";
 }
 
 /**
