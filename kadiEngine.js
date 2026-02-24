@@ -51,10 +51,7 @@ const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = tesseract -> 
 const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20); // si text < 20 => fallback gemini
 const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 3); // si digits < 3 => fallback gemini
 
-const _geminiClient =
-  GEMINI_API_KEY && GeminiGenAI
-    ? new GeminiGenAI(GEMINI_API_KEY)
-    : null;
+const _geminiClient = GEMINI_API_KEY && GeminiGenAI ? new GeminiGenAI(GEMINI_API_KEY) : null;
 
 async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
   if (!_geminiClient) throw new Error("Gemini not configured");
@@ -839,28 +836,43 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
 }
 
+// ✅ PATCHED: robustOcr = fallback Gemini même si Tesseract throw
 async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.maxOcrRetries) {
+  let lastErr = null;
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // 1) Tesseract (ton kadiOcr.js)
-      const tText = await ocrImageToText(buffer);
+      // 1) Tesseract (peut throw sur Render)
+      let tText = "";
+      try {
+        tText = await ocrImageToText(buffer);
+      } catch (e) {
+        lastErr = e;
+        tText = "";
+      }
 
-      // Si OCR est bon, on retourne direct
-      if (!OCR_HYBRID || ocrLooksGood(tText)) return tText;
+      // si texte tesseract OK => retour
+      if (tText && (!OCR_HYBRID || ocrLooksGood(tText))) return tText;
 
-      // 2) Fallback Gemini si dispo
-      if (_geminiClient) {
+      // 2) Fallback Gemini (si configuré)
+      if (_geminiClient && OCR_HYBRID) {
         const gText = await geminiOcrImageBuffer(buffer, mimeType);
         if (gText && gText.trim().length) return gText;
       }
 
-      // Sinon on retourne quand même tesseract
-      return tText;
+      // 3) Sinon retourne ce qu’on a (même faible)
+      if (tText) return tText;
+
+      // rien du tout -> on force retry
+      throw lastErr || new Error("OCR empty");
     } catch (e) {
+      lastErr = e;
       if (attempt === maxRetries) throw e;
-      await sleep(Math.pow(2, attempt) * 1000);
+      await sleep(Math.pow(2, attempt) * 500);
     }
   }
+
+  throw lastErr || new Error("OCR failed");
 }
 
 async function processOcrImageToDraft(from, mediaId) {
@@ -874,12 +886,25 @@ async function processOcrImageToDraft(from, mediaId) {
 
   const mime = info?.mime_type || "image/jpeg";
   const buf = await downloadMediaToBuffer(info.url);
+
+  // ✅ PATCH: buffer invalid / HTML / empty
+  if (!buf || !Buffer.isBuffer(buf) || buf.length < 1500) {
+    console.error("[KADI/OCR] download buffer invalid", {
+      bytes: buf?.length,
+      mime,
+      url: info?.url ? "present" : "missing",
+    });
+    await sendText(from, "❌ Téléchargement photo échoué. Renvoyez la photo (ou essayez en Wi-Fi).");
+    return;
+  }
+
   await sendText(from, "🔎 Lecture de la photo…");
 
   let ocrText = "";
   try {
     ocrText = await robustOcr(buf, mime);
   } catch (e) {
+    console.error("[KADI/OCR] failed:", e?.message, e?.stack);
     await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
   }
@@ -1557,14 +1582,11 @@ async function handleIncomingMessage(value) {
     // ===============================
     // ✅ PATCH: Support interactive + button
     // ===============================
-    const replyIdInteractive =
-      msg.interactive?.button_reply?.id ||
-      msg.interactive?.list_reply?.id ||
-      null;
+    const replyIdInteractive = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
 
     const replyIdButton =
       msg.button?.payload || // certains providers
-      msg.button?.text ||    // parfois seulement le texte
+      msg.button?.text || // parfois seulement le texte
       null;
 
     if (replyIdInteractive || replyIdButton) {
@@ -1583,11 +1605,7 @@ async function handleIncomingMessage(value) {
 
     // Fallback providers (msg.type === "button")
     if (msg.type === "button" && replyIdButton) {
-      const mapped =
-        replyIdButton === "Activer" || replyIdButton === "Désactiver"
-          ? "STAMP_TOGGLE"
-          : replyIdButton;
-
+      const mapped = replyIdButton === "Activer" || replyIdButton === "Désactiver" ? "STAMP_TOGGLE" : replyIdButton;
       return handleInteractiveReply(from, mapped);
     }
 
