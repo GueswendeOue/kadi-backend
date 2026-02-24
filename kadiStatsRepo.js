@@ -1,3 +1,4 @@
+// kadiStatsRepo.js — robust (wa_id OR user_id)
 "use strict";
 
 const { supabase } = require("./supabaseClient");
@@ -10,8 +11,27 @@ function money(n) {
 }
 
 function isoDaysAgo(days) {
-  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const d = new Date(Date.now() - Number(days || 0) * 24 * 60 * 60 * 1000);
   return d.toISOString();
+}
+
+// -------- detect id col (wa_id / user_id) --------
+const _ID_COL_CACHE = new Map();
+
+async function detectIdCol(table) {
+  if (_ID_COL_CACHE.has(table)) return _ID_COL_CACHE.get(table);
+
+  const candidates = ["wa_id", "user_id"];
+  for (const col of candidates) {
+    const { error } = await supabase.from(table).select(col, { head: true, count: "exact" });
+    if (!error) {
+      _ID_COL_CACHE.set(table, col);
+      return col;
+    }
+  }
+
+  _ID_COL_CACHE.set(table, "user_id");
+  return "user_id";
 }
 
 /**
@@ -31,30 +51,33 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     // ignore -> fallback
   }
 
-  // 2) FALLBACK
+  // 2) FALLBACK (robuste)
   const from7 = isoDaysAgo(7);
   const from30 = isoDaysAgo(30);
+
+  const idBp = await detectIdCol("business_profiles");
+  const idAct = await detectIdCol("kadi_activity");
 
   // USERS
   const { count: totalUsers, error: eU } = await supabase
     .from("business_profiles")
-    .select("wa_id", { count: "exact", head: true });
+    .select(idBp, { count: "exact", head: true });
   if (eU) throw eU;
 
   const { data: act7, error: eA7 } = await supabase
     .from("kadi_activity")
-    .select("wa_id")
+    .select(idAct)
     .gte("last_seen", from7);
   if (eA7) throw eA7;
 
   const { data: act30, error: eA30 } = await supabase
     .from("kadi_activity")
-    .select("wa_id")
+    .select(idAct)
     .gte("last_seen", from30);
   if (eA30) throw eA30;
 
-  const active7 = new Set((act7 || []).map((r) => String(r.wa_id))).size;
-  const active30 = new Set((act30 || []).map((r) => String(r.wa_id))).size;
+  const active7 = new Set((act7 || []).map((r) => String(r?.[idAct] || ""))).size;
+  const active30 = new Set((act30 || []).map((r) => String(r?.[idAct] || ""))).size;
 
   // DOCS
   const { count: docsTotal, error: eD } = await supabase
@@ -119,12 +142,9 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const added7 = (tx7 || []).filter((r) => Number(r.delta) > 0).reduce((a, r) => a + Number(r.delta || 0), 0);
   const consumed7 = Math.abs((tx7 || []).filter((r) => Number(r.delta) < 0).reduce((a, r) => a + Number(r.delta || 0), 0));
 
-  // NOTE: addedAll/consumedAll -> laisse au RPC (sinon gros fetch)
   const addedAll = null;
   const consumedAll = null;
 
-  // Paid credits (30d) => dépend de ton "reason" lors des paiements réels
-  // Tant que tu n'écris pas "om_payment:..." / "payment:..." -> revenue restera 0 et c'est normal
   const paidCredits30 = (tx30 || [])
     .filter((r) => {
       const d = Number(r.delta);

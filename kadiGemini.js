@@ -1,64 +1,66 @@
-// kadiGemini.js
 "use strict";
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-if (!GEMINI_API_KEY) {
-  console.warn("⚠️ GEMINI_API_KEY manquant");
+let GeminiGenAI = null;
+try {
+  GeminiGenAI = require("@google/generative-ai").GoogleGenerativeAI;
+} catch (_) {
+  // ok
 }
 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = fallback ON
 
-// modèle vision
-const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash",
-});
+const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20);
+const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 3);
 
-async function extractInvoiceFromImage(buffer) {
-  const imagePart = {
-    inlineData: {
-      data: buffer.toString("base64"),
-      mimeType: "image/jpeg", // WhatsApp image
-    },
-  };
+const _geminiClient =
+  GEMINI_API_KEY && GeminiGenAI ? new GeminiGenAI(GEMINI_API_KEY) : null;
 
-  const prompt = `
-Analyse cette image de facture / devis / reçu.
+function geminiIsEnabled() {
+  return !!_geminiClient && OCR_HYBRID;
+}
 
-Retourne uniquement un JSON valide avec cette structure:
+function ocrLooksGood(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (t.length < OCR_GEMINI_MIN_CHARS) return false;
 
-{
-  "doc_type": "facture | devis | recu",
-  "client": "",
-  "date": "",
-  "items": [
+  const digits = (t.match(/\d/g) || []).length;
+  if (digits < OCR_GEMINI_MIN_DIGITS) return false;
+
+  const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
+  const ratio = lettersOrDigits / Math.max(1, t.length);
+  if (ratio < 0.25) return false;
+
+  return true;
+}
+
+async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
+  if (!_geminiClient) throw new Error("Gemini not configured");
+
+  const model = _geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
+
+  const prompt =
+    "Tu es un OCR. Extrait tout le texte visible de l'image, en conservant les lignes.\n" +
+    "Ne commente pas. Ne reformule pas. Retourne UNIQUEMENT le texte extrait.";
+
+  const result = await model.generateContent([
+    { text: prompt },
     {
-      "label": "",
-      "qty": 1,
-      "unit_price": 0,
-      "total": 0
-    }
-  ],
-  "total": 0
+      inlineData: {
+        mimeType: mimeType || "image/jpeg",
+        data: Buffer.isBuffer(imageBuffer) ? imageBuffer.toString("base64") : Buffer.from(imageBuffer).toString("base64"),
+      },
+    },
+  ]);
+
+  const text = result?.response?.text?.() || "";
+  return String(text).trim();
 }
 
-Si une valeur est inconnue, mets null.
-Ne retourne rien d'autre que le JSON.
-`;
-
-  const result = await model.generateContent([prompt, imagePart]);
-  const response = result.response.text();
-
-  // Nettoyage si Gemini met du markdown
-  const cleaned = response.replace(/```json|```/g, "").trim();
-
-  try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    throw new Error("Gemini JSON parse error");
-  }
-}
-
-module.exports = { extractInvoiceFromImage };
+module.exports = {
+  geminiIsEnabled,
+  ocrLooksGood,
+  geminiOcrImageBuffer,
+};
