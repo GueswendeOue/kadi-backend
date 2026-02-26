@@ -1,6 +1,8 @@
 // kadiEngine.js — UPDATED (Model B + OCR HYBRID)
 // ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
 // ✅ OCR hybride: Tesseract d'abord, puis Gemini fallback si lecture faible/échoue
+// ✅ FIX: Gemini errors (404 model not found, etc.) no longer break OCR (we fallback to Tesseract)
+// ✅ FIX: Default Gemini model changed to a safer "gemini-1.5-flash-latest" (override via env GEMINI_MODEL)
 "use strict";
 
 // ================= Logger =================
@@ -46,12 +48,19 @@ try {
 }
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+
+// ✅ Safer default (v1beta compatibility changes over time)
+// Override via env: GEMINI_MODEL=gemini-2.0-flash (or any model you enable)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
+
 const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = tesseract -> gemini fallback
 const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20); // si text < 20 => fallback gemini
-const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 3); // si digits < 3 => fallback gemini
+const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 2); // ✅ lowered a bit (handwritten often has few digits)
 
-const _geminiClient = GEMINI_API_KEY && GeminiGenAI ? new GeminiGenAI(GEMINI_API_KEY) : null;
+const _geminiClient =
+  GEMINI_API_KEY && GeminiGenAI
+    ? new GeminiGenAI(GEMINI_API_KEY)
+    : null;
 
 async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
   if (!_geminiClient) throw new Error("Gemini not configured");
@@ -168,7 +177,7 @@ const REGEX = {
 const LIMITS = {
   maxItems: 200,
   maxImageSize: 5 * 1024 * 1024,
-  maxOcrRetries: 3,
+  maxOcrRetries: 2, // ✅ slightly lower (avoid long waits on Render)
   maxClientNameLength: 100,
   maxItemLabelLength: 200,
 };
@@ -234,16 +243,13 @@ function formatBaseCostLine(cost) {
 // ===============================
 // Tampon & Signature (wrapper)
 // ===============================
-// ✅ UPDATED: pass logoBuffer to stamp so it can render logo centered + tinted blue
 async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null) {
   let buf = pdfBuffer;
 
-  // ✅ Appliquer le tampon seulement si ON + payé (sécurité)
   const canStamp = profile?.stamp_enabled === true && profile?.stamp_paid === true;
 
   if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
     try {
-      // ✅ appliquer par défaut sur la DERNIÈRE page seulement
       buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
         pages: "last",
         logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
@@ -728,7 +734,6 @@ async function handleProductFlowText(from, text) {
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
 
-    // ✅ coût avant génération (base seulement)
     const cost = computeBasePdfCost(s.lastDocDraft);
     await sendText(from, formatBaseCostLine(cost));
 
@@ -836,13 +841,14 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
 }
 
-// ✅ PATCHED: robustOcr = fallback Gemini même si Tesseract throw
+// ✅ FIX: robustOcr never throws because Gemini is unavailable / model missing.
+// It only throws when BOTH OCR engines fail AND we have no text.
 async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.maxOcrRetries) {
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // 1) Tesseract (peut throw sur Render)
+      // 1) Tesseract (ton kadiOcr.js)
       let tText = "";
       try {
         tText = await ocrImageToText(buffer);
@@ -851,28 +857,36 @@ async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.ma
         tText = "";
       }
 
-      // si texte tesseract OK => retour
+      // If we got "good enough" text, return it
       if (tText && (!OCR_HYBRID || ocrLooksGood(tText))) return tText;
 
-      // 2) Fallback Gemini (si configuré)
-      if (_geminiClient && OCR_HYBRID) {
-        const gText = await geminiOcrImageBuffer(buffer, mimeType);
-        if (gText && gText.trim().length) return gText;
+      // 2) Fallback Gemini (best effort)
+      if (_geminiClient) {
+        try {
+          const gText = await geminiOcrImageBuffer(buffer, mimeType);
+          if (gText && gText.trim().length) return gText;
+
+          // if Gemini returns empty, we keep tesseract
+        } catch (ge) {
+          // ✅ Important: ignore Gemini failure and fallback to tesseract
+          logger.warn("OCR", "Gemini fallback failed (ignored)", { message: ge?.message, model: GEMINI_MODEL });
+        }
       }
 
-      // 3) Sinon retourne ce qu’on a (même faible)
-      if (tText) return tText;
+      // Return whatever we have from Tesseract (even if weak)
+      if (tText && tText.trim().length) return tText;
 
-      // rien du tout -> on force retry
-      throw lastErr || new Error("OCR empty");
+      // Nothing from both => throw to retry
+      throw lastErr || new Error("OCR_EMPTY");
     } catch (e) {
       lastErr = e;
-      if (attempt === maxRetries) throw e;
-      await sleep(Math.pow(2, attempt) * 500);
+      if (attempt === maxRetries) break;
+      await sleep(Math.pow(2, attempt) * 800);
     }
   }
 
-  throw lastErr || new Error("OCR failed");
+  // Hard fail (no text extracted)
+  throw lastErr || new Error("OCR_FAILED");
 }
 
 async function processOcrImageToDraft(from, mediaId) {
@@ -886,26 +900,19 @@ async function processOcrImageToDraft(from, mediaId) {
 
   const mime = info?.mime_type || "image/jpeg";
   const buf = await downloadMediaToBuffer(info.url);
-
-  // ✅ PATCH: buffer invalid / HTML / empty
-  if (!buf || !Buffer.isBuffer(buf) || buf.length < 1500) {
-    console.error("[KADI/OCR] download buffer invalid", {
-      bytes: buf?.length,
-      mime,
-      url: info?.url ? "present" : "missing",
-    });
-    await sendText(from, "❌ Téléchargement photo échoué. Renvoyez la photo (ou essayez en Wi-Fi).");
-    return;
-  }
-
   await sendText(from, "🔎 Lecture de la photo…");
 
   let ocrText = "";
   try {
     ocrText = await robustOcr(buf, mime);
   } catch (e) {
-    console.error("[KADI/OCR] failed:", e?.message, e?.stack);
     await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
+    return;
+  }
+
+  // ✅ If OCR returns almost nothing, treat as failure (avoid generating empty PDFs)
+  if (!ocrText || ocrText.trim().length < 8) {
+    await sendText(from, "❌ Lecture trop faible. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
   }
 
@@ -934,7 +941,6 @@ async function processOcrImageToDraft(from, mediaId) {
   const preview = buildPreviewMessage({ doc: s.lastDocDraft });
   await sendText(from, preview);
 
-  // ✅ coût avant génération (base seulement)
   const cost = computeBasePdfCost(s.lastDocDraft);
   await sendText(from, formatBaseCostLine(cost));
 
@@ -986,7 +992,6 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // ✅ coût = base seulement (tampon gratuit si déjà payé)
   const cost = computeBasePdfCost(draft);
   const reason = draft.source === "ocr" ? "ocr_pdf" : draft.type === "decharge" ? "decharge_pdf" : "pdf";
 
@@ -1039,7 +1044,6 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    // ✅ tampon dernière page si activé + payé + logo bleu centré (passé au stamp)
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
 
     try {
@@ -1355,16 +1359,13 @@ async function handleCommand(from, text) {
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
 
-  // Nav
   if (replyId === "BACK_HOME") return sendHomeMenu(from);
   if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
-  // Home
   if (replyId === "HOME_DOCS") return sendDocsMenu(from);
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
-  // Docs
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
   if (replyId === "DOC_DECHARGE") return startDocFlow(from, "decharge");
@@ -1424,14 +1425,12 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "STAMP_TOGGLE") {
     const p = await getOrCreateProfile(from);
 
-    // Si déjà ON -> OFF gratuit
     if (p?.stamp_enabled === true) {
       await updateProfile(from, { stamp_enabled: false });
       await sendText(from, "🟦 Tampon désactivé.");
       return sendStampMenu(from);
     }
 
-    // Si OFF -> ON : si pas payé, débiter UNE FOIS
     if (p?.stamp_paid !== true) {
       const res = await consumeFeature(from, "stamp_addon");
 
@@ -1457,7 +1456,6 @@ async function handleInteractiveReply(from, replyId) {
       return sendStampMenu(from);
     }
 
-    // Déjà payé -> ON gratuit
     await updateProfile(from, { stamp_enabled: true });
     await sendText(from, "🟦 Tampon activé.");
     return sendStampMenu(from);
@@ -1527,7 +1525,6 @@ async function handleInteractiveReply(from, replyId) {
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
 
-    // ✅ coût avant génération (base seulement)
     const cost = computeBasePdfCost(s.lastDocDraft);
     await sendText(from, formatBaseCostLine(cost));
 
@@ -1579,14 +1576,14 @@ async function handleIncomingMessage(value) {
     await ensureWelcomeCredits(from);
     await maybeSendOnboarding(from);
 
-    // ===============================
-    // ✅ PATCH: Support interactive + button
-    // ===============================
-    const replyIdInteractive = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
+    const replyIdInteractive =
+      msg.interactive?.button_reply?.id ||
+      msg.interactive?.list_reply?.id ||
+      null;
 
     const replyIdButton =
-      msg.button?.payload || // certains providers
-      msg.button?.text || // parfois seulement le texte
+      msg.button?.payload ||
+      msg.button?.text ||
       null;
 
     if (replyIdInteractive || replyIdButton) {
@@ -1598,32 +1595,30 @@ async function handleIncomingMessage(value) {
       });
     }
 
-    // Meta Cloud API standard
     if (msg.type === "interactive" && replyIdInteractive) {
       return handleInteractiveReply(from, replyIdInteractive);
     }
 
-    // Fallback providers (msg.type === "button")
     if (msg.type === "button" && replyIdButton) {
-      const mapped = replyIdButton === "Activer" || replyIdButton === "Désactiver" ? "STAMP_TOGGLE" : replyIdButton;
+      const mapped =
+        replyIdButton === "Activer" || replyIdButton === "Désactiver"
+          ? "STAMP_TOGGLE"
+          : replyIdButton;
+
       return handleInteractiveReply(from, mapped);
     }
 
-    // Image
     if (msg.type === "image") {
       const s = getSession(from);
       if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
       return handleIncomingImage(from, msg);
     }
 
-    // Text
     const text = norm(msg.text?.body);
     if (!text) return;
 
-    // Admin
     if (await handleAdmin(from, text)) return;
 
-    // Redeem code
     const mCode = text.match(REGEX.code);
     if (mCode) {
       const result = await redeemCode({ waId: from, code: mCode[1] });
@@ -1634,16 +1629,12 @@ async function handleIncomingMessage(value) {
       return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
     }
 
-    // Profile answers
     if (await handleProfileAnswer(from, text)) return;
 
-    // Product flow answers
     if (await handleProductFlowText(from, text)) return;
 
-    // Commands
     if (await handleCommand(from, text)) return;
 
-    // Fallback
     await sendText(from, "Tapez *MENU* pour commencer.");
   } catch (e) {
     logger.error("incoming_message", e, { messageType: value?.messages?.[0]?.type });
