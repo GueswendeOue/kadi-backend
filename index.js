@@ -3,8 +3,15 @@
 require("dotenv").config();
 const express = require("express");
 
-const { verifyRequestSignature } = require("./whatsappApi");
-const { handleIncomingMessage } = require("./kadiEngine");
+const {
+  verifyRequestSignature,
+  extractStatusesFromWebhookValue,
+} = require("./whatsappApi");
+
+const {
+  handleIncomingMessage,
+  handleIncomingStatuses,
+} = require("./kadiEngine");
 
 console.log("🟢 KADI booting...");
 console.log("ENV CHECK:", {
@@ -21,13 +28,17 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-// Standard parsing (pas de signature ici)
+// Standard parsing
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/", (req, res) => res.status(200).send("✅ Kadi backend is running"));
-app.get("/health", (req, res) =>
-  res.status(200).json({ ok: true, ts: new Date().toISOString() })
-);
+
+app.get("/health", (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    ts: new Date().toISOString(),
+  });
+});
 
 // Webhook verification (GET)
 app.get("/webhook", (req, res) => {
@@ -41,7 +52,7 @@ app.get("/webhook", (req, res) => {
   return res.status(200).send(challenge);
 });
 
-// Webhook receive (POST) — signature verify uniquement ici
+// Webhook receive (POST)
 app.post(
   "/webhook",
   express.json({
@@ -60,15 +71,28 @@ app.post(
       if (body.object !== "whatsapp_business_account") return;
 
       const entries = body.entry || [];
+
       for (const entry of entries) {
         const changes = entry.changes || [];
+
         for (const change of changes) {
           const value = change.value;
           if (!value) continue;
 
-          Promise.resolve(handleIncomingMessage(value)).catch((e) => {
-            console.error("💥 handleIncomingMessage error:", e.message);
-          });
+          // 1) Traiter les statuts WhatsApp
+          const statuses = extractStatusesFromWebhookValue(value);
+          if (statuses.length) {
+            Promise.resolve(handleIncomingStatuses(statuses)).catch((e) => {
+              console.error("💥 handleIncomingStatuses error:", e.message);
+            });
+          }
+
+          // 2) Traiter les messages entrants
+          if (value.messages?.length) {
+            Promise.resolve(handleIncomingMessage(value)).catch((e) => {
+              console.error("💥 handleIncomingMessage error:", e.message);
+            });
+          }
         }
       }
     } catch (e) {

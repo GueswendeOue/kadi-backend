@@ -1732,12 +1732,28 @@ async function handleIncomingMessage(value) {
     logger.metric("message_processing", duration, true, { messageType: value?.messages?.[0]?.type });
   }
 }
-
+async function handleIncomingStatuses(statuses = []) {
+  try {
+    for (const st of statuses) {
+      console.log("[KADI/STATUS]", {
+        messageId: st.messageId,
+        recipientId: st.recipientId,
+        status: st.status,
+        timestamp: st.timestamp,
+        errorCode: st.errorCode,
+        errorTitle: st.errorTitle,
+      });
+    }
+  } catch (e) {
+    logger.error("incoming_statuses", e);
+  }
+}
 // ===============================
 // EXPORTS
 // ===============================
 module.exports = {
   handleIncomingMessage,
+  handleIncomingStatuses,
   isValidWhatsAppId,
   isValidEmail,
 };

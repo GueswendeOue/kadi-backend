@@ -1,4 +1,3 @@
-// whatsappApi.js
 "use strict";
 
 const crypto = require("crypto");
@@ -53,11 +52,28 @@ function waHeadersJson() {
   };
 }
 
+function extractMessageId(respData) {
+  return respData?.messages?.[0]?.id || null;
+}
+
+async function postJsonMessage(payload, timeout = 15000) {
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+
+  const resp = await axios.post(url, payload, {
+    headers: waHeadersJson(),
+    timeout,
+  });
+
+  return {
+    raw: resp.data,
+    messageId: extractMessageId(resp.data),
+  };
+}
+
 /**
  * Envoi d’un message texte
  */
 async function sendText(to, text) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -65,12 +81,7 @@ async function sendText(to, text) {
     text: { body: String(text || "") },
   };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
-
-  return resp.data;
+  return postJsonMessage(payload);
 }
 
 /**
@@ -78,11 +89,12 @@ async function sendText(to, text) {
  * buttons: [{id, title}]
  */
 async function sendButtons(to, bodyText, buttons) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
-
   const safeButtons = (buttons || []).slice(0, 3).map((b) => ({
     type: "reply",
-    reply: { id: String(b.id), title: String(b.title || "").slice(0, 20) },
+    reply: {
+      id: String(b.id),
+      title: String(b.title || "").slice(0, 20),
+    },
   }));
 
   const payload = {
@@ -96,31 +108,13 @@ async function sendButtons(to, bodyText, buttons) {
     },
   };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
-
-  return resp.data;
+  return postJsonMessage(payload);
 }
 
 /**
  * Envoi d’une LIST (menu long)
- *
- * shape:
- * sendList(to, {
- *   header: "Documents",
- *   body: "Quel document voulez-vous créer ?",
- *   footer: "KADI",
- *   buttonText: "Choisir",
- *   sections: [
- *     { title: "Création", rows: [{id,title,description}] }
- *   ]
- * })
  */
 async function sendList(to, opts = {}) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
-
   const headerText = String(opts.header || "").slice(0, 60);
   const bodyText = String(opts.body || "Choisissez une option");
   const footerText = String(opts.footer || "").slice(0, 60);
@@ -160,12 +154,7 @@ async function sendList(to, opts = {}) {
   if (headerText) payload.interactive.header = { type: "text", text: headerText };
   if (footerText) payload.interactive.footer = { text: footerText };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
-
-  return resp.data;
+  return postJsonMessage(payload);
 }
 
 /**
@@ -179,7 +168,7 @@ async function getMediaInfo(mediaId) {
     timeout: 15000,
   });
 
-  return resp.data; // { url, mime_type, sha256, file_size, id }
+  return resp.data;
 }
 
 /**
@@ -191,6 +180,7 @@ async function downloadMediaToBuffer(mediaUrl) {
     responseType: "arraybuffer",
     timeout: 30000,
   });
+
   return Buffer.from(resp.data);
 }
 
@@ -225,7 +215,6 @@ async function uploadMediaBuffer({ buffer, filename, mimeType }) {
  * Envoi d’un document déjà uploadé (mediaId)
  */
 async function sendDocument({ to, mediaId, filename, caption }) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -237,19 +226,13 @@ async function sendDocument({ to, mediaId, filename, caption }) {
     },
   };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
-
-  return resp.data;
+  return postJsonMessage(payload);
 }
 
 /**
  * Envoi d’une image déjà uploadée (mediaId)
  */
 async function sendImage({ to, mediaId, caption }) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -260,20 +243,13 @@ async function sendImage({ to, mediaId, caption }) {
     },
   };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
-
-  return resp.data;
+  return postJsonMessage(payload);
 }
 
 /**
  * Envoi direct d’une image par lien public
- * Utile si un média est déjà hébergé publiquement
  */
 async function sendImageByLink({ to, imageLink, caption }) {
-  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -284,12 +260,27 @@ async function sendImageByLink({ to, imageLink, caption }) {
     },
   };
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout: 15000,
-  });
+  return postJsonMessage(payload);
+}
 
-  return resp.data;
+/**
+ * Extrait les statuts reçus via webhook Meta
+ * utile dans index.js / kadiEngine.js
+ */
+function extractStatusesFromWebhookValue(value) {
+  if (!value?.statuses?.length) return [];
+
+  return value.statuses.map((s) => ({
+    messageId: s.id || null,
+    recipientId: s.recipient_id || null,
+    status: s.status || null, // sent | delivered | read | failed
+    timestamp: s.timestamp || null,
+    conversationId: s.conversation?.id || null,
+    pricingCategory: s.pricing?.category || null,
+    errorCode: s.errors?.[0]?.code || null,
+    errorTitle: s.errors?.[0]?.title || null,
+    raw: s,
+  }));
 }
 
 module.exports = {
@@ -303,4 +294,5 @@ module.exports = {
   sendDocument,
   sendImage,
   sendImageByLink,
+  extractStatusesFromWebhookValue,
 };
