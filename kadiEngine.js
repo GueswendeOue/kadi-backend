@@ -41,21 +41,17 @@ try {
 // ================= Gemini (optional) =================
 let GeminiGenAI = null;
 try {
-  // npm i @google/generative-ai
   GeminiGenAI = require("@google/generative-ai").GoogleGenerativeAI;
 } catch (_) {
   // ok
 }
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-
-// ✅ Safer default (v1beta compatibility changes over time)
-// Override via env: GEMINI_MODEL=gemini-2.0-flash (or any model you enable)
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
 
-const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = tesseract -> gemini fallback
-const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20); // si text < 20 => fallback gemini
-const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 2); // ✅ lowered a bit (handwritten often has few digits)
+const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1";
+const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20);
+const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 2);
 
 const _geminiClient =
   GEMINI_API_KEY && GeminiGenAI
@@ -92,7 +88,6 @@ function ocrLooksGood(text) {
   const digits = (t.match(/\d/g) || []).length;
   if (digits < OCR_GEMINI_MIN_DIGITS) return false;
 
-  // trop de symboles / bruit
   const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
   const ratio = lettersOrDigits / Math.max(1, t.length);
   if (ratio < 0.25) return false;
@@ -104,7 +99,6 @@ function ocrLooksGood(text) {
 const { getSession } = require("./kadiState");
 const { nextDocNumber } = require("./kadiCounter");
 
-// ✅ Debug PDF module (optionnel)
 const pdfMod = require("./kadiPdf");
 if (process.env.KADI_DEBUG_PDF_MODULE === "1") {
   console.log("[KADI] PDF MODULE RESOLVED ✅", require.resolve("./kadiPdf"));
@@ -116,8 +110,6 @@ const { saveDocument } = require("./kadiRepo");
 const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
 
 const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
-
-// ✅ IMPORTANT: ton kadiOcr.js (tesseract+sharp) exporte ocrImageToText
 const { ocrImageToText } = require("./kadiOcr");
 
 const {
@@ -133,7 +125,7 @@ const {
 const {
   getBalance,
   consumeCredit,
-  consumeFeature, // ✅ utilisé pour le tampon (paiement unique)
+  consumeFeature,
   createRechargeCodes,
   redeemCode,
   addCredits,
@@ -148,22 +140,14 @@ const OM_NUMBER = process.env.OM_NUMBER || "76894642";
 const OM_NAME = process.env.OM_NAME || "GUESWENDE Ouedraogo";
 const PRICE_LABEL = process.env.CREDITS_PRICE_LABEL || "2000F = 25 crédits";
 
-// ✅ WELCOME = 10 par défaut (tu peux changer via ENV WELCOME_CREDITS)
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 10);
-
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
-// Anti-spam broadcast
 const BROADCAST_BATCH = Number(process.env.BROADCAST_BATCH || 25);
 const BROADCAST_DELAY_MS = Number(process.env.BROADCAST_DELAY_MS || 450);
 
 // ================= Pricing / Credits =================
-// ✅ Règles (Model B):
-// - PDF simple (devis/facture/reçu) = 1 crédit
-// - OCR (photo -> PDF) = 2 crédits
-// - Décharge = 2 crédits (même sans OCR)
-// - Tampon = 15 crédits (paiement UNIQUE) puis GRATUIT sur les PDF
 const PDF_SIMPLE_CREDITS = Number(process.env.PDF_SIMPLE_CREDITS || 1);
 const OCR_PDF_CREDITS = Number(process.env.OCR_PDF_CREDITS || 2);
 const DECHARGE_CREDITS = Number(process.env.DECHARGE_CREDITS || 2);
@@ -182,7 +166,7 @@ const LIMITS = {
   maxItemLabelLength: 200,
 };
 
-const _WELCOME_CACHE = new Map(); // waId -> ts
+const _WELCOME_CACHE = new Map();
 
 // ================= Utils =================
 function safe(v) {
@@ -1694,12 +1678,17 @@ async function handleIncomingMessage(value) {
     if (msg.type === "image") {
       const s = getSession(from);
 
-      // priorité au broadcast image admin
-      if (ensureAdmin(from) && s.adminPendingAction === "broadcast_image") {
+      // 🔴 PRIORITÉ ABSOLUE AU BROADCAST IMAGE ADMIN
+      if (s.adminPendingAction === "broadcast_image") {
         return handleAdminBroadcastImage(from, msg);
       }
 
-      if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
+      // upload logo profil
+      if (s.step === "profile" && s.profileStep === "logo") {
+        return handleLogoImage(from, msg);
+      }
+
+      // sinon image normale (OCR)
       return handleIncomingImage(from, msg);
     }
 
