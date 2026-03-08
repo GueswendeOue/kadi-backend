@@ -1675,22 +1675,33 @@ async function handleIncomingMessage(value) {
       return handleInteractiveReply(from, mapped);
     }
 
-    if (msg.type === "image") {
-      const s = getSession(from);
+  if (msg.type === "image") {
+  const s = getSession(from);
+  const caption = norm(msg.image?.caption || "");
 
-      // 🔴 PRIORITÉ ABSOLUE AU BROADCAST IMAGE ADMIN
-      if (s.adminPendingAction === "broadcast_image") {
-        return handleAdminBroadcastImage(from, msg);
-      }
+  // ✅ Cas 1 : image envoyée directement avec caption /broadcastimage ...
+  if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
+    const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
 
-      // upload logo profil
-      if (s.step === "profile" && s.profileStep === "logo") {
-        return handleLogoImage(from, msg);
-      }
+    s.adminPendingAction = "broadcast_image";
+    s.broadcastCaption = commandCaption || "";
 
-      // sinon image normale (OCR)
-      return handleIncomingImage(from, msg);
-    }
+    return handleAdminBroadcastImage(from, msg);
+  }
+
+  // ✅ Cas 2 : admin a déjà lancé /broadcastimage puis envoie l’image après
+  if (s.adminPendingAction === "broadcast_image") {
+    return handleAdminBroadcastImage(from, msg);
+  }
+
+  // upload logo profil
+  if (s.step === "profile" && s.profileStep === "logo") {
+    return handleLogoImage(from, msg);
+  }
+
+  // sinon image normale (OCR)
+  return handleIncomingImage(from, msg);
+}
 
     const text = norm(msg.text?.body);
     if (!text) return;
