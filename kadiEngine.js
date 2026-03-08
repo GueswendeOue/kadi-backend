@@ -1,8 +1,8 @@
-// kadiEngine.js — UPDATED (Model B + OCR HYBRID)
+// kadiEngine.js — UPDATED (Model B + OCR HYBRID + ADMIN BROADCAST TEXT/IMAGE)
 // ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
 // ✅ OCR hybride: Tesseract d'abord, puis Gemini fallback si lecture faible/échoue
-// ✅ FIX: Gemini errors (404 model not found, etc.) no longer break OCR (we fallback to Tesseract)
-// ✅ FIX: Default Gemini model changed to a safer "gemini-1.5-flash-latest" (override via env GEMINI_MODEL)
+// ✅ Broadcast texte: /broadcast Votre message...
+// ✅ Broadcast image: /broadcastimage [légende optionnelle] puis envoyer l'image depuis WhatsApp
 "use strict";
 
 // ================= Logger =================
@@ -177,7 +177,7 @@ const REGEX = {
 const LIMITS = {
   maxItems: 200,
   maxImageSize: 5 * 1024 * 1024,
-  maxOcrRetries: 2, // ✅ slightly lower (avoid long waits on Render)
+  maxOcrRetries: 2,
   maxClientNameLength: 100,
   maxItemLabelLength: 200,
 };
@@ -214,6 +214,17 @@ function parseDaysArg(text, defDays) {
   if (!Number.isFinite(d) || d <= 0) return defDays;
   return Math.min(d, 365);
 }
+function guessExtFromMime(mime) {
+  const t = String(mime || "").toLowerCase();
+  if (t.includes("png")) return "png";
+  if (t.includes("webp")) return "webp";
+  if (t.includes("gif")) return "gif";
+  return "jpg";
+}
+function resetAdminBroadcastState(session) {
+  session.adminPendingAction = null;
+  session.broadcastCaption = null;
+}
 
 function getDocTitle(draft) {
   return draft.type === "facture"
@@ -226,13 +237,8 @@ function getDocTitle(draft) {
 }
 
 function computeBasePdfCost(draft) {
-  // OCR always costs OCR_PDF_CREDITS (whatever doc)
   if (draft?.source === "ocr") return OCR_PDF_CREDITS;
-
-  // Décharge can be priced separately (even without OCR)
   if (draft?.type === "decharge") return DECHARGE_CREDITS;
-
-  // default simple docs
   return PDF_SIMPLE_CREDITS;
 }
 
@@ -662,7 +668,7 @@ async function startDocFlow(from, mode, factureKind = null) {
     client: null,
     items: [],
     finance: null,
-    source: "product", // product | ocr
+    source: "product",
   };
 
   const title =
@@ -841,14 +847,11 @@ function parseOcrToDraft(ocrText) {
   return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
 }
 
-// ✅ FIX: robustOcr never throws because Gemini is unavailable / model missing.
-// It only throws when BOTH OCR engines fail AND we have no text.
 async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.maxOcrRetries) {
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // 1) Tesseract (ton kadiOcr.js)
       let tText = "";
       try {
         tText = await ocrImageToText(buffer);
@@ -857,26 +860,19 @@ async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.ma
         tText = "";
       }
 
-      // If we got "good enough" text, return it
       if (tText && (!OCR_HYBRID || ocrLooksGood(tText))) return tText;
 
-      // 2) Fallback Gemini (best effort)
       if (_geminiClient) {
         try {
           const gText = await geminiOcrImageBuffer(buffer, mimeType);
           if (gText && gText.trim().length) return gText;
-
-          // if Gemini returns empty, we keep tesseract
         } catch (ge) {
-          // ✅ Important: ignore Gemini failure and fallback to tesseract
           logger.warn("OCR", "Gemini fallback failed (ignored)", { message: ge?.message, model: GEMINI_MODEL });
         }
       }
 
-      // Return whatever we have from Tesseract (even if weak)
       if (tText && tText.trim().length) return tText;
 
-      // Nothing from both => throw to retry
       throw lastErr || new Error("OCR_EMPTY");
     } catch (e) {
       lastErr = e;
@@ -885,7 +881,6 @@ async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.ma
     }
   }
 
-  // Hard fail (no text extracted)
   throw lastErr || new Error("OCR_FAILED");
 }
 
@@ -910,7 +905,6 @@ async function processOcrImageToDraft(from, mediaId) {
     return;
   }
 
-  // ✅ If OCR returns almost nothing, treat as failure (avoid generating empty PDFs)
   if (!ocrText || ocrText.trim().length < 8) {
     await sendText(from, "❌ Lecture trop faible. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
@@ -951,8 +945,61 @@ async function processOcrImageToDraft(from, mediaId) {
   ]);
 }
 
+async function handleAdminBroadcastImage(from, msg) {
+  const s = getSession(from);
+
+  if (!ensureAdmin(from)) return false;
+  if (s.adminPendingAction !== "broadcast_image") return false;
+
+  const mediaId = msg?.image?.id;
+  if (!mediaId) {
+    await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
+    return true;
+  }
+
+  try {
+    const info = await getMediaInfo(mediaId);
+    if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+      await sendText(from, "❌ Image trop grande. Envoyez une image plus légère.");
+      return true;
+    }
+
+    const mime = info?.mime_type || "image/jpeg";
+    const ext = guessExtFromMime(mime);
+    const buf = await downloadMediaToBuffer(info.url);
+
+    await sendText(from, "📢 Image reçue. Broadcast en cours...");
+
+    if (!kadiBroadcast?.broadcastImageToAll) {
+      resetAdminBroadcastState(s);
+      await sendText(from, "⚠️ Module broadcast image absent.");
+      return true;
+    }
+
+    const caption = s.broadcastCaption || "";
+    resetAdminBroadcastState(s);
+
+    await kadiBroadcast.broadcastImageToAll({
+      adminWaId: from,
+      imageBuffer: buf,
+      mimeType: mime,
+      filename: `broadcast-${Date.now()}.${ext}`,
+      caption,
+    });
+
+    return true;
+  } catch (e) {
+    logger.error("admin_broadcast_image", e, { from });
+    resetAdminBroadcastState(s);
+    await sendText(from, "❌ Erreur lors du broadcast image.");
+    return true;
+  }
+}
+
 async function handleIncomingImage(from, msg) {
   const s = getSession(from);
+
+  if (await handleAdminBroadcastImage(from, msg)) return;
 
   if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
 
@@ -1167,12 +1214,45 @@ async function broadcastToAllKnownUsers(from, text) {
   }
 
   if (kadiBroadcast?.broadcastToAll) {
+    await sendText(from, "📢 Broadcast texte lancé...");
     await kadiBroadcast.broadcastToAll({ adminWaId: from, message: msg });
-    await sendText(from, "✅ Broadcast lancé (module).");
     return true;
   }
 
-  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js (ou branche Supabase ici).");
+  await sendText(from, "⚠️ Module broadcast absent. Ajoute ./kadiBroadcast.js");
+  return true;
+}
+
+async function prepareBroadcastImage(from, text) {
+  if (!ensureAdmin(from)) {
+    await sendText(from, "❌ Admin seulement.");
+    return true;
+  }
+
+  const s = getSession(from);
+  const caption = String(text || "").replace(/^\/?broadcastimage\s*/i, "").trim();
+
+  s.adminPendingAction = "broadcast_image";
+  s.broadcastCaption = caption || "";
+
+  await sendText(
+    from,
+    caption
+      ? "🖼️ OK. Envoie maintenant l'image à diffuser.\nLa légende a bien été enregistrée."
+      : "🖼️ OK. Envoie maintenant l'image à diffuser.\nAucune légende définie."
+  );
+  return true;
+}
+
+async function cancelBroadcastImage(from) {
+  if (!ensureAdmin(from)) {
+    await sendText(from, "❌ Admin seulement.");
+    return true;
+  }
+
+  const s = getSession(from);
+  resetAdminBroadcastState(s);
+  await sendText(from, "✅ Broadcast image annulé.");
   return true;
 }
 
@@ -1232,11 +1312,19 @@ async function handleAdmin(from, text) {
       from,
       "👨‍💼 *Commandes Admin*\n\n" +
         "📊 Stats:\n• /stats\n• /top 30\n• /export 30\n\n" +
-        "📢 Broadcast:\n• /broadcast Votre message...\n\n" +
+        "📢 Broadcast:\n• /broadcast Votre message...\n• /broadcastimage [légende]\n• /broadcastcancel\n\n" +
         "💰 Crédits:\n• ADMIN ADD <wa_id> <credits>\n\n" +
         "🎫 Codes:\n• ADMIN CREATE <nb_codes> <credits_par_code>"
     );
     return true;
+  }
+
+  if (lower.startsWith("/broadcastimage") || lower.startsWith("broadcastimage")) {
+    return prepareBroadcastImage(from, text);
+  }
+
+  if (lower === "/broadcastcancel" || lower === "broadcastcancel") {
+    return cancelBroadcastImage(from);
   }
 
   if (lower.startsWith("/broadcast") || lower.startsWith("broadcast")) {
@@ -1380,7 +1468,6 @@ async function handleInteractiveReply(from, replyId) {
     return startDocFlow(from, "facture", kind);
   }
 
-  // OCR choose doc
   if (replyId === "OCR_DEVIS" || replyId === "OCR_RECU") {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
@@ -1417,11 +1504,9 @@ async function handleInteractiveReply(from, replyId) {
     return processOcrImageToDraft(from, mediaId);
   }
 
-  // Profile
   if (replyId === "PROFILE_EDIT") return startProfileFlow(from);
   if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
-  // ================= Tampon actions (Model B) =================
   if (replyId === "STAMP_TOGGLE") {
     const p = await getOrCreateProfile(from);
 
@@ -1503,11 +1588,9 @@ async function handleInteractiveReply(from, replyId) {
     return sendStampMenu(from);
   }
 
-  // Credits
   if (replyId === "CREDITS_SOLDE") return replyBalance(from);
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
-  // Item confirm
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
@@ -1610,6 +1693,12 @@ async function handleIncomingMessage(value) {
 
     if (msg.type === "image") {
       const s = getSession(from);
+
+      // priorité au broadcast image admin
+      if (ensureAdmin(from) && s.adminPendingAction === "broadcast_image") {
+        return handleAdminBroadcastImage(from, msg);
+      }
+
       if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
       return handleIncomingImage(from, msg);
     }

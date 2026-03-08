@@ -10,8 +10,12 @@ const sessions = new Map();
  * - profile
  * - collecting_doc
  * - recharge_proof
- * - awaiting_image_action   (image reçue -> demander: OCR / Logo / Preuve)
- * - collecting_decharge     (décharge: questions guidées)
+ * - awaiting_image_action
+ * - collecting_decharge
+ *
+ * Champs additionnels:
+ * - adminPendingAction: ex "broadcast_image"
+ * - broadcastCaption: légende temporaire pour /broadcastimage
  */
 function getSession(userId) {
   const id = String(userId || "").trim();
@@ -28,6 +32,8 @@ function getSession(userId) {
       mode: null, // devis | facture | recu | decharge
       factureKind: null, // proforma | definitive
       lastDocDraft: null,
+      itemDraft: null,
+      pendingOcrMediaId: null,
 
       // image routing
       pendingImage: null, // { mediaId, mime, url, buffer? } (optionnel)
@@ -36,6 +42,10 @@ function getSession(userId) {
       // décharge flow
       dechargeStep: null,
       dechargeDraft: null,
+
+      // admin broadcast
+      adminPendingAction: null, // "broadcast_image" | null
+      broadcastCaption: null,   // caption temporaire pour image broadcast
 
       // meta
       lastUpdated: Date.now(),

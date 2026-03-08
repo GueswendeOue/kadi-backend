@@ -26,7 +26,7 @@ try {
 
 let PDFLib;
 try {
-  PDFLib = require("pdf-lib"));
+  PDFLib = require("pdf-lib");
 } catch (e) {
   PDFLib = null;
 }

@@ -82,7 +82,7 @@ async function sendButtons(to, bodyText, buttons) {
 
   const safeButtons = (buttons || []).slice(0, 3).map((b) => ({
     type: "reply",
-    reply: { id: String(b.id), title: String(b.title || "").slice(0, 20) }, // WA limite title
+    reply: { id: String(b.id), title: String(b.title || "").slice(0, 20) },
   }));
 
   const payload = {
@@ -105,7 +105,7 @@ async function sendButtons(to, bodyText, buttons) {
 }
 
 /**
- * ✅ Envoi d’une LIST (menu long, parfait pour Documents)
+ * Envoi d’une LIST (menu long)
  *
  * shape:
  * sendList(to, {
@@ -117,11 +117,6 @@ async function sendButtons(to, bodyText, buttons) {
  *     { title: "Création", rows: [{id,title,description}] }
  *   ]
  * })
- *
- * WA limits (pratique):
- * - header/body/footer: texte
- * - buttonText: <= 20
- * - row.title <= 24 (souvent), row.description <= 72 (selon clients)
  */
 async function sendList(to, opts = {}) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
@@ -162,7 +157,6 @@ async function sendList(to, opts = {}) {
     },
   };
 
-  // header/footer sont optionnels selon templates/clients
   if (headerText) payload.interactive.header = { type: "text", text: headerText };
   if (footerText) payload.interactive.footer = { text: footerText };
 
@@ -251,13 +245,62 @@ async function sendDocument({ to, mediaId, filename, caption }) {
   return resp.data;
 }
 
+/**
+ * Envoi d’une image déjà uploadée (mediaId)
+ */
+async function sendImage({ to, mediaId, caption }) {
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "image",
+    image: {
+      id: mediaId,
+      caption: caption || "",
+    },
+  };
+
+  const resp = await axios.post(url, payload, {
+    headers: waHeadersJson(),
+    timeout: 15000,
+  });
+
+  return resp.data;
+}
+
+/**
+ * Envoi direct d’une image par lien public
+ * Utile si un média est déjà hébergé publiquement
+ */
+async function sendImageByLink({ to, imageLink, caption }) {
+  const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "image",
+    image: {
+      link: String(imageLink || ""),
+      caption: caption || "",
+    },
+  };
+
+  const resp = await axios.post(url, payload, {
+    headers: waHeadersJson(),
+    timeout: 15000,
+  });
+
+  return resp.data;
+}
+
 module.exports = {
   verifyRequestSignature,
   sendText,
   sendButtons,
-  sendList, // ✅ export
+  sendList,
   getMediaInfo,
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
+  sendImage,
+  sendImageByLink,
 };
