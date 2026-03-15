@@ -1,6 +1,6 @@
-// kadiEngine.js — UPDATED (Model B + OCR HYBRID + ADMIN BROADCAST TEXT/IMAGE)
+// kadiEngine.js — UPDATED (Google Vision/Tesseract + Gemini parsing + Admin broadcast)
 // ✅ Tampon = 15 crédits (paiement UNIQUE), puis GRATUIT sur tous les PDF suivants
-// ✅ OCR hybride: Tesseract d'abord, puis Gemini fallback si lecture faible/échoue
+// ✅ OCR hybride: Google Vision/Tesseract + Gemini fallback + parsing intelligent
 // ✅ Broadcast texte: /broadcast Votre message...
 // ✅ Broadcast image: /broadcastimage [légende optionnelle] puis envoyer l'image depuis WhatsApp
 "use strict";
@@ -38,80 +38,55 @@ try {
   // ok
 }
 
-// ================= Gemini (optional) =================
-let GeminiGenAI = null;
-try {
-  GeminiGenAI = require("@google/generative-ai").GoogleGenerativeAI;
-} catch (_) {
-  // ok
-}
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
-
-const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1";
-const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20);
-const OCR_GEMINI_MIN_DIGITS = Number(process.env.OCR_GEMINI_MIN_DIGITS || 2);
-
-const _geminiClient =
-  GEMINI_API_KEY && GeminiGenAI
-    ? new GeminiGenAI(GEMINI_API_KEY)
-    : null;
-
-async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
-  if (!_geminiClient) throw new Error("Gemini not configured");
-  const model = _geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
-
-  const prompt =
-    "Tu es un OCR. Extrait tout le texte visible de l'image, en conservant les lignes. " +
-    "Ne commente pas. Ne reformule pas. Retourne UNIQUEMENT le texte extrait.";
-
-  const result = await model.generateContent([
-    { text: prompt },
-    {
-      inlineData: {
-        mimeType: mimeType || "image/jpeg",
-        data: Buffer.from(imageBuffer).toString("base64"),
-      },
-    },
-  ]);
-
-  const text = result?.response?.text?.() || "";
-  return String(text).trim();
-}
-
-function ocrLooksGood(text) {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  if (t.length < OCR_GEMINI_MIN_CHARS) return false;
-
-  const digits = (t.match(/\d/g) || []).length;
-  if (digits < OCR_GEMINI_MIN_DIGITS) return false;
-
-  const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
-  const ratio = lettersOrDigits / Math.max(1, t.length);
-  if (ratio < 0.25) return false;
-
-  return true;
-}
-
 // ================= Imports core =================
+
+// Session / State
 const { getSession } = require("./kadiState");
+
+// Counters
 const { nextDocNumber } = require("./kadiCounter");
 
+// ================= PDF =================
 const pdfMod = require("./kadiPdf");
+
 if (process.env.KADI_DEBUG_PDF_MODULE === "1") {
   console.log("[KADI] PDF MODULE RESOLVED ✅", require.resolve("./kadiPdf"));
   console.log("[KADI] PDF MODULE KEYS ✅", Object.keys(pdfMod || {}));
 }
+
 const { buildPdfBuffer } = pdfMod;
 
-const { saveDocument } = require("./kadiRepo");
-const { getOrCreateProfile, updateProfile, markOnboardingDone } = require("./store");
 
-const { uploadLogoBuffer, getSignedLogoUrl, downloadSignedUrlToBuffer } = require("./supabaseStorage");
+// ================= Storage / Database =================
+const { saveDocument } = require("./kadiRepo");
+
+const {
+  getOrCreateProfile,
+  updateProfile,
+  markOnboardingDone,
+} = require("./store");
+
+
+// ================= Supabase Storage =================
+const {
+  uploadLogoBuffer,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+} = require("./supabaseStorage");
+
+
+// ================= OCR =================
 const { ocrImageToText } = require("./kadiOcr");
 
+const {
+  geminiIsEnabled,
+  ocrLooksGood,
+  geminiOcrImageBuffer,
+  parseInvoiceTextWithGemini,
+} = require("./kadiGemini");
+
+
+// ================= WhatsApp API =================
 const {
   sendText,
   sendButtons,
@@ -122,6 +97,8 @@ const {
   sendDocument,
 } = require("./whatsappApi");
 
+
+// ================= Credits =================
 const {
   getBalance,
   consumeCredit,
@@ -131,8 +108,18 @@ const {
   addCredits,
 } = require("./kadiCreditsRepo");
 
+
+// ================= Activity =================
 const { recordActivity } = require("./kadiActivityRepo");
-const { getStats, getTopClients, getDocsForExport, money } = require("./kadiStatsRepo");
+
+
+// ================= Stats =================
+const {
+  getStats,
+  getTopClients,
+  getDocsForExport,
+  money,
+} = require("./kadiStatsRepo");
 
 // ================= Config =================
 const ADMIN_WA_ID = process.env.ADMIN_WA_ID || "";
@@ -793,12 +780,23 @@ function guessDocTypeFromOcr(text) {
 }
 
 function extractTotalFromOcr(text) {
-  const m =
-    String(text || "").match(/total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i) ||
-    String(text || "").match(/montant\s+total\s*[:\-]?\s*([0-9][0-9\s.,]+)/i);
-  if (!m) return null;
-  const n = parseNumberSmart(m[1]);
-  return n == null ? null : n;
+  const patterns = [
+    /total\s*[:\-]?\s*([0-9\s.,]+)/i,
+    /total\s*ttc\s*[:\-]?\s*([0-9\s.,]+)/i,
+    /net\s*a\s*payer\s*[:\-]?\s*([0-9\s.,]+)/i,
+    /montant\s+total\s*[:\-]?\s*([0-9\s.,]+)/i,
+    /a\s+payer\s*[:\-]?\s*([0-9\s.,]+)/i,
+  ];
+
+  for (const p of patterns) {
+    const m = String(text || "").match(p);
+    if (m) {
+      const n = parseNumberSmart(m[1]);
+      if (n != null) return n;
+    }
+  }
+
+  return null;
 }
 
 function parseOcrToDraft(ocrText) {
@@ -809,7 +807,9 @@ function parseOcrToDraft(ocrText) {
 
   let client = null;
   for (const line of lines) {
-    const m = line.match(/^client\s*[:\-]\s*(.+)$/i) || line.match(/^nom\s*[:\-]\s*(.+)$/i);
+    const m =
+      line.match(/^client\s*[:\-]\s*(.+)$/i) ||
+      line.match(/^nom\s*[:\-]\s*(.+)$/i);
     if (m) {
       client = (m[1] || "").trim().slice(0, LIMITS.maxClientNameLength);
       break;
@@ -819,16 +819,31 @@ function parseOcrToDraft(ocrText) {
   const items = [];
   for (const line of lines) {
     if (!/\d/.test(line)) continue;
+    if (/date/i.test(line)) continue;
+    if (/total/i.test(line)) continue;
+    if (/montant/i.test(line)) continue;
+    if (/client/i.test(line)) continue;
+    if (/nom/i.test(line)) continue;
+
     const nums = line.match(/\d+(?:[.,]\d+)?/g) || [];
     const pu = nums.length ? parseNumberSmart(nums[nums.length - 1]) : 0;
     const label = line.replace(/\d+(?:[.,]\d+)?/g, "").trim() || line.trim();
+
     items.push(makeItem(label, 1, pu || 0));
     if (items.length >= LIMITS.maxItems) break;
   }
 
   const detected = extractTotalFromOcr(ocrText);
   const calc = computeFinance({ items }).gross;
-  return { client, items, finance: { subtotal: calc, gross: detected ?? calc } };
+
+  return {
+    client,
+    items,
+    finance: {
+      subtotal: calc,
+      gross: detected ?? calc,
+    },
+  };
 }
 
 async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.maxOcrRetries) {
@@ -836,26 +851,65 @@ async function robustOcr(buffer, mimeType = "image/jpeg", maxRetries = LIMITS.ma
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      let tText = "";
+      let baseText = "";
+
       try {
-        tText = await ocrImageToText(buffer);
+        baseText = await ocrImageToText(buffer);
+        logger.info("ocr", "Base OCR result", {
+          attempt,
+          length: String(baseText || "").trim().length,
+          preview: String(baseText || "").slice(0, 200),
+        });
       } catch (e) {
         lastErr = e;
-        tText = "";
+        baseText = "";
+        logger.warn("ocr", "Base OCR failed", {
+          attempt,
+          message: e?.message,
+        });
       }
 
-      if (tText && (!OCR_HYBRID || ocrLooksGood(tText))) return tText;
+      if (baseText && String(baseText).trim().length >= 3) {
+        if (geminiIsEnabled() && !ocrLooksGood(baseText)) {
+          try {
+            const gText = await geminiOcrImageBuffer(buffer, mimeType);
+            if (gText && String(gText).trim().length >= 3) {
+              logger.info("ocr", "Gemini OCR improved result", {
+                attempt,
+                length: String(gText || "").trim().length,
+                preview: String(gText || "").slice(0, 200),
+              });
+              return gText;
+            }
+          } catch (ge) {
+            logger.warn("ocr", "Gemini OCR fallback failed", {
+              attempt,
+              message: ge?.message,
+            });
+          }
+        }
 
-      if (_geminiClient) {
+        return baseText;
+      }
+
+      if (geminiIsEnabled()) {
         try {
           const gText = await geminiOcrImageBuffer(buffer, mimeType);
-          if (gText && gText.trim().length) return gText;
+          if (gText && String(gText).trim().length >= 3) {
+            logger.info("ocr", "Gemini OCR accepted", {
+              attempt,
+              length: String(gText || "").trim().length,
+              preview: String(gText || "").slice(0, 200),
+            });
+            return gText;
+          }
         } catch (ge) {
-          logger.warn("OCR", "Gemini fallback failed (ignored)", { message: ge?.message, model: GEMINI_MODEL });
+          logger.warn("ocr", "Gemini OCR direct failed", {
+            attempt,
+            message: ge?.message,
+          });
         }
       }
-
-      if (tText && tText.trim().length) return tText;
 
       throw lastErr || new Error("OCR_EMPTY");
     } catch (e) {
@@ -879,17 +933,23 @@ async function processOcrImageToDraft(from, mediaId) {
 
   const mime = info?.mime_type || "image/jpeg";
   const buf = await downloadMediaToBuffer(info.url);
-  await sendText(from, "🔎 Lecture de la photo…");
+  await sendText(from, "🔎 Lecture intelligente de la photo…");
 
   let ocrText = "";
   try {
     ocrText = await robustOcr(buf, mime);
+    logger.info("ocr", "OCR text extracted", {
+      from,
+      length: String(ocrText || "").trim().length,
+      preview: String(ocrText || "").slice(0, 300),
+    });
   } catch (e) {
+    logger.error("ocr", e, { from, step: "robustOcr" });
     await sendText(from, "❌ Impossible de lire la photo. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
   }
 
-  if (!ocrText || ocrText.trim().length < 8) {
+  if (!ocrText || ocrText.trim().length < 3) {
     await sendText(from, "❌ Lecture trop faible. Essayez une photo plus nette (bonne lumière, sans flou).");
     return;
   }
@@ -910,11 +970,60 @@ async function processOcrImageToDraft(from, mediaId) {
 
   s.step = "ocr_review";
 
-  const parsed = parseOcrToDraft(ocrText);
+  let parsed = null;
+
+  try {
+    const gemParsed = await parseInvoiceTextWithGemini(ocrText);
+
+    parsed = {
+      client: gemParsed?.client || null,
+      items: Array.isArray(gemParsed?.items)
+        ? gemParsed.items.map((it) =>
+            makeItem(
+              it?.label || "Produit",
+              Number(it?.qty || 1),
+              Number(it?.unitPrice ?? it?.amount ?? 0)
+            )
+          )
+        : [],
+      finance: {
+        subtotal: Number(gemParsed?.total || 0),
+        gross: Number(gemParsed?.total || 0),
+      },
+    };
+
+    if (!parsed.items.length) {
+      throw new Error("Gemini returned no items");
+    }
+
+    logger.info("ocr", "Gemini parsing ok", {
+      from,
+      client: parsed.client,
+      itemsCount: parsed.items.length,
+      total: parsed.finance?.gross || 0,
+    });
+  } catch (e) {
+    logger.warn("ocr", "Gemini parsing failed, fallback local parser", {
+      from,
+      message: e?.message,
+    });
+
+    parsed = parseOcrToDraft(ocrText);
+  }
+
   if (parsed.client) s.lastDocDraft.client = parsed.client;
-  if (parsed.items?.length) s.lastDocDraft.items = parsed.items.slice(0, LIMITS.maxItems);
+  if (parsed.items?.length) {
+    s.lastDocDraft.items = parsed.items.slice(0, LIMITS.maxItems);
+  }
 
   s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
+
+  logger.info("ocr", "Draft ready for preview", {
+    from,
+    client: s.lastDocDraft.client,
+    itemsCount: s.lastDocDraft.items.length,
+    total: s.lastDocDraft.finance?.gross || 0,
+  });
 
   const preview = buildPreviewMessage({ doc: s.lastDocDraft });
   await sendText(from, preview);
@@ -1038,7 +1147,11 @@ async function createAndSendPdf(from) {
   let successAfterDebit = false;
 
   try {
-    draft.finance = computeFinance(draft);
+    const computedFinance = computeFinance(draft);
+draft.finance = {
+  subtotal: computedFinance.subtotal,
+  gross: draft.finance?.gross ?? computedFinance.gross,
+};
 
     draft.docNumber = await nextDocNumber({
       waId: from,

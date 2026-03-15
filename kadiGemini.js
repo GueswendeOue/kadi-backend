@@ -50,7 +50,9 @@ async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
     {
       inlineData: {
         mimeType: mimeType || "image/jpeg",
-        data: Buffer.isBuffer(imageBuffer) ? imageBuffer.toString("base64") : Buffer.from(imageBuffer).toString("base64"),
+        data: Buffer.isBuffer(imageBuffer)
+          ? imageBuffer.toString("base64")
+          : Buffer.from(imageBuffer).toString("base64"),
       },
     },
   ]);
@@ -59,8 +61,67 @@ async function geminiOcrImageBuffer(imageBuffer, mimeType = "image/jpeg") {
   return String(text).trim();
 }
 
+async function parseInvoiceTextWithGemini(ocrText) {
+  if (!_geminiClient) throw new Error("Gemini not configured");
+
+  const model = _geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
+
+  const prompt = `
+Tu es un assistant spécialisé dans la compréhension de factures, devis, reçus et notes manuscrites africaines.
+
+On te donne un texte OCR brut, parfois imparfait, mal aligné, bruité ou avec fautes.
+
+Ta mission :
+- reconstruire les lignes de produits
+- détecter quantité, prix unitaire et montant
+- détecter le total
+- détecter le client si présent
+- détecter la date si présente
+- deviner le type de document : facture, devis, recu, ou inconnu
+
+Règles :
+- retourne UNIQUEMENT un JSON valide
+- pas de markdown
+- pas d'explication
+- si une valeur est inconnue, mets null
+- si amount manque, calcule qty * unitPrice si possible
+- si qty manque, mets 1
+- si unitPrice manque mais amount existe, mets unitPrice = amount
+- garde les noms de produits les plus plausibles
+
+Format attendu :
+{
+  "client": string|null,
+  "date": string|null,
+  "documentType": "facture"|"devis"|"recu"|"inconnu",
+  "items": [
+    {
+      "label": string,
+      "qty": number,
+      "unitPrice": number,
+      "amount": number
+    }
+  ],
+  "total": number|null
+}
+
+Texte OCR :
+${ocrText}
+`;
+
+  const result = await model.generateContent(prompt);
+  const raw = result?.response?.text?.() || "";
+
+  let cleaned = String(raw).trim();
+  cleaned = cleaned.replace(/^```json\s*/i, "").replace(/^```\s*/i, "");
+  cleaned = cleaned.replace(/```$/i, "").trim();
+
+  return JSON.parse(cleaned);
+}
+
 module.exports = {
   geminiIsEnabled,
   ocrLooksGood,
   geminiOcrImageBuffer,
+  parseInvoiceTextWithGemini,
 };

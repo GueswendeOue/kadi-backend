@@ -109,10 +109,12 @@ function cleanText(text) {
 function looksUseful(text) {
   const t = cleanText(text);
   if (!t) return false;
-  if (t.length < 10) return false;
+
+  // beaucoup plus permissif qu'avant
+  if (t.length < 3) return false;
 
   const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
-  if (lettersOrDigits < 8) return false;
+  if (lettersOrDigits < 2) return false;
 
   return true;
 }
@@ -179,9 +181,10 @@ async function ocrImageToText(imageBuffer) {
         txt = await recognizeWithLang(pre, "fra");
         txt = cleanText(txt);
 
+        console.log("[KADI/OCR] Tesseract FRA preview:", txt.slice(0, 300));
+
         if (looksUseful(txt)) {
           console.log("[KADI/OCR] Tesseract FRA accepted");
-          console.log("[KADI/OCR] Tesseract FRA preview:", txt.slice(0, 300));
           return txt;
         }
 
