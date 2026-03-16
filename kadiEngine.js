@@ -322,6 +322,35 @@ function parseNumberSmart(s) {
   return Number.isFinite(n) ? n : null;
 }
 
+function sanitizeOcrLabel(line) {
+  return String(line || "")
+    .replace(/\d+(?:[.,]\d+)?/g, " ")
+    .replace(/[|=;:_'"`’“”«»#*.,()[\]{}<>/-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeRealItemLabel(label) {
+  const t = String(label || "").trim();
+  if (!t) return false;
+  if (t.length < 4) return false;
+
+  const letters = (t.match(/[a-zàâçéèêëîïôûùüÿñæœ]/gi) || []).length;
+  if (letters < 3) return false;
+
+  const badPatterns = [
+    /^[-–—]+$/,
+    /^[=|;:.,]+$/,
+    /^(prix|total|montant|date|client|nom)$/i,
+  ];
+
+  for (const p of badPatterns) {
+    if (p.test(t)) return false;
+  }
+
+  return true;
+}
+
 // ===============================
 // Menus
 // ===============================
@@ -817,6 +846,7 @@ function parseOcrToDraft(ocrText) {
   }
 
   const items = [];
+
   for (const line of lines) {
     if (!/\d/.test(line)) continue;
     if (/date/i.test(line)) continue;
@@ -825,11 +855,22 @@ function parseOcrToDraft(ocrText) {
     if (/client/i.test(line)) continue;
     if (/nom/i.test(line)) continue;
 
-    const nums = line.match(/\d+(?:[.,]\d+)?/g) || [];
-    const pu = nums.length ? parseNumberSmart(nums[nums.length - 1]) : 0;
-    const label = line.replace(/\d+(?:[.,]\d+)?/g, "").trim() || line.trim();
+    const label = sanitizeOcrLabel(line);
+    if (!looksLikeRealItemLabel(label)) continue;
 
-    items.push(makeItem(label, 1, pu || 0));
+    const nums = line.match(/\d+(?:[.,]\d+)?/g) || [];
+    if (!nums.length) continue;
+
+    const candidates = nums
+      .map((x) => parseNumberSmart(x))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    if (!candidates.length) continue;
+
+    const pu = candidates[candidates.length - 1] || 0;
+    if (!Number.isFinite(pu) || pu <= 0) continue;
+
+    items.push(makeItem(label, 1, pu));
     if (items.length >= LIMITS.maxItems) break;
   }
 
@@ -995,6 +1036,18 @@ async function processOcrImageToDraft(from, mediaId) {
     if (!parsed.items.length) {
       throw new Error("Gemini returned no items");
     }
+
+    const noisyItems = parsed.items.filter(
+  (it) => !looksLikeRealItemLabel(it?.label || "")
+);
+
+if (noisyItems.length > 0) {
+  throw new Error("Gemini returned noisy items");
+}
+
+if (parsed.items.length > 10) {
+  throw new Error("Gemini returned too many items");
+}
 
     logger.info("ocr", "Gemini parsing ok", {
       from,

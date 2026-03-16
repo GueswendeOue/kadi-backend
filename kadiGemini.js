@@ -66,28 +66,31 @@ async function parseInvoiceTextWithGemini(ocrText) {
 
   const model = _geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
 
-  const prompt = `
-Tu es un assistant spécialisé dans la compréhension de factures, devis, reçus et notes manuscrites africaines.
+const prompt = `
+Tu es un assistant expert en lecture de devis, factures, reçus et notes manuscrites en français, surtout dans le contexte de matériaux de construction et travaux.
 
-On te donne un texte OCR brut, parfois imparfait, mal aligné, bruité ou avec fautes.
+On te donne un texte OCR brut, souvent bruité, mal aligné ou avec erreurs.
 
 Ta mission :
-- reconstruire les lignes de produits
+- reconstruire les vraies lignes de produits ou services
+- ignorer les lignes illisibles ou non plausibles
 - détecter quantité, prix unitaire et montant
 - détecter le total
 - détecter le client si présent
 - détecter la date si présente
-- deviner le type de document : facture, devis, recu, ou inconnu
+- reconnaître les mots plausibles du bâtiment et commerce, par exemple :
+  tôle, tube, crochet, galvanisé, rectangulaire, rond, main d’œuvre, soudure, tôlage, hangar, barre, feuille
 
 Règles :
 - retourne UNIQUEMENT un JSON valide
 - pas de markdown
 - pas d'explication
-- si une valeur est inconnue, mets null
-- si amount manque, calcule qty * unitPrice si possible
+- si une ligne est trop bruitée ou incompréhensible, ignore-la
 - si qty manque, mets 1
 - si unitPrice manque mais amount existe, mets unitPrice = amount
-- garde les noms de produits les plus plausibles
+- si amount manque, calcule qty * unitPrice
+- ne crée pas de faux produits à partir de symboles ou de texte illisible
+- préfère peu de lignes plausibles plutôt que beaucoup de lignes absurdes
 
 Format attendu :
 {
