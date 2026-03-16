@@ -10,8 +10,9 @@
  * Dépendances :
  *   npm i @google-cloud/vision tesseract.js sharp
  *
- * Fichier requis à la racine du projet :
- *   kadi-ocr.json
+ * Modes supportés :
+ * - Local : fichier kadi-ocr.json
+ * - Render : GOOGLE_OCR_JSON_BASE64 ou GOOGLE_OCR_JSON
  */
 
 const fs = require("fs");
@@ -28,8 +29,36 @@ const GOOGLE_KEY_PATH =
 // ================= Google Vision =================
 let googleClient = null;
 
+function getGoogleCredentialsFromEnv() {
+  try {
+    if (process.env.GOOGLE_OCR_JSON_BASE64) {
+      const raw = Buffer.from(
+        process.env.GOOGLE_OCR_JSON_BASE64,
+        "base64"
+      ).toString("utf8");
+      return JSON.parse(raw);
+    }
+
+    if (process.env.GOOGLE_OCR_JSON) {
+      return JSON.parse(process.env.GOOGLE_OCR_JSON);
+    }
+
+    return null;
+  } catch (e) {
+    throw new Error(`Invalid Google OCR credentials in env: ${e.message}`);
+  }
+}
+
 function getGoogleClient() {
   if (googleClient) return googleClient;
+
+  const envCreds = getGoogleCredentialsFromEnv();
+  if (envCreds) {
+    googleClient = new vision.ImageAnnotatorClient({
+      credentials: envCreds,
+    });
+    return googleClient;
+  }
 
   if (!fs.existsSync(GOOGLE_KEY_PATH)) {
     throw new Error(`Google OCR key file not found: ${GOOGLE_KEY_PATH}`);
@@ -109,8 +138,6 @@ function cleanText(text) {
 function looksUseful(text) {
   const t = cleanText(text);
   if (!t) return false;
-
-  // beaucoup plus permissif qu'avant
   if (t.length < 3) return false;
 
   const lettersOrDigits = (t.match(/[a-z0-9]/gi) || []).length;
@@ -146,14 +173,21 @@ async function ocrImageToText(imageBuffer) {
     pre = await preprocessImage(imageBuffer);
     console.log("[KADI/OCR] preprocess ok");
   } catch (e) {
-    console.warn("[KADI/OCR] preprocess failed, using original buffer:", e?.message);
+    console.warn(
+      "[KADI/OCR] preprocess failed, using original buffer:",
+      e?.message
+    );
     pre = imageBuffer;
   }
 
   // 1) Google Vision d'abord
   try {
     console.log("[KADI/OCR] Trying Google Vision...");
-    console.log("[KADI/OCR] Google key path:", GOOGLE_KEY_PATH);
+    console.log("[KADI/OCR] Google key path fallback:", GOOGLE_KEY_PATH);
+    console.log(
+      "[KADI/OCR] Google env creds:",
+      !!process.env.GOOGLE_OCR_JSON_BASE64 || !!process.env.GOOGLE_OCR_JSON
+    );
 
     const googleText = cleanText(await recognizeWithGoogle(pre));
 
@@ -165,7 +199,9 @@ async function ocrImageToText(imageBuffer) {
       return googleText;
     }
 
-    console.warn("[KADI/OCR] Google OCR returned weak/empty text, fallback to Tesseract");
+    console.warn(
+      "[KADI/OCR] Google OCR returned weak/empty text, fallback to Tesseract"
+    );
   } catch (e) {
     console.error("[KADI/OCR] Google OCR failed:", e?.message);
     console.error("[KADI/OCR] Google OCR stack:", e?.stack || "no stack");
@@ -188,7 +224,9 @@ async function ocrImageToText(imageBuffer) {
           return txt;
         }
 
-        console.warn("[KADI/OCR] Tesseract FRA weak/empty, trying ENG...");
+        console.warn(
+          "[KADI/OCR] Tesseract FRA weak/empty, trying ENG..."
+        );
       } catch (e) {
         console.warn("[KADI/OCR] Tesseract FRA failed:", e?.message);
       }
