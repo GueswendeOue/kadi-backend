@@ -8,7 +8,7 @@ try {
 }
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const OCR_HYBRID = (process.env.OCR_HYBRID || "1") === "1"; // 1 = fallback ON
 
 const OCR_GEMINI_MIN_CHARS = Number(process.env.OCR_GEMINI_MIN_CHARS || 20);
