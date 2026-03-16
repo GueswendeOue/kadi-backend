@@ -218,6 +218,32 @@ function formatBaseCostLine(cost) {
 }
 
 // ===============================
+// User locks (anti-concurrence)
+// ===============================
+const _userLocks = new Map();
+
+async function withUserLock(waId, fn) {
+  const previous = _userLocks.get(waId) || Promise.resolve();
+
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  _userLocks.set(waId, previous.then(() => current));
+
+  try {
+    await previous;
+    return await fn();
+  } finally {
+    release();
+    if (_userLocks.get(waId) === current) {
+      _userLocks.delete(waId);
+    }
+  }
+}
+
+// ===============================
 // Tampon & Signature (wrapper)
 // ===============================
 async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null) {
@@ -651,6 +677,8 @@ function resetDraftSession(s) {
   s.lastDocDraft = null;
   s.itemDraft = null;
   s.pendingOcrMediaId = null;
+  s.adminPendingAction = null;
+  s.broadcastCaption = null;
 }
 
 async function startDocFlow(from, mode, factureKind = null) {
@@ -1290,26 +1318,33 @@ async function ensureWelcomeCredits(waId) {
     if (cached && Date.now() - cached < 24 * 60 * 60 * 1000) return;
 
     const p = await getOrCreateProfile(waId);
-    if (p && p.welcome_credits_granted === true) {
+
+    // Déjà marqué comme donné
+    if (p?.welcome_credits_granted === true) {
       _WELCOME_CACHE.set(waId, Date.now());
       return;
     }
 
+    // Si l'utilisateur a déjà un solde positif, on ne redonne pas
     const bal = await getBalance(waId);
-    if (bal > 0) {
+    if (Number(bal || 0) > 0) {
       _WELCOME_CACHE.set(waId, Date.now());
+
       try {
         await updateProfile(waId, { welcome_credits_granted: true });
       } catch (_) {}
+
       return;
     }
 
+    // Donne les crédits UNE seule fois
     await addCredits(waId, WELCOME_CREDITS, "welcome");
-    _WELCOME_CACHE.set(waId, Date.now());
 
     try {
       await updateProfile(waId, { welcome_credits_granted: true });
     } catch (_) {}
+
+    _WELCOME_CACHE.set(waId, Date.now());
 
     await sendText(
       waId,
@@ -1326,19 +1361,25 @@ async function maybeSendOnboarding(from) {
     if (p?.onboarding_done === true) return;
 
     const msg =
-      `👋 Bienvenue sur *KADI*.\n\n` +
-      `✅ *Devis / Facture / Reçu* en 30 secondes.\n` +
-      `📷 Envoyez une *photo* → KADI extrait et refait un PDF propre.\n` +
-      `🟦 Tampon officiel: *${STAMP_ONE_TIME_COST} crédits (paiement unique)*.\n\n` +
-      `👇 Choisissez :`;
+      `👋 Bonjour, je suis *KADI*.\n\n` +
+      `Je vous aide à créer rapidement :\n` +
+      `📄 *Devis*\n` +
+      `🧾 *Factures*\n` +
+      `💰 *Reçus*\n\n` +
+      `⚡ Tout se fait directement ici sur *WhatsApp*.\n\n` +
+      `📷 Vous pouvez aussi envoyer une *photo d'un document* et je le transforme en PDF propre.\n\n` +
+      `🎁 Vous avez *${WELCOME_CREDITS} crédits gratuits* pour essayer.\n\n` +
+      `👇 Choisissez une action pour commencer :`;
 
     await sendButtons(from, msg, [
-      { id: "HOME_DOCS", title: "Créer" },
-      { id: "HOME_PROFILE", title: "Profil" },
-      { id: "HOME_CREDITS", title: "Crédits" },
+      { id: "HOME_DOCS", title: "📄 Créer document" },
+      { id: "HOME_PROFILE", title: "👤 Profil" },
+      { id: "HOME_CREDITS", title: "💳 Crédits" },
     ]);
 
-    await markOnboardingDone(from, 1);
+    try {
+      await markOnboardingDone(from, 1);
+    } catch (_) {}
   } catch (e) {
     console.warn("⚠️ onboarding:", e?.message);
   }
@@ -1566,7 +1607,49 @@ async function handleExportCommand(from, text) {
 
 async function handleCommand(from, text) {
   const lower = String(text || "").toLowerCase().trim();
+  const s = getSession(from);
 
+  // ===============================
+  // Commandes globales utilisateur
+  // ===============================
+  if (lower === "menu" || lower === "m" || lower === "/menu") {
+    s.step = "idle";
+    s.mode = null;
+    s.factureKind = null;
+    s.lastDocDraft = null;
+    s.itemDraft = null;
+    s.pendingOcrMediaId = null;
+    s.adminPendingAction = null;
+    s.broadcastCaption = null;
+
+    await sendHomeMenu(from);
+    return true;
+  }
+
+  if (
+    lower === "annuler" ||
+    lower === "annule" ||
+    lower === "stop" ||
+    lower === "retour" ||
+    lower === "/cancel"
+  ) {
+    s.step = "idle";
+    s.mode = null;
+    s.factureKind = null;
+    s.lastDocDraft = null;
+    s.itemDraft = null;
+    s.pendingOcrMediaId = null;
+    s.adminPendingAction = null;
+    s.broadcastCaption = null;
+
+    await sendText(from, "❌ Action annulée.");
+    await sendHomeMenu(from);
+    return true;
+  }
+
+  // ===============================
+  // Commandes générales
+  // ===============================
   if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
   if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
   if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
@@ -1575,14 +1658,12 @@ async function handleCommand(from, text) {
     await replyBalance(from);
     return true;
   }
+
   if (lower === "recharge") {
     await replyRechargeInfo(from);
     return true;
   }
-  if (lower === "menu" || lower === "m") {
-    await sendHomeMenu(from);
-    return true;
-  }
+
   if (lower === "profil" || lower === "profile") {
     await sendProfileMenu(from);
     return true;
@@ -1800,120 +1881,114 @@ async function handleIncomingMessage(value) {
       return;
     }
 
-    try {
-      await recordActivity(from);
-    } catch (e) {
-      logger.warn("activity_recording", e.message, { from });
-    }
-
-    await ensureWelcomeCredits(from);
-    await maybeSendOnboarding(from);
-
-    const replyIdInteractive =
-      msg.interactive?.button_reply?.id ||
-      msg.interactive?.list_reply?.id ||
-      null;
-
-    const replyIdButton =
-      msg.button?.payload ||
-      msg.button?.text ||
-      null;
-
-    if (replyIdInteractive || replyIdButton) {
-      console.log("[KADI] BUTTON CLICK", {
-        from,
-        msgType: msg.type,
-        replyIdInteractive,
-        replyIdButton,
-      });
-    }
-
-    if (msg.type === "interactive" && replyIdInteractive) {
-      return handleInteractiveReply(from, replyIdInteractive);
-    }
-
-    if (msg.type === "button" && replyIdButton) {
-      const mapped =
-        replyIdButton === "Activer" || replyIdButton === "Désactiver"
-          ? "STAMP_TOGGLE"
-          : replyIdButton;
-
-      return handleInteractiveReply(from, mapped);
-    }
-
-  if (msg.type === "image") {
-  const s = getSession(from);
-  const caption = norm(msg.image?.caption || "");
-
-  // ✅ Cas 1 : image envoyée directement avec caption /broadcastimage ...
-  if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
-    const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
-
-    s.adminPendingAction = "broadcast_image";
-    s.broadcastCaption = commandCaption || "";
-
-    return handleAdminBroadcastImage(from, msg);
-  }
-
-  // ✅ Cas 2 : admin a déjà lancé /broadcastimage puis envoie l’image après
-  if (s.adminPendingAction === "broadcast_image") {
-    return handleAdminBroadcastImage(from, msg);
-  }
-
-  // upload logo profil
-  if (s.step === "profile" && s.profileStep === "logo") {
-    return handleLogoImage(from, msg);
-  }
-
-  // sinon image normale (OCR)
-  return handleIncomingImage(from, msg);
-}
-
-    const text = norm(msg.text?.body);
-    if (!text) return;
-
-    if (await handleAdmin(from, text)) return;
-
-    const mCode = text.match(REGEX.code);
-    if (mCode) {
-      const result = await redeemCode({ waId: from, code: mCode[1] });
-      if (!result.ok) {
-        if (result.error === "CODE_DEJA_UTILISE") return sendText(from, "❌ Code déjà utilisé.");
-        return sendText(from, "❌ Code invalide.");
+    return await withUserLock(from, async () => {
+      try {
+        await recordActivity(from);
+      } catch (e) {
+        logger.warn("activity_recording", e.message, { from });
       }
-      return sendText(from, `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`);
-    }
 
-    if (await handleProfileAnswer(from, text)) return;
+      await ensureWelcomeCredits(from);
+      await maybeSendOnboarding(from);
 
-    if (await handleProductFlowText(from, text)) return;
+      const replyIdInteractive =
+        msg.interactive?.button_reply?.id ||
+        msg.interactive?.list_reply?.id ||
+        null;
 
-    if (await handleCommand(from, text)) return;
+      const replyIdButton =
+        msg.button?.payload ||
+        msg.button?.text ||
+        null;
 
-    await sendText(from, "Tapez *MENU* pour commencer.");
+      if (replyIdInteractive || replyIdButton) {
+        console.log("[KADI] BUTTON CLICK", {
+          from,
+          msgType: msg.type,
+          replyIdInteractive,
+          replyIdButton,
+        });
+      }
+
+      if (msg.type === "interactive" && replyIdInteractive) {
+        return handleInteractiveReply(from, replyIdInteractive);
+      }
+
+      if (msg.type === "button" && replyIdButton) {
+        const mapped =
+          replyIdButton === "Activer" || replyIdButton === "Désactiver"
+            ? "STAMP_TOGGLE"
+            : replyIdButton;
+
+        return handleInteractiveReply(from, mapped);
+      }
+
+      if (msg.type === "image") {
+        const s = getSession(from);
+        const caption = norm(msg.image?.caption || "");
+
+        if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
+          const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
+          s.adminPendingAction = "broadcast_image";
+          s.broadcastCaption = commandCaption || "";
+          return handleAdminBroadcastImage(from, msg);
+        }
+
+        if (s.adminPendingAction === "broadcast_image") {
+          return handleAdminBroadcastImage(from, msg);
+        }
+
+        if (s.step === "profile" && s.profileStep === "logo") {
+          return handleLogoImage(from, msg);
+        }
+
+        return handleIncomingImage(from, msg);
+      }
+
+      const text = norm(msg.text?.body);
+      if (!text) return;
+
+      // 1) ADMIN d'abord
+      if (await handleAdmin(from, text)) return;
+
+      // 2) Recharge code avant les flows
+      const mCode = text.match(REGEX.code);
+      if (mCode) {
+        const result = await redeemCode({ waId: from, code: mCode[1] });
+        if (!result.ok) {
+          if (result.error === "CODE_DEJA_UTILISE") {
+            return sendText(from, "❌ Code déjà utilisé.");
+          }
+          return sendText(from, "❌ Code invalide.");
+        }
+
+        return sendText(
+          from,
+          `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`
+        );
+      }
+
+      // 3) Commandes globales avant les flows
+      if (await handleCommand(from, text)) return;
+
+      // 4) Ensuite seulement les flows
+      if (await handleProfileAnswer(from, text)) return;
+      if (await handleProductFlowText(from, text)) return;
+
+      await sendText(from, "Tapez *MENU* pour commencer.");
+    });
   } catch (e) {
-    logger.error("incoming_message", e, { messageType: value?.messages?.[0]?.type });
+    logger.error("incoming_message", e, {
+      messageType: value?.messages?.[0]?.type,
+    });
   } finally {
     const duration = Date.now() - start;
-    logger.metric("message_processing", duration, true, { messageType: value?.messages?.[0]?.type });
+    logger.metric("message_processing", duration, true, {
+      messageType: value?.messages?.[0]?.type,
+    });
   }
 }
-async function handleIncomingStatuses(statuses = []) {
-  try {
-    for (const st of statuses) {
-      console.log("[KADI/STATUS]", {
-        messageId: st.messageId,
-        recipientId: st.recipientId,
-        status: st.status,
-        timestamp: st.timestamp,
-        errorCode: st.errorCode,
-        errorTitle: st.errorTitle,
-      });
-    }
-  } catch (e) {
-    logger.error("incoming_statuses", e);
-  }
-}
+
 // ===============================
 // EXPORTS
 // ===============================
