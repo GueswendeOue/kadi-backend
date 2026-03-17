@@ -1938,25 +1938,79 @@ async function handleTopCommand(from, text) {
 }
 
 async function handleExportCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
 
   const days = parseDaysArg(text, 30);
   const rows = await getDocsForExport({ days });
 
-  const header = ["created_at", "wa_id", "doc_number", "doc_type", "facture_kind", "client", "date", "total", "items_count"];
+  const header = [
+    "created_at",
+    "wa_id",
+    "wa_country_code",
+    "wa_country_guess",
+    "doc_number",
+    "doc_type",
+    "facture_kind",
+    "client",
+    "date",
+    "subtotal",
+    "discount",
+    "net",
+    "vat",
+    "total",
+    "deposit",
+    "due",
+    "paid",
+    "payment_method",
+    "motif",
+    "source",
+    "items_count",
+    "used_ocr",
+    "used_gemini_parse",
+    "used_stamp",
+    "credits_consumed",
+    "business_sector",
+    "status",
+  ];
+
+  const csvEscape = (value) => {
+    if (value === null || value === undefined) return "";
+    const s = String(value);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
 
   const csvLines = [header.join(",")].concat(
     rows.map((r) =>
       [
-        r.created_at || "",
-        r.wa_id || "",
-        r.doc_number || "",
-        r.doc_type || "",
-        r.facture_kind || "",
-        `"${String(r.client || "").replace(/"/g, '""')}"`,
-        r.date || "",
-        String(r.total ?? ""),
-        String(Array.isArray(r.items) ? r.items.length : 0),
+        csvEscape(r.created_at),
+        csvEscape(r.wa_id),
+        csvEscape(r.wa_country_code),
+        csvEscape(r.wa_country_guess),
+        csvEscape(r.doc_number),
+        csvEscape(r.doc_type),
+        csvEscape(r.facture_kind),
+        csvEscape(r.client),
+        csvEscape(r.date),
+        csvEscape(r.subtotal),
+        csvEscape(r.discount),
+        csvEscape(r.net),
+        csvEscape(r.vat),
+        csvEscape(r.total),
+        csvEscape(r.deposit),
+        csvEscape(r.due),
+        csvEscape(r.paid),
+        csvEscape(r.payment_method),
+        csvEscape(r.motif),
+        csvEscape(r.source),
+        csvEscape(r.items_count),
+        csvEscape(r.used_ocr),
+        csvEscape(r.used_gemini_parse),
+        csvEscape(r.used_stamp),
+        csvEscape(r.credits_consumed),
+        csvEscape(r.business_sector),
+        csvEscape(r.status),
       ].join(",")
     )
   );
@@ -1964,14 +2018,24 @@ async function handleExportCommand(from, text) {
   const buf = Buffer.from(csvLines.join("\n"), "utf8");
   const fileName = `kadi-export-${days}j-${formatDateISO()}.csv`;
 
-  const up = await uploadMediaBuffer({ buffer: buf, filename: fileName, mimeType: "text/csv" });
-  if (!up?.id) return sendText(from, "❌ Export: upload échoué.");
+  const up = await uploadMediaBuffer({
+    buffer: buf,
+    filename: fileName,
+    mimeType: "text/csv",
+  });
+
+  if (!up?.id) {
+    return sendText(from, "❌ Export: upload échoué.");
+  }
 
   return sendDocument({
     to: from,
     mediaId: up.id,
     filename: fileName,
-    caption: `📤 Export CSV (${days} jours)\nLignes: ${rows.length}`,
+    caption:
+      `📤 Export CSV (${days} jours)\n` +
+      `Lignes: ${rows.length}\n` +
+      `Colonnes: ${header.length}`,
   });
 }
 
