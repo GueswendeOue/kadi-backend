@@ -349,11 +349,50 @@ function makeItem(label, qty, unitPrice) {
   };
 }
 
-function parseNumberSmart(s) {
-  const t = String(s || "").trim().replace(/\s/g, "");
+function parseNumberSmart(input) {
+  let t = String(input || "").toLowerCase().trim();
   if (!t) return null;
-  const cleaned = t.replace(/,/g, ".");
+
+  // normalisation légère
+  t = t.replace(/\s+/g, " ");
+
+  // 1) formats type 25mil / 25 mille / 25k
+  if (
+    /\b(k|mil|mille)\b/.test(t) ||
+    /(\d)(k|mil|mille)\b/.test(t)
+  ) {
+    const raw = t.replace(/\s+/g, "").replace(/mille/g, "k").replace(/mil/g, "k");
+    const numPart = raw.replace(/k/g, "").replace(/,/g, "."); // 25,5k => 25.5
+    const n = Number(numPart);
+    return Number.isFinite(n) ? Math.round(n * 1000) : null;
+  }
+
+  // 2) formats type 1 million / 1.5 million / 2millions
+  if (
+    /\bmillion(s)?\b/.test(t) ||
+    /(\d)million(s)?\b/.test(t)
+  ) {
+    const raw = t.replace(/\s+/g, "").replace(/millions/g, "million");
+    const numPart = raw.replace(/million/g, "").replace(/,/g, ".");
+    const n = Number(numPart);
+    return Number.isFinite(n) ? Math.round(n * 1000000) : null;
+  }
+
+  // 3) si espace + point + virgule ensemble, on suppose séparateurs de milliers
+  // ex: 25 000 / 25.000 / 25,000 => 25000
+  if (/^\d{1,3}([ .,]\d{3})+$/.test(t)) {
+    const normalized = t.replace(/[ .,]/g, "");
+    const n = Number(normalized);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // 4) nombre "standard"
+  // - virgule seule => décimale (25,5)
+  // - point seul => décimale (25.5)
+  const compact = t.replace(/\s/g, "");
+  const cleaned = compact.replace(/,/g, ".");
   const n = Number(cleaned);
+
   return Number.isFinite(n) ? n : null;
 }
 
@@ -363,6 +402,409 @@ function sanitizeOcrLabel(line) {
     .replace(/[|=;:_'"`’“”«»#*.,()[\]{}<>/-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeItemLineText(input) {
+  let t = String(input || "").trim();
+  if (!t) return "";
+
+  t = t
+    .replace(/[–—]/g, "-")
+    .replace(/[“”«»]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return t;
+}
+
+function isProbablyTotalLine(input) {
+  const t = String(input || "").toLowerCase().trim();
+
+  if (!t) return true;
+
+  return [
+    "total",
+    "total general",
+    "total général",
+    "total materiel",
+    "total matériel",
+    "prix total",
+    "sous total",
+    "montant total",
+    "main d'oeuvre",
+    "main d œuvre",
+    "main d’oeuvre",
+    "transport",
+    "acompte",
+    "avance",
+    "reste",
+  ].some((x) => t.includes(x));
+}
+
+function cleanupItemLabel(label) {
+  let t = String(label || "").trim();
+  if (!t) return "";
+
+  // enlever séparateurs isolés
+  t = t
+    .replace(/[:=]\s*$/g, "")
+    .replace(/^\s*[-•*]+\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // ne pas casser les dimensions/type 40x40, 2x4, 1.5, 32A, 5mm...
+  return t;
+}
+
+function computeAmountSafe(qty, unitPrice, amount) {
+  const q = Number(qty);
+  const pu = Number(unitPrice);
+  const mt = Number(amount);
+
+  if (Number.isFinite(mt) && mt > 0) return mt;
+  if (Number.isFinite(q) && q > 0 && Number.isFinite(pu) && pu >= 0) return q * pu;
+  if (Number.isFinite(pu) && pu >= 0) return pu;
+
+  return 0;
+}
+
+function parseQtyToken(token) {
+  const t = String(token || "").trim().toLowerCase();
+  if (!t) return null;
+
+  // x5 / 5x / x 5 / 5
+  let m =
+    t.match(/^x\s*(\d+(?:[.,]\d+)?)$/i) ||
+    t.match(/^(\d+(?:[.,]\d+)?)\s*x$/i) ||
+    t.match(/^(\d+(?:[.,]\d+)?)$/i);
+
+  if (!m) return null;
+
+  const n = Number(String(m[1]).replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseLineNumbersOrdered(input) {
+  const t = String(input || "");
+  const matches = t.match(/\d+(?:[.,]\d+)?(?:\s*(?:k|mil|mille|million|millions))?/gi) || [];
+
+  return matches
+    .map((raw) => ({
+      raw,
+      value: parseNumberSmart(raw),
+    }))
+    .filter((x) => Number.isFinite(x.value));
+}
+
+function makeParsedItem({
+  raw,
+  label,
+  qty = 1,
+  unitPrice = 0,
+  amount = null,
+  confidence = 0.5,
+}) {
+  const cleanLabel = cleanupItemLabel(label || "");
+  const q = Number.isFinite(Number(qty)) && Number(qty) > 0 ? Number(qty) : 1;
+  const pu = Number.isFinite(Number(unitPrice)) && Number(unitPrice) >= 0 ? Number(unitPrice) : 0;
+  const amt = computeAmountSafe(q, pu, amount);
+
+  return {
+    raw: String(raw || "").trim(),
+    label: cleanLabel || "Produit",
+    qty: q,
+    unitPrice: pu,
+    amount: amt,
+    confidence,
+  };
+}
+
+function parseItemLineSmart(input) {
+  const raw = normalizeItemLineText(input);
+  if (!raw) return null;
+  if (isProbablyTotalLine(raw)) return null;
+
+  const lower = raw.toLowerCase();
+
+  // ===============================
+  // CAS 1 : label:prixxqty=total
+  // Ex: Fil1.5:9000x5=45000
+  // ===============================
+  let m = raw.match(/^(.+?)\s*[:]\s*([0-9][0-9\s.,kKmMiIlL]*)\s*x\s*([0-9]+(?:[.,]\d+)?)\s*=\s*([0-9][0-9\s.,kKmMiIlL]*)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const unitPrice = parseNumberSmart(m[2]);
+    const qty = parseQtyToken(m[3]);
+    const amount = parseNumberSmart(m[4]);
+
+    if (label && unitPrice != null && qty != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty,
+        unitPrice,
+        amount,
+        confidence: 0.97,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 2 : label:prixxqty
+  // Ex: Fil1.5:9000x5
+  // ===============================
+  m = raw.match(/^(.+?)\s*[:]\s*([0-9][0-9\s.,kKmMiIlL]*)\s*x\s*([0-9]+(?:[.,]\d+)?)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const unitPrice = parseNumberSmart(m[2]);
+    const qty = parseQtyToken(m[3]);
+
+    if (label && unitPrice != null && qty != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty,
+        unitPrice,
+        confidence: 0.94,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 3 : label qty x prix = total
+  // Ex: Câble 2x4 25x1000=25000
+  // ===============================
+  m = raw.match(/^(.+?)\s+([0-9]+(?:[.,]\d+)?)\s*x\s*([0-9][0-9\s.,kKmMiIlL]*)\s*=\s*([0-9][0-9\s.,kKmMiIlL]*)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const qty = parseQtyToken(m[2]);
+    const unitPrice = parseNumberSmart(m[3]);
+    const amount = parseNumberSmart(m[4]);
+
+    if (label && qty != null && unitPrice != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty,
+        unitPrice,
+        amount,
+        confidence: 0.9,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 4 : "label ... qty unité ... prix"
+  // Ex: Ciment 2 tonnes 115000
+  // Ex: barres de fer 12 3500
+  // ===============================
+  const unitsPattern =
+    "(sac|sacs|barre|barres|tonne|tonnes|voyage|voyages|bidon|bidons|carton|cartons|kg|kilo|kilos|litre|litres|planche|planches|tôle|tôles|tube|tubes|rouleau|rouleaux|paquet|paquets|porte|portes|fenêtre|fenêtres)";
+  m = raw.match(
+    new RegExp(`^(.+?)\\s+(\\d+(?:[.,]\\d+)?)\\s+${unitsPattern}\\s+([0-9][0-9\\s.,kKmMiIlL]*)$`, "i")
+  );
+  if (m) {
+    const labelLeft = cleanupItemLabel(m[1]);
+    const qty = parseQtyToken(m[2]);
+    const unitWord = cleanupItemLabel(m[3]);
+    const unitPrice = parseNumberSmart(m[4]);
+
+    if (qty != null && unitPrice != null) {
+      const label = cleanupItemLabel(`${labelLeft} ${unitWord}`);
+      return makeParsedItem({
+        raw,
+        label,
+        qty,
+        unitPrice,
+        confidence: 0.86,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 5 : "label qty prix"
+  // Ex: planches 5 8500
+  // Ex: tôles 10 3500
+  // ===============================
+  m = raw.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s+([0-9][0-9\s.,kKmMiIlL]*)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const qty = parseQtyToken(m[2]);
+    const unitPrice = parseNumberSmart(m[3]);
+
+    if (label && qty != null && unitPrice != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty,
+        unitPrice,
+        confidence: 0.82,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 6 : "label : prix"
+  // Ex: Coffre 08module:3500
+  // Ex: Contact étanche :1500
+  // ===============================
+  m = raw.match(/^(.+?)\s*[:]\s*([0-9][0-9\s.,kKmMiIlL]*)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const unitPrice = parseNumberSmart(m[2]);
+
+    if (label && unitPrice != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty: 1,
+        unitPrice,
+        confidence: 0.8,
+      });
+    }
+  }
+
+  // ===============================
+  // CAS 7 : label avec 2 nombres ou plus
+  // Ex: Tube rectangulaire 40/8 4 barres 1 barre: 8000
+  // On garde tout avant le dernier nombre comme label
+  // ===============================
+  const nums = parseLineNumbersOrdered(raw);
+  if (nums.length >= 1) {
+    const lastRaw = nums[nums.length - 1].raw;
+    const lastValue = nums[nums.length - 1].value;
+
+    const idx = lower.lastIndexOf(String(lastRaw).toLowerCase());
+    if (idx > 0 && lastValue != null) {
+      const before = cleanupItemLabel(raw.slice(0, idx));
+      if (before && before.length >= 3) {
+        // essayer de récupérer une quantité avant le dernier prix
+        const qtyMatch =
+          before.match(/\b(\d+(?:[.,]\d+)?)\s*(?:barre|barres|sac|sacs|bidon|bidons|tonne|tonnes|voyage|voyages)\b/i) ||
+          before.match(/\b(\d+(?:[.,]\d+)?)\b(?!.*\b\d+(?:[.,]\d+)?\b)/i);
+
+        let qty = 1;
+        if (qtyMatch) {
+          const maybeQty = parseQtyToken(qtyMatch[1]);
+          if (maybeQty != null && maybeQty <= 1000) qty = maybeQty;
+        }
+
+        return makeParsedItem({
+          raw,
+          label: before,
+          qty,
+          unitPrice: lastValue,
+          confidence: 0.68,
+        });
+      }
+    }
+  }
+
+  // ===============================
+  // CAS 8 : fallback texte brut + un prix
+  // Ex: Ajout de tôle 6000
+  // ===============================
+  m = raw.match(/^(.+?)\s+([0-9][0-9\s.,kKmMiIlL]*)$/i);
+  if (m) {
+    const label = cleanupItemLabel(m[1]);
+    const unitPrice = parseNumberSmart(m[2]);
+
+    if (label && unitPrice != null) {
+      return makeParsedItem({
+        raw,
+        label,
+        qty: 1,
+        unitPrice,
+        confidence: 0.62,
+      });
+    }
+  }
+
+  return null;
+}
+
+function splitCandidateItemLines(input) {
+  const text = String(input || "").trim();
+  if (!text) return [];
+
+  return text
+    .split(/\r?\n+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((line) => line.length >= 2);
+}
+
+function parseItemsBlockSmart(input) {
+  const lines = splitCandidateItemLines(input);
+  const items = [];
+  const ignored = [];
+
+  for (const line of lines) {
+    const parsed = parseItemLineSmart(line);
+    if (parsed) {
+      items.push(parsed);
+    } else {
+      ignored.push(line);
+    }
+  }
+
+  return { items, ignored };
+}
+
+async function handleSmartItemsBlockText(from, text) {
+  const s = getSession(from);
+  const draft = s.lastDocDraft;
+
+  // Il faut déjà un document en cours
+  if (!draft) return false;
+
+  // On ne gère que du multi-lignes ici
+  const raw = String(text || "").trim();
+  if (!raw || !/\r?\n/.test(raw)) return false;
+
+  // Éviter d'intercepter certains steps sensibles
+  if (s.step === "profile" || s.step === "stamp_title") return false;
+
+  const { items, ignored } = parseItemsBlockSmart(raw);
+
+  // Il faut au moins 2 lignes reconnues pour considérer que c'est un vrai bloc
+  if (!Array.isArray(items) || items.length < 2) return false;
+
+  // Convertir vers le format draft existant
+  draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
+  draft.finance = computeFinance(draft);
+
+  // Si client manquant, on demande le client avant preview PDF
+  if (!safe(draft.client)) {
+    s.step = "missing_client_pdf";
+    await sendText(
+      from,
+      `✅ ${items.length} ligne(s) détectée(s).\n` +
+        `👤 Maintenant, tapez le nom du client :`
+    );
+    return true;
+  }
+
+  // Sinon preview direct
+  s.step = "doc_review";
+
+  const preview = buildPreviewMessage({ doc: draft });
+  await sendText(from, preview);
+
+  const cost = computeBasePdfCost(draft);
+  await sendText(from, formatBaseCostLine(cost));
+
+  if (ignored.length > 0) {
+    await sendText(
+      from,
+      `ℹ️ ${ignored.length} ligne(s) non reconnue(s) ont été ignorée(s) ` +
+        `(ex: total, main d'œuvre, transport).`
+    );
+  }
+
+  await sendPreviewMenu(from);
+  return true;
 }
 
 function looksLikeRealItemLabel(label) {
@@ -2414,14 +2856,17 @@ async function handleIncomingMessage(value) {
         );
       }
 
-      // 3) Commandes globales avant les flows
-      if (await handleCommand(from, text)) return;
+     // 3) Commandes globales avant les flows
+if (await handleCommand(from, text)) return;
 
-      // 4) Ensuite seulement les flows
-      if (await handleProfileAnswer(from, text)) return;
-      if (await handleProductFlowText(from, text)) return;
+// 4) Collage intelligent de plusieurs lignes produits
+if (await handleSmartItemsBlockText(from, text)) return;
 
-      await sendText(from, "Tapez *MENU* pour commencer.");
+// 5) Ensuite seulement les flows
+if (await handleProfileAnswer(from, text)) return;
+if (await handleProductFlowText(from, text)) return;
+
+await sendText(from, "Tapez *MENU* pour commencer.");
     });
   } catch (e) {
     logger.error("incoming_message", e, {
