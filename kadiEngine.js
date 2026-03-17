@@ -1498,7 +1498,9 @@ async function handleAdmin(from, text) {
     try {
       const codes = await createRechargeCodes({ count: nb, creditsEach: credits, createdBy: from });
       let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
-      codes.forEach((code, i) => (response += `${i + 1}. ${code}\n`));
+ codes.forEach((c, i) => {
+  response += `${i + 1}. ${c.code} (${c.credits} crédits)\n`;
+});
       await sendText(from, response);
     } catch (e) {
       logger.error("admin_create_codes", e, { from, nb, credits });
@@ -1535,7 +1537,7 @@ async function handleAdmin(from, text) {
   if (lower === "admin" || lower === "admin help") {
     await sendText(
       from,
-      "👨‍💼 *Commandes Admin*\n\n" +
+      "👨‍💼 *KADI ADMIN PANEL*\n\n" +
   "📊 Stats:\n" +
   "• /stats\n" +
   "• /statsmini\n" +
