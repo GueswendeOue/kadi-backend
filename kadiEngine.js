@@ -66,6 +66,15 @@ const {
   markOnboardingDone,
 } = require("./store");
 
+function makeDraftMeta(overrides = {}) {
+  return {
+    usedGeminiParse: false,
+    businessSector: null,
+    usedStamp: false,
+    creditsConsumed: null,
+    ...overrides,
+  };
+}
 
 // ================= Supabase Storage =================
 const {
@@ -688,16 +697,17 @@ async function startDocFlow(from, mode, factureKind = null) {
   s.mode = mode;
   s.factureKind = factureKind;
 
-  s.lastDocDraft = {
-    type: mode,
-    factureKind,
-    docNumber: null,
-    date: formatDateISO(),
-    client: null,
-    items: [],
-    finance: null,
-    source: "product",
-  };
+ s.lastDocDraft = {
+  type: mode,
+  factureKind,
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  items: [],
+  finance: null,
+  source: "product",
+meta: makeDraftMeta(),
+};
 
   const title =
     mode === "facture"
@@ -1036,6 +1046,14 @@ async function processOcrImageToDraft(from, mediaId) {
       source: "ocr",
     };
   }
+  if (!s.lastDocDraft.meta) {
+  s.lastDocDraft.meta = {
+    usedGeminiParse: false,
+    businessSector: null,
+    usedStamp: false,
+    creditsConsumed: null,
+  };
+}
 
   s.step = "ocr_review";
 
@@ -1077,19 +1095,29 @@ if (parsed.items.length > 10) {
   throw new Error("Gemini returned too many items");
 }
 
-    logger.info("ocr", "Gemini parsing ok", {
-      from,
-      client: parsed.client,
-      itemsCount: parsed.items.length,
-      total: parsed.finance?.gross || 0,
-    });
+    s.lastDocDraft.meta = {
+  ...(s.lastDocDraft.meta || {}),
+  usedGeminiParse: true,
+};
+
+logger.info("ocr", "Gemini parsing ok", {
+  from,
+  client: parsed.client,
+  itemsCount: parsed.items.length,
+  total: parsed.finance?.gross || 0,
+});
   } catch (e) {
     logger.warn("ocr", "Gemini parsing failed, fallback local parser", {
       from,
       message: e?.message,
     });
 
-    parsed = parseOcrToDraft(ocrText);
+   s.lastDocDraft.meta = {
+  ...(s.lastDocDraft.meta || {}),
+  usedGeminiParse: false,
+};
+
+parsed = parseOcrToDraft(ocrText);
   }
 
   if (parsed.client) s.lastDocDraft.client = parsed.client;
@@ -1270,6 +1298,16 @@ draft.finance = {
     });
 
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
+
+    draft.meta = {
+  ...(draft.meta || {}),
+  creditsConsumed: cost,
+  usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
+  usedGeminiParse: !!draft?.meta?.usedGeminiParse,
+  businessSector: draft?.meta?.businessSector || null,
+};
+
+draft.status = "generated";
 
     try {
       await saveDocument({ waId: from, doc: draft });
@@ -1502,10 +1540,23 @@ async function handleAdmin(from, text) {
     await sendText(
       from,
       "👨‍💼 *Commandes Admin*\n\n" +
-        "📊 Stats:\n• /stats\n• /top 30\n• /export 30\n\n" +
-        "📢 Broadcast:\n• /broadcast Votre message...\n• /broadcastimage [légende]\n• /broadcastcancel\n\n" +
-        "💰 Crédits:\n• ADMIN ADD <wa_id> <credits>\n\n" +
-        "🎫 Codes:\n• ADMIN CREATE <nb_codes> <credits_par_code>"
+  "📊 Stats:\n" +
+  "• /stats\n" +
+  "• /statsmini\n" +
+  "• /statsdocs\n" +
+  "• /statscredits\n" +
+  "• /statsusers\n" +
+  "• /alert\n" +
+  "• /top 30\n" +
+  "• /export 30\n\n" +
+  "📢 Broadcast:\n" +
+  "• /broadcast Votre message...\n" +
+  "• /broadcastimage [légende]\n" +
+  "• /broadcastcancel\n\n" +
+  "💰 Crédits:\n" +
+  "• ADMIN ADD <wa_id> <credits>\n\n" +
+  "🎫 Codes:\n" +
+  "• ADMIN CREATE <nb_codes> <credits_par_code>"
     );
     return true;
   }
@@ -1526,32 +1577,356 @@ async function handleAdmin(from, text) {
 }
 
 async function handleStatsCommand(from, text) {
-  if (!ensureAdmin(from)) return sendText(from, "❌ Commande réservée à l'administrateur.");
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
 
   try {
-    const stats = await getStats({ packCredits: PACK_CREDITS, packPriceFcfa: PACK_PRICE_FCFA });
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
 
-    const msgTxt =
-      `📊 *KADI — STATISTIQUES*\n\n` +
+    const topDocTypes = (stats.docs?.byType || [])
+      .slice(0, 4)
+      .map((r) => `• ${r.doc_type}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
+      .join("\n") || "• Aucune donnée";
+
+    const topSources = (stats.docs?.bySource || [])
+      .slice(0, 3)
+      .map((r) => `• ${r.source}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
+      .join("\n") || "• Aucune donnée";
+
+    const topCountries = (stats.docs?.byCountry || [])
+      .slice(0, 3)
+      .map((r) => `• ${r.country}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
+      .join("\n") || "• Aucune donnée";
+
+    const topReasons = (stats.credits?.byReason30 || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.reason}: +${r.added} / -${r.consumed} (${r.tx_count} tx)`)
+      .join("\n") || "• Aucune donnée";
+
+    const retention = (stats.retention || [])[0]
+      ? `• Cohorte: ${String(stats.retention[0].first_week || "").slice(0, 10)}\n` +
+        `• Nouveaux: ${stats.retention[0].new_users}\n` +
+        `• Retenus W1: ${stats.retention[0].retained_w1}\n` +
+        `• Retenus W2: ${stats.retention[0].retained_w2}`
+      : "• Aucune donnée";
+
+    const msg =
+      `📊 *KADI — STATS GLOBALES*\n\n` +
+
       `👥 *Utilisateurs*\n` +
-      `• Total : ${stats.users.totalUsers}\n` +
-      `• Actifs 7j : ${stats.users.active7}\n` +
-      `• Actifs 30j : ${stats.users.active30}\n\n` +
-      `📄 *Documents*\n` +
-      `• Total : ${stats.docs.total}\n` +
-      `• 7 derniers jours : ${stats.docs.last7}\n` +
-      `• 30 derniers jours : ${stats.docs.last30}\n\n` +
-      `💳 *Crédits (7j)*\n` +
-      `• Consommés : ${stats.credits.consumed7}\n` +
-      `• Ajoutés : ${stats.credits.added7}\n\n` +
-      `💰 *Revenu estimé (30j)*\n` +
-      `• ≈ ${stats.revenue.est30} FCFA\n` +
-      `• Base : ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits`;
+      `• Total profils: ${stats.users.totalUsers}\n` +
+      `• Actifs 1j: ${stats.users.active1d}\n` +
+      `• Actifs 7j: ${stats.users.active7}\n` +
+      `• Actifs 30j: ${stats.users.active30}\n` +
+      `• Avec docs: ${stats.users.usersWithDocs}\n` +
+      `• Onboardés: ${stats.users.onboardedUsers}\n` +
+      `• Wallets: ${stats.users.usersWithWallet}\n` +
+      `• Ont rechargé: ${stats.users.usersRecharged}\n\n` +
 
-    return sendText(from, msgTxt);
+      `📄 *Documents*\n` +
+      `• Depuis lancement: ${stats.docs.total}\n` +
+      `• 7 derniers jours: ${stats.docs.last7}\n` +
+      `• 30 derniers jours: ${stats.docs.last30}\n` +
+      `• Volume total: ${money(stats.docs.sumAll)} FCFA\n` +
+      `• Volume 7j: ${money(stats.docs.sum7)} FCFA\n` +
+      `• Volume 30j: ${money(stats.docs.sum30)} FCFA\n` +
+      `• Panier moyen global: ${money(stats.docs.avgAll)} FCFA\n` +
+      `• Panier moyen 30j: ${money(stats.docs.avg30)} FCFA\n\n` +
+
+      `🤖 *Usage produit*\n` +
+      `• Docs OCR: ${stats.docs.ocrDocs}\n` +
+      `• Docs manuels: ${stats.docs.manualDocs}\n` +
+      `• Parsés par Gemini: ${stats.docs.geminiParsedDocs}\n` +
+      `• Avec tampon: ${stats.docs.stampedDocs}\n\n` +
+
+      `📂 *Par type*\n${topDocTypes}\n\n` +
+      `🧭 *Par source*\n${topSources}\n\n` +
+      `🌍 *Top pays*\n${topCountries}\n\n` +
+
+      `💳 *Crédits*\n` +
+      `• Solde total wallet: ${stats.credits.totalBalance}\n` +
+      `• Transactions totales: ${stats.credits.totalTx}\n` +
+      `• Crédits ajoutés total: ${stats.credits.creditsAdded}\n` +
+      `• Crédits consommés total: ${stats.credits.creditsConsumed}\n` +
+      `• Ajoutés 7j: ${stats.credits.added7}\n` +
+      `• Consommés 7j: ${stats.credits.consumed7}\n` +
+      `• Payés 30j: ${stats.credits.addedPaid30}\n\n` +
+
+      `🧾 *Top raisons crédits (30j)*\n${topReasons}\n\n` +
+
+      `💰 *Revenu estimé*\n` +
+      `• Crédits payés: ${stats.revenue.creditsPaid}\n` +
+      `• Estimation 30j: ${money(stats.revenue.est30)} FCFA\n` +
+      `• Base: ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits\n\n` +
+
+      `🎫 *Codes*\n` +
+      `• Créés: ${stats.codes.codesCreated}\n` +
+      `• Utilisés: ${stats.codes.codesRedeemed}\n` +
+      `• Taux d'usage: ${stats.codes.redeemRatePct}%\n` +
+      `• Crédits via codes: ${stats.codes.creditsRedeemed}\n\n` +
+
+      `📈 *Rétention*\n${retention}`;
+
+    return sendText(from, msg);
   } catch (e) {
     logger.error("stats_command", e, { from });
     return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
+  }
+}
+
+async function handleStatsMiniCommand(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
+
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const msg =
+      `📊 *KADI MINI STATS*\n\n` +
+      `👥 Users: ${stats.users.totalUsers}\n` +
+      `🔥 Actifs 7j: ${stats.users.active7}\n` +
+      `📄 Docs total: ${stats.docs.total}\n` +
+      `📅 Docs 30j: ${stats.docs.last30}\n` +
+      `💰 Volume total: ${money(stats.docs.sumAll)} FCFA\n` +
+      `💳 Crédits consommés: ${stats.credits.creditsConsumed}\n` +
+      `💵 Revenu estimé 30j: ${money(stats.revenue.est30)} FCFA`;
+
+    return sendText(from, msg);
+  } catch (e) {
+    logger.error("stats_mini_command", e, { from });
+    return sendText(from, "❌ Impossible de charger les mini stats.");
+  }
+}
+
+async function handleStatsDocsCommand(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
+
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const byType = (stats.docs.byType || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.doc_type}: ${r.docs}`)
+      .join("\n") || "• Aucune donnée";
+
+    const bySource = (stats.docs.bySource || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.source}: ${r.docs}`)
+      .join("\n") || "• Aucune donnée";
+
+    const msg =
+      `📄 *KADI — DOCS & PRODUIT*\n\n` +
+      `📊 Volume\n` +
+      `• Total: ${stats.docs.total}\n` +
+      `• 7j: ${stats.docs.last7}\n` +
+      `• 30j: ${stats.docs.last30}\n\n` +
+      `💰 Business\n` +
+      `• Total FCFA: ${money(stats.docs.sumAll)}\n` +
+      `• 30j: ${money(stats.docs.sum30)}\n` +
+      `• Panier moyen: ${money(stats.docs.avgAll)}\n\n` +
+      `🤖 Usage\n` +
+      `• OCR: ${stats.docs.ocrDocs}\n` +
+      `• Manuel: ${stats.docs.manualDocs}\n` +
+      `• Gemini: ${stats.docs.geminiParsedDocs}\n` +
+      `• Tampon: ${stats.docs.stampedDocs}\n\n` +
+      `📂 Types\n${byType}\n\n` +
+      `🧭 Sources\n${bySource}`;
+
+    return sendText(from, msg);
+  } catch (e) {
+    logger.error("stats_docs", e, { from });
+    return sendText(from, "❌ Erreur stats docs.");
+  }
+}
+
+async function handleStatsCreditsCommand(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
+
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const topReasons = (stats.credits.byReason30 || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.reason}: +${r.added} / -${r.consumed}`)
+      .join("\n") || "• Aucune donnée";
+
+    const msg =
+      `💳 *KADI — CRÉDITS & REVENUS*\n\n` +
+      `📊 Global\n` +
+      `• Solde total: ${stats.credits.totalBalance}\n` +
+      `• Transactions: ${stats.credits.totalTx}\n\n` +
+      `📥 Ajouts\n` +
+      `• Total: ${stats.credits.creditsAdded}\n` +
+      `• 7j: ${stats.credits.added7}\n` +
+      `• Payés 30j: ${stats.credits.addedPaid30}\n\n` +
+      `📤 Consommation\n` +
+      `• Total: ${stats.credits.creditsConsumed}\n` +
+      `• 7j: ${stats.credits.consumed7}\n\n` +
+      `💰 Revenus\n` +
+      `• Crédits payés: ${stats.revenue.creditsPaid}\n` +
+      `• Estimé 30j: ${money(stats.revenue.est30)} FCFA\n\n` +
+      `🧾 Raisons (30j)\n${topReasons}`;
+
+    return sendText(from, msg);
+  } catch (e) {
+    logger.error("stats_credits", e, { from });
+    return sendText(from, "❌ Erreur stats crédits.");
+  }
+}
+
+async function handleStatsUsersCommand(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
+
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const topCountries = (stats.docs.byCountry || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.country}: ${r.docs} docs`)
+      .join("\n") || "• Aucune donnée";
+
+    const retention = (stats.retention || [])[0]
+      ? `• Cohorte: ${String(stats.retention[0].first_week || "").slice(0, 10)}\n` +
+        `• Nouveaux: ${stats.retention[0].new_users}\n` +
+        `• W1: ${stats.retention[0].retained_w1}\n` +
+        `• W2: ${stats.retention[0].retained_w2}`
+      : "• Aucune donnée";
+
+    const msg =
+      `👥 *KADI — USERS & GROWTH*\n\n` +
+      `📊 Utilisateurs\n` +
+      `• Total: ${stats.users.totalUsers}\n` +
+      `• Actifs 1j: ${stats.users.active1d}\n` +
+      `• Actifs 7j: ${stats.users.active7}\n` +
+      `• Actifs 30j: ${stats.users.active30}\n\n` +
+      `🚀 Adoption\n` +
+      `• Avec docs: ${stats.users.usersWithDocs}\n` +
+      `• Onboardés: ${stats.users.onboardedUsers}\n\n` +
+      `💳 Monétisation\n` +
+      `• Wallets: ${stats.users.usersWithWallet}\n` +
+      `• Ont payé: ${stats.users.usersRecharged}\n\n` +
+      `🌍 Top pays\n${topCountries}\n\n` +
+      `📈 Rétention\n${retention}`;
+
+    return sendText(from, msg);
+  } catch (e) {
+    logger.error("stats_users", e, { from });
+    return sendText(from, "❌ Erreur stats users.");
+  }
+}
+
+async function handleAlertsCommand(from) {
+  if (!ensureAdmin(from)) {
+    return sendText(from, "❌ Commande réservée à l'administrateur.");
+  }
+
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const today = formatDateISO();
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const todayDocs = Array.isArray(stats.docs?.daily30d)
+      ? (stats.docs.daily30d.find((r) => String(r.day || "").slice(0, 10) === today)?.docs || 0)
+      : 0;
+
+    const yesterdayDocs = Array.isArray(stats.docs?.daily30d)
+      ? (stats.docs.daily30d.find((r) => String(r.day || "").slice(0, 10) === yesterday)?.docs || 0)
+      : 0;
+
+    const todayCreditsConsumed = Array.isArray(stats.credits?.daily30d)
+      ? (stats.credits.daily30d.find((r) => String(r.day || "").slice(0, 10) === today)?.consumed || 0)
+      : 0;
+
+    const alerts = [];
+
+    if (todayDocs === 0) {
+      alerts.push("⚠️ Aucun document généré aujourd’hui.");
+    }
+
+    if (yesterdayDocs >= 5 && todayDocs < yesterdayDocs * 0.5) {
+      alerts.push(`📉 Forte baisse activité docs : ${todayDocs} aujourd’hui vs ${yesterdayDocs} hier.`);
+    }
+
+    if (yesterdayDocs >= 1 && todayDocs >= yesterdayDocs * 2) {
+      alerts.push(`🚀 Pic d’activité docs : ${todayDocs} aujourd’hui vs ${yesterdayDocs} hier.`);
+    }
+
+    if ((stats.users?.active7 || 0) < 5) {
+      alerts.push(`👥 Activité faible : seulement ${stats.users?.active7 || 0} utilisateur(s) actifs sur 7 jours.`);
+    }
+
+    if ((stats.revenue?.est30 || 0) <= 0) {
+      alerts.push("💸 Aucun revenu estimé détecté sur les 30 derniers jours.");
+    }
+
+    if ((stats.credits?.creditsConsumed || 0) > 0 && (stats.revenue?.est30 || 0) <= 0) {
+      alerts.push("⚠️ Les crédits sont consommés mais aucun revenu payant n’est encore détecté.");
+    }
+
+    if ((stats.docs?.ocrDocs || 0) > 0 && (stats.docs?.total || 0) > 0) {
+      const ocrShare = (stats.docs.ocrDocs / Math.max(1, stats.docs.total)) * 100;
+      if (ocrShare >= 60) {
+        alerts.push(`📷 Forte part OCR : ${Math.round(ocrShare)}% des documents viennent de l’OCR.`);
+      }
+    }
+
+    if ((stats.docs?.stampedDocs || 0) >= 10) {
+      alerts.push(`🟦 Bon usage du tampon : ${stats.docs.stampedDocs} document(s) avec tampon.`);
+    }
+
+    if (todayCreditsConsumed >= 20) {
+      alerts.push(`🔥 Forte consommation aujourd’hui : ${todayCreditsConsumed} crédits consommés.`);
+    }
+
+    if ((stats.users?.totalUsers || 0) > 0) {
+      const onboardRate = ((stats.users?.onboardedUsers || 0) / Math.max(1, stats.users.totalUsers)) * 100;
+      if (onboardRate < 40) {
+        alerts.push(`🧭 Onboarding faible : seulement ${Math.round(onboardRate)}% des utilisateurs ont terminé le profil.`);
+      }
+    }
+
+    if (!alerts.length) {
+      return sendText(
+        from,
+        "✅ *KADI ALERTS*\n\nAucune alerte critique pour le moment.\nLe système semble stable."
+      );
+    }
+
+    const msg =
+      `🚨 *KADI ALERTS*\n\n` +
+      alerts.map((a, i) => `${i + 1}. ${a}`).join("\n");
+
+    return sendText(from, msg);
+  } catch (e) {
+    logger.error("alerts_command", e, { from });
+    return sendText(from, "❌ Impossible de calculer les alertes pour le moment.");
   }
 }
 
@@ -1651,8 +2026,15 @@ async function handleCommand(from, text) {
   // Commandes générales
   // ===============================
   if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
-  if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
-  if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
+if (lower === "/statsmini" || lower === "statsmini") return handleStatsMiniCommand(from);
+if (lower === "/statsdocs" || lower === "statsdocs") return handleStatsDocsCommand(from);
+if (lower === "/statscredits" || lower === "statscredits") return handleStatsCreditsCommand(from);
+if (lower === "/statsusers" || lower === "statsusers") return handleStatsUsersCommand(from);
+if (lower === "/alert" || lower === "/alerts" || lower === "alert" || lower === "alerts") {
+  return handleAlertsCommand(from);
+}
+if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
+if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
 
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     await replyBalance(from);
@@ -1705,16 +2087,22 @@ async function handleInteractiveReply(from, replyId) {
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
     s.lastDocDraft = null;
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-    s.lastDocDraft = {
-      type: mode,
-      factureKind: null,
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      finance: null,
-      source: "ocr",
-    };
+   s.lastDocDraft = {
+  type: mode,
+  factureKind: null,
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  items: [],
+  finance: null,
+  source: "ocr",
+  meta: {
+    usedGeminiParse: false,
+    businessSector: null,
+    usedStamp: false,
+    creditsConsumed: null,
+  },
+};
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -1722,16 +2110,22 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-    s.lastDocDraft = {
-      type: "facture",
-      factureKind: "definitive",
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      finance: null,
-      source: "ocr",
-    };
+  s.lastDocDraft = {
+  type: "facture",
+  factureKind: "definitive",
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  items: [],
+  finance: null,
+  source: "ocr",
+  meta: {
+    usedGeminiParse: false,
+    businessSector: null,
+    usedStamp: false,
+    creditsConsumed: null,
+  },
+};
     return processOcrImageToDraft(from, mediaId);
   }
 

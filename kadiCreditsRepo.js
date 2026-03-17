@@ -211,7 +211,7 @@ async function redeemCode({ waId, code }) {
 
   if (e2) throw e2;
 
-  const newBal = await addCredits(waId, data.credits, `code:${clean}`);
+  const newBal = await addCredits(waId, data.credits, "code_redeem");
   return { ok: true, added: data.credits, balance: newBal };
 }
 
