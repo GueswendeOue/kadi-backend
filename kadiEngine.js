@@ -1046,13 +1046,8 @@ async function processOcrImageToDraft(from, mediaId) {
       source: "ocr",
     };
   }
-  if (!s.lastDocDraft.meta) {
-  s.lastDocDraft.meta = {
-    usedGeminiParse: false,
-    businessSector: null,
-    usedStamp: false,
-    creditsConsumed: null,
-  };
+if (!s.lastDocDraft.meta) {
+  s.lastDocDraft.meta = makeDraftMeta();
 }
 
   s.step = "ocr_review";
@@ -1095,10 +1090,10 @@ if (parsed.items.length > 10) {
   throw new Error("Gemini returned too many items");
 }
 
-    s.lastDocDraft.meta = {
+    s.lastDocDraft.meta = makeDraftMeta({
   ...(s.lastDocDraft.meta || {}),
   usedGeminiParse: true,
-};
+});
 
 logger.info("ocr", "Gemini parsing ok", {
   from,
@@ -1112,10 +1107,10 @@ logger.info("ocr", "Gemini parsing ok", {
       message: e?.message,
     });
 
-   s.lastDocDraft.meta = {
+   s.lastDocDraft.meta = makeDraftMeta({
   ...(s.lastDocDraft.meta || {}),
   usedGeminiParse: false,
-};
+});
 
 parsed = parseOcrToDraft(ocrText);
   }
@@ -1299,13 +1294,13 @@ draft.finance = {
 
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
 
-    draft.meta = {
+    draft.meta = makeDraftMeta({
   ...(draft.meta || {}),
   creditsConsumed: cost,
   usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
   usedGeminiParse: !!draft?.meta?.usedGeminiParse,
   businessSector: draft?.meta?.businessSector || null,
-};
+});
 
 draft.status = "generated";
 
@@ -2087,7 +2082,7 @@ async function handleInteractiveReply(from, replyId) {
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
     s.lastDocDraft = null;
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-   s.lastDocDraft = {
+s.lastDocDraft = {
   type: mode,
   factureKind: null,
   docNumber: null,
@@ -2096,12 +2091,7 @@ async function handleInteractiveReply(from, replyId) {
   items: [],
   finance: null,
   source: "ocr",
-  meta: {
-    usedGeminiParse: false,
-    businessSector: null,
-    usedStamp: false,
-    creditsConsumed: null,
-  },
+  meta: makeDraftMeta(),
 };
     return processOcrImageToDraft(from, mediaId);
   }
@@ -2110,7 +2100,7 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-  s.lastDocDraft = {
+s.lastDocDraft = {
   type: "facture",
   factureKind: "definitive",
   docNumber: null,
@@ -2119,12 +2109,7 @@ async function handleInteractiveReply(from, replyId) {
   items: [],
   finance: null,
   source: "ocr",
-  meta: {
-    usedGeminiParse: false,
-    businessSector: null,
-    usedStamp: false,
-    creditsConsumed: null,
-  },
+  meta: makeDraftMeta(),
 };
     return processOcrImageToDraft(from, mediaId);
   }
