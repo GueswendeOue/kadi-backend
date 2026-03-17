@@ -1304,15 +1304,16 @@ draft.finance = {
 
 draft.status = "generated";
 
-    try {
-      await saveDocument({ waId: from, doc: draft });
-    } catch (e) {
-      console.warn("saveDocument error:", e?.message);
-    }
 
     const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
     const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
     if (!up?.id) throw new Error("Upload PDF échoué");
+
+     try {
+      await saveDocument({ waId: from, doc: draft });
+    } catch (e) {
+      console.warn("saveDocument error:", e?.message);
+    }
 
     successAfterDebit = true;
 
