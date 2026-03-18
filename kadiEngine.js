@@ -833,17 +833,17 @@ async function handleSmartItemsBlockText(from, text) {
 
   const totalsDetected = extractBlockTotals(raw);
 
- draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
-draft.finance = computeFinance(draft);
+  draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
+  draft.finance = computeFinance(draft);
 
-const computedTotal = Number(draft.finance?.gross || 0);
+  const computedTotal = Number(draft.finance?.gross || 0);
 
-draft.meta = makeDraftMeta({
-  ...(draft.meta || {}),
-  detectedMaterialTotal: totalsDetected.materialTotal,
-  detectedGrandTotal: totalsDetected.grandTotal,
-  computedTotalFromParsedItems: computedTotal,
-});
+  draft.meta = makeDraftMeta({
+    ...(draft.meta || {}),
+    detectedMaterialTotal: totalsDetected.materialTotal,
+    detectedGrandTotal: totalsDetected.grandTotal,
+    computedTotalFromParsedItems: computedTotal,
+  });
 
   if (!safe(draft.client)) {
     s.step = "missing_client_pdf";
@@ -855,26 +855,26 @@ draft.meta = makeDraftMeta({
   }
 
   const totalsCheck = buildTotalsCheckMessage({
-  computedTotal: draft.finance?.gross || 0,
-  materialTotal: totalsDetected.materialTotal,
-  grandTotal: totalsDetected.grandTotal,
-});
+    computedTotal: draft.finance?.gross || 0,
+    materialTotal: totalsDetected.materialTotal,
+    grandTotal: totalsDetected.grandTotal,
+  });
 
-if (totalsCheck.warning) {
-  await sendText(from, totalsCheck.text);
+  if (totalsCheck.warning) {
+    await sendText(from, totalsCheck.text);
 
-  await sendButtons(
-    from,
-    "Que voulez-vous faire ?",
-    [
-      { id: "SMARTBLOCK_FIX", title: "Corriger" },
-      { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-    ]
-  );
+    await sendButtons(
+      from,
+      "Que voulez-vous faire ?",
+      [
+        { id: "SMARTBLOCK_FIX", title: "Corriger" },
+        { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+      ]
+    );
 
-  s.step = "smartblock_warning";
-  return true;
-}
+    s.step = "smartblock_warning";
+    return true;
+  }
 
   s.step = "doc_review";
 
@@ -891,24 +891,7 @@ if (totalsCheck.warning) {
     );
   }
 
-if (totalsDetected.materialTotal != null || totalsDetected.grandTotal != null) {
-  await sendButtons(
-    from,
-    `📊 Vérification des totaux :
-
-• Total calculé : ${money(draft.finance.total)} FCFA
-• Total matériel détecté : ${money(totalsDetected.materialTotal || 0)} FCFA
-• Total général détecté : ${money(totalsDetected.grandTotal || 0)} FCFA
-
-⚠️ Les totaux ne coïncident pas.
-
-Que voulez-vous faire ?`,
-    [
-      { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-      { id: "SMARTBLOCK_FIX", title: "Corriger" },
-    ]
-  );
-
+  await sendPreviewMenu(from);
   return true;
 }
 
@@ -929,27 +912,6 @@ async function askDocTypeForSmartBlock(from, text) {
       { id: "SMARTBLOCK_RECU", title: "Reçu" },
     ]
   );
-
-  return true;
-}
-
-function looksLikeRealItemLabel(label) {
-  const t = String(label || "").trim();
-  if (!t) return false;
-  if (t.length < 4) return false;
-
-  const letters = (t.match(/[a-zàâçéèêëîïôûùüÿñæœ]/gi) || []).length;
-  if (letters < 3) return false;
-
-  const badPatterns = [
-    /^[-–—]+$/,
-    /^[=|;:.,]+$/,
-    /^(prix|total|montant|date|client|nom)$/i,
-  ];
-
-  for (const p of badPatterns) {
-    if (p.test(t)) return false;
-  }
 
   return true;
 }
