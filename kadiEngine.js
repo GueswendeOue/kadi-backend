@@ -771,6 +771,49 @@ function extractBlockTotals(input) {
   };
 }
 
+function buildTotalsCheckMessage({ computedTotal, materialTotal, grandTotal }) {
+  const computed = Number(computedTotal || 0);
+  const material = Number(materialTotal || 0);
+  const grand = Number(grandTotal || 0);
+
+  let lines = [];
+
+  lines.push(`📊 Vérification des totaux :`);
+  lines.push(`• Total calculé (lignes reconnues) : ${money(computed)} FCFA`);
+
+  if (material > 0) {
+    lines.push(`• Total matériel détecté : ${money(material)} FCFA`);
+  }
+
+  if (grand > 0) {
+    lines.push(`• Total général détecté : ${money(grand)} FCFA`);
+  }
+
+  let warning = false;
+
+  if (grand > 0 && grand !== computed) {
+    warning = true;
+  } else if (grand <= 0 && material > 0 && material !== computed) {
+    warning = true;
+  }
+
+  if (warning) {
+    lines.push(
+      ``,
+      `⚠️ Si Les totaux ne coïncident pas.`,
+      ` C'est que certaines lignes n'ont peut-être pas été reconnues correctement.`,
+      `Vérifiez avant de générer le PDF.`
+    );
+  } else {
+    lines.push(``, `✅ Les totaux semblent cohérents.`);
+  }
+
+  return {
+    text: lines.join("\n"),
+    warning,
+  };
+}
+
 async function handleSmartItemsBlockText(from, text) {
   const s = getSession(from);
   let draft = s.lastDocDraft;
@@ -790,14 +833,17 @@ async function handleSmartItemsBlockText(from, text) {
 
   const totalsDetected = extractBlockTotals(raw);
 
-  draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
-  draft.finance = computeFinance(draft);
+ draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
+draft.finance = computeFinance(draft);
 
-  draft.meta = makeDraftMeta({
-    ...(draft.meta || {}),
-    detectedMaterialTotal: totalsDetected.materialTotal,
-    detectedGrandTotal: totalsDetected.grandTotal,
-  });
+const computedTotal = Number(draft.finance?.gross || 0);
+
+draft.meta = makeDraftMeta({
+  ...(draft.meta || {}),
+  detectedMaterialTotal: totalsDetected.materialTotal,
+  detectedGrandTotal: totalsDetected.grandTotal,
+  computedTotalFromParsedItems: computedTotal,
+});
 
   if (!safe(draft.client)) {
     s.step = "missing_client_pdf";
@@ -823,14 +869,15 @@ async function handleSmartItemsBlockText(from, text) {
     );
   }
 
-  if (totalsDetected.materialTotal != null || totalsDetected.grandTotal != null) {
-    await sendText(
-      from,
-      `📌 Totaux détectés dans votre texte :\n` +
-      `• Total matériel : ${money(totalsDetected.materialTotal || 0)} FCFA\n` +
-      `• Total général : ${money(totalsDetected.grandTotal || 0)} FCFA`
-    );
-  }
+if (totalsDetected.materialTotal != null || totalsDetected.grandTotal != null) {
+  const totalsCheck = buildTotalsCheckMessage({
+    computedTotal: draft.finance?.gross || 0,
+    materialTotal: totalsDetected.materialTotal,
+    grandTotal: totalsDetected.grandTotal,
+  });
+
+  await sendText(from, totalsCheck.text);
+}
 
   await sendPreviewMenu(from);
   return true;
