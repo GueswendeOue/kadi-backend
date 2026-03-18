@@ -2916,6 +2916,133 @@ async function handleInteractiveReply(from, replyId) {
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
 }
 
+async function handleIncomingMessage(value) {
+  const start = Date.now();
+
+  try {
+    if (!value) return;
+    if (value.statuses?.length) return;
+    if (!value.messages?.length) return;
+
+    const msg = value.messages[0];
+    const from = msg.from;
+
+    if (!isValidWhatsAppId(from)) {
+      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { from });
+      return;
+    }
+
+    return await withUserLock(from, async () => {
+      try {
+        await recordActivity(from);
+      } catch (e) {
+        logger.warn("activity_recording", e.message, { from });
+      }
+
+      await ensureWelcomeCredits(from);
+      await maybeSendOnboarding(from);
+
+      const replyIdInteractive =
+        msg.interactive?.button_reply?.id ||
+        msg.interactive?.list_reply?.id ||
+        null;
+
+      const replyIdButton =
+        msg.button?.payload ||
+        msg.button?.text ||
+        null;
+
+      if (replyIdInteractive || replyIdButton) {
+        console.log("[KADI] BUTTON CLICK", {
+          from,
+          msgType: msg.type,
+          replyIdInteractive,
+          replyIdButton,
+        });
+      }
+
+      if (msg.type === "interactive" && replyIdInteractive) {
+        return handleInteractiveReply(from, replyIdInteractive);
+      }
+
+      if (msg.type === "button" && replyIdButton) {
+        const mapped =
+          replyIdButton === "Activer" || replyIdButton === "Désactiver"
+            ? "STAMP_TOGGLE"
+            : replyIdButton;
+
+        return handleInteractiveReply(from, mapped);
+      }
+
+      if (msg.type === "image") {
+        const s = getSession(from);
+        const caption = norm(msg.image?.caption || "");
+
+        if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
+          const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
+          s.adminPendingAction = "broadcast_image";
+          s.broadcastCaption = commandCaption || "";
+          return handleAdminBroadcastImage(from, msg);
+        }
+
+        if (s.adminPendingAction === "broadcast_image") {
+          return handleAdminBroadcastImage(from, msg);
+        }
+
+        if (s.step === "profile" && s.profileStep === "logo") {
+          return handleLogoImage(from, msg);
+        }
+
+        return handleIncomingImage(from, msg);
+      }
+
+      const text = norm(msg.text?.body);
+      if (!text) return;
+
+      // 1) ADMIN d'abord
+      if (await handleAdmin(from, text)) return;
+
+      // 2) Recharge code avant les flows
+      const mCode = text.match(REGEX.code);
+      if (mCode) {
+        const result = await redeemCode({ waId: from, code: mCode[1] });
+        if (!result.ok) {
+          if (result.error === "CODE_DEJA_UTILISE") {
+            return sendText(from, "❌ Code déjà utilisé.");
+          }
+          return sendText(from, "❌ Code invalide.");
+        }
+
+        return sendText(
+          from,
+          `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`
+        );
+      }
+
+      // 3) Commandes globales avant les flows
+      if (await handleCommand(from, text)) return;
+
+      // 4) Collage intelligent de plusieurs lignes produits
+      if (await handleSmartItemsBlockText(from, text)) return;
+
+      // 5) Ensuite seulement les flows
+      if (await handleProfileAnswer(from, text)) return;
+      if (await handleProductFlowText(from, text)) return;
+
+      await sendText(from, "Tapez *MENU* pour commencer.");
+    });
+  } catch (e) {
+    logger.error("incoming_message", e, {
+      messageType: value?.messages?.[0]?.type,
+    });
+  } finally {
+    const duration = Date.now() - start;
+    logger.metric("message_processing", duration, true, {
+      messageType: value?.messages?.[0]?.type,
+    });
+  }
+}
+
 async function handleIncomingStatuses(statuses = []) {
   try {
     for (const st of statuses) {
