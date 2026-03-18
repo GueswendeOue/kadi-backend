@@ -776,10 +776,10 @@ function buildTotalsCheckMessage({ computedTotal, materialTotal, grandTotal }) {
   const material = Number(materialTotal || 0);
   const grand = Number(grandTotal || 0);
 
-  let lines = [];
+  const lines = [];
 
-  lines.push(`📊 Vérification des totaux :`);
-  lines.push(`• Total calculé (lignes reconnues) : ${money(computed)} FCFA`);
+  lines.push("📊 Vérification des totaux :");
+  lines.push(`• Total calculé : ${money(computed)} FCFA`);
 
   if (material > 0) {
     lines.push(`• Total matériel détecté : ${money(material)} FCFA`);
@@ -798,14 +798,13 @@ function buildTotalsCheckMessage({ computedTotal, materialTotal, grandTotal }) {
   }
 
   if (warning) {
-    lines.push(
-      ``,
-      `⚠️ Si Les totaux ne coïncident pas.`,
-      ` C'est que certaines lignes n'ont peut-être pas été reconnues correctement.`,
-      `Vérifiez avant de générer le PDF.`
-    );
+    lines.push("");
+    lines.push("⚠️ Les totaux ne correspondent pas.");
+    lines.push("👉 Certaines lignes n’ont peut-être pas été prises en compte.");
+    lines.push("✔️ Vérifiez avant de générer le PDF.");
   } else {
-    lines.push(``, `✅ Les totaux semblent cohérents.`);
+    lines.push("");
+    lines.push("✅ Les totaux semblent cohérents.");
   }
 
   return {
@@ -826,7 +825,7 @@ async function handleSmartItemsBlockText(from, text) {
   const { items, ignored } = parseItemsBlockSmart(raw);
   if (!Array.isArray(items) || items.length < 2) return false;
 
-  // ✅ si aucun draft actif, demander directement le type de document
+  // Si aucun draft actif, demander le type de document
   if (!draft) {
     return askDocTypeForSmartBlock(from, raw);
   }
@@ -2652,31 +2651,31 @@ if (lower.startsWith("/export") || lower.startsWith("export")) return handleExpo
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
 
-  if (replyId === "SMARTBLOCK_CONTINUE") {
-  const draft = s.lastDocDraft;
-
-  if (!draft) {
-    return sendText(from, "❌ Aucun document en cours.");
+  if (replyId === "SMARTBLOCK_FIX") {
+    return sendText(
+      from,
+      "✍️ D’accord. Ajoutez ou corrigez les lignes, puis renvoyez le texte."
+    );
   }
 
-  if (replyId === "SMARTBLOCK_FIX") {
-  return sendText(
-    from,
-    "✍️ D’accord. Ajoutez ou corrigez les lignes, puis renvoyez le texte."
-  );
-}
+  if (replyId === "SMARTBLOCK_CONTINUE") {
+    const draft = s.lastDocDraft;
 
-  s.step = "doc_review";
+    if (!draft) {
+      return sendText(from, "❌ Aucun document en cours.");
+    }
 
-  const preview = buildPreviewMessage({ doc: draft });
-  await sendText(from, preview);
+    s.step = "doc_review";
 
-  const cost = computeBasePdfCost(draft);
-  await sendText(from, formatBaseCostLine(cost));
+    const preview = buildPreviewMessage({ doc: draft });
+    await sendText(from, preview);
 
-  await sendPreviewMenu(from);
-  return;
-}
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
+    return;
+  }
 
   if (replyId === "BACK_HOME") return sendHomeMenu(from);
   if (replyId === "BACK_DOCS") return sendDocsMenu(from);
@@ -2686,38 +2685,38 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
   if (
-  replyId === "SMARTBLOCK_DEVIS" ||
-  replyId === "SMARTBLOCK_FACTURE" ||
-  replyId === "SMARTBLOCK_RECU"
-) {
-  const raw = s.pendingSmartBlockText;
-  if (!raw) {
-    return sendText(from, "❌ Bloc introuvable. Renvoyez votre texte.");
+    replyId === "SMARTBLOCK_DEVIS" ||
+    replyId === "SMARTBLOCK_FACTURE" ||
+    replyId === "SMARTBLOCK_RECU"
+  ) {
+    const raw = s.pendingSmartBlockText;
+    if (!raw) {
+      return sendText(from, "❌ Bloc introuvable. Renvoyez votre texte.");
+    }
+
+    const mode =
+      replyId === "SMARTBLOCK_FACTURE"
+        ? "facture"
+        : replyId === "SMARTBLOCK_RECU"
+        ? "recu"
+        : "devis";
+
+    s.lastDocDraft = {
+      type: mode,
+      factureKind: mode === "facture" ? "definitive" : null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "smart_block",
+      meta: makeDraftMeta(),
+    };
+
+    s.pendingSmartBlockText = null;
+
+    return handleSmartItemsBlockText(from, raw);
   }
-
-  const mode =
-    replyId === "SMARTBLOCK_FACTURE"
-      ? "facture"
-      : replyId === "SMARTBLOCK_RECU"
-      ? "recu"
-      : "devis";
-
-  s.lastDocDraft = {
-    type: mode,
-    factureKind: mode === "facture" ? "definitive" : null,
-    docNumber: null,
-    date: formatDateISO(),
-    client: null,
-    items: [],
-    finance: null,
-    source: "smart_block",
-    meta: makeDraftMeta(),
-  };
-
-  s.pendingSmartBlockText = null;
-
-  return handleSmartItemsBlockText(from, raw);
-}
 
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
@@ -2737,19 +2736,20 @@ async function handleInteractiveReply(from, replyId) {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-    s.lastDocDraft = null;
+
     const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-s.lastDocDraft = {
-  type: mode,
-  factureKind: null,
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  items: [],
-  finance: null,
-  source: "ocr",
-  meta: makeDraftMeta(),
-};
+    s.lastDocDraft = {
+      type: mode,
+      factureKind: null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+      meta: makeDraftMeta(),
+    };
+
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -2757,17 +2757,19 @@ s.lastDocDraft = {
     const mediaId = s.pendingOcrMediaId;
     s.pendingOcrMediaId = null;
     if (!mediaId) return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
-s.lastDocDraft = {
-  type: "facture",
-  factureKind: "definitive",
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  items: [],
-  finance: null,
-  source: "ocr",
-  meta: makeDraftMeta(),
-};
+
+    s.lastDocDraft = {
+      type: "facture",
+      factureKind: "definitive",
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+      meta: makeDraftMeta(),
+    };
+
     return processOcrImageToDraft(from, mediaId);
   }
 
@@ -2815,28 +2817,37 @@ s.lastDocDraft = {
 
   if (replyId === "STAMP_EDIT_TITLE") {
     s.step = "stamp_title";
-    await sendText(from, "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer.");
+    await sendText(
+      from,
+      "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer."
+    );
     return;
   }
+
   if (replyId === "STAMP_MORE") return sendStampMoreMenu(from);
+
   if (replyId === "STAMP_POS") {
     await sendStampPositionMenu(from);
     return sendStampPositionMenu2(from);
   }
+
   if (replyId === "STAMP_SIZE") return sendStampSizeMenu(from);
 
   if (replyId === "STAMP_POS_BR") {
     await updateProfile(from, { stamp_position: "bottom-right" });
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_POS_BL") {
     await updateProfile(from, { stamp_position: "bottom-left" });
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_POS_TR") {
     await updateProfile(from, { stamp_position: "top-right" });
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_POS_TL") {
     await updateProfile(from, { stamp_position: "top-left" });
     return sendStampMenu(from);
@@ -2846,10 +2857,12 @@ s.lastDocDraft = {
     await updateProfile(from, { stamp_size: 150 });
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_SIZE_M") {
     await updateProfile(from, { stamp_size: 170 });
     return sendStampMenu(from);
   }
+
   if (replyId === "STAMP_SIZE_L") {
     await updateProfile(from, { stamp_size: 200 });
     return sendStampMenu(from);
@@ -2861,7 +2874,11 @@ s.lastDocDraft = {
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
-    if (s.lastDocDraft.items.length < LIMITS.maxItems) s.lastDocDraft.items.push(item);
+
+    if (s.lastDocDraft.items.length < LIMITS.maxItems) {
+      s.lastDocDraft.items.push(item);
+    }
+
     s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
     s.itemDraft = null;
     return sendAfterProductMenu(from);
@@ -2872,6 +2889,7 @@ s.lastDocDraft = {
 
   if (replyId === "DOC_FINISH") {
     s.step = "doc_review";
+
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
 
@@ -2896,136 +2914,6 @@ s.lastDocDraft = {
   }
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
-}
-
-// ===============================
-// MAIN ENTRY — handleIncomingMessage
-// ===============================
-async function handleIncomingMessage(value) {
-  const start = Date.now();
-
-  try {
-    if (!value) return;
-    if (value.statuses?.length) return;
-    if (!value.messages?.length) return;
-
-    const msg = value.messages[0];
-    const from = msg.from;
-
-    if (!isValidWhatsAppId(from)) {
-      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { from });
-      return;
-    }
-
-    return await withUserLock(from, async () => {
-      try {
-        await recordActivity(from);
-      } catch (e) {
-        logger.warn("activity_recording", e.message, { from });
-      }
-
-      await ensureWelcomeCredits(from);
-      await maybeSendOnboarding(from);
-
-      const replyIdInteractive =
-        msg.interactive?.button_reply?.id ||
-        msg.interactive?.list_reply?.id ||
-        null;
-
-      const replyIdButton =
-        msg.button?.payload ||
-        msg.button?.text ||
-        null;
-
-      if (replyIdInteractive || replyIdButton) {
-        console.log("[KADI] BUTTON CLICK", {
-          from,
-          msgType: msg.type,
-          replyIdInteractive,
-          replyIdButton,
-        });
-      }
-
-      if (msg.type === "interactive" && replyIdInteractive) {
-        return handleInteractiveReply(from, replyIdInteractive);
-      }
-
-      if (msg.type === "button" && replyIdButton) {
-        const mapped =
-          replyIdButton === "Activer" || replyIdButton === "Désactiver"
-            ? "STAMP_TOGGLE"
-            : replyIdButton;
-
-        return handleInteractiveReply(from, mapped);
-      }
-
-      if (msg.type === "image") {
-        const s = getSession(from);
-        const caption = norm(msg.image?.caption || "");
-
-        if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
-          const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
-          s.adminPendingAction = "broadcast_image";
-          s.broadcastCaption = commandCaption || "";
-          return handleAdminBroadcastImage(from, msg);
-        }
-
-        if (s.adminPendingAction === "broadcast_image") {
-          return handleAdminBroadcastImage(from, msg);
-        }
-
-        if (s.step === "profile" && s.profileStep === "logo") {
-          return handleLogoImage(from, msg);
-        }
-
-        return handleIncomingImage(from, msg);
-      }
-
-      const text = norm(msg.text?.body);
-      if (!text) return;
-
-      // 1) ADMIN d'abord
-      if (await handleAdmin(from, text)) return;
-
-      // 2) Recharge code avant les flows
-      const mCode = text.match(REGEX.code);
-      if (mCode) {
-        const result = await redeemCode({ waId: from, code: mCode[1] });
-        if (!result.ok) {
-          if (result.error === "CODE_DEJA_UTILISE") {
-            return sendText(from, "❌ Code déjà utilisé.");
-          }
-          return sendText(from, "❌ Code invalide.");
-        }
-
-        return sendText(
-          from,
-          `✅ Recharge OK : +${result.added} crédits\n💳 Nouveau solde : ${result.balance}`
-        );
-      }
-
-     // 3) Commandes globales avant les flows
-if (await handleCommand(from, text)) return;
-
-// 4) Collage intelligent de plusieurs lignes produits
-if (await handleSmartItemsBlockText(from, text)) return;
-
-// 5) Ensuite seulement les flows
-if (await handleProfileAnswer(from, text)) return;
-if (await handleProductFlowText(from, text)) return;
-
-await sendText(from, "Tapez *MENU* pour commencer.");
-    });
-  } catch (e) {
-    logger.error("incoming_message", e, {
-      messageType: value?.messages?.[0]?.type,
-    });
-  } finally {
-    const duration = Date.now() - start;
-    logger.metric("message_processing", duration, true, {
-      messageType: value?.messages?.[0]?.type,
-    });
-  }
 }
 
 async function handleIncomingStatuses(statuses = []) {
