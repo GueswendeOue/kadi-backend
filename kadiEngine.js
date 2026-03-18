@@ -420,7 +420,6 @@ function normalizeItemLineText(input) {
 
 function isProbablyTotalLine(input) {
   const t = String(input || "").toLowerCase().trim();
-
   if (!t) return true;
 
   return [
@@ -432,12 +431,6 @@ function isProbablyTotalLine(input) {
     "prix total",
     "sous total",
     "montant total",
-    "main d'oeuvre",
-    "main d œuvre",
-    "main d’oeuvre",
-    "transport",
-    "acompte",
-    "avance",
     "reste",
   ].some((x) => t.includes(x));
 }
@@ -752,41 +745,69 @@ function parseItemsBlockSmart(input) {
   return { items, ignored };
 }
 
+function extractBlockTotals(input) {
+  const lines = splitCandidateItemLines(input);
+
+  let materialTotal = null;
+  let grandTotal = null;
+
+  for (const line of lines) {
+    const t = String(line || "").toLowerCase().trim();
+
+    if (t.includes("total matériel") || t.includes("total materiel")) {
+      const nums = parseLineNumbersOrdered(line);
+      if (nums.length) materialTotal = nums[nums.length - 1].value;
+    }
+
+    if (t.includes("total général") || t.includes("total general")) {
+      const nums = parseLineNumbersOrdered(line);
+      if (nums.length) grandTotal = nums[nums.length - 1].value;
+    }
+  }
+
+  return {
+    materialTotal,
+    grandTotal,
+  };
+}
+
 async function handleSmartItemsBlockText(from, text) {
   const s = getSession(from);
-  const draft = s.lastDocDraft;
+  let draft = s.lastDocDraft;
 
-  // Il faut déjà un document en cours
-  if (!draft) return false;
-
-  // On ne gère que du multi-lignes ici
   const raw = String(text || "").trim();
   if (!raw || !/\r?\n/.test(raw)) return false;
 
-  // Éviter d'intercepter certains steps sensibles
   if (s.step === "profile" || s.step === "stamp_title") return false;
 
   const { items, ignored } = parseItemsBlockSmart(raw);
-
-  // Il faut au moins 2 lignes reconnues pour considérer que c'est un vrai bloc
   if (!Array.isArray(items) || items.length < 2) return false;
 
-  // Convertir vers le format draft existant
+  // ✅ si aucun draft actif, demander directement le type de document
+  if (!draft) {
+    return askDocTypeForSmartBlock(from, raw);
+  }
+
+  const totalsDetected = extractBlockTotals(raw);
+
   draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
   draft.finance = computeFinance(draft);
 
-  // Si client manquant, on demande le client avant preview PDF
+  draft.meta = makeDraftMeta({
+    ...(draft.meta || {}),
+    detectedMaterialTotal: totalsDetected.materialTotal,
+    detectedGrandTotal: totalsDetected.grandTotal,
+  });
+
   if (!safe(draft.client)) {
     s.step = "missing_client_pdf";
     await sendText(
       from,
-      `✅ ${items.length} ligne(s) détectée(s).\n` +
-        `👤 Maintenant, tapez le nom du client :`
+      `✅ ${items.length} ligne(s) détectée(s).\n👤 Maintenant, tapez le nom du client :`
     );
     return true;
   }
 
-  // Sinon preview direct
   s.step = "doc_review";
 
   const preview = buildPreviewMessage({ doc: draft });
@@ -798,12 +819,41 @@ async function handleSmartItemsBlockText(from, text) {
   if (ignored.length > 0) {
     await sendText(
       from,
-      `ℹ️ ${ignored.length} ligne(s) non reconnue(s) ont été ignorée(s) ` +
-        `(ex: total, main d'œuvre, transport).`
+      `ℹ️ ${ignored.length} ligne(s) non reconnue(s) ont été ignorée(s).`
+    );
+  }
+
+  if (totalsDetected.materialTotal != null || totalsDetected.grandTotal != null) {
+    await sendText(
+      from,
+      `📌 Totaux détectés dans votre texte :\n` +
+      `• Total matériel : ${money(totalsDetected.materialTotal || 0)} FCFA\n` +
+      `• Total général : ${money(totalsDetected.grandTotal || 0)} FCFA`
     );
   }
 
   await sendPreviewMenu(from);
+  return true;
+}
+
+async function askDocTypeForSmartBlock(from, text) {
+  const s = getSession(from);
+  const { items } = parseItemsBlockSmart(text);
+
+  if (!items || items.length < 2) return false;
+
+  s.pendingSmartBlockText = String(text || "").trim();
+
+  await sendButtons(
+    from,
+    `🧠 J’ai détecté ${items.length} ligne(s) de produits.\n\nQuel document voulez-vous créer ?`,
+    [
+      { id: "SMARTBLOCK_DEVIS", title: "Devis" },
+      { id: "SMARTBLOCK_FACTURE", title: "Facture" },
+      { id: "SMARTBLOCK_RECU", title: "Reçu" },
+    ]
+  );
+
   return true;
 }
 
@@ -2570,6 +2620,40 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_DOCS") return sendDocsMenu(from);
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+
+  if (
+  replyId === "SMARTBLOCK_DEVIS" ||
+  replyId === "SMARTBLOCK_FACTURE" ||
+  replyId === "SMARTBLOCK_RECU"
+) {
+  const raw = s.pendingSmartBlockText;
+  if (!raw) {
+    return sendText(from, "❌ Bloc introuvable. Renvoyez votre texte.");
+  }
+
+  const mode =
+    replyId === "SMARTBLOCK_FACTURE"
+      ? "facture"
+      : replyId === "SMARTBLOCK_RECU"
+      ? "recu"
+      : "devis";
+
+  s.lastDocDraft = {
+    type: mode,
+    factureKind: mode === "facture" ? "definitive" : null,
+    docNumber: null,
+    date: formatDateISO(),
+    client: null,
+    items: [],
+    finance: null,
+    source: "smart_block",
+    meta: makeDraftMeta(),
+  };
+
+  s.pendingSmartBlockText = null;
+
+  return handleSmartItemsBlockText(from, raw);
+}
 
   if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
   if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
