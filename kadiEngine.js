@@ -854,6 +854,28 @@ draft.meta = makeDraftMeta({
     return true;
   }
 
+  const totalsCheck = buildTotalsCheckMessage({
+  computedTotal: draft.finance?.gross || 0,
+  materialTotal: totalsDetected.materialTotal,
+  grandTotal: totalsDetected.grandTotal,
+});
+
+if (totalsCheck.warning) {
+  await sendText(from, totalsCheck.text);
+
+  await sendButtons(
+    from,
+    "Que voulez-vous faire ?",
+    [
+      { id: "SMARTBLOCK_FIX", title: "Corriger" },
+      { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+    ]
+  );
+
+  s.step = "smartblock_warning";
+  return true;
+}
+
   s.step = "doc_review";
 
   const preview = buildPreviewMessage({ doc: draft });
@@ -870,16 +892,23 @@ draft.meta = makeDraftMeta({
   }
 
 if (totalsDetected.materialTotal != null || totalsDetected.grandTotal != null) {
-  const totalsCheck = buildTotalsCheckMessage({
-    computedTotal: draft.finance?.gross || 0,
-    materialTotal: totalsDetected.materialTotal,
-    grandTotal: totalsDetected.grandTotal,
-  });
+  await sendButtons(
+    from,
+    `📊 Vérification des totaux :
 
-  await sendText(from, totalsCheck.text);
-}
+• Total calculé : ${money(draft.finance.total)} FCFA
+• Total matériel détecté : ${money(totalsDetected.materialTotal || 0)} FCFA
+• Total général détecté : ${money(totalsDetected.grandTotal || 0)} FCFA
 
-  await sendPreviewMenu(from);
+⚠️ Les totaux ne coïncident pas.
+
+Que voulez-vous faire ?`,
+    [
+      { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+      { id: "SMARTBLOCK_FIX", title: "Corriger" },
+    ]
+  );
+
   return true;
 }
 
@@ -2660,6 +2689,32 @@ if (lower.startsWith("/export") || lower.startsWith("export")) return handleExpo
 // ===============================
 async function handleInteractiveReply(from, replyId) {
   const s = getSession(from);
+
+  if (replyId === "SMARTBLOCK_CONTINUE") {
+  const draft = s.lastDocDraft;
+
+  if (!draft) {
+    return sendText(from, "❌ Aucun document en cours.");
+  }
+
+  if (replyId === "SMARTBLOCK_FIX") {
+  return sendText(
+    from,
+    "✍️ D’accord. Ajoutez ou corrigez les lignes, puis renvoyez le texte."
+  );
+}
+
+  s.step = "doc_review";
+
+  const preview = buildPreviewMessage({ doc: draft });
+  await sendText(from, preview);
+
+  const cost = computeBasePdfCost(draft);
+  await sendText(from, formatBaseCostLine(cost));
+
+  await sendPreviewMenu(from);
+  return;
+}
 
   if (replyId === "BACK_HOME") return sendHomeMenu(from);
   if (replyId === "BACK_DOCS") return sendDocsMenu(from);
