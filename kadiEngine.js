@@ -813,6 +813,150 @@ function buildTotalsCheckMessage({ computedTotal, materialTotal, grandTotal }) {
   };
 }
 
+function detectBusinessType(items = []) {
+  const text = items
+    .map((it) => String(it?.label || "").toLowerCase())
+    .join(" ");
+
+  const artisanWords = [
+    "fil", "cable", "câble", "prise", "disjoncteur", "coffre",
+    "tube", "corniere", "cornière", "fer", "ciment", "sable",
+    "gravier", "tôle", "tole", "vitre", "vitrée", "alu", "soudure",
+    "main d'oeuvre", "main d’œuvre", "pose", "installation",
+    "chantier", "barre", "barres", "gaine", "pvc", "serrure"
+  ];
+
+  const commerceWords = [
+    "riz", "sucre", "huile", "boisson", "savon", "carton",
+    "bidon", "sac", "produit", "marchandise", "vente", "stock"
+  ];
+
+  const serviceWords = [
+    "prestation", "consultation", "audit", "formation",
+    "design", "maintenance", "réparation", "reparation",
+    "service", "honoraire", "frais"
+  ];
+
+  const score = (words) =>
+    words.reduce((acc, w) => acc + (text.includes(w) ? 1 : 0), 0);
+
+  const artisanScore = score(artisanWords);
+  const commerceScore = score(commerceWords);
+  const serviceScore = score(serviceWords);
+
+  if (artisanScore >= commerceScore && artisanScore >= serviceScore && artisanScore > 0) {
+    return "artisan";
+  }
+  if (commerceScore >= artisanScore && commerceScore >= serviceScore && commerceScore > 0) {
+    return "commerce";
+  }
+  if (serviceScore > 0) {
+    return "service";
+  }
+
+  return "generic";
+}
+
+function computeTotalsGapInfo({ computedTotal, materialTotal, grandTotal }) {
+  const computed = Number(computedTotal || 0);
+  const material = Number(materialTotal || 0);
+  const grand = Number(grandTotal || 0);
+
+  const reference = grand > 0 ? grand : material > 0 ? material : 0;
+  const absGap = Math.abs(reference - computed);
+  const gap = Math.max(0, reference - computed);
+
+  let severity = "none";
+  if (reference > 0 && absGap > 0) {
+    const ratio = absGap / reference;
+    if (ratio <= 0.05) severity = "small";
+    else if (ratio <= 0.2) severity = "medium";
+    else severity = "high";
+  }
+
+  return {
+    computed,
+    material,
+    grand,
+    reference,
+    gap,
+    absGap,
+    severity,
+    hasMismatch: reference > 0 && absGap > 0,
+  };
+}
+
+function buildSmartMismatchMessage({ businessType, gapInfo }) {
+  const {
+    computed,
+    material,
+    grand,
+    gap,
+    severity,
+    hasMismatch,
+  } = gapInfo;
+
+  if (!hasMismatch) {
+    return {
+      text:
+        `✅ Vérification terminée.\n\n` +
+        `Le total semble cohérent avec les lignes reconnues.`,
+      warning: false,
+    };
+  }
+
+  const lines = [];
+  lines.push("📊 Petite vérification :");
+  lines.push(`• Total reconnu par KADI : ${money(computed)} FCFA`);
+
+  if (material > 0) {
+    lines.push(`• Total matériel indiqué : ${money(material)} FCFA`);
+  }
+
+  if (grand > 0) {
+    lines.push(`• Total général indiqué : ${money(grand)} FCFA`);
+  }
+
+  lines.push("");
+
+  if (businessType === "artisan") {
+    if (severity === "high") {
+      lines.push("⚠️ Je pense qu’il manque plusieurs lignes dans le matériel ou la main d’œuvre.");
+      lines.push("");
+      lines.push(`👉 Écart estimé : ${money(gap)} FCFA.`);
+      lines.push("Vérifiez si tout le chantier a bien été envoyé.");
+    } else {
+      lines.push("⚠️ Je remarque une différence dans les montants.");
+      lines.push("");
+      lines.push("👉 Il manque peut-être une ligne de matériel, de pose ou de main d’œuvre.");
+    }
+  } else if (businessType === "commerce") {
+    if (severity === "high") {
+      lines.push("⚠️ Le total indiqué semble plus grand que les produits que j’ai reconnus.");
+      lines.push("");
+      lines.push(`👉 Écart estimé : ${money(gap)} FCFA.`);
+      lines.push("Vérifiez si tous les articles ont bien été inclus.");
+    } else {
+      lines.push("⚠️ Je remarque une différence entre le total indiqué et les produits reconnus.");
+      lines.push("");
+      lines.push("👉 Vérifiez s’il manque un article ou une quantité.");
+    }
+  } else if (businessType === "service") {
+    lines.push("⚠️ Le montant total indiqué ne correspond pas exactement aux éléments reconnus.");
+    lines.push("");
+    lines.push("👉 Vérifiez si une prestation ou un frais n’a pas été oublié.");
+  } else {
+    lines.push("⚠️ J’ai remarqué une différence entre le total indiqué et les lignes reconnues.");
+    lines.push("");
+    lines.push("👉 Il manque peut-être certaines lignes ou certains montants.");
+  }
+
+  return {
+    text: lines.join("\n"),
+    warning: true,
+  };
+}
+
 async function handleSmartItemsBlockText(from, text) {
   const s = getSession(from);
   let draft = s.lastDocDraft;
@@ -836,12 +980,21 @@ async function handleSmartItemsBlockText(from, text) {
   draft.finance = computeFinance(draft);
 
   const computedTotal = Number(draft.finance?.gross || 0);
+  const businessType = detectBusinessType(draft.items);
+  const gapInfo = computeTotalsGapInfo({
+    computedTotal,
+    materialTotal: totalsDetected.materialTotal,
+    grandTotal: totalsDetected.grandTotal,
+  });
 
   draft.meta = makeDraftMeta({
     ...(draft.meta || {}),
+    businessType,
     detectedMaterialTotal: totalsDetected.materialTotal,
     detectedGrandTotal: totalsDetected.grandTotal,
     computedTotalFromParsedItems: computedTotal,
+    totalsGap: gapInfo.gap,
+    totalsGapSeverity: gapInfo.severity,
   });
 
   if (!safe(draft.client)) {
@@ -853,18 +1006,17 @@ async function handleSmartItemsBlockText(from, text) {
     return true;
   }
 
-  const totalsCheck = buildTotalsCheckMessage({
-    computedTotal: draft.finance?.gross || 0,
-    materialTotal: totalsDetected.materialTotal,
-    grandTotal: totalsDetected.grandTotal,
+  const smartMessage = buildSmartMismatchMessage({
+    businessType,
+    gapInfo,
   });
 
-  if (totalsCheck.warning) {
-    await sendText(from, totalsCheck.text);
+  if (smartMessage.warning) {
+    await sendText(from, smartMessage.text);
 
     await sendButtons(
       from,
-      "Que voulez-vous faire ?",
+      "Choisissez une action :",
       [
         { id: "SMARTBLOCK_FIX", title: "Corriger" },
         { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
@@ -1307,29 +1459,37 @@ if (s.step === "missing_client_pdf") {
   const draft = s.lastDocDraft;
 
   // ✅ Cas spécial : document issu d'un bloc intelligent
-  if (draft?.source === "smart_block") {
-    const totalsCheck = buildTotalsCheckMessage({
-      computedTotal: draft?.finance?.gross || 0,
-      materialTotal: draft?.meta?.detectedMaterialTotal,
-      grandTotal: draft?.meta?.detectedGrandTotal,
-    });
+if (draft?.source === "smart_block") {
+  const businessType =
+    draft?.meta?.businessType || detectBusinessType(draft.items || []);
 
-    if (totalsCheck.warning) {
-      await sendText(from, totalsCheck.text);
+  const gapInfo = computeTotalsGapInfo({
+    computedTotal: draft?.finance?.gross || 0,
+    materialTotal: draft?.meta?.detectedMaterialTotal,
+    grandTotal: draft?.meta?.detectedGrandTotal,
+  });
 
-      await sendButtons(
-        from,
-        "Que voulez-vous faire ?",
-        [
-          { id: "SMARTBLOCK_FIX", title: "Corriger" },
-          { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-        ]
-      );
+  const smartMessage = buildSmartMismatchMessage({
+    businessType,
+    gapInfo,
+  });
 
-      s.step = "smartblock_warning";
-      return true;
-    }
+  if (smartMessage.warning) {
+    await sendText(from, smartMessage.text);
+
+    await sendButtons(
+      from,
+      "Que voulez-vous faire ?",
+      [
+        { id: "SMARTBLOCK_FIX", title: "Corriger" },
+        { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+      ]
+    );
+
+    s.step = "smartblock_warning";
+    return true;
   }
+}
 
   // ✅ Sinon flow normal
   s.step = "doc_review";
