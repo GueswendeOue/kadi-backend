@@ -1301,18 +1301,47 @@ async function handleProductFlowText(from, text) {
   const t = norm(text);
   if (!t) return false;
 
-  if (s.step === "missing_client_pdf") {
-    s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
-    s.step = "doc_review";
-    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-    await sendText(from, preview);
+if (s.step === "missing_client_pdf") {
+  s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
 
-    const cost = computeBasePdfCost(s.lastDocDraft);
-    await sendText(from, formatBaseCostLine(cost));
+  const draft = s.lastDocDraft;
 
-    await sendPreviewMenu(from);
-    return true;
+  // ✅ Cas spécial : document issu d'un bloc intelligent
+  if (draft?.source === "smart_block") {
+    const totalsCheck = buildTotalsCheckMessage({
+      computedTotal: draft?.finance?.gross || 0,
+      materialTotal: draft?.meta?.detectedMaterialTotal,
+      grandTotal: draft?.meta?.detectedGrandTotal,
+    });
+
+    if (totalsCheck.warning) {
+      await sendText(from, totalsCheck.text);
+
+      await sendButtons(
+        from,
+        "Que voulez-vous faire ?",
+        [
+          { id: "SMARTBLOCK_FIX", title: "Corriger" },
+          { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+        ]
+      );
+
+      s.step = "smartblock_warning";
+      return true;
+    }
   }
+
+  // ✅ Sinon flow normal
+  s.step = "doc_review";
+  const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+  await sendText(from, preview);
+
+  const cost = computeBasePdfCost(s.lastDocDraft);
+  await sendText(from, formatBaseCostLine(cost));
+
+  await sendPreviewMenu(from);
+  return true;
+}
 
   if (s.step === "doc_client") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
