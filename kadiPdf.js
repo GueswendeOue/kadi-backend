@@ -107,7 +107,12 @@ function closingPhrase(typeUpper) {
 async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
   const encoded = encodeURIComponent(prefillText || "Bonjour KADI");
   const url = `https://wa.me/${fullNumberE164}?text=${encoded}`;
-  const png = await QRCode.toBuffer(url, { type: "png", width: 140, margin: 1, errorCorrectionLevel: "M" });
+  const png = await QRCode.toBuffer(url, {
+    type: "png",
+    width: 140,
+    margin: 1,
+    errorCorrectionLevel: "M",
+  });
   return { png, url };
 }
 
@@ -115,7 +120,10 @@ async function makeKadiQrBuffer({ fullNumberE164, prefillText }) {
 async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer = null }) {
   const KADI_E164 = process.env.KADI_E164 || "22679239027";
   const KADI_PREFILL = process.env.KADI_QR_PREFILL || "Bonjour KADI, je veux créer un document";
-  const qr = await makeKadiQrBuffer({ fullNumberE164: KADI_E164, prefillText: KADI_PREFILL });
+  const qr = await makeKadiQrBuffer({
+    fullNumberE164: KADI_E164,
+    prefillText: KADI_PREFILL,
+  });
 
   return new Promise((resolve, reject) => {
     try {
@@ -138,27 +146,22 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const total = Number(docData.total || 0);
       const bp = businessProfile || {};
 
-      // footer safe area
       const FOOTER_H = 85;
       const SAFE_BOTTOM = pageHeight - FOOTER_H;
 
-      // ===== TABLE CONFIG =====
       const ROW_MIN_H = 26;
       const CELL_PAD_Y = 7;
       const CELL_PAD_X = 6;
-      const MAX_LABEL_LINES = 3; // augmente à 4 si tu veux
+      const MAX_LABEL_LINES = 3;
 
-      // usable width
       const W = right - left;
 
-      // ✅ IMPORTANT: donner assez de largeur à "Montant"
-      // (ton ancien des=300 faisait amt ~ 15px => "Montant" vertical)
       const col = {
         idx: 38,
         des: 235,
         qty: 55,
         pu: 70,
-        amt: W - (38 + 235 + 55 + 70), // reste => ~97px sur A4 (bon)
+        amt: W - (38 + 235 + 55 + 70),
       };
 
       const x = {
@@ -231,18 +234,32 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
 
         pdf.font("Helvetica").fontSize(9).text(lines.join("\n"), infoX, topY + 17);
 
-        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, topY, { width: right - left, align: "right" });
+        pdf.font("Helvetica-Bold").fontSize(16).text(type, left, topY, {
+          width: right - left,
+          align: "right",
+        });
+
         pdf.font("Helvetica").fontSize(10);
-        pdf.text(`N° : ${number}`, left, topY + 20, { width: right - left, align: "right" });
-        pdf.text(`Date : ${date}`, left, topY + 35, { width: right - left, align: "right" });
+        pdf.text(`N° : ${number}`, left, topY + 20, {
+          width: right - left,
+          align: "right",
+        });
+        pdf.text(`Date : ${date}`, left, topY + 35, {
+          width: right - left,
+          align: "right",
+        });
 
         pdf.moveTo(left, 120).lineTo(right, 120).stroke();
 
         if (isFirstPage) {
           const y = 135;
           pdf.rect(left, y, right - left, 45).stroke();
-          pdf.font("Helvetica-Bold").fontSize(10).text("Client", left + 10, y + 8);
+
+          const partyLabel = type === "DÉCHARGE" ? "Concerné" : "Client";
+
+          pdf.font("Helvetica-Bold").fontSize(10).text(partyLabel, left + 10, y + 8);
           pdf.font("Helvetica").fontSize(10).text(client, left + 10, y + 25);
+
           pdf.y = y + 65;
         } else {
           pdf.y = 140;
@@ -273,11 +290,12 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         const yy = vCenterY(y0, rowH, lineH);
 
         pdf.text("#", x.idx, yy, { width: col.idx, align: "center", lineBreak: false });
-        pdf.text("Désignation", x.des + CELL_PAD_X, yy, { width: col.des - (CELL_PAD_X * 2), lineBreak: false });
+        pdf.text("Désignation", x.des + CELL_PAD_X, yy, {
+          width: col.des - (CELL_PAD_X * 2),
+          lineBreak: false,
+        });
         pdf.text("Qté", x.qty, yy, { width: col.qty - 10, align: "right", lineBreak: false });
         pdf.text("PU", x.pu, yy, { width: col.pu - 10, align: "right", lineBreak: false });
-
-        // ✅ "Montant" ne doit plus se casser
         pdf.text("Montant", x.amt, yy, { width: col.amt - 10, align: "right", lineBreak: false });
 
         pdf.y = y0 + rowH;
@@ -296,7 +314,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       function drawItemRow(i, it) {
-        // set font before measuring
         pdf.fillColor("#000").font("Helvetica").fontSize(10);
 
         const label = safe(it.label || it.raw || "—");
@@ -308,7 +325,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         const labelH = measureLabelHeight(label, labelW);
         const rowH = Math.max(ROW_MIN_H, labelH + (CELL_PAD_Y * 2));
 
-        // ✅ ensure space with computed rowH
         ensureSpace(rowH + 8);
 
         const y0 = pdf.y;
@@ -323,7 +339,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
           lineBreak: false,
         });
 
-        // ✅ Désignation wrap + ellipsis (limit height)
         pdf.text(label, x.des + CELL_PAD_X, y0 + CELL_PAD_Y, {
           width: labelW,
           lineBreak: true,
@@ -342,44 +357,50 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       drawHeader(true);
 
       if (type === "DÉCHARGE") {
-        // ---- Simple decharge body (no table) ----
-        ensureSpace(200);
+        ensureSpace(220);
 
         pdf.font("Helvetica").fontSize(11).fillColor("#000");
 
         const body =
           docData.dechargeText ||
-          `Je soussigné(e), ${client}, reconnais avoir reçu la somme de ${fmtNumber(total)} FCFA ` +
-          `et décharge ${safe(bp.business_name) || "—"} de toute obligation relative à ce paiement.`;
+          `Je soussigné(e), ${client}, reconnais avoir reçu : ${safe(docData.motif) || "objet non précisé"}. La présente décharge est établie pour servir et valoir ce que de droit.`;
 
-        pdf.text(body, left, pdf.y, { width: right - left, align: "left" });
-
-        pdf.y += 18;
-
-        // Total box
-        ensureSpace(90);
-        const boxW = 260;
-        const boxH = 40;
-        const boxX = right - boxW;
-        const boxY = pdf.y;
-
-        pdf.rect(boxX, boxY, boxW, boxH).stroke();
-
-        pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
-        pdf.text("TOTAL", boxX + 10, boxY + 12, { width: 70, lineBreak: false });
-
-        pdf.text(`${fmtNumber(total)} FCFA`, boxX + 80, boxY + 12, {
-          width: boxW - 90,
-          align: "right",
-          lineBreak: false,
+        pdf.text(body, left, pdf.y, {
+          width: right - left,
+          align: "left",
+          lineGap: 4,
         });
 
-        pdf.y = boxY + boxH + 14;
+        pdf.y += 20;
 
-        const phrase = closingPhrase(type);
-        const words = numberToFrench(total);
-        pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-        pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
+        if (total > 0) {
+          ensureSpace(90);
+          const boxW = 260;
+          const boxH = 40;
+          const boxX = right - boxW;
+          const boxY = pdf.y;
+
+          pdf.rect(boxX, boxY, boxW, boxH).stroke();
+
+          pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
+          pdf.text("MONTANT", boxX + 10, boxY + 12, { width: 80, lineBreak: false });
+
+          pdf.text(`${fmtNumber(total)} FCFA`, boxX + 90, boxY + 12, {
+            width: boxW - 100,
+            align: "right",
+            lineBreak: false,
+          });
+
+          pdf.y = boxY + boxH + 16;
+
+          const words = numberToFrench(total);
+          pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
+          pdf.text(`Montant en lettres : ${words} francs CFA.`, left, pdf.y, {
+            width: right - left,
+          });
+
+          pdf.y += 14;
+        }
 
         drawFooter();
         pdf.end();
@@ -419,7 +440,9 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       const words = numberToFrench(total);
 
       pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, { width: right - left });
+      pdf.text(`${phrase} à la somme de : ${words} francs CFA.`, left, pdf.y, {
+        width: right - left,
+      });
 
       drawFooter();
       pdf.end();

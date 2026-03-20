@@ -54,6 +54,19 @@ if (process.env.KADI_DEBUG_PDF_MODULE === "1") {
   console.log("[KADI] PDF MODULE KEYS ✅", Object.keys(pdfMod || {}));
 }
 
+const { analyzeSmartBlock } = require("./kadiSmartAnalyzer");
+const { parseNaturalWhatsAppMessage } = require("./kadiNaturalParser");
+const { logLearningEvent } = require("./kadiLearningLogger");
+
+const {
+  detectDechargeType,
+  buildDechargeText,
+  buildDechargePreviewMessage,
+  initDechargeDraft,
+  buildDechargeConfirmationMessage,
+  buildPostConfirmationMessage,
+} = require("./kadiDecharge");
+
 const { buildPdfBuffer } = pdfMod;
 
 
@@ -813,88 +826,8 @@ function buildTotalsCheckMessage({ computedTotal, materialTotal, grandTotal }) {
   };
 }
 
-function detectBusinessType(items = []) {
-  const text = items
-    .map((it) => String(it?.label || "").toLowerCase())
-    .join(" ");
-
-  const artisanWords = [
-    "fil", "cable", "câble", "prise", "disjoncteur", "coffre",
-    "tube", "corniere", "cornière", "fer", "ciment", "sable",
-    "gravier", "tôle", "tole", "vitre", "vitrée", "alu", "soudure",
-    "main d'oeuvre", "main d’œuvre", "pose", "installation",
-    "chantier", "barre", "barres", "gaine", "pvc", "serrure"
-  ];
-
-  const commerceWords = [
-    "riz", "sucre", "huile", "boisson", "savon", "carton",
-    "bidon", "sac", "produit", "marchandise", "vente", "stock"
-  ];
-
-  const serviceWords = [
-    "prestation", "consultation", "audit", "formation",
-    "design", "maintenance", "réparation", "reparation",
-    "service", "honoraire", "frais"
-  ];
-
-  const score = (words) =>
-    words.reduce((acc, w) => acc + (text.includes(w) ? 1 : 0), 0);
-
-  const artisanScore = score(artisanWords);
-  const commerceScore = score(commerceWords);
-  const serviceScore = score(serviceWords);
-
-  if (artisanScore >= commerceScore && artisanScore >= serviceScore && artisanScore > 0) {
-    return "artisan";
-  }
-  if (commerceScore >= artisanScore && commerceScore >= serviceScore && commerceScore > 0) {
-    return "commerce";
-  }
-  if (serviceScore > 0) {
-    return "service";
-  }
-
-  return "generic";
-}
-
-function computeTotalsGapInfo({ computedTotal, materialTotal, grandTotal }) {
-  const computed = Number(computedTotal || 0);
-  const material = Number(materialTotal || 0);
-  const grand = Number(grandTotal || 0);
-
-  const reference = grand > 0 ? grand : material > 0 ? material : 0;
-  const absGap = Math.abs(reference - computed);
-  const gap = Math.max(0, reference - computed);
-
-  let severity = "none";
-  if (reference > 0 && absGap > 0) {
-    const ratio = absGap / reference;
-    if (ratio <= 0.05) severity = "small";
-    else if (ratio <= 0.2) severity = "medium";
-    else severity = "high";
-  }
-
-  return {
-    computed,
-    material,
-    grand,
-    reference,
-    gap,
-    absGap,
-    severity,
-    hasMismatch: reference > 0 && absGap > 0,
-  };
-}
-
-function buildSmartMismatchMessage({ businessType, gapInfo }) {
-  const {
-    computed,
-    material,
-    grand,
-    gap,
-    severity,
-    hasMismatch,
-  } = gapInfo;
+function buildSmartMismatchMessage({ gapInfo, hint }) {
+  const { computed, material, grand, gap, severity, hasMismatch } = gapInfo;
 
   if (!hasMismatch) {
     return {
@@ -905,9 +838,10 @@ function buildSmartMismatchMessage({ businessType, gapInfo }) {
     };
   }
 
-  const lines = [];
-  lines.push("📊 Petite vérification :");
-  lines.push(`• Total reconnu par KADI : ${money(computed)} FCFA`);
+  const lines = [
+    "📊 Petite vérification :",
+    `• Total reconnu par KADI : ${money(computed)} FCFA`,
+  ];
 
   if (material > 0) {
     lines.push(`• Total matériel indiqué : ${money(material)} FCFA`);
@@ -919,37 +853,27 @@ function buildSmartMismatchMessage({ businessType, gapInfo }) {
 
   lines.push("");
 
-  if (businessType === "artisan") {
-    if (severity === "high") {
-      lines.push("⚠️ Je pense qu’il manque plusieurs lignes dans le matériel ou la main d’œuvre.");
-      lines.push("");
-      lines.push(`👉 Écart estimé : ${money(gap)} FCFA.`);
-      lines.push("Vérifiez si tout le chantier a bien été envoyé.");
-    } else {
-      lines.push("⚠️ Je remarque une différence dans les montants.");
-      lines.push("");
-      lines.push("👉 Il manque peut-être une ligne de matériel, de pose ou de main d’œuvre.");
-    }
-  } else if (businessType === "commerce") {
-    if (severity === "high") {
-      lines.push("⚠️ Le total indiqué semble plus grand que les produits que j’ai reconnus.");
-      lines.push("");
-      lines.push(`👉 Écart estimé : ${money(gap)} FCFA.`);
-      lines.push("Vérifiez si tous les articles ont bien été inclus.");
-    } else {
-      lines.push("⚠️ Je remarque une différence entre le total indiqué et les produits reconnus.");
-      lines.push("");
-      lines.push("👉 Vérifiez s’il manque un article ou une quantité.");
-    }
-  } else if (businessType === "service") {
-    lines.push("⚠️ Le montant total indiqué ne correspond pas exactement aux éléments reconnus.");
-    lines.push("");
-    lines.push("👉 Vérifiez si une prestation ou un frais n’a pas été oublié.");
+  const hintMessages = {
+    missing_labor: "👉 Il semble manquer la main d’œuvre ou la pose.",
+    missing_material: "👉 Il semble manquer du matériel ou certains produits.",
+    missing_transport: "👉 Il semble manquer le transport ou certains frais.",
+    check_quantity: "👉 Vérifiez les quantités ou les prix des articles.",
+    missing_fee: "👉 Vérifiez si des frais ou une prestation ont été oubliés.",
+    unknown: "👉 Il manque peut-être une ligne ou un montant.",
+  };
+
+  const hintText = hintMessages[hint] || hintMessages.unknown;
+
+  if (severity === "high") {
+    lines.push("⚠️ Écart important détecté.");
+    lines.push(`👉 Différence estimée : ${money(gap)} FCFA.`);
   } else {
-    lines.push("⚠️ J’ai remarqué une différence entre le total indiqué et les lignes reconnues.");
-    lines.push("");
-    lines.push("👉 Il manque peut-être certaines lignes ou certains montants.");
+    lines.push("⚠️ Petite différence détectée.");
   }
+
+  lines.push(hintText);
+  lines.push("");
+  lines.push("💡 Vous pouvez compléter ou corriger les éléments pour ajuster le total.");
 
   return {
     text: lines.join("\n"),
@@ -957,46 +881,230 @@ function buildSmartMismatchMessage({ businessType, gapInfo }) {
   };
 }
 
+async function tryHandleNaturalMessage(from, text) {
+  const s = getSession(from);
+  const parsed = parseNaturalWhatsAppMessage(text);
+
+  if (!parsed) {
+    await logLearningEvent({
+      waId: from,
+      rawText: text,
+      parseSuccess: false,
+      failureReason: "natural_not_understood",
+      itemsCount: 0,
+    });
+    return false;
+  }
+
+  // Si aucun draft actif, il faut soit créer un draft,
+  // soit demander le type si non détecté.
+  if (!s.lastDocDraft) {
+    const detectedType = parsed.docType;
+
+    if (!detectedType) {
+      s.pendingSmartBlockText = String(text || "").trim();
+
+      await sendButtons(
+        from,
+        "🧠 J’ai reconnu un message naturel.\n\nQuel document voulez-vous créer ?",
+        [
+          { id: "SMARTBLOCK_DEVIS", title: "Devis" },
+          { id: "SMARTBLOCK_FACTURE", title: "Facture" },
+          { id: "SMARTBLOCK_RECU", title: "Reçu" },
+        ]
+      );
+
+      return true;
+    }
+
+    s.lastDocDraft = {
+      type: detectedType,
+      factureKind: detectedType === "facture" ? "definitive" : null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      items: [],
+      finance: null,
+      source: "natural_text",
+      meta: makeDraftMeta(),
+    };
+  }
+
+  const draft = s.lastDocDraft;
+
+  if (parsed.kind === "simple_payment") {
+    draft.type = parsed.docType || draft.type || "recu";
+
+    if (parsed.client && !draft.client) {
+      draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+    }
+
+    draft.items = [
+      makeItem(parsed.motif || "Paiement", 1, parsed.total || 0),
+    ];
+    draft.finance = computeFinance(draft);
+
+    if (!safe(draft.client)) {
+      await logLearningEvent({
+        waId: from,
+        rawText: text,
+        parseSuccess: true,
+        failureReason: "client_missing",
+        itemsCount: 1,
+      });
+
+      s.step = "missing_client_pdf";
+      await sendText(from, "👤 Quel est le nom du client ?");
+      return true;
+    }
+
+    s.step = "doc_review";
+
+    const preview = buildPreviewMessage({ doc: draft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
+    return true;
+  }
+
+  if (parsed.kind === "items") {
+    if (parsed.client && !draft.client) {
+      draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+    }
+
+    draft.items = parsed.items.map((it) =>
+      makeItem(it.label, it.qty, it.unitPrice)
+    );
+    draft.finance = computeFinance(draft);
+
+    const analysis = analyzeSmartBlock({
+      items: draft.items,
+      computedTotal: draft.finance?.gross || 0,
+    });
+
+    draft.meta = makeDraftMeta({
+      ...(draft.meta || {}),
+      businessType: analysis.businessType,
+      totalsGap: analysis.gapInfo.gap,
+      totalsGapSeverity: analysis.gapInfo.severity,
+      missingHint: analysis.hint,
+    });
+
+    if (!safe(draft.client)) {
+      await logLearningEvent({
+        waId: from,
+        rawText: text,
+        parseSuccess: true,
+        failureReason: "client_missing",
+        itemsCount: draft.items.length || 0,
+      });
+
+      s.step = "missing_client_pdf";
+      await sendText(from, "👤 Quel est le nom du client ?");
+      return true;
+    }
+
+    const smartMessage = buildSmartMismatchMessage({
+      gapInfo: analysis.gapInfo,
+      hint: analysis.hint,
+    });
+
+    if (smartMessage.warning) {
+      await sendText(from, smartMessage.text);
+
+      await sendButtons(from, "Choisissez une action :", [
+        { id: "SMARTBLOCK_FIX", title: "Corriger" },
+        { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+      ]);
+
+      s.step = "smartblock_warning";
+      return true;
+    }
+
+    s.step = "doc_review";
+
+    const preview = buildPreviewMessage({ doc: draft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
+    return true;
+  }
+
+  await logLearningEvent({
+    waId: from,
+    rawText: text,
+    parseSuccess: false,
+    failureReason: "natural_not_understood",
+    itemsCount: 0,
+  });
+
+  return false;
+}
+
 async function handleSmartItemsBlockText(from, text) {
   const s = getSession(from);
-  let draft = s.lastDocDraft;
+  const draft = s.lastDocDraft;
 
   const raw = String(text || "").trim();
-  if (!raw || !/\r?\n/.test(raw)) return false;
 
+  // 1) Garde-fous
+  if (!raw || !/\r?\n/.test(raw)) return false;
   if (s.step === "profile" || s.step === "stamp_title") return false;
 
-  const { items, ignored } = parseItemsBlockSmart(raw);
-  if (!Array.isArray(items) || items.length < 2) return false;
+  // 2) Parsing du bloc
+const { items, ignored } = parseItemsBlockSmart(raw);
+if (!Array.isArray(items) || items.length < 2) {
+  await logLearningEvent({
+    waId: from,
+    rawText: raw,
+    parseSuccess: false,
+    failureReason: "no_items_detected",
+    itemsCount: items?.length || 0,
+  });
+  return false;
+}
 
-  // Si aucun draft actif, demander le type de document
+  // 3) Aucun draft actif → demander le type de document
   if (!draft) {
     return askDocTypeForSmartBlock(from, raw);
   }
 
-  const totalsDetected = extractBlockTotals(raw);
-
-  draft.items = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
+  // 4) Construire les lignes du draft
+  const parsedItems = items.map((it) => makeItem(it.label, it.qty, it.unitPrice));
+  draft.items = parsedItems;
   draft.finance = computeFinance(draft);
 
+  // 5) Totaux détectés dans le texte
+  const totalsDetected = extractBlockTotals(raw);
   const computedTotal = Number(draft.finance?.gross || 0);
-  const businessType = detectBusinessType(draft.items);
-  const gapInfo = computeTotalsGapInfo({
+
+  // 6) Analyse smart centralisée
+  const analysis = analyzeSmartBlock({
+    items: draft.items,
     computedTotal,
     materialTotal: totalsDetected.materialTotal,
     grandTotal: totalsDetected.grandTotal,
   });
 
+  // 7) Sauvegarde des métadonnées utiles
   draft.meta = makeDraftMeta({
     ...(draft.meta || {}),
-    businessType,
+    businessType: analysis.businessType,
     detectedMaterialTotal: totalsDetected.materialTotal,
     detectedGrandTotal: totalsDetected.grandTotal,
     computedTotalFromParsedItems: computedTotal,
-    totalsGap: gapInfo.gap,
-    totalsGapSeverity: gapInfo.severity,
+    totalsGap: analysis.gapInfo.gap,
+    totalsGapSeverity: analysis.gapInfo.severity,
+    missingHint: analysis.hint,
   });
 
+  // 8) Si client manquant, le demander avant d’aller plus loin
   if (!safe(draft.client)) {
     s.step = "missing_client_pdf";
     await sendText(
@@ -1006,27 +1114,27 @@ async function handleSmartItemsBlockText(from, text) {
     return true;
   }
 
+  // 9) Construire le message intelligent
   const smartMessage = buildSmartMismatchMessage({
-    businessType,
-    gapInfo,
+    businessType: analysis.businessType,
+    gapInfo: analysis.gapInfo,
+    hint: analysis.hint,
   });
 
+  // 10) Si incohérence détectée → proposer correction ou continuation
   if (smartMessage.warning) {
     await sendText(from, smartMessage.text);
 
-    await sendButtons(
-      from,
-      "Choisissez une action :",
-      [
-        { id: "SMARTBLOCK_FIX", title: "Corriger" },
-        { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-      ]
-    );
+    await sendButtons(from, "Choisissez une action :", [
+      { id: "SMARTBLOCK_FIX", title: "Corriger" },
+      { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+    ]);
 
     s.step = "smartblock_warning";
     return true;
   }
 
+  // 11) Sinon → aperçu normal
   s.step = "doc_review";
 
   const preview = buildPreviewMessage({ doc: draft });
@@ -1374,21 +1482,37 @@ function resetDraftSession(s) {
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
 
-  s.step = "doc_client";
   s.mode = mode;
   s.factureKind = factureKind;
 
- s.lastDocDraft = {
-  type: mode,
-  factureKind,
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  items: [],
-  finance: null,
-  source: "product",
-meta: makeDraftMeta(),
-};
+  if (mode === "decharge") {
+    s.lastDocDraft = initDechargeDraft({
+      dateISO: formatDateISO(),
+      makeDraftMeta,
+    });
+
+    s.step = "decharge_client";
+
+    await sendText(
+      from,
+      `📄 Décharge\n\n👤 *Nom de la personne concernée ?*\n(Ex: Mr Ouedraogo / Awa / Société X)`
+    );
+    return;
+  }
+
+  s.step = "doc_client";
+
+  s.lastDocDraft = {
+    type: mode,
+    factureKind,
+    docNumber: null,
+    date: formatDateISO(),
+    client: null,
+    items: [],
+    finance: null,
+    source: "product",
+    meta: makeDraftMeta(),
+  };
 
   const title =
     mode === "facture"
@@ -1397,9 +1521,7 @@ meta: makeDraftMeta(),
         : "🧾 Facture Définitive"
       : mode === "devis"
       ? "📝 Devis"
-      : mode === "recu"
-      ? "🧾 Reçu"
-      : "📄 Décharge";
+      : "🧾 Reçu";
 
   await sendText(from, `${title}\n\n👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`);
 }
@@ -1453,56 +1575,187 @@ async function handleProductFlowText(from, text) {
   const t = norm(text);
   if (!t) return false;
 
-if (s.step === "missing_client_pdf") {
-  s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
+  // ===============================
+  // Client manquant avant aperçu PDF
+  // ===============================
+  if (s.step === "missing_client_pdf") {
+    s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
 
-  const draft = s.lastDocDraft;
+    const draft = s.lastDocDraft;
 
-  // ✅ Cas spécial : document issu d'un bloc intelligent
-if (draft?.source === "smart_block") {
-  const businessType =
-    draft?.meta?.businessType || detectBusinessType(draft.items || []);
+    // Cas spécial : document issu d’un bloc intelligent
+    if (draft?.source === "smart_block") {
+      const analysis = analyzeSmartBlock({
+        items: draft.items || [],
+        computedTotal: draft?.finance?.gross || 0,
+        materialTotal: draft?.meta?.detectedMaterialTotal,
+        grandTotal: draft?.meta?.detectedGrandTotal,
+      });
 
-  const gapInfo = computeTotalsGapInfo({
-    computedTotal: draft?.finance?.gross || 0,
-    materialTotal: draft?.meta?.detectedMaterialTotal,
-    grandTotal: draft?.meta?.detectedGrandTotal,
-  });
+      draft.meta = makeDraftMeta({
+        ...(draft.meta || {}),
+        businessType: analysis.businessType,
+        totalsGap: analysis.gapInfo.gap,
+        totalsGapSeverity: analysis.gapInfo.severity,
+        missingHint: analysis.hint,
+      });
 
-  const smartMessage = buildSmartMismatchMessage({
-    businessType,
-    gapInfo,
-  });
+      const smartMessage = buildSmartMismatchMessage({
+        businessType: analysis.businessType,
+        gapInfo: analysis.gapInfo,
+        hint: analysis.hint,
+      });
 
-  if (smartMessage.warning) {
-    await sendText(from, smartMessage.text);
+      if (smartMessage.warning) {
+        await sendText(from, smartMessage.text);
 
-    await sendButtons(
-      from,
-      "Que voulez-vous faire ?",
-      [
-        { id: "SMARTBLOCK_FIX", title: "Corriger" },
-        { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-      ]
-    );
+        await sendButtons(from, "Que voulez-vous faire ?", [
+          { id: "SMARTBLOCK_FIX", title: "Corriger" },
+          { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
+        ]);
 
-    s.step = "smartblock_warning";
+        s.step = "smartblock_warning";
+        return true;
+      }
+    }
+
+    // Flow normal vers aperçu
+    s.step = "doc_review";
+
+    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(s.lastDocDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
     return true;
   }
-}
 
-  // ✅ Sinon flow normal
-  s.step = "doc_review";
-  const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-  await sendText(from, preview);
+  // ===============================
+  // Flow décharge séparé
+  // ===============================
+  if (s.step === "decharge_client") {
+    s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
+    s.step = "decharge_motif";
+    await sendText(from, "📝 Quel est le motif de la décharge ?");
+    return true;
+  }
 
-  const cost = computeBasePdfCost(s.lastDocDraft);
-  await sendText(from, formatBaseCostLine(cost));
+  if (s.step === "decharge_motif") {
+    s.lastDocDraft.motif = t.slice(0, LIMITS.maxItemLabelLength);
+    s.lastDocDraft.dechargeType = detectDechargeType(t);
+    s.step = "decharge_amount";
+    await sendText(
+      from,
+      "💰 Quel est le montant ?\nSi pas de montant, tapez *0*."
+    );
+    return true;
+  }
 
-  await sendPreviewMenu(from);
-  return true;
-}
+  if (s.step === "decharge_amount") {
+    const isZero = t === "0";
+    const n = isZero ? 0 : parseNumberSmart(t);
 
+    if (!isZero && (n == null || n < 0)) {
+      await sendText(from, "❌ Montant invalide. Réessayez (ex: 100000) ou tapez 0.");
+      return true;
+    }
+
+    const amount = isZero ? 0 : n;
+
+    s.lastDocDraft.items = [
+      makeItem(s.lastDocDraft.motif || "Décharge", 1, amount),
+    ];
+    s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
+
+    s.step = "decharge_confirm_target";
+    await sendText(
+      from,
+      "📲 Voulez-vous envoyer cette décharge à l’autre partie pour confirmation WhatsApp ?\n\nRépondez par :\n• OUI\n• NON"
+    );
+    return true;
+  }
+
+  if (s.step === "decharge_confirm_target") {
+    const answer = t.toLowerCase();
+
+    if (answer === "oui") {
+      s.step = "decharge_target_wa";
+      await sendText(
+        from,
+        "📱 Entrez le numéro WhatsApp de l’autre partie au format simple.\nEx: 70112233 ou 22670112233"
+      );
+      return true;
+    }
+
+    if (answer === "non") {
+      s.lastDocDraft.confirmation = {
+        requested: false,
+        targetWaId: null,
+        confirmed: false,
+        confirmedAt: null,
+        confirmedBy: null,
+      };
+
+      s.step = "doc_review";
+
+      const preview = buildDechargePreviewMessage({
+        doc: s.lastDocDraft,
+        money,
+      });
+      await sendText(from, preview);
+
+      const cost = computeBasePdfCost(s.lastDocDraft);
+      await sendText(from, formatBaseCostLine(cost));
+
+      await sendPreviewMenu(from);
+      return true;
+    }
+
+    await sendText(from, "Répondez seulement par *OUI* ou *NON*.");
+    return true;
+  }
+
+  if (s.step === "decharge_target_wa") {
+    let target = t.replace(/\D/g, "");
+
+    if (target.length === 8) {
+      target = `226${target}`;
+    }
+
+    if (!isValidWhatsAppId(target)) {
+      await sendText(from, "❌ Numéro invalide. Réessayez.");
+      return true;
+    }
+
+    s.lastDocDraft.confirmation = {
+      requested: true,
+      targetWaId: target,
+      confirmed: false,
+      confirmedAt: null,
+      confirmedBy: null,
+    };
+
+    const preview = buildDechargePreviewMessage({
+      doc: s.lastDocDraft,
+      money,
+    });
+
+    await sendText(from, preview);
+
+    await sendButtons(from, "Valider l’envoi de la demande de confirmation ?", [
+      { id: "DECHARGE_SEND_CONFIRMATION", title: "Envoyer" },
+      { id: "DOC_CANCEL", title: "Annuler" },
+    ]);
+
+    s.step = "decharge_send_confirmation";
+    return true;
+  }
+
+  // ===============================
+  // Flow manuel produit par produit
+  // ===============================
   if (s.step === "doc_client") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
     await askItemLabel(from);
@@ -1522,6 +1775,7 @@ if (draft?.source === "smart_block") {
       await sendText(from, "❌ Quantité invalide. Réessayez (ex: 2).");
       return true;
     }
+
     s.itemDraft = s.itemDraft || {};
     s.itemDraft.qty = n;
     await askItemPu(from);
@@ -1534,12 +1788,16 @@ if (draft?.source === "smart_block") {
       await sendText(from, "❌ Prix invalide. Réessayez (ex: 5000).");
       return true;
     }
+
     s.itemDraft = s.itemDraft || {};
     s.itemDraft.unitPrice = n;
     await sendItemConfirmMenu(from);
     return true;
   }
 
+  // ===============================
+  // Tampon
+  // ===============================
   if (s.step === "stamp_title") {
     const val = t === "0" ? null : t;
     await updateProfile(from, { stamp_title: val });
@@ -1997,18 +2255,30 @@ draft.finance = {
     const title = getDocTitle(draft);
     const total = draft.finance?.gross ?? computeFinance(draft).gross;
 
-    let pdfBuf = await buildPdfBuffer({
-      docData: {
-        type: title,
-        docNumber: draft.docNumber,
-        date: draft.date,
-        client: draft.client,
-        items: draft.items || [],
-        total,
-      },
-      businessProfile: profile,
-      logoBuffer: logoBuf,
-    });
+let pdfBuf = await buildPdfBuffer({
+  docData: {
+    type: title,
+    docNumber: draft.docNumber,
+    date: draft.date,
+    client: draft.client,
+    motif: draft.motif || null,
+    dechargeType: draft.dechargeType || null,
+    dechargeText:
+      draft.type === "decharge"
+        ? buildDechargeText({
+            client: draft.client,
+            businessName: safe(profile?.business_name),
+            motif: draft.motif,
+            total,
+            dechargeType: draft.dechargeType,
+          })
+        : null,
+    items: draft.items || [],
+    total,
+  },
+  businessProfile: profile,
+  logoBuffer: logoBuf,
+});
 
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
 
@@ -3088,6 +3358,42 @@ async function handleInteractiveReply(from, replyId) {
     return sendPreviewMenu(from);
   }
 
+  if (replyId === "DECHARGE_SEND_CONFIRMATION") {
+    const draft = s.lastDocDraft;
+
+    if (!draft || draft.type !== "decharge") {
+      await sendText(from, "❌ Aucune décharge en cours.");
+      return;
+    }
+
+    const targetWaId = draft?.confirmation?.targetWaId;
+    if (!targetWaId) {
+      await sendText(from, "❌ Numéro de confirmation manquant.");
+      return;
+    }
+
+    const confirmationMessage = buildDechargeConfirmationMessage({
+      doc: draft,
+      money,
+    });
+
+    await sendText(targetWaId, confirmationMessage);
+
+    s.step = "doc_review";
+
+    const preview = buildDechargePreviewMessage({
+      doc: draft,
+      money,
+    });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
+    return;
+  }
+
   if (replyId === "DOC_CONFIRM") return createAndSendPdf(from);
 
   if (replyId === "DOC_RESTART") {
@@ -3096,6 +3402,7 @@ async function handleInteractiveReply(from, replyId) {
     return sendDocsMenu(from);
   }
 
+
   if (replyId === "DOC_CANCEL") {
     resetDraftSession(s);
     await sendText(from, "❌ Annulé.");
@@ -3103,6 +3410,31 @@ async function handleInteractiveReply(from, replyId) {
   }
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
+}
+
+async function tryHandleDechargeConfirmation(from, text) {
+  if (String(text || "").trim().toLowerCase() !== "confirmer") return false;
+
+  // ⚠️ V1 simple:
+  // ici on ne cherche pas encore dans toute la base.
+  // On suppose qu'on retrouvera la décharge via kadiRepo plus tard.
+  // Pour l'instant, on enregistre seulement un message utile.
+  await sendText(
+    from,
+    "✅ Votre confirmation a été reçue.\nSi une décharge KADI vous a été envoyée, elle peut maintenant être finalisée."
+  );
+
+  const p = await getOrCreateProfile(from);
+  const isFirstTime = !p?.onboarding_done;
+  const kadiWaLink = `https://wa.me/${process.env.KADI_E164 || "22679239027"}`;
+
+  const followup = buildPostConfirmationMessage({
+    isFirstTime,
+    kadiWaLink,
+  });
+
+  await sendText(from, followup);
+  return true;
 }
 
 async function handleIncomingMessage(value) {
@@ -3188,6 +3520,11 @@ async function handleIncomingMessage(value) {
       const text = norm(msg.text?.body);
       if (!text) return;
 
+      if (text.toLowerCase() === "confirmer") {
+        const possibleOwnerSession = null;
+        // la confirmation sera traitée plus bas via recherche simple
+      }
+
       // 1) ADMIN d'abord
       if (await handleAdmin(from, text)) return;
 
@@ -3208,15 +3545,20 @@ async function handleIncomingMessage(value) {
         );
       }
 
-      // 3) Commandes globales avant les flows
-      if (await handleCommand(from, text)) return;
+      if (await tryHandleDechargeConfirmation(from, text)) return;
 
-      // 4) Collage intelligent de plusieurs lignes produits
-      if (await handleSmartItemsBlockText(from, text)) return;
+    // 3) Commandes globales avant les flows
+if (await handleCommand(from, text)) return;
 
-      // 5) Ensuite seulement les flows
-      if (await handleProfileAnswer(from, text)) return;
-      if (await handleProductFlowText(from, text)) return;
+// 4) Messages naturels WhatsApp
+if (await tryHandleNaturalMessage(from, text)) return;
+
+// 5) Collage intelligent de plusieurs lignes produits
+if (await handleSmartItemsBlockText(from, text)) return;
+
+// 6) Ensuite seulement les flows
+if (await handleProfileAnswer(from, text)) return;
+if (await handleProductFlowText(from, text)) return;
 
       await sendText(from, "Tapez *MENU* pour commencer.");
     });
