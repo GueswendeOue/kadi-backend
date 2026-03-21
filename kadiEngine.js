@@ -917,17 +917,27 @@ async function tryHandleNaturalMessage(from, text) {
       return true;
     }
 
-    s.lastDocDraft = {
-      type: detectedType,
-      factureKind: detectedType === "facture" ? "definitive" : null,
-      docNumber: null,
-      date: formatDateISO(),
-      client: null,
-      items: [],
-      finance: null,
-      source: "natural_text",
-      meta: makeDraftMeta(),
-    };
+    if (detectedType === "decharge") {
+      s.lastDocDraft = initDechargeDraft({
+        dateISO: formatDateISO(),
+        makeDraftMeta,
+      });
+      s.lastDocDraft.type = "decharge";
+      s.lastDocDraft.source = "natural_text";
+    } else {
+      s.lastDocDraft = {
+        type: detectedType,
+        factureKind: detectedType === "facture" ? "definitive" : null,
+        docNumber: null,
+        date: formatDateISO(),
+        client: null,
+        motif: null,
+        items: [],
+        finance: null,
+        source: "natural_text",
+        meta: makeDraftMeta(),
+      };
+    }
   }
 
   const draft = s.lastDocDraft;
@@ -937,6 +947,14 @@ async function tryHandleNaturalMessage(from, text) {
 
     if (parsed.client && !draft.client) {
       draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+    }
+
+    if (parsed.motif && !draft.motif) {
+      draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+    }
+
+    if (draft.type === "decharge") {
+      draft.dechargeType = detectDechargeType(draft.motif || parsed.motif || "");
     }
 
     draft.items = [
@@ -960,13 +978,72 @@ async function tryHandleNaturalMessage(from, text) {
 
     s.step = "doc_review";
 
-    const preview = buildPreviewMessage({ doc: draft });
+    const preview =
+      draft.type === "decharge"
+        ? buildDechargePreviewMessage({ doc: draft, money })
+        : buildPreviewMessage({ doc: draft });
+
     await sendText(from, preview);
 
     const cost = computeBasePdfCost(draft);
     await sendText(from, formatBaseCostLine(cost));
 
     await sendPreviewMenu(from);
+    return true;
+  }
+
+  // 🔥 NOUVEAU : INTENT ONLY
+  if (parsed.kind === "intent_only") {
+    if (draft.type === "decharge") {
+      if (parsed.client && !draft.client) {
+        draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+      }
+
+      if (parsed.motif && !draft.motif) {
+        draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+        draft.dechargeType = detectDechargeType(draft.motif);
+      }
+
+      if (!safe(draft.client)) {
+        s.step = "decharge_client";
+        await sendText(from, "👤 Quel est le nom de la personne concernée ?");
+        return true;
+      }
+
+      if (!safe(draft.motif)) {
+        s.step = "decharge_motif";
+        await sendText(from, "📝 Quel est le motif de la décharge ?");
+        return true;
+      }
+
+      s.step = "decharge_amount";
+      await sendText(from, "💰 Quel est le montant ?\nSi pas de montant, tapez *0*.");
+      return true;
+    }
+
+    if (parsed.client && !draft.client) {
+      draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+    }
+
+    if (parsed.motif && !draft.motif) {
+      draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+    }
+
+    if (!safe(draft.client)) {
+      s.step = "doc_client";
+      await sendText(from, "👤 Quel est le nom du client ?");
+      return true;
+    }
+
+    await sendText(
+      from,
+      `✅ ${String(draft.type || "").toUpperCase()} en cours\n` +
+        `👤 Client : ${draft.client}\n` +
+        (draft.motif ? `📝 Motif : ${draft.motif}\n` : "") +
+        `\nAjoutez les éléments ou les prix 👇`
+    );
+
+    await askItemLabel(from);
     return true;
   }
 

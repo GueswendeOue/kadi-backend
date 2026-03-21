@@ -50,8 +50,9 @@ function parseMoneyToken(token = "") {
 function findLastMoneyAmount(text = "") {
   const raw = String(text || "");
   const matches =
-    raw.match(/\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi) ||
-    [];
+    raw.match(
+      /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi
+    ) || [];
 
   let last = null;
   for (const m of matches) {
@@ -115,13 +116,11 @@ function looksLikeSimplePaymentMessage(text = "") {
 function extractSimplePaymentMotif(text = "") {
   const raw = String(text || "").trim();
 
-  // on enlève le montant final s’il existe
   let motif = raw.replace(
     /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
     " "
   );
 
-  // enlever les verbes/documents fréquents
   motif = motif
     .replace(/\bfais(?:\s+moi)?\b/gi, " ")
     .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcréer\b/gi, " ")
@@ -184,8 +183,9 @@ function parseNaturalItemSegment(segment = "") {
     .trim();
 
   const qtyMatch =
-    clean.match(/\b(\d+(?:[.,]\d+)?)\s*(sac|sacs|bidon|bidons|rouleau|rouleaux|carton|cartons|piece|pieces|barre|barres|kg|tonne|tonnes)\b/i) ||
-    clean.match(/\b(\d+(?:[.,]\d+)?)\b/i);
+    clean.match(
+      /\b(\d+(?:[.,]\d+)?)\s*(sac|sacs|bidon|bidons|rouleau|rouleaux|carton|cartons|piece|pieces|barre|barres|kg|tonne|tonnes)\b/i
+    ) || clean.match(/\b(\d+(?:[.,]\d+)?)\b/i);
 
   let qty = 1;
   if (qtyMatch) {
@@ -194,7 +194,10 @@ function parseNaturalItemSegment(segment = "") {
   }
 
   const label = raw
-    .replace(/\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi, " ")
+    .replace(
+      /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
+      " "
+    )
     .replace(/\bdevis\b|\bfacture\b|\brecu\b|\bdécharge\b|\bdecharge\b/gi, " ")
     .replace(/\bpour\b|\bchez\b|\bclient\b/gi, " ")
     .replace(/\s+/g, " ")
@@ -233,6 +236,37 @@ function parseNaturalItemsMessage(text = "") {
 }
 
 // ===============================
+// INTENT ONLY MESSAGE
+// ===============================
+function parseNaturalIntentOnlyMessage(text = "") {
+  const docType = detectDocTypeFromText(text);
+  if (!docType) return null;
+
+  const client = extractClientFromText(text);
+  const raw = String(text || "").trim();
+
+  const motif = raw
+    .replace(/\bfais(?:\s+moi)?\b/gi, " ")
+    .replace(/\bje veux\b/gi, " ")
+    .replace(/\bcree\b|\bcrée\b|\bcreer\b|\bcréer\b/gi, " ")
+    .replace(/\bun\b|\bune\b/gi, " ")
+    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/gi, " ")
+    .replace(/\bpour\s+(mr\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
+    .replace(/\bpour\s+(mme\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
+    .replace(/\bpour\s+(m\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
+    .replace(/\bpour\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return {
+    kind: "intent_only",
+    docType,
+    client: client || null,
+    motif: motif || null,
+  };
+}
+
+// ===============================
 // ROUTER
 // ===============================
 function parseNaturalWhatsAppMessage(text = "") {
@@ -245,6 +279,9 @@ function parseNaturalWhatsAppMessage(text = "") {
 
   const items = parseNaturalItemsMessage(text);
   if (items) return items;
+
+  const intentOnly = parseNaturalIntentOnlyMessage(text);
+  if (intentOnly) return intentOnly;
 
   return null;
 }
