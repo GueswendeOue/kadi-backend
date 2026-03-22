@@ -1,8 +1,6 @@
 // kadiBroadcast.js
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
 
 const {
@@ -47,10 +45,16 @@ function uniqueWaIds(rows = []) {
 }
 
 /**
- * Récupère toute l'audience depuis business_profiles
- * Ajuste ici si un jour tu veux filtrer seulement les users "actifs"
+ * audience:
+ * - "all_known"  => vue kadi_all_known_users
+ * - "active_30d" => vue kadi_active_users_30d
  */
-async function getAudience() {
+async function getAudience(audience = "all_known") {
+  const source =
+    audience === "active_30d"
+      ? "kadi_active_users_30d"
+      : "kadi_all_known_users";
+
   const all = [];
   let from = 0;
 
@@ -58,12 +62,12 @@ async function getAudience() {
     const to = from + BROADCAST_BATCH - 1;
 
     const { data, error } = await supabase
-      .from("business_profiles")
+      .from(source)
       .select("wa_id")
       .range(from, to);
 
     if (error) {
-      throw new Error(`Erreur audience: ${error.message}`);
+      throw new Error(`Erreur audience (${source}): ${error.message}`);
     }
 
     if (!data || !data.length) break;
@@ -85,6 +89,7 @@ async function sendBroadcastSummary(adminWaId, result) {
     `👥 Audience: ${result.total}`,
     `📤 Envoyés: ${result.sent}`,
     `❌ Échecs: ${result.failed}`,
+    `🎯 Cible: ${result.audience}`,
   ];
 
   if (result.failedIds?.length) {
@@ -99,19 +104,23 @@ async function sendBroadcastSummary(adminWaId, result) {
 /**
  * Broadcast texte
  */
-async function broadcastToAll({ adminWaId, message }) {
+async function broadcastToAll({
+  adminWaId,
+  message,
+  audience = "all_known",
+}) {
   const msg = String(message || "").trim();
   if (!msg) {
     throw new Error("broadcastToAll: message vide");
   }
 
-  const audience = await getAudience();
+  const recipients = await getAudience(audience);
 
   let sent = 0;
   let failed = 0;
   const failedIds = [];
 
-  for (const waId of audience) {
+  for (const waId of recipients) {
     try {
       await sendText(waId, msg);
       sent++;
@@ -125,7 +134,8 @@ async function broadcastToAll({ adminWaId, message }) {
   }
 
   const result = {
-    total: audience.length,
+    audience,
+    total: recipients.length,
     sent,
     failed,
     failedIds,
@@ -136,10 +146,7 @@ async function broadcastToAll({ adminWaId, message }) {
 }
 
 /**
- * Broadcast image depuis un mediaId déjà reçu sur WhatsApp
- * -> on télécharge l'image reçue
- * -> on la ré-upload UNE seule fois
- * -> on l'envoie à tous
+ * Broadcast image
  */
 async function broadcastImageToAll({
   adminWaId,
@@ -147,14 +154,14 @@ async function broadcastImageToAll({
   mimeType = "image/jpeg",
   filename = "broadcast.jpg",
   caption = "",
+  audience = "all_known",
 }) {
   if (!imageBuffer || !Buffer.isBuffer(imageBuffer)) {
     throw new Error("broadcastImageToAll: imageBuffer invalide");
   }
 
-  const audience = await getAudience();
+  const recipients = await getAudience(audience);
 
-  // Upload une seule fois sur WhatsApp
   const up = await uploadMediaBuffer({
     buffer: imageBuffer,
     filename,
@@ -169,7 +176,7 @@ async function broadcastImageToAll({
   let failed = 0;
   const failedIds = [];
 
-  for (const waId of audience) {
+  for (const waId of recipients) {
     try {
       await sendImage({
         to: waId,
@@ -187,7 +194,8 @@ async function broadcastImageToAll({
   }
 
   const result = {
-    total: audience.length,
+    audience,
+    total: recipients.length,
     sent,
     failed,
     failedIds,
