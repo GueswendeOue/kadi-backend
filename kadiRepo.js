@@ -110,7 +110,7 @@ async function saveDocument({ waId, doc }) {
     used_gemini_parse: b(doc?.meta?.usedGeminiParse, false),
     used_stamp: b(doc?.meta?.usedStamp, false),
     credits_consumed: n(doc?.meta?.creditsConsumed),
-    business_sector: s(doc?.meta?.businessSector),
+    business_sector: s(doc?.meta?.businessSector || doc?.meta?.businessType),
     status: s(doc?.status) || "generated",
 
     // Raw data

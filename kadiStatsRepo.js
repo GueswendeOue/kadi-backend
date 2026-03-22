@@ -160,6 +160,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     codesStats,
     topConsumers,
   ] = await Promise.all([
+    fetchAll("kadi_stats_by_sector").catch(() => []),
     fetchSingleView("kadi_stats_adoption_kpis").catch(() => null),
     fetchAll("kadi_stats_docs_by_type").catch(() => []),
     fetchAll("kadi_stats_docs_daily_30d", "day", true).catch(() => []),
@@ -263,7 +264,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     tx30AllRes,
   ] = await Promise.all([
     supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from7),
-    supabase.from("kadi_documents").select("id", { count: "exact", head: "exact" }).gte("created_at", from30).then((r)=>r).catch((e)=>{throw e;}), // will normalize below
+    supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from30), // will normalize below
     supabase.from("kadi_documents").select("total").gte("created_at", from7),
     supabase.from("kadi_documents").select("total").gte("created_at", from30),
     supabase.from("kadi_documents").select("total"),
@@ -342,14 +343,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   }));
 
   // By country
-  result.docs.byCountry = aggregateBy(
-    docsAnalytics,
-    (r) => safeStr(r.wa_country_guess || r.wa_country_code, "unknown"),
-    (r) => r.total
-  ).map((r) => ({
-    country: r.key,
-    docs: r.count,
-    total_fcfa: Math.round(r.total),
+ result.docs.bySector = (docsBySector || []).map((r) => ({
+    business_sector: safeStr(r.business_sector, "unknown"),
+    docs: toNum(r.docs, 0),
+    users: toNum(r.users, 0),
+    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
   }));
 
   // Credits 7d
@@ -396,6 +394,27 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       (result.credits.addedPaid30 / Math.max(1, packCredits)) * packPriceFcfa
     );
   }
+
+const onboardingRate =
+    result.users.totalUsers > 0
+      ? Math.round((result.users.onboardedUsers / result.users.totalUsers) * 100)
+      : 0;
+
+  const activationRate =
+    result.users.totalUsers > 0
+      ? Math.round((result.users.usersWithDocs / result.users.totalUsers) * 100)
+      : 0;
+
+  const paymentConversion =
+    result.users.active30 > 0
+      ? Math.round((result.users.usersRecharged / result.users.active30) * 100)
+      : 0;
+
+  result.kpis = {
+    onboardingRate,
+    activationRate,
+    paymentConversion,
+  };
 
   return result;
 }

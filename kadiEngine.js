@@ -2677,62 +2677,62 @@ async function handleStatsCommand(from, text) {
         `• Retenus W2: ${stats.retention[0].retained_w2}`
       : "• Aucune donnée";
 
-    const msg =
-      `📊 *KADI — STATS GLOBALES*\n\n` +
+ const sectorLines = (stats.docs?.bySector || [])
+      .slice(0, 5)
+      .map((r) => `• ${r.business_sector}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
+      .join("\n") || "• Aucune donnée";
 
-      `👥 *Utilisateurs*\n` +
-      `• Total profils: ${stats.users.totalUsers}\n` +
+    const msg =
+      `📊 *KADI — ANALYTICS*\n\n` +
+
+      `👥 *UTILISATEURS*\n` +
+      `• Profils enregistrés: ${stats.users.totalUsers}\n` +
+      `• Onboarding terminé: ${stats.users.onboardedUsers} (${stats.kpis?.onboardingRate || 0}%)\n` +
       `• Actifs 1j: ${stats.users.active1d}\n` +
       `• Actifs 7j: ${stats.users.active7}\n` +
       `• Actifs 30j: ${stats.users.active30}\n` +
-      `• Avec docs: ${stats.users.usersWithDocs}\n` +
-      `• Onboardés: ${stats.users.onboardedUsers}\n` +
-      `• Wallets: ${stats.users.usersWithWallet}\n` +
-      `• Ont rechargé: ${stats.users.usersRecharged}\n\n` +
+      `• Ont créé ≥ 1 document: ${stats.users.usersWithDocs} (${stats.kpis?.activationRate || 0}%)\n\n` +
 
-      `📄 *Documents*\n` +
-      `• Depuis lancement: ${stats.docs.total}\n` +
+      `📄 *PRODUIT*\n` +
+      `• Documents total: ${stats.docs.total}\n` +
       `• 7 derniers jours: ${stats.docs.last7}\n` +
       `• 30 derniers jours: ${stats.docs.last30}\n` +
       `• Volume total: ${money(stats.docs.sumAll)} FCFA\n` +
-      `• Volume 7j: ${money(stats.docs.sum7)} FCFA\n` +
       `• Volume 30j: ${money(stats.docs.sum30)} FCFA\n` +
-      `• Panier moyen global: ${money(stats.docs.avgAll)} FCFA\n` +
-      `• Panier moyen 30j: ${money(stats.docs.avg30)} FCFA\n\n` +
+      `• Panier moyen global: ${money(stats.docs.avgAll)} FCFA\n\n` +
 
-      `🤖 *Usage produit*\n` +
-      `• Docs OCR: ${stats.docs.ocrDocs}\n` +
-      `• Docs manuels: ${stats.docs.manualDocs}\n` +
-      `• Parsés par Gemini: ${stats.docs.geminiParsedDocs}\n` +
-      `• Avec tampon: ${stats.docs.stampedDocs}\n\n` +
+      `📂 *PAR TYPE*\n${topDocTypes}\n\n` +
+      `🏗 *PAR SECTEUR*\n${sectorLines}\n\n` +
+      `🌍 *PAR PAYS*\n${topCountries}\n\n` +
 
-      `📂 *Par type*\n${topDocTypes}\n\n` +
-      `🧭 *Par source*\n${topSources}\n\n` +
-      `🌍 *Top pays*\n${topCountries}\n\n` +
+      `🤖 *USAGE FEATURES*\n` +
+      `• OCR: ${stats.docs.ocrDocs}\n` +
+      `• Non OCR: ${stats.docs.manualDocs}\n` +
+      `• Gemini: ${stats.docs.geminiParsedDocs}\n` +
+      `• Tampon: ${stats.docs.stampedDocs}\n\n` +
 
-      `💳 *Crédits*\n` +
+      `💳 *CRÉDITS*\n` +
+      `• Comptes crédits: ${stats.users.usersWithWallet}\n` +
+      `• Utilisateurs payants: ${stats.users.usersRecharged}\n` +
       `• Solde total wallet: ${stats.credits.totalBalance}\n` +
       `• Transactions totales: ${stats.credits.totalTx}\n` +
       `• Crédits ajoutés total: ${stats.credits.creditsAdded}\n` +
       `• Crédits consommés total: ${stats.credits.creditsConsumed}\n` +
       `• Ajoutés 7j: ${stats.credits.added7}\n` +
-      `• Consommés 7j: ${stats.credits.consumed7}\n` +
-      `• Payés 30j: ${stats.credits.addedPaid30}\n\n` +
+      `• Consommés 7j: ${stats.credits.consumed7}\n\n` +
 
-      `🧾 *Top raisons crédits (30j)*\n${topReasons}\n\n` +
+      `💰 *BUSINESS*\n` +
+      `• Crédits payés 30j: ${stats.credits.addedPaid30}\n` +
+      `• Revenu estimé 30j: ${money(stats.revenue.est30)} FCFA\n` +
+      `• Conversion paiement: ${stats.kpis?.paymentConversion || 0}%\n\n` +
 
-      `💰 *Revenu estimé*\n` +
-      `• Crédits payés: ${stats.revenue.creditsPaid}\n` +
-      `• Estimation 30j: ${money(stats.revenue.est30)} FCFA\n` +
-      `• Base: ${stats.revenue.packPriceFcfa}F / ${stats.revenue.packCredits} crédits\n\n` +
-
-      `🎫 *Codes*\n` +
+      `🎫 *CODES*\n` +
       `• Créés: ${stats.codes.codesCreated}\n` +
       `• Utilisés: ${stats.codes.codesRedeemed}\n` +
       `• Taux d'usage: ${stats.codes.redeemRatePct}%\n` +
       `• Crédits via codes: ${stats.codes.creditsRedeemed}\n\n` +
 
-      `📈 *Rétention*\n${retention}`;
+      `📈 *RÉTENTION*\n${retention}`;
 
     return sendText(from, msg);
   } catch (e) {
