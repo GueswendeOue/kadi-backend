@@ -6,6 +6,10 @@ const { supabase } = require("./supabaseClient");
 // ===============================
 // Utils
 // ===============================
+function ensureArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
 function money(n) {
   const x = Number(n || 0);
   if (!Number.isFinite(x)) return "0";
@@ -53,13 +57,13 @@ async function fetchAll(tableName, orderBy = null, ascending = true) {
 
   const { data, error } = await q;
   if (error) throw error;
-  return data || [];
+  return Array.isArray(data) ? data : [];
 }
 
 function aggregateBy(rows, keyGetter, valueGetter = null) {
   const map = new Map();
 
-  for (const row of rows || []) {
+  for (const row of ensureArray(rows)) {
     const key = keyGetter(row);
     const cur = map.get(key) || {
       key,
@@ -143,6 +147,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     },
 
     topConsumers: [],
+    kpis: {
+      onboardingRate: 0,
+      activationRate: 0,
+      paymentConversion: 0,
+    },
   };
 
   // ===============================
@@ -159,8 +168,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     retentionWeekly,
     codesStats,
     topConsumers,
+    docsBySector,
   ] = await Promise.all([
-    fetchAll("kadi_stats_by_sector").catch(() => []),
     fetchSingleView("kadi_stats_adoption_kpis").catch(() => null),
     fetchAll("kadi_stats_docs_by_type").catch(() => []),
     fetchAll("kadi_stats_docs_daily_30d", "day", true).catch(() => []),
@@ -171,6 +180,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     fetchAll("kadi_stats_retention_weekly", "first_week", false).catch(() => []),
     fetchSingleView("kadi_stats_codes").catch(() => null),
     fetchAll("kadi_stats_top_consumers").catch(() => []),
+    fetchAll("kadi_stats_by_sector").catch(() => []),
   ]);
 
   if (adoptionKpis) {
@@ -183,21 +193,21 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     result.users.onboardedUsers = toNum(adoptionKpis.onboarded_users, 0);
   }
 
-  result.docs.byType = (docsByType || []).map((r) => ({
+  result.docs.byType = ensureArray(docsByType).map((r) => ({
     doc_type: safeStr(r.doc_type),
     docs: toNum(r.docs, 0),
     users: toNum(r.users, 0),
     total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
   }));
 
-  result.docs.daily30d = (docsDaily30d || []).map((r) => ({
+  result.docs.daily30d = ensureArray(docsDaily30d).map((r) => ({
     day: r.day,
     docs: toNum(r.docs, 0),
     users: toNum(r.users, 0),
     total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
   }));
 
-  result.docs.byFactureKind = (factureKinds || []).map((r) => ({
+  result.docs.byFactureKind = ensureArray(factureKinds).map((r) => ({
     facture_kind: safeStr(r.facture_kind),
     docs: toNum(r.docs, 0),
     users: toNum(r.users, 0),
@@ -213,7 +223,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     result.credits.creditsAdded = toNum(creditsKpis.credits_added, 0);
   }
 
-  result.credits.daily30d = (creditsDaily30d || []).map((r) => ({
+  result.credits.daily30d = ensureArray(creditsDaily30d).map((r) => ({
     day: r.day,
     consumed: toNum(r.consumed, 0),
     added: toNum(r.added, 0),
@@ -225,7 +235,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     result.revenue.est30 = Math.round(toNum(revenueEstimate.estimated_revenue_fcfa, 0));
   }
 
-  result.retention = (retentionWeekly || []).map((r) => ({
+  result.retention = ensureArray(retentionWeekly).map((r) => ({
     first_week: r.first_week,
     new_users: toNum(r.new_users, 0),
     retained_w1: toNum(r.retained_w1, 0),
@@ -239,11 +249,18 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     result.codes.creditsRedeemed = toNum(codesStats.credits_redeemed, 0);
   }
 
-  result.topConsumers = (topConsumers || []).map((r) => ({
+  result.topConsumers = ensureArray(topConsumers).map((r) => ({
     wa_id: safeStr(r.wa_id, ""),
     consumed: toNum(r.consumed, 0),
     added: toNum(r.added, 0),
     last_tx: r.last_tx || null,
+  }));
+
+  result.docs.bySector = ensureArray(docsBySector).map((r) => ({
+    business_sector: safeStr(r.business_sector, "unknown"),
+    docs: toNum(r.docs, 0),
+    users: toNum(r.users, 0),
+    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
   }));
 
   // ===============================
@@ -264,7 +281,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     tx30AllRes,
   ] = await Promise.all([
     supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from7),
-    supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from30), // will normalize below
+    supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from30),
     supabase.from("kadi_documents").select("total").gte("created_at", from7),
     supabase.from("kadi_documents").select("total").gte("created_at", from30),
     supabase.from("kadi_documents").select("total"),
@@ -305,14 +322,14 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   result.docs.last7 = toNum(docs7CountRes.count, 0);
   result.docs.last30 = toNum(docs30Count, 0);
 
-  result.docs.sum7 = Math.round((docs7SumRes.data || []).reduce((a, r) => a + toNum(r.total, 0), 0));
-  result.docs.sum30 = Math.round((docs30SumRes.data || []).reduce((a, r) => a + toNum(r.total, 0), 0));
-  result.docs.sumAll = Math.round((docsAllSumRes.data || []).reduce((a, r) => a + toNum(r.total, 0), 0));
+  result.docs.sum7 = Math.round(ensureArray(docs7SumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
+  result.docs.sum30 = Math.round(ensureArray(docs30SumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
+  result.docs.sumAll = Math.round(ensureArray(docsAllSumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
 
   result.docs.avgAll = result.docs.total > 0 ? Math.round(result.docs.sumAll / result.docs.total) : 0;
   result.docs.avg30 = result.docs.last30 > 0 ? Math.round(result.docs.sum30 / result.docs.last30) : 0;
 
-  const docsAnalytics = docsAnalyticsRes.data || [];
+  const docsAnalytics = ensureArray(docsAnalyticsRes.data);
 
   // OCR / manual / Gemini / stamp
   result.docs.ocrDocs = docsAnalytics.filter((r) => r.source === "ocr" || r.used_ocr === true).length;
@@ -331,27 +348,19 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     total_fcfa: Math.round(r.total),
   }));
 
-  // By business sector
-  result.docs.bySector = aggregateBy(
+  // By country
+  result.docs.byCountry = aggregateBy(
     docsAnalytics,
-    (r) => safeStr(r.business_sector, "unknown"),
+    (r) => safeStr(r.wa_country_guess || r.wa_country_code, "unknown"),
     (r) => r.total
   ).map((r) => ({
-    business_sector: r.key,
+    country: r.key,
     docs: r.count,
     total_fcfa: Math.round(r.total),
   }));
 
-  // By country
- result.docs.bySector = (docsBySector || []).map((r) => ({
-    business_sector: safeStr(r.business_sector, "unknown"),
-    docs: toNum(r.docs, 0),
-    users: toNum(r.users, 0),
-    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
-  }));
-
   // Credits 7d
-  const tx7 = tx7Res.data || [];
+  const tx7 = ensureArray(tx7Res.data);
   result.credits.added7 = Math.round(
     tx7.filter((r) => toNum(r.delta, 0) > 0).reduce((a, r) => a + toNum(r.delta, 0), 0)
   );
@@ -361,12 +370,12 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // Paid 30d
   result.credits.addedPaid30 = Math.round(
-    (tx30PaidRes.data || []).reduce((a, r) => a + toNum(r.delta, 0), 0)
+    ensureArray(tx30PaidRes.data).reduce((a, r) => a + toNum(r.delta, 0), 0)
   );
 
   // By reason 30d
   const reasonMap = new Map();
-  for (const row of tx30AllRes.data || []) {
+  for (const row of ensureArray(tx30AllRes.data)) {
     const reason = safeStr(row.reason, "unknown");
     const delta = toNum(row.delta, 0);
 
@@ -395,7 +404,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     );
   }
 
-const onboardingRate =
+  const onboardingRate =
     result.users.totalUsers > 0
       ? Math.round((result.users.onboardedUsers / result.users.totalUsers) * 100)
       : 0;
@@ -434,7 +443,7 @@ async function getTopClients({ days = 30, limit = 5 } = {}) {
 
   const map = new Map();
 
-  for (const r of data || []) {
+  for (const r of ensureArray(data)) {
     const { key, display } = normalizeClientName(r?.client);
     const total = toNum(r?.total, 0);
 
@@ -509,7 +518,7 @@ async function getDocsForExport({ days = 30 } = {}) {
   const { data, error } = await q;
   if (error) throw error;
 
-  return data || [];
+  return ensureArray(data);
 }
 
 module.exports = {
