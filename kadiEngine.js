@@ -2563,9 +2563,9 @@ async function handleAdmin(from, text) {
     try {
       const codes = await createRechargeCodes({ count: nb, creditsEach: credits, createdBy: from });
       let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
- codes.forEach((c, i) => {
-  response += `${i + 1}. ${c.code} (${c.credits} crédits)\n`;
-});
+      codes.forEach((c, i) => {
+        response += `${i + 1}. ${c.code} (${c.credits} crédits)\n`;
+      });
       await sendText(from, response);
     } catch (e) {
       logger.error("admin_create_codes", e, { from, nb, credits });
@@ -2603,24 +2603,49 @@ async function handleAdmin(from, text) {
     await sendText(
       from,
       "👨‍💼 *KADI ADMIN PANEL*\n\n" +
-  "📊 Stats:\n" +
-  "• /stats\n" +
-  "• /statsmini\n" +
-  "• /statsdocs\n" +
-  "• /statscredits\n" +
-  "• /statsusers\n" +
-  "• /alert\n" +
-  "• /top 30\n" +
-  "• /export 30\n\n" +
-  "📢 Broadcast:\n" +
-  "• /broadcast Votre message...\n" +
-  "• /broadcastimage [légende]\n" +
-  "• /broadcastcancel\n\n" +
-  "💰 Crédits:\n" +
-  "• ADMIN ADD <wa_id> <credits>\n\n" +
-  "🎫 Codes:\n" +
-  "• ADMIN CREATE <nb_codes> <credits_par_code>"
+        "📊 Stats:\n" +
+        "• /stats\n" +
+        "• /statsmini\n" +
+        "• /statsdocs\n" +
+        "• /statscredits\n" +
+        "• /statsusers\n" +
+        "• /alert\n" +
+        "• /top 30\n" +
+        "• /export 30\n\n" +
+        "📢 Broadcast:\n" +
+        "• /broadcast Votre message...\n" +
+        "• /broadcastimage [légende]\n" +
+        "• /broadcasttemplate\n" +
+        "• /broadcastcancel\n\n" +
+        "💰 Crédits:\n" +
+        "• ADMIN ADD <wa_id> <credits>\n\n" +
+        "🎫 Codes:\n" +
+        "• ADMIN CREATE <nb_codes> <credits_par_code>"
     );
+    return true;
+  }
+
+  // Template broadcast Meta
+  if (lower === "/broadcasttemplate" || lower === "broadcasttemplate") {
+    if (!kadiBroadcast?.broadcastTemplateToAll) {
+      await sendText(from, "❌ Module broadcast template absent.");
+      return true;
+    }
+
+    await sendText(from, "📢 Broadcast template lancé...");
+
+    try {
+      await kadiBroadcast.broadcastTemplateToAll({
+        adminWaId: from,
+        templateName: "kadi_monday_boost",
+        language: "fr",
+        audience: "active_30d",
+      });
+    } catch (e) {
+      logger.error("admin_broadcast_template", e, { from });
+      await sendText(from, "❌ Erreur lors du broadcast template.");
+    }
+
     return true;
   }
 

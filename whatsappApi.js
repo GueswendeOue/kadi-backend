@@ -85,6 +85,46 @@ async function sendText(to, text) {
 }
 
 /**
+ * Envoi d’un template WhatsApp validé Meta
+ * components exemple :
+ * [
+ *   {
+ *     type: "header",
+ *     parameters: [
+ *       {
+ *         type: "image",
+ *         image: { link: "https://..." }
+ *       }
+ *     ]
+ *   }
+ * ]
+ */
+async function sendTemplate({
+  to,
+  name,
+  language = "fr",
+  components = [],
+}) {
+  const payload = {
+    messaging_product: "whatsapp",
+    to: String(to),
+    type: "template",
+    template: {
+      name: String(name),
+      language: {
+        code: String(language || "fr"),
+      },
+    },
+  };
+
+  if (Array.isArray(components) && components.length > 0) {
+    payload.template.components = components;
+  }
+
+  return postJsonMessage(payload, 20000);
+}
+
+/**
  * Envoi de boutons (max 3)
  * buttons: [{id, title}]
  */
@@ -286,6 +326,7 @@ function extractStatusesFromWebhookValue(value) {
 module.exports = {
   verifyRequestSignature,
   sendText,
+  sendTemplate,
   sendButtons,
   sendList,
   getMediaInfo,

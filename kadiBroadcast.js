@@ -5,6 +5,7 @@ const { createClient } = require("@supabase/supabase-js");
 
 const {
   sendText,
+  sendTemplate,
   uploadMediaBuffer,
   sendImage,
 } = require("./whatsappApi");
@@ -92,6 +93,10 @@ async function sendBroadcastSummary(adminWaId, result) {
     `🎯 Cible: ${result.audience}`,
   ];
 
+  if (result.templateName) {
+    lines.push(`🧩 Template: ${result.templateName}`);
+  }
+
   if (result.failedIds?.length) {
     lines.push("");
     lines.push("Exemples d'échecs :");
@@ -146,7 +151,7 @@ async function broadcastToAll({
 }
 
 /**
- * Broadcast image
+ * Broadcast image simple (session 24h seulement)
  */
 async function broadcastImageToAll({
   adminWaId,
@@ -205,8 +210,95 @@ async function broadcastImageToAll({
   return result;
 }
 
+/**
+ * Broadcast template Meta
+ *
+ * Cas sans image :
+ *   broadcastTemplateToAll({
+ *     adminWaId,
+ *     templateName: "kadi_reactivation",
+ *     language: "fr",
+ *     audience: "active_30d",
+ *   })
+ *
+ * Cas avec image header :
+ *   broadcastTemplateToAll({
+ *     adminWaId,
+ *     templateName: "kadi_monday_boost",
+ *     language: "fr",
+ *     audience: "active_30d",
+ *     headerImageLink: "https://..."
+ *   })
+ */
+async function broadcastTemplateToAll({
+  adminWaId,
+  templateName,
+  language = "fr",
+  audience = "all_known",
+  headerImageLink = "",
+  components = [],
+}) {
+  const name = String(templateName || "").trim();
+  if (!name) {
+    throw new Error("broadcastTemplateToAll: templateName manquant");
+  }
+
+  const recipients = await getAudience(audience);
+
+  let finalComponents = Array.isArray(components) ? [...components] : [];
+
+  if (headerImageLink) {
+    finalComponents.push({
+      type: "header",
+      parameters: [
+        {
+          type: "image",
+          image: {
+            link: String(headerImageLink),
+          },
+        },
+      ],
+    });
+  }
+
+  let sent = 0;
+  let failed = 0;
+  const failedIds = [];
+
+  for (const waId of recipients) {
+    try {
+      await sendTemplate({
+        to: waId,
+        name,
+        language,
+        components: finalComponents,
+      });
+      sent++;
+    } catch (e) {
+      failed++;
+      failedIds.push(waId);
+      console.warn("[BROADCAST/TEMPLATE] send fail:", waId, e?.message);
+    }
+
+    await sleep(BROADCAST_DELAY_MS);
+  }
+
+  const result = {
+    audience,
+    templateName: name,
+    total: recipients.length,
+    sent,
+    failed,
+    failedIds,
+  };
+
+  await sendBroadcastSummary(adminWaId, result);
+  return result;
+}
+
 module.exports = {
   getAudience,
   broadcastToAll,
   broadcastImageToAll,
+  broadcastTemplateToAll,
 };
