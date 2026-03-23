@@ -73,11 +73,16 @@ async function downloadSignedUrlToBuffer(signedUrl) {
   return Buffer.from(resp.data);
 }
 
+async function uploadCampaignImageBuffer({ userId = "admin", buffer, mimeType = "image/jpeg", filename = "campaign" }) {
+  return uploadAnyBuffer({ userId, buffer, mimeType, filename });
+}
+
 module.exports = {
   // uploads
   uploadLogoBuffer,
   uploadSignatureBuffer,
   uploadStampBuffer,
+  uploadCampaignImageBuffer,
 
   // signed urls
   getSignedUrl,
