@@ -94,6 +94,8 @@ const {
   uploadLogoBuffer,
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
+  uploadCampaignImageBuffer,
+  getSignedUrl,
 } = require("./supabaseStorage");
 
 
@@ -2199,7 +2201,6 @@ async function handleAdminBroadcastImage(from, msg) {
   const s = getSession(from);
 
   if (!ensureAdmin(from)) return false;
-  if (s.adminPendingAction !== "broadcast_image") return false;
 
   const mediaId = msg?.image?.id;
   if (!mediaId) {
@@ -2218,30 +2219,72 @@ async function handleAdminBroadcastImage(from, msg) {
     const ext = guessExtFromMime(mime);
     const buf = await downloadMediaToBuffer(info.url);
 
-    await sendText(from, "📢 Image reçue. Broadcast en cours...");
+    // ===============================
+    // 1) Broadcast image classique
+    // ===============================
+    if (s.adminPendingAction === "broadcast_image") {
+      await sendText(from, "📢 Image reçue. Broadcast en cours...");
 
-    if (!kadiBroadcast?.broadcastImageToAll) {
+      if (!kadiBroadcast?.broadcastImageToAll) {
+        resetAdminBroadcastState(s);
+        await sendText(from, "⚠️ Module broadcast image absent.");
+        return true;
+      }
+
+      const caption = s.broadcastCaption || "";
       resetAdminBroadcastState(s);
-      await sendText(from, "⚠️ Module broadcast image absent.");
+
+      await kadiBroadcast.broadcastImageToAll({
+        adminWaId: from,
+        imageBuffer: buf,
+        mimeType: mime,
+        filename: `broadcast-${Date.now()}.${ext}`,
+        caption,
+        audience: "all_known",
+      });
+
       return true;
     }
 
-    const caption = s.broadcastCaption || "";
-    resetAdminBroadcastState(s);
+    // ===============================
+    // 2) Broadcast template avec image header
+    // ===============================
+    if (s.adminPendingAction === "broadcast_template_image") {
+      await sendText(from, "🧩 Image reçue. Préparation du template en cours...");
 
-    await kadiBroadcast.broadcastImageToAll({
-      adminWaId: from,
-      imageBuffer: buf,
-      mimeType: mime,
-      filename: `broadcast-${Date.now()}.${ext}`,
-      caption,
-    });
+      if (!kadiBroadcast?.broadcastTemplateToAll) {
+        resetAdminBroadcastState(s);
+        await sendText(from, "⚠️ Module broadcast template absent.");
+        return true;
+      }
 
-    return true;
+      const { filePath } = await uploadCampaignImageBuffer({
+        userId: "admin",
+        buffer: buf,
+        mimeType: mime,
+        filename: `template-${Date.now()}`,
+      });
+
+      const headerImageLink = await getSignedUrl(filePath);
+
+      resetAdminBroadcastState(s);
+
+      await kadiBroadcast.broadcastTemplateToAll({
+        adminWaId: from,
+        templateName: "kadi_monday_boost",
+        language: "fr",
+        audience: "all_known",
+        headerImageLink,
+      });
+
+      return true;
+    }
+
+    return false;
   } catch (e) {
-    logger.error("admin_broadcast_image", e, { from });
+    logger.error("admin_broadcast_image", e, { from, action: s.adminPendingAction });
     resetAdminBroadcastState(s);
-    await sendText(from, "❌ Erreur lors du broadcast image.");
+    await sendText(from, "❌ Erreur lors du traitement de l'image.");
     return true;
   }
 }
@@ -2520,18 +2563,35 @@ async function prepareBroadcastImage(from, text) {
   }
 
   const s = getSession(from);
-  const caption = String(text || "").replace(/^\/?broadcastimage\s*/i, "").trim();
+  const raw = String(text || "").trim();
 
-  s.adminPendingAction = "broadcast_image";
-  s.broadcastCaption = caption || "";
+  // /broadcastimage [légende]
+  if (/^\/?broadcastimage\b/i.test(raw)) {
+    const caption = raw.replace(/^\/?broadcastimage\s*/i, "").trim();
 
-  await sendText(
-    from,
-    caption
-      ? "🖼️ OK. Envoie maintenant l'image à diffuser.\nLa légende a bien été enregistrée."
-      : "🖼️ OK. Envoie maintenant l'image à diffuser.\nAucune légende définie."
-  );
-  return true;
+    s.adminPendingAction = "broadcast_image";
+    s.broadcastCaption = caption || "";
+
+    await sendText(
+      from,
+      caption
+        ? "🖼️ OK. Envoie maintenant l'image à diffuser.\nLa légende a bien été enregistrée."
+        : "🖼️ OK. Envoie maintenant l'image à diffuser.\nAucune légende définie."
+    );
+    return true;
+  }
+
+  // /broadcasttemplateimage
+  if (/^\/?broadcasttemplateimage\b/i.test(raw)) {
+    s.adminPendingAction = "broadcast_template_image";
+    await sendText(
+      from,
+      "🧩 OK. Envoie maintenant l'image du template à diffuser à tous les utilisateurs."
+    );
+    return true;
+  }
+
+  return false;
 }
 
 async function cancelBroadcastImage(from) {
@@ -2616,6 +2676,7 @@ async function handleAdmin(from, text) {
         "• /broadcast Votre message...\n" +
         "• /broadcastimage [légende]\n" +
         "• /broadcasttemplate\n" +
+        "• /broadcasttemplateimage\n" +
         "• /broadcastcancel\n\n" +
         "💰 Crédits:\n" +
         "• ADMIN ADD <wa_id> <credits>\n\n" +
@@ -2625,21 +2686,21 @@ async function handleAdmin(from, text) {
     return true;
   }
 
-  // Template broadcast Meta
+  // Template broadcast sans nouvelle image
   if (lower === "/broadcasttemplate" || lower === "broadcasttemplate") {
     if (!kadiBroadcast?.broadcastTemplateToAll) {
       await sendText(from, "❌ Module broadcast template absent.");
       return true;
     }
 
-    await sendText(from, "📢 Broadcast template lancé...");
+    await sendText(from, "📢 Broadcast template lancé vers tous les utilisateurs...");
 
     try {
       await kadiBroadcast.broadcastTemplateToAll({
         adminWaId: from,
         templateName: "kadi_monday_boost",
         language: "fr",
-        audience: "active_30d",
+        audience: "all_known",
       });
     } catch (e) {
       logger.error("admin_broadcast_template", e, { from });
@@ -2647,6 +2708,11 @@ async function handleAdmin(from, text) {
     }
 
     return true;
+  }
+
+  // Template broadcast avec nouvelle image envoyée ensuite
+  if (lower === "/broadcasttemplateimage" || lower === "broadcasttemplateimage") {
+    return prepareBroadcastImage(from, text);
   }
 
   if (lower.startsWith("/broadcastimage") || lower.startsWith("broadcastimage")) {
