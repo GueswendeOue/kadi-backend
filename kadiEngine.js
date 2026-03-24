@@ -95,7 +95,7 @@ const {
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
   uploadCampaignImageBuffer,
-  getSignedUrl,
+  getSignedCampaignUrl,
 } = require("./supabaseStorage");
 
 
@@ -1564,7 +1564,9 @@ async function startDocFlow(from, mode, factureKind = null) {
   s.mode = mode;
   s.factureKind = factureKind;
 
-  if (mode === "decharge") {
+  const modeNorm = String(mode || "").toLowerCase();
+
+  if (modeNorm === "decharge") {
     s.lastDocDraft = initDechargeDraft({
       dateISO: formatDateISO(),
       makeDraftMeta,
@@ -1579,8 +1581,6 @@ async function startDocFlow(from, mode, factureKind = null) {
     return;
   }
 
-  s.step = "doc_client";
-
   s.lastDocDraft = {
     type: mode,
     factureKind,
@@ -1594,15 +1594,35 @@ async function startDocFlow(from, mode, factureKind = null) {
   };
 
   const title =
-    mode === "facture"
+    modeNorm === "facture"
       ? factureKind === "proforma"
         ? "🧾 Facture Pro forma"
         : "🧾 Facture Définitive"
-      : mode === "devis"
+      : modeNorm === "devis"
       ? "📝 Devis"
       : "🧾 Reçu";
 
-  await sendText(from, `${title}\n\n👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`);
+  // Cas spécial : reçu → demander le format d'abord
+  if (modeNorm === "reçu" || modeNorm === "recu") {
+    s.step = "receipt_format";
+
+    await sendText(
+      from,
+      `${title}\n\n` +
+        `Quel format voulez-vous ?\n\n` +
+        `• RAPIDE → facile à partager sur WhatsApp\n` +
+        `• PRO → version A4 plus formelle\n\n` +
+        `Répondez : RAPIDE ou PRO`
+    );
+    return;
+  }
+
+  s.step = "doc_client";
+
+  await sendText(
+    from,
+    `${title}\n\n👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
+  );
 }
 
 async function askItemLabel(from) {
@@ -1645,6 +1665,15 @@ async function sendItemConfirmMenu(from) {
       { id: "DOC_CANCEL", title: "❌ Annuler" },
     ]
   );
+}
+
+function normalizeReceiptFormat(text) {
+  const t = String(text || "").trim().toLowerCase();
+
+  if (["1", "rapide", "compact", "whatsapp", "wa"].includes(t)) return "compact";
+  if (["2", "pro", "a4", "professionnel", "professionnelle"].includes(t)) return "a4";
+
+  return null;
 }
 
 async function handleProductFlowText(from, text) {
@@ -1708,6 +1737,34 @@ async function handleProductFlowText(from, text) {
     await sendText(from, formatBaseCostLine(cost));
 
     await sendPreviewMenu(from);
+    return true;
+  }
+
+  // ===============================
+  // Choix du format de reçu
+  // ===============================
+  if (s.step === "receipt_format") {
+    const format = normalizeReceiptFormat(t);
+
+    if (!format) {
+      await sendText(
+        from,
+        "Répondez simplement :\n• RAPIDE → version WhatsApp\n• PRO → version A4"
+      );
+      return true;
+    }
+
+    s.lastDocDraft = s.lastDocDraft || {};
+    s.lastDocDraft.receiptFormat = format;
+
+    s.step = "doc_client";
+
+    await sendText(
+      from,
+      format === "compact"
+        ? "✅ Reçu rapide sélectionné.\n\n👤 Quel est le nom du client ?"
+        : "✅ Reçu professionnel A4 sélectionné.\n\n👤 Quel est le nom du client ?"
+    );
     return true;
   }
 
@@ -2265,7 +2322,7 @@ async function handleAdminBroadcastImage(from, msg) {
         filename: `template-${Date.now()}`,
       });
 
-      const headerImageLink = await getSignedUrl(filePath);
+      const headerImageLink = await getSignedCampaignUrl(filePath);
 
       resetAdminBroadcastState(s);
 
@@ -2395,6 +2452,7 @@ let pdfBuf = await buildPdfBuffer({
         : null,
     items: draft.items || [],
     total,
+    receiptFormat: draft.receiptFormat || "a4",
   },
   businessProfile: profile,
   logoBuffer: logoBuf,
