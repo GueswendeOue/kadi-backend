@@ -77,19 +77,14 @@ async function saveDocument({ waId, doc }) {
   const source = s(doc?.source) || "product";
 
   const payload = {
-    // Identity
     wa_id: s(waId),
     wa_country_code: country.wa_country_code,
     wa_country_guess: country.wa_country_guess,
-
-    // Document core
     doc_number: s(doc?.docNumber),
-    doc_type: s(doc?.type),                 // devis | facture | recu | decharge
-    facture_kind: s(doc?.factureKind),      // proforma | definitive | null
+    doc_type: s(doc?.type),
+    facture_kind: s(doc?.factureKind),
     client: s(doc?.client),
     date: s(doc?.date),
-
-    // Finance
     subtotal: n(f.subtotal),
     discount: n(doc?.discount),
     net: n(doc?.net),
@@ -97,13 +92,9 @@ async function saveDocument({ waId, doc }) {
     total: n(f.gross ?? doc?.total),
     deposit: n(doc?.deposit),
     due: n(doc?.due),
-
-    // Payment
     paid: typeof doc?.paid === "boolean" ? doc.paid : null,
     payment_method: s(doc?.paymentMethod),
     motif: s(doc?.motif),
-
-    // Analytics
     source,
     items_count: items.length,
     used_ocr: source === "ocr",
@@ -112,8 +103,6 @@ async function saveDocument({ waId, doc }) {
     credits_consumed: n(doc?.meta?.creditsConsumed),
     business_sector: s(doc?.meta?.businessSector || doc?.meta?.businessType),
     status: s(doc?.status) || "generated",
-
-    // Raw data
     items,
     raw: doc || {},
   };
@@ -124,7 +113,13 @@ async function saveDocument({ waId, doc }) {
     .select("id, doc_number, created_at")
     .single();
 
-  if (error) throw error;
+  if (error) {
+    if (String(error.message || "").includes("kadi_documents_doc_number_uniq")) {
+      throw new Error(`DOC_NUMBER_ALREADY_EXISTS:${payload.doc_number}`);
+    }
+    throw error;
+  }
+
   return data;
 }
 

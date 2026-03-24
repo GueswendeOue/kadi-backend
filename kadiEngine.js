@@ -67,6 +67,13 @@ const {
   buildPostConfirmationMessage,
 } = require("./kadiDecharge");
 
+console.log("[KADI] createAndSendPdf", {
+      type: draft.type,
+      receiptFormat: draft.receiptFormat,
+      docNumber: draft.docNumber,
+      savedDocumentId: draft.savedDocumentId || null,
+    });
+    
 const { buildPdfBuffer } = pdfMod;
 
 
@@ -2410,12 +2417,14 @@ draft.finance = {
   gross: draft.finance?.gross ?? computedFinance.gross,
 };
 
-    draft.docNumber = await nextDocNumber({
-      waId: from,
-      mode: draft.type,
-      factureKind: draft.factureKind,
-      dateISO: draft.date,
-    });
+    if (!draft.docNumber) {
+      draft.docNumber = await nextDocNumber({
+        waId: from,
+        mode: draft.type,
+        factureKind: draft.factureKind,
+        dateISO: draft.date,
+      });
+    }
 
     const profile = await getOrCreateProfile(from);
 
@@ -2475,10 +2484,28 @@ draft.status = "generated";
     const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
     if (!up?.id) throw new Error("Upload PDF échoué");
 
-     try {
-      await saveDocument({ waId: from, doc: draft });
+     let saved = null;
+
+    try {
+      saved = await saveDocument({ waId: from, doc: draft });
+      draft.savedDocumentId = saved?.id || true;
     } catch (e) {
-      console.warn("saveDocument error:", e?.message);
+      const msg = String(e?.message || e || "");
+      console.warn("saveDocument error:", msg);
+
+      if (
+        msg.includes("kadi_documents_doc_number_uniq") ||
+        msg.includes("DOC_NUMBER_ALREADY_EXISTS") ||
+        msg.includes("duplicate key value")
+      ) {
+        await sendText(
+          from,
+          "⚠️ Ce document semble déjà avoir été enregistré. Réessayez avec un nouveau document."
+        );
+        return;
+      }
+
+      throw e;
     }
 
     successAfterDebit = true;
@@ -3620,7 +3647,32 @@ async function handleInteractiveReply(from, replyId) {
     return;
   }
 
-  if (replyId === "DOC_CONFIRM") return createAndSendPdf(from);
+  if (replyId === "DOC_CONFIRM") {
+  const draft = s.lastDocDraft;
+
+  if (!draft) {
+    await sendText(from, "❌ Aucun document en cours.");
+    return;
+  }
+
+  if (draft.savedDocumentId) {
+    await sendText(from, "✅ Ce document a déjà été enregistré.");
+    return;
+  }
+
+  if (draft._saving === true) {
+    await sendText(from, "⏳ Enregistrement en cours...");
+    return;
+  }
+
+  draft._saving = true;
+
+  try {
+    return await createAndSendPdf(from);
+  } finally {
+    draft._saving = false;
+  }
+}
 
   if (replyId === "DOC_RESTART") {
     resetDraftSession(s);

@@ -525,15 +525,16 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       // ===== Render =====
-      drawHeader(true);
+      // ===== Render =====
+if (isCompactReceipt) {
+  pdf.y = 50;
+  drawCompactReceipt();
+  drawFooter();
+  pdf.end();
+  return;
+}
 
-      if (isCompactReceipt) {
-        pdf.y = 50;
-        drawCompactReceipt();
-        drawFooter();
-        pdf.end();
-        return;
-      }
+drawHeader(true);
 
       if (type === "DÉCHARGE") {
         ensureSpace(220);
