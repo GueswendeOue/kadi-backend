@@ -125,23 +125,37 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
     prefillText: KADI_PREFILL,
   });
 
+  const rawType = String(docData.type || "DOCUMENT").toUpperCase();
+  const normalizedType = normalizeDocType(rawType);
+  const receiptFormat = String(docData.receiptFormat || "a4").toLowerCase();
+  const isCompactReceipt =
+    normalizedType === "REÇU" && receiptFormat === "compact";
+
+const rawType = String(docData.type || "DOCUMENT").toUpperCase();
+  const normalizedType = normalizeDocType(rawType);
+  const receiptFormat = String(docData.receiptFormat || "a4").toLowerCase();
+  const isCompactReceipt =
+    normalizedType === "REÇU" && receiptFormat === "compact";
+
   return new Promise((resolve, reject) => {
     try {
-      const pdf = new PDFDocument({ size: "A4", margin: 50, bufferPages: true });
+      const pdf = new PDFDocument({
+        size: isCompactReceipt ? [320, 560] : "A4",
+        margin: isCompactReceipt ? 20 : 50,
+        bufferPages: true,
+      });
+
       const chunks = [];
       pdf.on("data", (c) => chunks.push(c));
       pdf.on("end", () => resolve(Buffer.concat(chunks)));
 
       const pageWidth = pdf.page.width;
       const pageHeight = pdf.page.height;
-      const left = 50;
-      const right = pageWidth - 50;
+      const left = isCompactReceipt ? 20 : 50;
+      const right = pageWidth - (isCompactReceipt ? 20 : 50);
 
-      const rawType = String(docData.type || "DOCUMENT").toUpperCase();
-      const type = normalizeDocType(rawType);
-      const receiptFormat = String(docData.receiptFormat || "a4").toLowerCase();
+      const type = normalizedType;
       const isReceipt = type === "REÇU";
-      const isCompactReceipt = isReceipt && receiptFormat === "compact";
 
       const number = docData.docNumber || "—";
       const date = docData.date || "—";
