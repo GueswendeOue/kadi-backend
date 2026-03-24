@@ -131,12 +131,6 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
   const isCompactReceipt =
     normalizedType === "REÇU" && receiptFormat === "compact";
 
-const rawType = String(docData.type || "DOCUMENT").toUpperCase();
-  const normalizedType = normalizeDocType(rawType);
-  const receiptFormat = String(docData.receiptFormat || "a4").toLowerCase();
-  const isCompactReceipt =
-    normalizedType === "REÇU" && receiptFormat === "compact";
-
   return new Promise((resolve, reject) => {
     try {
       const pdf = new PDFDocument({
