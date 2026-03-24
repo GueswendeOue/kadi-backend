@@ -67,13 +67,7 @@ const {
   buildPostConfirmationMessage,
 } = require("./kadiDecharge");
 
-console.log("[KADI] createAndSendPdf", {
-      type: draft.type,
-      receiptFormat: draft.receiptFormat,
-      docNumber: draft.docNumber,
-      savedDocumentId: draft.savedDocumentId || null,
-    });
-    
+
 const { buildPdfBuffer } = pdfMod;
 
 
@@ -2377,6 +2371,13 @@ async function handleIncomingImage(from, msg) {
 async function createAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
+
+  console.log("[KADI] createAndSendPdf", {
+  type: draft?.type,
+  receiptFormat: draft?.receiptFormat,
+  docNumber: draft?.docNumber,
+  savedDocumentId: draft?.savedDocumentId || null,
+});
 
   if (!draft) {
     await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
