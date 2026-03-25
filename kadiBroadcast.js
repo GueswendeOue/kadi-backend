@@ -45,6 +45,15 @@ function uniqueWaIds(rows = []) {
   return Array.from(set);
 }
 
+function extractMetaError(err) {
+  return (
+    err?.response?.data?.error?.message ||
+    err?.response?.data?.message ||
+    err?.message ||
+    "Unknown error"
+  );
+}
+
 /**
  * audience:
  * - "all_known"  => vue kadi_all_known_users
@@ -97,10 +106,19 @@ async function sendBroadcastSummary(adminWaId, result) {
     lines.push(`🧩 Template: ${result.templateName}`);
   }
 
+  if (result.language) {
+    lines.push(`🌐 Langue: ${result.language}`);
+  }
+
   if (result.failedIds?.length) {
     lines.push("");
     lines.push("Exemples d'échecs :");
     lines.push(result.failedIds.slice(0, 10).join(", "));
+  }
+
+  if (result.lastErrorMessage) {
+    lines.push("");
+    lines.push(`⚠️ Dernière erreur: ${result.lastErrorMessage}`);
   }
 
   await sendText(adminWaId, lines.join("\n"));
@@ -124,6 +142,7 @@ async function broadcastToAll({
   let sent = 0;
   let failed = 0;
   const failedIds = [];
+  let lastErrorMessage = "";
 
   for (const waId of recipients) {
     try {
@@ -132,7 +151,8 @@ async function broadcastToAll({
     } catch (e) {
       failed++;
       failedIds.push(waId);
-      console.warn("[BROADCAST/TEXT] send fail:", waId, e?.message);
+      lastErrorMessage = extractMetaError(e);
+      console.warn("[BROADCAST/TEXT] send fail:", waId, lastErrorMessage);
     }
 
     await sleep(BROADCAST_DELAY_MS);
@@ -144,6 +164,7 @@ async function broadcastToAll({
     sent,
     failed,
     failedIds,
+    lastErrorMessage,
   };
 
   await sendBroadcastSummary(adminWaId, result);
@@ -180,6 +201,7 @@ async function broadcastImageToAll({
   let sent = 0;
   let failed = 0;
   const failedIds = [];
+  let lastErrorMessage = "";
 
   for (const waId of recipients) {
     try {
@@ -192,7 +214,8 @@ async function broadcastImageToAll({
     } catch (e) {
       failed++;
       failedIds.push(waId);
-      console.warn("[BROADCAST/IMAGE] send fail:", waId, e?.message);
+      lastErrorMessage = extractMetaError(e);
+      console.warn("[BROADCAST/IMAGE] send fail:", waId, lastErrorMessage);
     }
 
     await sleep(BROADCAST_DELAY_MS);
@@ -204,6 +227,7 @@ async function broadcastImageToAll({
     sent,
     failed,
     failedIds,
+    lastErrorMessage,
   };
 
   await sendBroadcastSummary(adminWaId, result);
@@ -213,20 +237,20 @@ async function broadcastImageToAll({
 /**
  * Broadcast template Meta
  *
- * Cas sans image :
+ * Exemple sans image :
  *   broadcastTemplateToAll({
  *     adminWaId,
  *     templateName: "kadi_reactivation",
- *     language: "fr",
- *     audience: "active_30d",
+ *     language: "fr_FR",
+ *     audience: "all_known",
  *   })
  *
- * Cas avec image header :
+ * Exemple avec image header :
  *   broadcastTemplateToAll({
  *     adminWaId,
  *     templateName: "kadi_monday_boost",
- *     language: "fr",
- *     audience: "active_30d",
+ *     language: "fr_FR",
+ *     audience: "all_known",
  *     headerImageLink: "https://..."
  *   })
  */
@@ -245,7 +269,7 @@ async function broadcastTemplateToAll({
 
   const recipients = await getAudience(audience);
 
-  let finalComponents = Array.isArray(components) ? [...components] : [];
+  const finalComponents = Array.isArray(components) ? [...components] : [];
 
   if (headerImageLink) {
     finalComponents.push({
@@ -264,6 +288,7 @@ async function broadcastTemplateToAll({
   let sent = 0;
   let failed = 0;
   const failedIds = [];
+  let lastErrorMessage = "";
 
   for (const waId of recipients) {
     try {
@@ -277,7 +302,8 @@ async function broadcastTemplateToAll({
     } catch (e) {
       failed++;
       failedIds.push(waId);
-      console.warn("[BROADCAST/TEMPLATE] send fail:", waId, e?.message);
+      lastErrorMessage = extractMetaError(e);
+      console.warn("[BROADCAST/TEMPLATE] send fail:", waId, lastErrorMessage);
     }
 
     await sleep(BROADCAST_DELAY_MS);
@@ -286,10 +312,12 @@ async function broadcastTemplateToAll({
   const result = {
     audience,
     templateName: name,
+    language,
     total: recipients.length,
     sent,
     failed,
     failedIds,
+    lastErrorMessage,
   };
 
   await sendBroadcastSummary(adminWaId, result);

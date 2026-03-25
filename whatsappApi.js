@@ -99,29 +99,28 @@ async function sendText(to, text) {
  *   }
  * ]
  */
-async function sendTemplate({
-  to,
-  name,
-  language = "fr",
-  components = [],
-}) {
-  const payload = {
-    messaging_product: "whatsapp",
-    to: String(to),
-    type: "template",
-    template: {
-      name: String(name),
-      language: {
-        code: String(language || "fr"),
+async function sendTemplate({ to, name, language = "fr", components = [] }) {
+  return axios.post(
+    `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name,
+        language: {
+          code: language, // ✅ IMPORTANT
+        },
+        components,
       },
     },
-  };
-
-  if (Array.isArray(components) && components.length > 0) {
-    payload.template.components = components;
-  }
-
-  return postJsonMessage(payload, 20000);
+    {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
 }
 
 /**
