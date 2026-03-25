@@ -134,8 +134,8 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
   return new Promise((resolve, reject) => {
     try {
       const pdf = new PDFDocument({
-        size: isCompactReceipt ? [320, 560] : "A4",
-        margin: isCompactReceipt ? 20 : 50,
+        size: isCompactReceipt ? [280, 420] : "A4",
+        margin: isCompactReceipt ? 16 : 50,
         bufferPages: true,
       });
 
@@ -205,6 +205,8 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
       }
 
       function drawFooter() {
+        if (isCompactReceipt) return;
+
         const footerY = pageHeight - 60;
 
         pdf.save();
@@ -226,170 +228,165 @@ async function buildPdfBuffer({ docData = {}, businessProfile = null, logoBuffer
         pdf.restore();
       }
 
-      function drawCompactReceipt() {
-        const compactLeft = left + 60;
-        const compactRight = right - 60;
-        const compactW = compactRight - compactLeft;
+  function drawCompactReceipt() {
+  const compactW = 220;
+  const compactLeft = Math.round((pageWidth - compactW) / 2);
+  const compactRight = compactLeft + compactW;
 
-        const qrSize = 54;
-        let y = 70;
+  const qrSize = 34;
+  let y = 18;
 
-        function hr() {
-          pdf.save();
-          pdf.strokeColor("#D9D9D9").lineWidth(1);
-          pdf.moveTo(compactLeft, y).lineTo(compactRight, y).stroke();
-          pdf.restore();
-          y += 10;
-        }
+  function hr() {
+    pdf.save();
+    pdf.strokeColor("#D9D9D9").lineWidth(1);
+    pdf.moveTo(compactLeft, y).lineTo(compactRight, y).stroke();
+    pdf.restore();
+    y += 8;
+  }
 
-        function textLeftRight(label, value, opts = {}) {
-          const rowH = opts.rowH || 16;
-          const labelW = compactW - 90;
+  // Header
+  if (logoBuffer) {
+    try {
+      pdf.image(logoBuffer, compactLeft + 2, y, { fit: [18, 18] });
+    } catch (_) {}
+  }
 
-          pdf.font(opts.labelFont || "Helvetica")
-            .fontSize(opts.fontSize || 10)
-            .fillColor(opts.color || "#000")
-            .text(label, compactLeft, y, {
-              width: labelW,
-              align: "left",
-              lineBreak: false,
-            });
+  pdf.font("Helvetica-Bold").fontSize(9).fillColor("#000");
+  pdf.text(safe(bp.business_name) || "—", compactLeft + (logoBuffer ? 24 : 0), y, {
+    width: compactW - (logoBuffer ? 24 : 0),
+    align: "left",
+  });
 
-          pdf.font(opts.valueFont || opts.labelFont || "Helvetica")
-            .fontSize(opts.fontSize || 10)
-            .fillColor(opts.color || "#000")
-            .text(value, compactLeft, y, {
-              width: compactW,
-              align: "right",
-              lineBreak: false,
-            });
+  if (bp.phone) {
+    pdf.font("Helvetica").fontSize(8).fillColor("#555");
+    pdf.text(bp.phone, compactLeft + (logoBuffer ? 24 : 0), y + 10, {
+      width: compactW - (logoBuffer ? 24 : 0),
+      align: "left",
+    });
+  }
 
-          y += rowH;
-        }
+  y += 24;
+  hr();
 
-        // Header compact
-        if (logoBuffer) {
-          try {
-            pdf.image(logoBuffer, compactLeft, y, { fit: [28, 28] });
-          } catch (_) {}
-        }
+  // Infos document
+  pdf.font("Helvetica-Bold").fontSize(10).fillColor("#000");
+  pdf.text(`REÇU #${number}`, compactLeft, y, {
+    width: compactW,
+    align: "left",
+  });
 
-        const businessX = logoBuffer ? compactLeft + 36 : compactLeft;
+  pdf.font("Helvetica").fontSize(8).fillColor("#666");
+  pdf.text(date, compactLeft, y + 12, {
+    width: compactW,
+    align: "left",
+  });
 
-        pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
-        pdf.text(safe(bp.business_name) || "—", businessX, y);
+  y += 24;
+  hr();
 
-        if (bp.phone) {
-          pdf.font("Helvetica").fontSize(9).fillColor("#444");
-          pdf.text(bp.phone, businessX, y + 14);
-        }
+  // Client
+  pdf.font("Helvetica-Bold").fontSize(8).fillColor("#777");
+  pdf.text("CLIENT", compactLeft, y);
 
-        y += 38;
-        hr();
+  pdf.font("Helvetica").fontSize(9).fillColor("#000");
+  pdf.text(client, compactLeft, y + 10, {
+    width: compactW,
+    align: "left",
+  });
 
-        // Infos document
-        pdf.font("Helvetica-Bold").fontSize(12).fillColor("#000");
-        pdf.text(`Reçu #${number}`, compactLeft, y);
+  y += 24;
+  hr();
 
-        pdf.font("Helvetica").fontSize(9).fillColor("#444");
-        pdf.text(date, compactLeft, y + 16);
+  // Items
+  for (const it of items) {
+    const label = safe(it.label || it.raw || "—");
+    const qty = Number(it.qty || 0);
+    const pu = Number(it.unitPrice || 0);
+    const amt = Number(it.amount || (qty * pu) || 0);
 
-        y += 34;
-        hr();
+    const shownLabel =
+      qty > 0 && !/x\s*\d+/i.test(label)
+        ? `${label}${qty > 1 ? ` x${fmtNumber(qty)}` : ""}`
+        : label;
 
-        // Client
-        pdf.font("Helvetica-Bold").fontSize(9).fillColor("#666");
-        pdf.text("Client", compactLeft, y);
+    const labelW = compactW - 78;
+    const labelH = pdf.heightOfString(shownLabel, {
+      width: labelW,
+      lineBreak: true,
+    });
 
-        pdf.font("Helvetica").fontSize(10).fillColor("#000");
-        pdf.text(client, compactLeft, y + 13, {
-          width: compactW,
-        });
+    pdf.font("Helvetica").fontSize(9).fillColor("#000");
+    pdf.text(shownLabel, compactLeft, y, {
+      width: labelW,
+      align: "left",
+    });
 
-        y += 32;
-        hr();
+    pdf.text(`${fmtNumber(amt)} F`, compactLeft, y, {
+      width: compactW,
+      align: "right",
+      lineBreak: false,
+    });
 
-        // Items
-        pdf.font("Helvetica").fontSize(10).fillColor("#000");
+    y += Math.max(16, labelH + 2);
+  }
 
-        for (const it of items) {
-          const label = safe(it.label || it.raw || "—");
-          const qty = Number(it.qty || 0);
-          const pu = Number(it.unitPrice || 0);
-          const amt = Number(it.amount || (qty * pu) || 0);
+  hr();
 
-          const shownLabel =
-            qty > 0 && !/x\s*\d+/i.test(label)
-              ? `${label}${qty > 1 ? ` x${fmtNumber(qty)}` : ""}`
-              : label;
+  // Total
+  pdf.font("Helvetica-Bold").fontSize(10).fillColor("#138A36");
+  pdf.text("TOTAL", compactLeft, y, {
+    width: 70,
+    align: "left",
+    lineBreak: false,
+  });
 
-          const labelW = compactW - 90;
-          const labelH = pdf.heightOfString(shownLabel, {
-            width: labelW,
-            lineBreak: true,
-          });
+  pdf.text(`${fmtNumber(total)} F CFA`, compactLeft, y, {
+    width: compactW,
+    align: "right",
+    lineBreak: false,
+  });
 
-          const amountText = `${fmtNumber(amt)} F`;
+  y += 18;
+  hr();
 
-          pdf.font("Helvetica").fontSize(10).fillColor("#000");
-          pdf.text(shownLabel, compactLeft, y, {
-            width: labelW,
-            align: "left",
-          });
+  // Statut
+  pdf.font("Helvetica-Bold").fontSize(8).fillColor("#138A36");
+  pdf.text("PAYÉ", compactLeft, y);
 
-          pdf.text(amountText, compactLeft, y, {
-            width: compactW,
-            align: "right",
-            lineBreak: false,
-          });
+  y += 18;
 
-          y += Math.max(18, labelH + 4);
-        }
+  // Footer compact branding KADI
+  pdf.font("Helvetica").fontSize(8).fillColor("#444");
+  pdf.text("Merci", compactLeft, y);
 
-        hr();
+  const qrX = compactRight - qrSize;
+  const qrY = y - 4;
 
-        // Total
-        pdf.font("Helvetica-Bold").fontSize(12).fillColor("#0A8F3D");
-        pdf.text("TOTAL :", compactLeft, y, {
-          width: 100,
-          align: "left",
-          lineBreak: false,
-        });
+  pdf.font("Helvetica-Bold").fontSize(7).fillColor("#111");
+  pdf.text("Généré par KADI", compactLeft, y + 12, {
+    width: compactW - qrSize - 10,
+    align: "left",
+  });
 
-        pdf.text(`${fmtNumber(total)} F CFA`, compactLeft, y, {
-          width: compactW,
-          align: "right",
-          lineBreak: false,
-        });
+  pdf.font("Helvetica").fontSize(6).fillColor("#666");
+  pdf.text("Scannez pour essayer sur WhatsApp", compactLeft, y + 22, {
+    width: compactW - qrSize - 10,
+    align: "left",
+  });
 
-        y += 24;
-        hr();
+  try {
+    pdf.image(qr.png, qrX, qrY, { fit: [qrSize, qrSize] });
+  } catch (_) {}
 
-        // Status
-        pdf.font("Helvetica-Bold").fontSize(10).fillColor("#0A8F3D");
-        pdf.text("Payé ✔", compactLeft, y);
+  pdf.font("Helvetica").fontSize(6).fillColor("#777");
+  pdf.text("Essayer", qrX - 4, qrY + qrSize + 2, {
+    width: qrSize + 8,
+    align: "center",
+  });
 
-        y += 24;
-
-        // Footer compact avec QR
-        pdf.font("Helvetica").fontSize(9).fillColor("#444");
-        pdf.text("Merci 🙏", compactLeft, y);
-
-        pdf.font("Helvetica").fontSize(8).fillColor("#777");
-        pdf.text("Généré avec KADI", compactLeft, y + 14);
-
-        try {
-          pdf.image(qr.png, compactRight - qrSize, y - 6, { fit: [qrSize, qrSize] });
-        } catch (_) {}
-
-        pdf.font("Helvetica").fontSize(7).fillColor("#777");
-        pdf.text("Scanner pour revenir", compactRight - 80, y + qrSize - 2, {
-          width: 80,
-          align: "right",
-        });
-
-        pdf.y = y + qrSize + 10;
-      }
+  y = Math.max(y + 36, qrY + qrSize + 12);
+  pdf.y = y;
+}
 
       function drawHeader(isFirstPage = true) {
         const topY = 45;
