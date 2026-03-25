@@ -2785,7 +2785,7 @@ async function handleAdmin(from, text) {
       await kadiBroadcast.broadcastTemplateToAll({
         adminWaId: from,
         templateName: "relance_utilisateur_kadi",
-        language: "fr_FR",
+        language: "fr",
         audience: "all_known",
       });
     } catch (e) {
