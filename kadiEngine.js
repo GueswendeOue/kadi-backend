@@ -2373,14 +2373,29 @@ async function createAndSendPdf(from) {
   const draft = s.lastDocDraft;
 
   console.log("[KADI] createAndSendPdf", {
-  type: draft?.type,
-  receiptFormat: draft?.receiptFormat,
-  docNumber: draft?.docNumber,
-  savedDocumentId: draft?.savedDocumentId || null,
-});
+    type: draft?.type,
+    receiptFormat: draft?.receiptFormat,
+    docNumber: draft?.docNumber,
+    savedDocumentId: draft?.savedDocumentId || null,
+    savedPdfMediaId: draft?.savedPdfMediaId || null,
+    isGeneratingPdf: !!s.isGeneratingPdf,
+  });
 
   if (!draft) {
     await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
+    return;
+  }
+
+  // Anti double clic
+  if (s.isGeneratingPdf) {
+    await sendText(from, "⏳ Génération déjà en cours... veuillez patienter.");
+    return;
+  }
+
+  // Si déjà généré dans la session, proposer un choix UX
+  if (draft.savedDocumentId || draft.savedPdfMediaId) {
+    s.step = "doc_already_generated";
+    await sendAlreadyGeneratedMenu(from);
     return;
   }
 
@@ -2398,25 +2413,32 @@ async function createAndSendPdf(from) {
   }
 
   const cost = computeBasePdfCost(draft);
-  const reason = draft.source === "ocr" ? "ocr_pdf" : draft.type === "decharge" ? "decharge_pdf" : "pdf";
+  const reason =
+    draft.source === "ocr"
+      ? "ocr_pdf"
+      : draft.type === "decharge"
+      ? "decharge_pdf"
+      : "pdf";
 
-  const cons = await consumeCredit(from, cost, reason);
-  if (!cons.ok) {
-    await sendText(
-      from,
-      `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
-    );
-    return;
-  }
+  s.isGeneratingPdf = true;
 
   let successAfterDebit = false;
 
   try {
+    const cons = await consumeCredit(from, cost, reason);
+    if (!cons.ok) {
+      await sendText(
+        from,
+        `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
+      );
+      return;
+    }
+
     const computedFinance = computeFinance(draft);
-draft.finance = {
-  subtotal: computedFinance.subtotal,
-  gross: draft.finance?.gross ?? computedFinance.gross,
-};
+    draft.finance = {
+      subtotal: computedFinance.subtotal,
+      gross: draft.finance?.gross ?? computedFinance.gross,
+    };
 
     if (!draft.docNumber) {
       draft.docNumber = await nextDocNumber({
@@ -2442,50 +2464,55 @@ draft.finance = {
     const title = getDocTitle(draft);
     const total = draft.finance?.gross ?? computeFinance(draft).gross;
 
-let pdfBuf = await buildPdfBuffer({
-  docData: {
-    type: title,
-    docNumber: draft.docNumber,
-    date: draft.date,
-    client: draft.client,
-    motif: draft.motif || null,
-    dechargeType: draft.dechargeType || null,
-    dechargeText:
-      draft.type === "decharge"
-        ? buildDechargeText({
-            client: draft.client,
-            businessName: safe(profile?.business_name),
-            motif: draft.motif,
-            total,
-            dechargeType: draft.dechargeType,
-          })
-        : null,
-    items: draft.items || [],
-    total,
-    receiptFormat: draft.receiptFormat || "a4",
-  },
-  businessProfile: profile,
-  logoBuffer: logoBuf,
-});
+    let pdfBuf = await buildPdfBuffer({
+      docData: {
+        type: title,
+        docNumber: draft.docNumber,
+        date: draft.date,
+        client: draft.client,
+        motif: draft.motif || null,
+        dechargeType: draft.dechargeType || null,
+        dechargeText:
+          draft.type === "decharge"
+            ? buildDechargeText({
+                client: draft.client,
+                businessName: safe(profile?.business_name),
+                motif: draft.motif,
+                total,
+                dechargeType: draft.dechargeType,
+              })
+            : null,
+        items: draft.items || [],
+        total,
+        receiptFormat: draft.receiptFormat || "a4",
+      },
+      businessProfile: profile,
+      logoBuffer: logoBuf,
+    });
 
     pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
 
     draft.meta = makeDraftMeta({
-  ...(draft.meta || {}),
-  creditsConsumed: cost,
-  usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
-  usedGeminiParse: !!draft?.meta?.usedGeminiParse,
-  businessSector: draft?.meta?.businessSector || null,
-});
+      ...(draft.meta || {}),
+      creditsConsumed: cost,
+      usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
+      usedGeminiParse: !!draft?.meta?.usedGeminiParse,
+      businessSector: draft?.meta?.businessSector || null,
+    });
 
-draft.status = "generated";
-
+    draft.status = "generated";
 
     const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
-    const up = await uploadMediaBuffer({ buffer: pdfBuf, filename: fileName, mimeType: "application/pdf" });
+    const up = await uploadMediaBuffer({
+      buffer: pdfBuf,
+      filename: fileName,
+      mimeType: "application/pdf",
+    });
     if (!up?.id) throw new Error("Upload PDF échoué");
 
-     let saved = null;
+    let saved = null;
+    let duplicateDoc = false;
+    let refundedBalance = cons.balance;
 
     try {
       saved = await saveDocument({ waId: from, doc: draft });
@@ -2499,27 +2526,39 @@ draft.status = "generated";
         msg.includes("DOC_NUMBER_ALREADY_EXISTS") ||
         msg.includes("duplicate key value")
       ) {
-        await sendText(
-          from,
-          "⚠️ Ce document semble déjà avoir été enregistré. Réessayez avec un nouveau document."
-        );
-        return;
-      }
+        duplicateDoc = true;
+        draft.savedDocumentId = true;
 
-      throw e;
+        try {
+          refundedBalance = await addCredits(from, cost, "rollback_duplicate_doc");
+        } catch (rb) {
+          console.error("rollback duplicate doc failed:", rb?.message);
+          refundedBalance = cons.balance;
+        }
+      } else {
+        throw e;
+      }
     }
 
     successAfterDebit = true;
 
+    // ✅ On garde les infos pour renvoi gratuit
+    draft.savedPdfMediaId = up.id;
+    draft.savedPdfFilename = fileName;
+    draft.savedPdfCaption = duplicateDoc
+      ? `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nℹ️ Ce document avait déjà été généré.\nAucun crédit supplémentaire n’a été consommé.\nSolde: ${refundedBalance} crédit(s)`
+      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${cost} crédit(s)\nSolde: ${cons.balance} crédit(s)`;
+
     await sendDocument({
       to: from,
-      mediaId: up.id,
-      filename: fileName,
-      caption: `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${cost} crédit(s)\nSolde: ${cons.balance} crédit(s)`,
+      mediaId: draft.savedPdfMediaId,
+      filename: draft.savedPdfFilename,
+      caption: draft.savedPdfCaption,
     });
 
-    resetDraftSession(s);
-    await sendHomeMenu(from);
+    // On ne reset pas tout de suite si tu veux permettre correction/réenvoi
+    s.step = "doc_already_generated";
+    await sendAlreadyGeneratedMenu(from);
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
@@ -2532,6 +2571,8 @@ draft.status = "generated";
     }
 
     await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
+  } finally {
+    s.isGeneratingPdf = false;
   }
 }
 
@@ -3649,31 +3690,34 @@ async function handleInteractiveReply(from, replyId) {
   }
 
   if (replyId === "DOC_CONFIRM") {
-  const draft = s.lastDocDraft;
+    const draft = s.lastDocDraft;
 
-  if (!draft) {
-    await sendText(from, "❌ Aucun document en cours.");
-    return;
+    if (!draft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
+
+    if (draft._saving === true || s.isGeneratingPdf === true) {
+      await sendText(from, "⏳ Génération en cours...");
+      return;
+    }
+
+    // ✅ Si déjà généré, on propose le menu premium
+    if (draft.savedDocumentId || draft.savedPdfMediaId) {
+      s.step = "doc_already_generated";
+      await sendAlreadyGeneratedMenu(from);
+      return;
+    }
+
+    draft._saving = true;
+
+    try {
+      await createAndSendPdf(from);
+      return;
+    } finally {
+      draft._saving = false;
+    }
   }
-
-  if (draft.savedDocumentId) {
-    await sendText(from, "✅ Ce document a déjà été enregistré.");
-    return;
-  }
-
-  if (draft._saving === true) {
-    await sendText(from, "⏳ Enregistrement en cours...");
-    return;
-  }
-
-  draft._saving = true;
-
-  try {
-    return await createAndSendPdf(from);
-  } finally {
-    draft._saving = false;
-  }
-}
 
   if (replyId === "DOC_RESTART") {
     resetDraftSession(s);
@@ -3681,11 +3725,63 @@ async function handleInteractiveReply(from, replyId) {
     return sendDocsMenu(from);
   }
 
-
   if (replyId === "DOC_CANCEL") {
     resetDraftSession(s);
     await sendText(from, "❌ Annulé.");
     return sendHomeMenu(from);
+  }
+
+  if (replyId === "DOC_RESEND_LAST_PDF") {
+    const draft = s.lastDocDraft;
+
+    if (!draft?.savedPdfMediaId) {
+      await sendText(from, "❌ Aucun PDF déjà généré à renvoyer.");
+      return;
+    }
+
+    await sendDocument({
+      to: from,
+      mediaId: draft.savedPdfMediaId,
+      filename: draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+      caption:
+        draft.savedPdfCaption ||
+        "✅ Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
+    });
+
+    s.step = "doc_already_generated";
+    await sendAlreadyGeneratedMenu(from);
+    return;
+  }
+
+  if (replyId === "DOC_EDIT_AFTER_GENERATED") {
+    const draft = s.lastDocDraft;
+
+    if (!draft) {
+      await sendText(from, "❌ Aucun document à corriger.");
+      return;
+    }
+
+    // ✅ Comme il s'agit d'une version modifiée, on repart sur une nouvelle génération
+    draft.savedDocumentId = null;
+    draft.savedPdfMediaId = null;
+    draft.savedPdfFilename = null;
+    draft.savedPdfCaption = null;
+    draft.docNumber = null;
+    draft.status = "draft";
+
+    s.step = "doc_review";
+
+    await sendText(
+      from,
+      "✏️ D’accord. Vous pouvez corriger ce document maintenant.\nUne nouvelle génération sera faite après vos modifications."
+    );
+
+    await sendButtons(from, "Que voulez-vous faire ?", [
+      { id: "DOC_ADD_MORE", title: "➕ Modifier" },
+      { id: "DOC_CONFIRM", title: "📄 Regénérer" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ]);
+    return;
   }
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
