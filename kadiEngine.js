@@ -2508,7 +2508,10 @@ async function createAndSendPdf(from) {
       filename: fileName,
       mimeType: "application/pdf",
     });
-    if (!up?.id) throw new Error("Upload PDF échoué");
+
+    if (!up?.id) {
+      throw new Error("Upload PDF échoué");
+    }
 
     let saved = null;
     let duplicateDoc = false;
@@ -2516,7 +2519,7 @@ async function createAndSendPdf(from) {
 
     try {
       saved = await saveDocument({ waId: from, doc: draft });
-      draft.savedDocumentId = saved?.id || true;
+      draft.savedDocumentId = saved?.id || "generated";
     } catch (e) {
       const msg = String(e?.message || e || "");
       console.warn("saveDocument error:", msg);
@@ -2527,8 +2530,9 @@ async function createAndSendPdf(from) {
         msg.includes("duplicate key value")
       ) {
         duplicateDoc = true;
-        draft.savedDocumentId = true;
+        draft.savedDocumentId = "duplicate";
 
+        // remboursement car même document déjà enregistré
         try {
           refundedBalance = await addCredits(from, cost, "rollback_duplicate_doc");
         } catch (rb) {
@@ -2542,7 +2546,7 @@ async function createAndSendPdf(from) {
 
     successAfterDebit = true;
 
-    // ✅ On garde les infos pour renvoi gratuit
+    // Conserver les infos pour renvoi gratuit
     draft.savedPdfMediaId = up.id;
     draft.savedPdfFilename = fileName;
     draft.savedPdfCaption = duplicateDoc
@@ -2556,7 +2560,6 @@ async function createAndSendPdf(from) {
       caption: draft.savedPdfCaption,
     });
 
-    // On ne reset pas tout de suite si tu veux permettre correction/réenvoi
     s.step = "doc_already_generated";
     await sendAlreadyGeneratedMenu(from);
   } catch (e) {
@@ -2573,7 +2576,30 @@ async function createAndSendPdf(from) {
     await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
   } finally {
     s.isGeneratingPdf = false;
+    if (draft) draft._saving = false;
   }
+}
+
+// --- UI / Messages ---
+
+function buildAlreadyGeneratedMessage() {
+  return (
+    "📄 *Ce document a déjà été généré.*\n\n" +
+    "Vous pouvez le recevoir à nouveau gratuitement ou le modifier."
+  );
+}
+
+
+// --- Menus ---
+
+async function sendAlreadyGeneratedMenu(to) {
+  const text = buildAlreadyGeneratedMessage();
+
+  await sendButtons(to, text, [
+    { id: "DOC_RESEND_LAST_PDF", title: "📄 Recevoir" },
+    { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+    { id: "DOC_CANCEL", title: "🏠 Menu" },
+  ]);
 }
 
 // ===============================
