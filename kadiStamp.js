@@ -154,71 +154,63 @@ async function drawTintedLogo(ctx, logoBuffer, x, y, w, h, opts = {}) {
 async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
-  const size = 520;
+  const size = 500;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
+
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
-  const outerR = 240;
-  const innerR = 185;
 
+  // =====================
+  // CERCLE PRO
+  // =====================
   ctx.strokeStyle = STAMP_BLUE;
+  ctx.lineWidth = 8;
+
+  ctx.beginPath();
+  ctx.arc(center, center, 200, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(center, center, 160, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // =====================
+  // TEXTE HAUT (simple)
+  // =====================
   ctx.fillStyle = STAMP_BLUE;
+  ctx.font = "bold 28px Arial";
+  ctx.textAlign = "center";
 
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.arc(center, center, outerR, 0, Math.PI * 2);
-  ctx.stroke();
+  const name = (profile?.business_name || "ENTREPRISE").toUpperCase();
+  ctx.fillText(name, center, 80);
 
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.arc(center, center, innerR, 0, Math.PI * 2);
-  ctx.stroke();
+  // =====================
+  // TEXTE BAS
+  // =====================
+  const phone = profile?.phone ? `TEL: ${profile.phone}` : "";
+  ctx.font = "bold 20px Arial";
+  ctx.fillText(phone, center, 430);
 
-  const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
+  // =====================
+  // CENTRE (fonction)
+  // =====================
+  const centerTitle = (title || profile?.stamp_title || "GERANT").toUpperCase();
 
-  ctx.save();
-  ctx.translate(center, center);
-  ctx.font = "bold 32px Arial";
-  drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
-  ctx.restore();
+  ctx.font = "bold 36px Arial";
+  ctx.fillText(centerTitle, center, center + 20);
 
-  const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
-  if (bottom) {
-    ctx.save();
-    ctx.translate(center, center);
-    ctx.font = "bold 22px Arial";
-    drawCircularText(ctx, bottom.toUpperCase(), Math.PI, -205, 2.0, true);
-    ctx.restore();
-  }
-
-  ctx.save();
-  ctx.translate(center, center);
-
-  if (logoBuffer) {
+  // =====================
+  // LOGO (optionnel)
+  // =====================
+  if (logoBuffer && loadImage) {
     try {
-      const logoSize = 140;
-      const lx = -logoSize / 2;
-      const ly = -logoSize / 2 - 40;
-      await drawTintedLogo(ctx, logoBuffer, lx, ly, logoSize, logoSize);
+      const img = await loadImage(logoBuffer);
+      ctx.drawImage(img, center - 40, center - 100, 80, 80);
     } catch (_) {}
   }
 
-  const centerTitle = safe(title) || safe(profile?.stamp_title) || "GERANT";
-  ctx.font = "bold 34px Arial";
-  ctx.textAlign = "center";
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.fillText(truncate(centerTitle.toUpperCase(), 18), 0, 48);
-
-  if (addr) {
-    ctx.font = "bold 18px Arial";
-    ctx.textAlign = "center";
-    ctx.fillStyle = STAMP_BLUE;
-    ctx.fillText(truncate(addr.toUpperCase(), 34), 0, 128);
-  }
-
-  ctx.restore();
   return canvas.toBuffer("image/png");
 }
 
