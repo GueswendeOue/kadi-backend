@@ -1,17 +1,12 @@
 "use strict";
 
 /**
- * kadiStamp.js — robust stamp engine
+ * kadiStamp.js — premium stamp engine
  *
  * Priorité:
  * 1) tampon uploadé par le client (profile.stamp_image_path ou opts.stampBuffer)
  * 2) génération dynamique via canvas
  * 3) fallback local ./assets/stamp.png
- *
- * Notes:
- * - apply on LAST page by default
- * - supports logoBuffer for generated stamp
- * - protects footer area
  */
 
 const fs = require("fs");
@@ -35,7 +30,7 @@ try {
 const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
 const FOOTER_RESERVED_H = Number(process.env.KADI_PDF_FOOTER_H || 85);
 const DEFAULT_MARGIN = Number(process.env.KADI_STAMP_MARGIN || 18);
-const DEFAULT_SIZE = Number(process.env.KADI_STAMP_SIZE || 190);
+const DEFAULT_SIZE = Number(process.env.KADI_STAMP_SIZE || 220);
 
 const BG_REMOVE_THRESHOLD = Number(process.env.KADI_LOGO_BG_THRESHOLD || 242);
 const BG_REMOVE_SOFTNESS = Number(process.env.KADI_LOGO_BG_SOFTNESS || 18);
@@ -62,38 +57,6 @@ function normalizePhone(p) {
 
 function requirePdfLib() {
   if (!PDFLib) throw new Error("pdf-lib non installé. Faites: npm i pdf-lib");
-}
-
-function makeStampTextLines(profile) {
-  const name = safe(profile?.business_name) || "ENTREPRISE";
-  const ifu = safe(profile?.ifu);
-  const rccm = safe(profile?.rccm);
-  const phone = normalizePhone(profile?.phone);
-  const idLine = ifu ? `IFU: ${ifu}` : rccm ? `RCCM: ${rccm}` : "";
-  const phoneLine = phone ? `TEL: ${phone}` : "";
-  const addr = safe(profile?.address);
-
-  return { name, idLine, phoneLine, addr };
-}
-
-function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
-  const chars = String(text || "").split("");
-  const angleStep = (Math.PI / 180) * spacingCoef;
-
-  let angle = startAngle - (chars.length * angleStep) / 2;
-  if (reverse) angle = startAngle + (chars.length * angleStep) / 2;
-
-  for (const ch of chars) {
-    ctx.save();
-    ctx.rotate(angle);
-    ctx.translate(0, radiusOffset);
-    ctx.rotate(reverse ? Math.PI : 0);
-    ctx.textAlign = "center";
-    ctx.fillText(ch, 0, 0);
-    ctx.restore();
-
-    angle += reverse ? -angleStep : angleStep;
-  }
 }
 
 function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness = 18) {
@@ -127,88 +90,122 @@ function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness 
   ctx.putImageData(img, Math.max(0, x), Math.max(0, y));
 }
 
-async function drawTintedLogo(ctx, logoBuffer, x, y, w, h, opts = {}) {
+async function drawCircularLogo(ctx, logoBuffer, centerX, centerY, size) {
   if (!logoBuffer || !loadImage) return;
 
   const img = await loadImage(logoBuffer);
+  const r = size / 2;
 
   ctx.save();
-  ctx.drawImage(img, x, y, w, h);
+
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+
+  ctx.drawImage(img, centerX - r, centerY - r, size, size);
 
   removeLightBackgroundInRect(
     ctx,
-    Math.round(x),
-    Math.round(y),
-    Math.round(w),
-    Math.round(h),
-    Number(opts.threshold ?? BG_REMOVE_THRESHOLD),
-    Number(opts.softness ?? BG_REMOVE_SOFTNESS)
+    Math.round(centerX - r),
+    Math.round(centerY - r),
+    Math.round(size),
+    Math.round(size),
+    BG_REMOVE_THRESHOLD,
+    BG_REMOVE_SOFTNESS
   );
 
   ctx.globalCompositeOperation = "source-in";
   ctx.fillStyle = STAMP_BLUE;
-  ctx.fillRect(x, y, w, h);
+  ctx.fillRect(centerX - r, centerY - r, size, size);
+
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = STAMP_BLUE;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 
 async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
-  const size = 500;
+  const size = 700;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
+  const businessName = truncate((safe(profile?.business_name) || "ENTREPRISE").toUpperCase(), 30);
+  const centerTitle = truncate((safe(title) || safe(profile?.stamp_title) || "GERANT").toUpperCase(), 18);
+  const phone = normalizePhone(profile?.phone);
+  const addr = truncate((safe(profile?.address) || "OUAGA").toUpperCase(), 24);
 
-  // =====================
-  // CERCLE PRO
-  // =====================
   ctx.strokeStyle = STAMP_BLUE;
-  ctx.lineWidth = 8;
-
-  ctx.beginPath();
-  ctx.arc(center, center, 200, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.arc(center, center, 160, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // =====================
-  // TEXTE HAUT (simple)
-  // =====================
   ctx.fillStyle = STAMP_BLUE;
-  ctx.font = "bold 28px Arial";
   ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
 
-  const name = (profile?.business_name || "ENTREPRISE").toUpperCase();
-  ctx.fillText(name, center, 80);
+  // Double cercle
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(center, center, 270, 0, Math.PI * 2);
+  ctx.stroke();
 
-  // =====================
-  // TEXTE BAS
-  // =====================
-  const phone = profile?.phone ? `TEL: ${profile.phone}` : "";
-  ctx.font = "bold 20px Arial";
-  ctx.fillText(phone, center, 430);
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(center, center, 235, 0, Math.PI * 2);
+  ctx.stroke();
 
-  // =====================
-  // CENTRE (fonction)
-  // =====================
-  const centerTitle = (title || profile?.stamp_title || "GERANT").toUpperCase();
+  // Bande haute
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(150, 165);
+  ctx.lineTo(550, 165);
+  ctx.stroke();
 
-  ctx.font = "bold 36px Arial";
-  ctx.fillText(centerTitle, center, center + 20);
+  ctx.font = "bold 30px Arial";
+  ctx.fillText(businessName, center, 135);
 
-  // =====================
-  // LOGO (optionnel)
-  // =====================
+  // Cercle logo interne
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(center, center - 35, 70, 0, Math.PI * 2);
+  ctx.stroke();
+
   if (logoBuffer && loadImage) {
     try {
-      const img = await loadImage(logoBuffer);
-      ctx.drawImage(img, center - 40, center - 100, 80, 80);
-    } catch (_) {}
+      await drawCircularLogo(ctx, logoBuffer, center, center - 35, 110);
+    } catch (err) {
+      console.warn("[STAMP] circular logo draw failed:", err?.message);
+    }
+  }
+
+  // Fonction
+  ctx.font = "bold 42px Arial";
+  ctx.fillText(centerTitle, center, center + 78);
+
+  // Ligne basse
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(180, 520);
+  ctx.lineTo(520, 520);
+  ctx.stroke();
+
+  // Téléphone
+  if (phone) {
+    ctx.font = "bold 22px Arial";
+    ctx.fillText(`TEL: ${phone}`, center, 555);
+  }
+
+  // Adresse
+  if (addr) {
+    ctx.font = "bold 18px Arial";
+    ctx.fillText(addr, center, 588);
   }
 
   return canvas.toBuffer("image/png");
@@ -290,11 +287,11 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     return pdfBuffer;
   }
 
-  const { PDFDocument } = PDFLib;
+  const { PDFDocument, degrees } = PDFLib;
 
   const size = Number(opts.size || profile?.stamp_size || DEFAULT_SIZE);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 1))));
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.78))));
   const margin = Number(opts.margin || DEFAULT_MARGIN);
   const pages = String(opts.pages || profile?.stamp_pages || "last");
   const title = opts.title || null;
@@ -337,8 +334,8 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
       x = margin;
       y = safeBottomY;
     } else if (position === "bottom-right") {
-      x = width - drawW - margin;
-      y = safeBottomY + 25;
+      x = width - drawW - margin - 10;
+      y = safeBottomY + 95;
       if (y > safeTopY) y = safeTopY;
     } else if (position === "top-left") {
       x = margin;
@@ -375,6 +372,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
       width: drawW,
       height: drawH,
       opacity,
+      rotate: degrees(-7),
     });
   }
 
