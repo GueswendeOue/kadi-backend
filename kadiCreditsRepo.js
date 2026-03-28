@@ -50,95 +50,188 @@ async function getBalance(waId) {
   return toInt(data.balance, 0);
 }
 
-/**
- * ✅ Ajout crédits (ATOMIQUE via RPC si dispo)
- * Retourne le nouveau solde (number)
- */
-async function addCredits(waId, amount, reason = "admin") {
-  const amt = toInt(amount, 0);
-  if (!Number.isFinite(amt) || amt <= 0) throw new Error("amount invalid");
-
-  // 1) Essai RPC (recommandé)
-  try {
-    const { data, error } = await supabase.rpc("kadi_add_credits", {
-      p_wa_id: waId,
-      p_amount: amt,
-      p_reason: String(reason || "add"),
-    });
-
-    if (!error && data != null) {
-      // data = nouveau solde
-      return toInt(data, 0);
-    }
-  } catch (_) {
-    // ignore -> fallback
-  }
-
-  // 2) Fallback non atomique (moins safe)
-  await ensureRow(waId);
-  const current = await getBalance(waId);
-  const next = current + amt;
-
-  const { error: e1 } = await supabase
-    .from("kadi_credits")
-    .upsert({ wa_id: waId, balance: next }, { onConflict: "wa_id" });
-  if (e1) throw e1;
-
-  const { error: e2 } = await supabase.from("kadi_credit_tx").insert({
-    wa_id: waId,
-    delta: amt,
-    reason: String(reason || "add"),
-  });
-  if (e2) throw e2;
-
-  return next;
-}
-
-/**
- * ✅ Consomme crédits (ATOMIQUE via RPC si dispo)
- * - amount: nombre de crédits à retirer
- * - reason: tag dans kadi_credit_tx (ex: "pdf", "ocr_pdf", "pdf_with_stamp")
- */
 async function consumeCredit(waId, amount = 1, reason = "pdf") {
+  const cleanWaId = String(waId || "").trim();
   const amt = toInt(amount, 1);
+  const cleanReason = String(reason || "consume");
+
+  if (!cleanWaId) throw new Error("waId invalid");
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("amount invalid");
 
   // 1) Essai RPC (recommandé)
   try {
     const { data, error } = await supabase.rpc("kadi_consume_credits", {
-      p_wa_id: waId,
+      p_wa_id: cleanWaId,
       p_amount: amt,
-      p_reason: String(reason || "consume"),
+      p_reason: cleanReason,
     });
 
-    // data attendu: { ok: boolean, balance: number }
-    if (!error && data && typeof data === "object") {
-      return { ok: !!data.ok, balance: toInt(data.balance, 0) };
+    if (error) {
+      console.error("[consumeCredit] rpc error:", error.message, {
+        waId: cleanWaId,
+        amount: amt,
+        reason: cleanReason,
+      });
+    } else if (data && typeof data === "object") {
+      return {
+        ok: !!data.ok,
+        balance: toInt(data.balance, 0),
+      };
+    } else {
+      console.warn("[consumeCredit] rpc returned unexpected payload:", data);
     }
-  } catch (_) {
-    // ignore -> fallback
+  } catch (err) {
+    console.error("[consumeCredit] rpc failed:", err?.message, {
+      waId: cleanWaId,
+      amount: amt,
+      reason: cleanReason,
+    });
   }
 
   // 2) Fallback non atomique (moins safe)
-  await ensureRow(waId);
-  const current = await getBalance(waId);
-  if (current < amt) return { ok: false, balance: current };
+  await ensureRow(cleanWaId);
+
+  const current = await getBalance(cleanWaId);
+  if (current < amt) {
+    return { ok: false, balance: current };
+  }
 
   const next = current - amt;
 
   const { error: e1 } = await supabase
     .from("kadi_credits")
-    .upsert({ wa_id: waId, balance: next }, { onConflict: "wa_id" });
-  if (e1) throw e1;
+    .upsert({ wa_id: cleanWaId, balance: next }, { onConflict: "wa_id" });
+
+  if (e1) {
+    console.error("[consumeCredit] fallback wallet update failed:", e1.message, {
+      waId: cleanWaId,
+      current,
+      next,
+      amount: amt,
+      reason: cleanReason,
+    });
+    throw e1;
+  }
 
   const { error: e2 } = await supabase.from("kadi_credit_tx").insert({
-    wa_id: waId,
+    wa_id: cleanWaId,
     delta: -amt,
-    reason: String(reason || "consume"),
+    reason: cleanReason,
   });
-  if (e2) throw e2;
+
+  if (e2) {
+    console.error("[consumeCredit] fallback tx insert failed:", e2.message, {
+      waId: cleanWaId,
+      current,
+      next,
+      amount: amt,
+      reason: cleanReason,
+    });
+    throw e2;
+  }
+
+  console.log("[consumeCredit] fallback ok", {
+    waId: cleanWaId,
+    before: current,
+    delta: -amt,
+    after: next,
+    reason: cleanReason,
+  });
 
   return { ok: true, balance: next };
+}
+
+async function addCredits(waId, amount, reason = "admin") {
+  const cleanWaId = String(waId || "").trim();
+  const amt = toInt(amount, 0);
+  const cleanReason = String(reason || "add");
+
+  if (!cleanWaId) throw new Error("waId invalid");
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error("amount invalid");
+
+  // 1) Essai RPC (recommandé)
+  try {
+    const { data, error } = await supabase.rpc("kadi_add_credits", {
+      p_wa_id: cleanWaId,
+      p_amount: amt,
+      p_reason: cleanReason,
+    });
+
+    if (error) {
+      console.error("[addCredits] rpc error:", error.message, {
+        waId: cleanWaId,
+        amount: amt,
+        reason: cleanReason,
+      });
+    } else if (data != null) {
+      const next = toInt(data, 0);
+
+      console.log("[addCredits] rpc ok", {
+        waId: cleanWaId,
+        delta: amt,
+        after: next,
+        reason: cleanReason,
+      });
+
+      return next;
+    } else {
+      console.warn("[addCredits] rpc returned unexpected payload:", data);
+    }
+  } catch (err) {
+    console.error("[addCredits] rpc failed:", err?.message, {
+      waId: cleanWaId,
+      amount: amt,
+      reason: cleanReason,
+    });
+  }
+
+  // 2) Fallback non atomique (moins safe)
+  await ensureRow(cleanWaId);
+
+  const current = await getBalance(cleanWaId);
+  const next = current + amt;
+
+  const { error: e1 } = await supabase
+    .from("kadi_credits")
+    .upsert({ wa_id: cleanWaId, balance: next }, { onConflict: "wa_id" });
+
+  if (e1) {
+    console.error("[addCredits] fallback wallet update failed:", e1.message, {
+      waId: cleanWaId,
+      current,
+      next,
+      amount: amt,
+      reason: cleanReason,
+    });
+    throw e1;
+  }
+
+  const { error: e2 } = await supabase.from("kadi_credit_tx").insert({
+    wa_id: cleanWaId,
+    delta: amt,
+    reason: cleanReason,
+  });
+
+  if (e2) {
+    console.error("[addCredits] fallback tx insert failed:", e2.message, {
+      waId: cleanWaId,
+      current,
+      next,
+      amount: amt,
+      reason: cleanReason,
+    });
+    throw e2;
+  }
+
+  console.log("[addCredits] fallback ok", {
+    waId: cleanWaId,
+    before: current,
+    delta: amt,
+    after: next,
+    reason: cleanReason,
+  });
+
+  return next;
 }
 
 /**

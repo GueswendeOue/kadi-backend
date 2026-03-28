@@ -2422,10 +2422,12 @@ async function createAndSendPdf(from) {
 
   s.isGeneratingPdf = true;
 
+  let debited = false;
   let successAfterDebit = false;
 
   try {
     const cons = await consumeCredit(from, cost, reason);
+
     if (!cons.ok) {
       await sendText(
         from,
@@ -2433,6 +2435,8 @@ async function createAndSendPdf(from) {
       );
       return;
     }
+
+    debited = true;
 
     const computedFinance = computeFinance(draft);
     draft.finance = {
@@ -2513,12 +2517,11 @@ async function createAndSendPdf(from) {
       throw new Error("Upload PDF échoué");
     }
 
-    let saved = null;
     let duplicateDoc = false;
     let refundedBalance = cons.balance;
 
     try {
-      saved = await saveDocument({ waId: from, doc: draft });
+      const saved = await saveDocument({ waId: from, doc: draft });
       draft.savedDocumentId = saved?.id || "generated";
     } catch (e) {
       const msg = String(e?.message || e || "");
@@ -2565,7 +2568,7 @@ async function createAndSendPdf(from) {
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
-    if (!successAfterDebit) {
+    if (debited && !successAfterDebit) {
       try {
         await addCredits(from, cost, "rollback_pdf_failed");
       } catch (rb) {
