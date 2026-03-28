@@ -276,15 +276,29 @@ async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null
 
   const canStamp = profile?.stamp_enabled === true && profile?.stamp_paid === true;
 
+  console.log("[STAMP CHECK]", {
+    stamp_enabled: profile?.stamp_enabled,
+    stamp_paid: profile?.stamp_paid,
+    stamp_path: profile?.stamp_path || null,
+    stamp_position: profile?.stamp_position || null,
+    stamp_size: profile?.stamp_size || null,
+    canStamp,
+  });
+
   if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
     try {
+      console.log("[STAMP] applying...");
       buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
         pages: "last",
         logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
       });
+      console.log("[STAMP] applied successfully");
     } catch (e) {
+      console.warn("[STAMP ERROR]", e?.message);
       logger.warn("stamp", e.message);
     }
+  } else {
+    console.log("[STAMP] skipped");
   }
 
   if (kadiSignature?.applySignatureToPdfBuffer) {
@@ -1935,15 +1949,25 @@ async function handleProductFlowText(from, text) {
   // ===============================
   // Tampon
   // ===============================
-  if (s.step === "stamp_title") {
-    const val = t === "0" ? null : t;
-    await updateProfile(from, { stamp_title: val });
-    s.step = "idle";
-    await sendText(from, "✅ Fonction tampon mise à jour.");
-    await sendStampMenu(from);
-    return true;
-  }
+if (s.step === "stamp_title") {
+  const raw = String(text || "").trim();
+  const cleaned = raw.replace(/\s+/g, " ");
+  const val = cleaned === "0" || !cleaned ? null : cleaned.slice(0, 30);
 
+  await updateProfile(from, { stamp_title: val });
+
+  s.step = null;
+
+  await sendText(
+    from,
+    val
+      ? `✅ Fonction tampon mise à jour : ${val}`
+      : "✅ Fonction tampon effacée."
+  );
+
+  await sendStampMenu(from);
+  return true;
+}
   return false;
 }
 
