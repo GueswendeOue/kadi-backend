@@ -1,16 +1,17 @@
 "use strict";
 
 /**
- * kadiStamp.js — Render safe (UPDATED PRO)
- * - Canvas available: generate circular stamp PNG dynamically
- * - Canvas NOT available: fallback to ./assets/stamp.png
- * - Apply stamp with pdf-lib on LAST page by default
+ * kadiStamp.js — robust stamp engine
  *
- * ✅ PRO UPDATES:
- * - Accept opts.logoBuffer (Buffer)
- * - Auto-remove white/light background from logo (so PNG transparent not required)
- * - Tint logo to STAMP_BLUE
- * - Safety: if profile.stamp_paid exists and is NOT true => do NOT apply stamp
+ * Priorité:
+ * 1) tampon uploadé par le client (profile.stamp_image_path ou opts.stampBuffer)
+ * 2) génération dynamique via canvas
+ * 3) fallback local ./assets/stamp.png
+ *
+ * Notes:
+ * - apply on LAST page by default
+ * - supports logoBuffer for generated stamp
+ * - protects footer area
  */
 
 const fs = require("fs");
@@ -34,21 +35,29 @@ try {
 const STAMP_BLUE = process.env.KADI_STAMP_COLOR || "#0B57D0";
 const FOOTER_RESERVED_H = Number(process.env.KADI_PDF_FOOTER_H || 85);
 const DEFAULT_MARGIN = Number(process.env.KADI_STAMP_MARGIN || 18);
+const DEFAULT_SIZE = Number(process.env.KADI_STAMP_SIZE || 190);
 
-// 🎯 background removal tuning
-const BG_REMOVE_THRESHOLD = Number(process.env.KADI_LOGO_BG_THRESHOLD || 242); // 0..255
-const BG_REMOVE_SOFTNESS = Number(process.env.KADI_LOGO_BG_SOFTNESS || 18);    // 0..60
+const BG_REMOVE_THRESHOLD = Number(process.env.KADI_LOGO_BG_THRESHOLD || 242);
+const BG_REMOVE_SOFTNESS = Number(process.env.KADI_LOGO_BG_SOFTNESS || 18);
+
+console.log("[STAMP INIT]", {
+  canvasAvailable: !!createCanvas,
+  loadImageAvailable: !!loadImage,
+  pdfLibAvailable: !!PDFLib,
+});
 
 function safe(v) {
   return String(v || "").trim();
 }
+
 function truncate(s, max) {
   const x = safe(s);
   if (x.length <= max) return x;
   return x.slice(0, max - 1) + "…";
 }
+
 function normalizePhone(p) {
-  return safe(p).replace(/\s/g, "");
+  return safe(p).replace(/\s+/g, "");
 }
 
 function requirePdfLib() {
@@ -60,7 +69,6 @@ function makeStampTextLines(profile) {
   const ifu = safe(profile?.ifu);
   const rccm = safe(profile?.rccm);
   const phone = normalizePhone(profile?.phone);
-
   const idLine = ifu ? `IFU: ${ifu}` : rccm ? `RCCM: ${rccm}` : "";
   const phoneLine = phone ? `TEL: ${phone}` : "";
   const addr = safe(profile?.address);
@@ -68,7 +76,6 @@ function makeStampTextLines(profile) {
   return { name, idLine, phoneLine, addr };
 }
 
-// -------- Canvas stamp generation (optional) --------
 function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
   const chars = String(text || "").split("");
   const angleStep = (Math.PI / 180) * spacingCoef;
@@ -89,16 +96,10 @@ function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0
   }
 }
 
-/**
- * Removes near-white background pixels by setting alpha based on threshold.
- * - threshold ~242 = remove very bright pixels
- * - softness adds fade around threshold to avoid harsh edges
- */
 function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness = 18) {
   const img = ctx.getImageData(Math.max(0, x), Math.max(0, y), w, h);
   const data = img.data;
 
-  // helper: luminance
   const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
   for (let i = 0; i < data.length; i += 4) {
@@ -111,16 +112,13 @@ function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness 
 
     const L = lum(r, g, b);
 
-    // Fully remove above threshold
     if (L >= threshold) {
       data[i + 3] = 0;
       continue;
     }
 
-    // Soft fade zone: threshold-softness -> threshold
     if (softness > 0 && L >= threshold - softness) {
-      const t = (L - (threshold - softness)) / softness; // 0..1
-      // reduce alpha gradually
+      const t = (L - (threshold - softness)) / softness;
       const newA = Math.round(a * (1 - t));
       data[i + 3] = Math.max(0, Math.min(255, newA));
     }
@@ -129,22 +127,14 @@ function removeLightBackgroundInRect(ctx, x, y, w, h, threshold = 242, softness 
   ctx.putImageData(img, Math.max(0, x), Math.max(0, y));
 }
 
-/**
- * Draw logo then:
- * - remove light background (so JPG ok)
- * - tint to STAMP_BLUE using source-in
- */
 async function drawTintedLogo(ctx, logoBuffer, x, y, w, h, opts = {}) {
   if (!logoBuffer || !loadImage) return;
 
   const img = await loadImage(logoBuffer);
 
   ctx.save();
-
-  // draw raw logo
   ctx.drawImage(img, x, y, w, h);
 
-  // remove near-white bg in the logo box (auto-transparency)
   removeLightBackgroundInRect(
     ctx,
     Math.round(x),
@@ -155,12 +145,9 @@ async function drawTintedLogo(ctx, logoBuffer, x, y, w, h, opts = {}) {
     Number(opts.softness ?? BG_REMOVE_SOFTNESS)
   );
 
-  // tint to stamp color using the logo alpha as mask
   ctx.globalCompositeOperation = "source-in";
   ctx.fillStyle = STAMP_BLUE;
   ctx.fillRect(x, y, w, h);
-
-  // reset composite
   ctx.restore();
 }
 
@@ -191,14 +178,12 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
 
   const { name, idLine, phoneLine, addr } = makeStampTextLines(profile);
 
-  // top arc
   ctx.save();
   ctx.translate(center, center);
   ctx.font = "bold 32px Arial";
   drawCircularText(ctx, name.toUpperCase(), 0, -205, 2.2);
   ctx.restore();
 
-  // bottom arc
   const bottom = [idLine, phoneLine].filter(Boolean).join(" • ");
   if (bottom) {
     ctx.save();
@@ -208,23 +193,19 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
     ctx.restore();
   }
 
-  // center block
   ctx.save();
   ctx.translate(center, center);
 
-  // ✅ Logo centered + auto-transparent + tinted BLUE
   if (logoBuffer) {
     try {
-      const logoSize = 140; // a bit bigger than before
+      const logoSize = 140;
       const lx = -logoSize / 2;
       const ly = -logoSize / 2 - 40;
-
       await drawTintedLogo(ctx, logoBuffer, lx, ly, logoSize, logoSize);
     } catch (_) {}
   }
 
-  // ✅ Replace "TAMPON" by the function/title (no word "TAMPON" on final)
-  const centerTitle = safe(title) || safe(profile?.stamp_title) || "—";
+  const centerTitle = safe(title) || safe(profile?.stamp_title) || "GERANT";
   ctx.font = "bold 34px Arial";
   ctx.textAlign = "center";
   ctx.fillStyle = STAMP_BLUE;
@@ -241,54 +222,99 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   return canvas.toBuffer("image/png");
 }
 
-// -------- Stamp PNG fallback (Render friendly) --------
-function getFallbackStampPngBuffer(profile) {
-  const p = profile?.stamp_image_path
-    ? path.resolve(profile.stamp_image_path)
-    : path.join(__dirname, "assets", "stamp.png");
+function getUploadedStampPngBuffer(profile) {
+  const p = safe(profile?.stamp_image_path);
+  if (!p) return null;
 
-  if (!fs.existsSync(p)) {
-    throw new Error(`Fallback stamp PNG not found: ${p}`);
+  const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Uploaded stamp PNG not found: ${resolved}`);
   }
-  return fs.readFileSync(p);
+
+  return fs.readFileSync(resolved);
 }
 
-// -------- Apply on PDF (pdf-lib) --------
+function getDefaultFallbackStampPngBuffer() {
+  const defaultPath = path.join(__dirname, "assets", "stamp.png");
+  if (!fs.existsSync(defaultPath)) {
+    throw new Error(`Fallback stamp PNG not found: ${defaultPath}`);
+  }
+  return fs.readFileSync(defaultPath);
+}
+
+async function resolveStampPngBuffer({ profile, logoBuffer = null, title = null, stampBuffer = null }) {
+  if (stampBuffer && Buffer.isBuffer(stampBuffer)) {
+    console.log("[STAMP APPLY] using opts.stampBuffer");
+    return stampBuffer;
+  }
+
+  if (profile?.stamp_image_path) {
+    console.log("[STAMP APPLY] using uploaded stamp image");
+    return getUploadedStampPngBuffer(profile);
+  }
+
+  try {
+    if (!createCanvas) {
+      throw new Error("canvas non disponible");
+    }
+
+    console.log("[STAMP APPLY] generating dynamic stamp");
+    return await generateStampPngBuffer({ profile, logoBuffer, title });
+  } catch (err) {
+    console.warn("[STAMP APPLY] dynamic generation failed:", err?.message);
+  }
+
+  console.log("[STAMP APPLY] using default fallback stamp.png");
+  return getDefaultFallbackStampPngBuffer();
+}
+
 async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   requirePdfLib();
-  if (!Buffer.isBuffer(pdfBuffer)) throw new Error("applyStampToPdfBuffer: pdfBuffer doit être un Buffer");
 
-  // ✅ Apply only when enabled === true
-  if (profile?.stamp_enabled !== true) return pdfBuffer;
+  if (!Buffer.isBuffer(pdfBuffer)) {
+    throw new Error("applyStampToPdfBuffer: pdfBuffer doit être un Buffer");
+  }
 
-  // ✅ Safety for Model B (one-time paid stamp): if field exists and not paid => skip
-  if (Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") && profile?.stamp_paid !== true) {
+  console.log("[STAMP APPLY INPUT]", {
+    stamp_enabled: profile?.stamp_enabled,
+    stamp_paid: profile?.stamp_paid,
+    stamp_title: profile?.stamp_title || null,
+    stamp_image_path: profile?.stamp_image_path || null,
+    stamp_position: profile?.stamp_position || null,
+    stamp_size: profile?.stamp_size || null,
+    stamp_opacity: profile?.stamp_opacity || null,
+  });
+
+  if (profile?.stamp_enabled !== true) {
+    console.log("[STAMP APPLY] skipped: stamp_enabled !== true");
+    return pdfBuffer;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") &&
+    profile?.stamp_paid !== true
+  ) {
+    console.log("[STAMP APPLY] skipped: stamp_paid !== true");
     return pdfBuffer;
   }
 
   const { PDFDocument } = PDFLib;
 
-  const size = Number(opts.size || profile?.stamp_size || process.env.KADI_STAMP_SIZE || 170);
+  const size = Number(opts.size || profile?.stamp_size || DEFAULT_SIZE);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.9))));
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 1))));
   const margin = Number(opts.margin || DEFAULT_MARGIN);
-
-  // ✅ last page by default
   const pages = String(opts.pages || profile?.stamp_pages || "last");
   const title = opts.title || null;
   const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
+  const stampBuffer = opts.stampBuffer && Buffer.isBuffer(opts.stampBuffer) ? opts.stampBuffer : null;
 
-  // PNG stamp: canvas if available else fallback
-  let stampPng;
-  try {
-    if (createCanvas) {
-      stampPng = await generateStampPngBuffer({ profile, logoBuffer, title });
-    } else {
-      stampPng = getFallbackStampPngBuffer(profile);
-    }
-  } catch (_) {
-    stampPng = getFallbackStampPngBuffer(profile);
-  }
+  const stampPng = await resolveStampPngBuffer({
+    profile,
+    logoBuffer,
+    title,
+    stampBuffer,
+  });
 
   const pdfDoc = await PDFDocument.load(pdfBuffer);
   const stampImg = await pdfDoc.embedPng(stampPng);
@@ -296,7 +322,9 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   const allPages = pdfDoc.getPages();
   if (!allPages.length) return pdfBuffer;
 
-  const targetPages = pages === "all" ? allPages : [allPages[allPages.length - 1]];
+  const targetPages = pages === "all"
+    ? allPages
+    : [allPages[allPages.length - 1]];
 
   for (const page of targetPages) {
     const { width, height } = page.getSize();
@@ -304,10 +332,9 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     const pngDims = stampImg.scale(1);
     const ratio = pngDims.width / pngDims.height;
 
-    const drawW = Number.isFinite(size) && size > 10 ? size : 170;
+    const drawW = Number.isFinite(size) && size > 10 ? size : DEFAULT_SIZE;
     const drawH = drawW / ratio;
 
-    // safe zone above footer
     const safeBottomY = FOOTER_RESERVED_H + margin;
     const safeTopY = height - margin - drawH;
 
@@ -317,38 +344,50 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     if (position === "bottom-left") {
       x = margin;
       y = safeBottomY;
-    }
-    if (position === "bottom-right") {
+    } else if (position === "bottom-right") {
       x = width - drawW - margin;
-      y = safeBottomY + 25; // avoid QR collision
+      y = safeBottomY + 25;
       if (y > safeTopY) y = safeTopY;
-    }
-    if (position === "top-left") {
+    } else if (position === "top-left") {
       x = margin;
       y = safeTopY;
-    }
-    if (position === "top-right") {
+    } else if (position === "top-right") {
       x = width - drawW - margin;
       y = safeTopY;
-    }
-    if (position === "center") {
+    } else if (position === "center") {
       x = (width - drawW) / 2;
       y = (height - drawH) / 2;
       if (y < safeBottomY) y = safeBottomY;
       if (y > safeTopY) y = safeTopY;
     }
 
-    // clamp final
     if (x < margin) x = margin;
     if (x + drawW > width - margin) x = width - margin - drawW;
-
     if (y < safeBottomY) y = safeBottomY;
     if (y > safeTopY) y = safeTopY;
 
-    page.drawImage(stampImg, { x, y, width: drawW, height: drawH, opacity });
+    console.log("[STAMP DRAW]", {
+      pageWidth: width,
+      pageHeight: height,
+      drawW,
+      drawH,
+      x,
+      y,
+      position,
+      opacity,
+    });
+
+    page.drawImage(stampImg, {
+      x,
+      y,
+      width: drawW,
+      height: drawH,
+      opacity,
+    });
   }
 
   const out = await pdfDoc.save();
+  console.log("[STAMP APPLY] done");
   return Buffer.from(out);
 }
 
