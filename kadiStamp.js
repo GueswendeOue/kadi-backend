@@ -170,81 +170,105 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const size = 800;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
-
   ctx.clearRect(0, 0, size, size);
 
   const cx = size / 2;
   const cy = size / 2;
 
-  const R_OUTER = 290;
-  const R_BAND = 268;
-  const R_CONTENT = 220;
-  const R_LOGO = 80;
+  const R_OUTER   = 280;
+  const R_BAND    = 248;
+  const R_CONTENT = 200;
+  const R_LOGO    = 72;
+  const COLOR     = STAMP_BLUE;
 
   const topText = truncate(
-    (safe(profile?.business_name) || "ENTREPRISE")
-      .replace(/\b(sarl|sa|sas|eurl|ets)\b/gi, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toUpperCase(),
-    24
+    (safe(profile?.business_name) || "ENTREPRISE").toUpperCase(), 28
   );
-
   const bottomText = truncate(
-    (safe(profile?.address) || "OUAGADOUGOU • BURKINA FASO")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toUpperCase(),
-    28
+    (safe(profile?.address) || "OUAGADOUGOU • BURKINA FASO").toUpperCase(), 34
   );
 
-  ctx.strokeStyle = STAMP_BLUE;
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
+  // ── Fonction arcText corrigée ──────────────────────────────────────────────
+  // radius   : distance du centre au MILIEU des caractères
+  // midAngle : angle où le texte est centré (-PI/2 = haut, PI/2 = bas)
+  // flip     : true pour le texte du bas (lettres à l'endroit, arc concave)
+  function arcText(text, radius, midAngle, flip = false) {
+    const chars   = [...text];
+    const fontPx  = flip ? 30 : 33;
+    ctx.font = `bold ${fontPx}px Arial, sans-serif`;
 
-  // Cercle externe
-  ctx.lineWidth = 5;
+    // Mesure réelle de chaque caractère
+    const widths  = chars.map(ch => ctx.measureText(ch).width);
+    const total   = widths.reduce((a, b) => a + b, 0);
+    const spacing = total / radius;          // arc total occupé
+
+    let angle = midAngle - spacing / 2;
+
+    for (let i = 0; i < chars.length; i++) {
+      const charAngle = widths[i] / radius;  // arc de CE caractère
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle + charAngle / 2);     // centré sur son propre arc
+
+      if (flip) {
+        // Texte du bas : on descend puis on retourne
+        ctx.translate(0, radius);
+        ctx.rotate(Math.PI);
+      } else {
+        // Texte du haut : on monte
+        ctx.translate(0, -radius);
+      }
+
+      ctx.textAlign    = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle    = COLOR;
+      ctx.fillText(chars[i], 0, 0);
+      ctx.restore();
+
+      angle += charAngle;
+    }
+  }
+
+  // ── 1. Cercle externe ──────────────────────────────────────────────────────
+  ctx.strokeStyle = COLOR;
+  ctx.lineWidth   = 5;
   ctx.beginPath();
   ctx.arc(cx, cy, R_OUTER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Séparateur interne du bandeau
-  ctx.lineWidth = 2;
+  // ── 2. Séparateur bandeau ──────────────────────────────────────────────────
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.arc(cx, cy, R_BAND, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Texte circulaire haut
-  const midBandR = (R_OUTER + R_BAND) / 2;
-  ctx.font = "bold 34px Arial";
-  drawCircularText(ctx, topText, cx, cy, midBandR, -Math.PI / 2, 34, false);
+  // ── 3. Texte HAUT — centré à -90° (sommet) ────────────────────────────────
+  const midBand = (R_OUTER + R_BAND) / 2;   // ~264
+  arcText(topText, midBand, -Math.PI / 2, false);
 
-  // Points décoratifs gauche / droite
-  const DOT_R = 5;
-  [0, Math.PI].forEach((a) => {
+  // ── 4. Points décoratifs gauche / droite ──────────────────────────────────
+  ctx.fillStyle = COLOR;
+  [-Math.PI / 2 + Math.PI * 0.5, -Math.PI / 2 - Math.PI * 0.5].forEach(a => {
     ctx.beginPath();
     ctx.arc(
-      cx + midBandR * Math.cos(a),
-      cy + midBandR * Math.sin(a),
-      DOT_R,
-      0,
-      Math.PI * 2
+      cx + midBand * Math.cos(a + Math.PI / 2),
+      cy + midBand * Math.sin(a + Math.PI / 2),
+      4.5, 0, Math.PI * 2
     );
     ctx.fill();
   });
 
-  // Texte circulaire bas
-  ctx.font = "bold 30px Arial";
-  drawCircularText(ctx, bottomText, cx, cy, midBandR, Math.PI / 2, 30, true);
+  // ── 5. Texte BAS — centré à +90° (fond) ───────────────────────────────────
+  arcText(bottomText, midBand, Math.PI / 2, true);
 
-  // Cercle intérieur contenu
-  ctx.lineWidth = 2;
+  // ── 6. Cercle intérieur zone contenu ──────────────────────────────────────
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.arc(cx, cy, R_CONTENT, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Logo central sans double cercle parasite
+  // ── 7. Logo central ───────────────────────────────────────────────────────
   if (logoBuffer && loadImage) {
     try {
       await drawCircularLogo(ctx, logoBuffer, cx, cy, R_LOGO * 2);
@@ -257,6 +281,31 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   }
 
   return canvas.toBuffer("image/png");
+}
+
+function drawFallbackMonogram(ctx, profile, cx, cy, r) {
+  const name  = safe(profile?.business_name) || "E";
+  const parts = name.trim().split(/\s+/);
+  const mono  = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase();
+
+  ctx.strokeStyle = STAMP_BLUE;
+  ctx.lineWidth   = 2.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 14, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle    = STAMP_BLUE;
+  ctx.font         = `bold ${Math.round(r * 0.9)}px Arial, sans-serif`;
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(mono, cx, cy);
 }
 
 function getUploadedStampPngBuffer(profile) {
