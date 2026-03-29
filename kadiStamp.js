@@ -178,7 +178,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const R_OUTER = 320;
   const R_INNER = 275;
-  const LOGO_SIZE = 240; // ✅ beaucoup plus grand
+  const LOGO_SIZE = 300; // 👈 augmenté
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -203,10 +203,10 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
       await drawCircularLogo(ctx, logoBuffer, cx, cy, LOGO_SIZE);
     } catch (err) {
       console.warn("[STAMP] logo draw failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy, 95);
+      drawFallbackMonogram(ctx, profile, cx, cy, 110);
     }
   } else {
-    drawFallbackMonogram(ctx, profile, cx, cy, 95);
+    drawFallbackMonogram(ctx, profile, cx, cy, 110);
   }
 
   return canvas.toBuffer("image/png");
