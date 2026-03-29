@@ -36,16 +36,6 @@ function safe(v) {
   return String(v || "").trim();
 }
 
-function truncate(s, max) {
-  const x = safe(s);
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1) + "…";
-}
-
-function normalizePhone(p) {
-  return safe(p).replace(/\s+/g, "");
-}
-
 function requirePdfLib() {
   if (!PDFLib) throw new Error("pdf-lib non installé. Faites: npm i pdf-lib");
 }
@@ -113,31 +103,6 @@ async function drawCircularLogo(ctx, logoBuffer, centerX, centerY, size) {
   ctx.restore();
 }
 
-function drawCircularText(ctx, text, cx, cy, radius, startAngle, fontPx, reverse = false) {
-  const chars = [...String(text || "")];
-  if (!chars.length) return;
-
-  const charArc = (fontPx * 1.15) / radius;
-  const totalArc = charArc * (chars.length - 1);
-
-  let angle = startAngle - totalArc / 2;
-  if (reverse) angle = startAngle + totalArc / 2;
-
-  for (const ch of chars) {
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-    ctx.translate(0, -radius);
-    if (reverse) ctx.rotate(Math.PI);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(ch, 0, 0);
-    ctx.restore();
-
-    angle += reverse ? -charArc : charArc;
-  }
-}
-
 function drawFallbackMonogram(ctx, profile, cx, cy, r) {
   const name = safe(profile?.business_name) || "E";
   const parts = name.trim().split(/\s+/);
@@ -154,11 +119,11 @@ function drawFallbackMonogram(ctx, profile, cx, cy, r) {
 
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(cx, cy, r - 16, 0, Math.PI * 2);
+  ctx.arc(cx, cy, r - 18, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.fillStyle = STAMP_BLUE;
-  ctx.font = `bold ${r * 0.85}px Arial`;
+  ctx.font = `bold ${r * 0.9}px Arial`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(mono, cx, cy);
@@ -178,7 +143,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const R_OUTER = 320;
   const R_INNER = 275;
-  const LOGO_SIZE = 300; // 👈 augmenté
+  const LOGO_SIZE = 300;
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -210,32 +175,6 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   }
 
   return canvas.toBuffer("image/png");
-}
-
-function drawFallbackMonogram(ctx, profile, cx, cy, r) {
-  const name = safe(profile?.business_name) || "E";
-  const parts = name.trim().split(/\s+/);
-  const mono =
-    parts.length >= 2
-      ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-      : name.slice(0, 2).toUpperCase();
-
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = STAMP_BLUE;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r - 18, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.font = `bold ${r * 0.9}px Arial`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(mono, cx, cy);
 }
 
 function getUploadedStampPngBuffer(profile) {
@@ -318,11 +257,16 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
 
   const size = Number(opts.size || profile?.stamp_size || DEFAULT_SIZE);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.76))));
+  const opacity = Math.max(
+    0,
+    Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.76)))
+  );
   const margin = Number(opts.margin || DEFAULT_MARGIN);
   const pages = String(opts.pages || profile?.stamp_pages || "last");
-  const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
-  const stampBuffer = opts.stampBuffer && Buffer.isBuffer(opts.stampBuffer) ? opts.stampBuffer : null;
+  const logoBuffer =
+    opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
+  const stampBuffer =
+    opts.stampBuffer && Buffer.isBuffer(opts.stampBuffer) ? opts.stampBuffer : null;
 
   const stampPng = await resolveStampPngBuffer({
     profile,
