@@ -121,71 +121,108 @@ async function drawCircularLogo(ctx, logoBuffer, centerX, centerY, size) {
   ctx.restore();
 }
 
-async function generateStampPngBuffer({ profile, logoBuffer = null, title = null }) {
+function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
+  const chars = String(text || "").split("");
+  const angleStep = (Math.PI / 180) * spacingCoef;
+
+  let angle = startAngle - (chars.length * angleStep) / 2;
+  if (reverse) angle = startAngle + (chars.length * angleStep) / 2;
+
+  for (const ch of chars) {
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.translate(0, radiusOffset);
+    ctx.rotate(reverse ? Math.PI : 0);
+    ctx.textAlign = "center";
+    ctx.fillText(ch, 0, 0);
+    ctx.restore();
+
+    angle += reverse ? -angleStep : angleStep;
+  }
+}
+
+async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
-  const size = 700;
+  const size = 800;
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext("2d");
 
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
-  const outerR = 250;
-  const midR = 215;
-  const innerR = 120;
+  const outerR = 285;
+  const innerR = 245;
+  const logoR = 78;
 
-  const centerTitle = truncate(
-    (safe(title) || safe(profile?.stamp_title) || "GERANT").toUpperCase(),
-    18
+  const topText = truncate(
+    (safe(profile?.business_name) || "ENTREPRISE").toUpperCase(),
+    26
   );
 
-  const phone = normalizePhone(profile?.phone);
-  const ifu = safe(profile?.ifu);
-  const rccm = safe(profile?.rccm);
-
-  let bottomLine = "";
-  if (ifu) bottomLine = `IFU ${ifu}`;
-  else if (rccm) bottomLine = `RCCM ${rccm}`;
-  else if (phone) bottomLine = `TEL ${phone}`;
+  const bottomText = truncate(
+    (safe(profile?.address) || "OUAGADOUGOU • BURKINA FASO").toUpperCase(),
+    30
+  );
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
+  // Cercle externe
   ctx.lineWidth = 10;
   ctx.beginPath();
   ctx.arc(center, center, outerR, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Cercle interne
   ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.arc(center, center, midR, 0, Math.PI * 2);
+  ctx.arc(center, center, innerR, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.lineWidth = 3;
+  // Points latéraux
   ctx.beginPath();
-  ctx.arc(center, center - 55, innerR / 2, 0, Math.PI * 2);
+  ctx.arc(center - 255, center, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(center + 255, center, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Texte circulaire haut
+  ctx.save();
+  ctx.translate(center, center);
+  ctx.font = "bold 40px Arial";
+  drawCircularText(ctx, topText, 0, -263, 2.1, false);
+  ctx.restore();
+
+  // Texte circulaire bas
+  ctx.save();
+  ctx.translate(center, center);
+  ctx.font = "bold 34px Arial";
+  drawCircularText(ctx, bottomText, Math.PI, -263, 2.0, true);
+  ctx.restore();
+
+  // Cercle central logo
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(center, center, logoR, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.font = "bold 24px Arial";
-  ctx.fillText("CACHET PROFESSIONNEL", center, 135);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(center, center, logoR - 18, 0, Math.PI * 2);
+  ctx.stroke();
 
+  // Logo centre
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, center, center - 55, 95);
+      await drawCircularLogo(ctx, logoBuffer, center, center, 118);
     } catch (err) {
       console.warn("[STAMP] circular logo draw failed:", err?.message);
     }
-  }
-
-  ctx.font = "bold 48px Arial";
-  ctx.fillText(centerTitle, center, center + 55);
-
-  if (bottomLine) {
-    ctx.font = "bold 24px Arial";
-    ctx.fillText(truncate(bottomLine.toUpperCase(), 28), center, 535);
   }
 
   return canvas.toBuffer("image/png");
@@ -211,7 +248,7 @@ function getDefaultFallbackStampPngBuffer() {
   return fs.readFileSync(defaultPath);
 }
 
-async function resolveStampPngBuffer({ profile, logoBuffer = null, title = null, stampBuffer = null }) {
+async function resolveStampPngBuffer({ profile, logoBuffer = null, stampBuffer = null }) {
   if (stampBuffer && Buffer.isBuffer(stampBuffer)) {
     console.log("[STAMP APPLY] using opts.stampBuffer");
     return stampBuffer;
@@ -228,7 +265,7 @@ async function resolveStampPngBuffer({ profile, logoBuffer = null, title = null,
     }
 
     console.log("[STAMP APPLY] generating dynamic stamp");
-    return await generateStampPngBuffer({ profile, logoBuffer, title });
+    return await generateStampPngBuffer({ profile, logoBuffer });
   } catch (err) {
     console.warn("[STAMP APPLY] dynamic generation failed:", err?.message);
   }
@@ -271,17 +308,15 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
 
   const size = Number(opts.size || profile?.stamp_size || DEFAULT_SIZE);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
-  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.78))));
+  const opacity = Math.max(0, Math.min(1, Number(opts.opacity ?? (profile?.stamp_opacity ?? 0.76))));
   const margin = Number(opts.margin || DEFAULT_MARGIN);
   const pages = String(opts.pages || profile?.stamp_pages || "last");
-  const title = opts.title || null;
   const logoBuffer = opts.logoBuffer && Buffer.isBuffer(opts.logoBuffer) ? opts.logoBuffer : null;
   const stampBuffer = opts.stampBuffer && Buffer.isBuffer(opts.stampBuffer) ? opts.stampBuffer : null;
 
   const stampPng = await resolveStampPngBuffer({
     profile,
     logoBuffer,
-    title,
     stampBuffer,
   });
 
@@ -314,8 +349,8 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
       x = margin;
       y = safeBottomY;
     } else if (position === "bottom-right") {
-      x = width - drawW - margin - 10;
-      y = safeBottomY + 95;
+      x = width - drawW - margin - 12;
+      y = safeBottomY + 82;
       if (y > safeTopY) y = safeTopY;
     } else if (position === "top-left") {
       x = margin;
