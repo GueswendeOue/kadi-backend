@@ -111,34 +111,57 @@ async function drawCircularLogo(ctx, logoBuffer, centerX, centerY, size) {
   ctx.fillRect(centerX - r, centerY - r, size, size);
 
   ctx.restore();
-
-  ctx.save();
-  ctx.strokeStyle = STAMP_BLUE;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
 }
 
-function drawCircularText(ctx, text, startAngle, radiusOffset, spacingCoef = 2.0, reverse = false) {
-  const chars = String(text || "").split("");
-  const angleStep = (Math.PI / 180) * spacingCoef;
+function drawCircularText(ctx, text, cx, cy, radius, startAngle, fontPx, reverse = false) {
+  const chars = [...String(text || "")];
+  if (!chars.length) return;
 
-  let angle = startAngle - (chars.length * angleStep) / 2;
-  if (reverse) angle = startAngle + (chars.length * angleStep) / 2;
+  const charArc = (fontPx * 1.15) / radius;
+  const totalArc = charArc * (chars.length - 1);
+
+  let angle = startAngle - totalArc / 2;
+  if (reverse) angle = startAngle + totalArc / 2;
 
   for (const ch of chars) {
     ctx.save();
+    ctx.translate(cx, cy);
     ctx.rotate(angle);
-    ctx.translate(0, radiusOffset);
-    ctx.rotate(reverse ? Math.PI : 0);
+    ctx.translate(0, -radius);
+    if (reverse) ctx.rotate(Math.PI);
     ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
     ctx.fillText(ch, 0, 0);
     ctx.restore();
 
-    angle += reverse ? -angleStep : angleStep;
+    angle += reverse ? -charArc : charArc;
   }
+}
+
+function drawFallbackMonogram(ctx, profile, cx, cy, r) {
+  const name = safe(profile?.business_name) || "E";
+  const parts = name.trim().split(/\s+/);
+  const mono =
+    parts.length >= 2
+      ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+      : name.slice(0, 2).toUpperCase();
+
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = STAMP_BLUE;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 16, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.font = `bold ${r * 0.85}px Arial`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(mono, cx, cy);
 }
 
 async function generateStampPngBuffer({ profile, logoBuffer = null }) {
@@ -150,19 +173,29 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   ctx.clearRect(0, 0, size, size);
 
-  const center = size / 2;
-  const outerR = 285;
-  const innerR = 245;
-  const logoR = 78;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  const R_OUTER = 290;
+  const R_BAND = 268;
+  const R_CONTENT = 220;
+  const R_LOGO = 80;
 
   const topText = truncate(
-    (safe(profile?.business_name) || "ENTREPRISE").toUpperCase(),
-    26
+    (safe(profile?.business_name) || "ENTREPRISE")
+      .replace(/\b(sarl|sa|sas|eurl|ets)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase(),
+    24
   );
 
   const bottomText = truncate(
-    (safe(profile?.address) || "OUAGADOUGOU • BURKINA FASO").toUpperCase(),
-    30
+    (safe(profile?.address) || "OUAGADOUGOU • BURKINA FASO")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase(),
+    28
   );
 
   ctx.strokeStyle = STAMP_BLUE;
@@ -171,58 +204,56 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.textBaseline = "middle";
 
   // Cercle externe
-  ctx.lineWidth = 10;
+  ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.arc(center, center, outerR, 0, Math.PI * 2);
+  ctx.arc(cx, cy, R_OUTER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Cercle interne
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(center, center, innerR, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Points latéraux
-  ctx.beginPath();
-  ctx.arc(center - 255, center, 7, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(center + 255, center, 7, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Texte circulaire haut
-  ctx.save();
-  ctx.translate(center, center);
-  ctx.font = "bold 40px Arial";
-  drawCircularText(ctx, topText, 0, -263, 2.1, false);
-  ctx.restore();
-
-  // Texte circulaire bas
-  ctx.save();
-  ctx.translate(center, center);
-  ctx.font = "bold 34px Arial";
-  drawCircularText(ctx, bottomText, Math.PI, -263, 2.0, true);
-  ctx.restore();
-
-  // Cercle central logo
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(center, center, logoR, 0, Math.PI * 2);
-  ctx.stroke();
-
+  // Séparateur interne du bandeau
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(center, center, logoR - 18, 0, Math.PI * 2);
+  ctx.arc(cx, cy, R_BAND, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Logo centre
+  // Texte circulaire haut
+  const midBandR = (R_OUTER + R_BAND) / 2;
+  ctx.font = "bold 34px Arial";
+  drawCircularText(ctx, topText, cx, cy, midBandR, -Math.PI / 2, 34, false);
+
+  // Points décoratifs gauche / droite
+  const DOT_R = 5;
+  [0, Math.PI].forEach((a) => {
+    ctx.beginPath();
+    ctx.arc(
+      cx + midBandR * Math.cos(a),
+      cy + midBandR * Math.sin(a),
+      DOT_R,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+  });
+
+  // Texte circulaire bas
+  ctx.font = "bold 30px Arial";
+  drawCircularText(ctx, bottomText, cx, cy, midBandR, Math.PI / 2, 30, true);
+
+  // Cercle intérieur contenu
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R_CONTENT, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Logo central sans double cercle parasite
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, center, center, 118);
+      await drawCircularLogo(ctx, logoBuffer, cx, cy, R_LOGO * 2);
     } catch (err) {
-      console.warn("[STAMP] circular logo draw failed:", err?.message);
+      console.warn("[STAMP] logo draw failed:", err?.message);
+      drawFallbackMonogram(ctx, profile, cx, cy, R_LOGO);
     }
+  } else {
+    drawFallbackMonogram(ctx, profile, cx, cy, R_LOGO);
   }
 
   return canvas.toBuffer("image/png");
@@ -326,9 +357,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   const allPages = pdfDoc.getPages();
   if (!allPages.length) return pdfBuffer;
 
-  const targetPages = pages === "all"
-    ? allPages
-    : [allPages[allPages.length - 1]];
+  const targetPages = pages === "all" ? allPages : [allPages[allPages.length - 1]];
 
   for (const page of targetPages) {
     const { width, height } = page.getSize();
