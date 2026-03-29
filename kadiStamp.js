@@ -1,14 +1,5 @@
 "use strict";
 
-/**
- * kadiStamp.js — premium stamp engine
- *
- * Priorité:
- * 1) tampon uploadé par le client (profile.stamp_image_path ou opts.stampBuffer)
- * 2) génération dynamique via canvas
- * 3) fallback local ./assets/stamp.png
- */
-
 const fs = require("fs");
 const path = require("path");
 
@@ -140,72 +131,61 @@ async function generateStampPngBuffer({ profile, logoBuffer = null, title = null
   ctx.clearRect(0, 0, size, size);
 
   const center = size / 2;
-  const businessName = truncate((safe(profile?.business_name) || "ENTREPRISE").toUpperCase(), 30);
-  const centerTitle = truncate((safe(title) || safe(profile?.stamp_title) || "GERANT").toUpperCase(), 18);
+  const outerR = 250;
+  const midR = 215;
+  const innerR = 120;
+
+  const centerTitle = truncate(
+    (safe(title) || safe(profile?.stamp_title) || "GERANT").toUpperCase(),
+    18
+  );
+
   const phone = normalizePhone(profile?.phone);
-  const addr = truncate((safe(profile?.address) || "OUAGA").toUpperCase(), 24);
+  const ifu = safe(profile?.ifu);
+  const rccm = safe(profile?.rccm);
+
+  let bottomLine = "";
+  if (ifu) bottomLine = `IFU ${ifu}`;
+  else if (rccm) bottomLine = `RCCM ${rccm}`;
+  else if (phone) bottomLine = `TEL ${phone}`;
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // Double cercle
   ctx.lineWidth = 10;
   ctx.beginPath();
-  ctx.arc(center, center, 270, 0, Math.PI * 2);
+  ctx.arc(center, center, outerR, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.arc(center, center, 235, 0, Math.PI * 2);
+  ctx.arc(center, center, midR, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Bande haute
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(150, 165);
-  ctx.lineTo(550, 165);
+  ctx.arc(center, center - 55, innerR / 2, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.font = "bold 30px Arial";
-  ctx.fillText(businessName, center, 135);
-
-  // Cercle logo interne
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(center, center - 35, 70, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.font = "bold 24px Arial";
+  ctx.fillText("CACHET PROFESSIONNEL", center, 135);
 
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, center, center - 35, 110);
+      await drawCircularLogo(ctx, logoBuffer, center, center - 55, 95);
     } catch (err) {
       console.warn("[STAMP] circular logo draw failed:", err?.message);
     }
   }
 
-  // Fonction
-  ctx.font = "bold 42px Arial";
-  ctx.fillText(centerTitle, center, center + 78);
+  ctx.font = "bold 48px Arial";
+  ctx.fillText(centerTitle, center, center + 55);
 
-  // Ligne basse
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(180, 520);
-  ctx.lineTo(520, 520);
-  ctx.stroke();
-
-  // Téléphone
-  if (phone) {
-    ctx.font = "bold 22px Arial";
-    ctx.fillText(`TEL: ${phone}`, center, 555);
-  }
-
-  // Adresse
-  if (addr) {
-    ctx.font = "bold 18px Arial";
-    ctx.fillText(addr, center, 588);
+  if (bottomLine) {
+    ctx.font = "bold 24px Arial";
+    ctx.fillText(truncate(bottomLine.toUpperCase(), 28), center, 535);
   }
 
   return canvas.toBuffer("image/png");
@@ -287,7 +267,7 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
     return pdfBuffer;
   }
 
-  const { PDFDocument, degrees } = PDFLib;
+  const { PDFDocument } = PDFLib;
 
   const size = Number(opts.size || profile?.stamp_size || DEFAULT_SIZE);
   const position = String(opts.position || profile?.stamp_position || "bottom-right");
@@ -372,7 +352,6 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
       width: drawW,
       height: drawH,
       opacity,
-      rotate: degrees(-7),
     });
   }
 
