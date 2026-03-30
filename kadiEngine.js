@@ -77,6 +77,7 @@ const { saveDocument } = require("./kadiRepo");
 const {
   getOrCreateProfile,
   updateProfile,
+  updateProfileByIdentity,
   markOnboardingDone,
 } = require("./store");
 
@@ -192,6 +193,82 @@ function isValidWhatsAppId(id) {
 }
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""));
+}
+
+function extractMetaIdentity(value = {}) {
+  const contact = value?.contacts?.[0] || {};
+  const msg = value?.messages?.[0] || {};
+  const status = value?.statuses?.[0] || {};
+
+  const waId =
+    contact?.wa_id ||
+    msg?.from ||
+    status?.recipient_id ||
+    null;
+
+  const bsuid =
+    contact?.user_id ||
+    msg?.from_user_id ||
+    status?.recipient_user_id ||
+    null;
+
+  const parentBsuid =
+    contact?.parent_user_id ||
+    msg?.from_parent_user_id ||
+    status?.parent_recipient_user_id ||
+    null;
+
+  const username = contact?.profile?.username || null;
+  const profileName = contact?.profile?.name || null;
+
+  return {
+    waId: waId ? String(waId).trim() : null,
+    bsuid: bsuid ? String(bsuid).trim() : null,
+    parentBsuid: parentBsuid ? String(parentBsuid).trim() : null,
+    username: username ? String(username).trim() : null,
+    profileName: profileName ? String(profileName).trim() : null,
+  };
+}
+
+function resolveOwnerKey(identity = {}) {
+  // version sans casse pour l’instant
+  return identity?.waId || identity?.bsuid || null;
+}
+
+async function syncMetaIdentity(identity = {}) {
+  const waId = identity?.waId || null;
+  const bsuid = identity?.bsuid || null;
+  const parentBsuid = identity?.parentBsuid || null;
+  const username = identity?.username || null;
+  const profileName = identity?.profileName || null;
+
+  if (!waId && !bsuid) return null;
+
+  const profile = await getOrCreateProfile(waId, {
+    bsuid,
+    parentBsuid,
+    username,
+    profileName,
+  });
+
+  const patch = {};
+
+  if (bsuid && profile?.bsuid !== bsuid) patch.bsuid = bsuid;
+  if (parentBsuid && profile?.parent_bsuid !== parentBsuid) {
+    patch.parent_bsuid = parentBsuid;
+  }
+  if (username && profile?.whatsapp_username !== username) {
+    patch.whatsapp_username = username;
+  }
+  if (profileName && !profile?.owner_name) {
+    patch.owner_name = profileName;
+  }
+
+  if (Object.keys(patch).length) {
+    await updateProfileByIdentity({ waId, bsuid }, patch);
+  }
+
+  return profile;
 }
 function formatDateISO() {
   const d = new Date();
@@ -2921,94 +2998,119 @@ async function handleStatsCommand(from, text) {
       packPriceFcfa: PACK_PRICE_FCFA,
     });
 
-    const topDocTypes = (stats.docs?.byType || [])
-      .slice(0, 4)
-      .map((r) => `• ${r.doc_type}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
-      .join("\n") || "• Aucune donnée";
+    // ── Helpers locaux ──────────────────────────────
+    const pct = (n, total) =>
+      total > 0 ? ` (${Math.round((n / total) * 100)}%)` : "";
 
-    const topSources = (stats.docs?.bySource || [])
-      .slice(0, 3)
-      .map((r) => `• ${r.source}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
-      .join("\n") || "• Aucune donnée";
+    const trend = (n, label) =>
+      n === 0 ? `• ${label}: —` : `• ${label}: ${n}`;
 
-    const topCountries = (stats.docs?.byCountry || [])
-      .slice(0, 3)
-      .map((r) => `• ${r.country}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
-      .join("\n") || "• Aucune donnée";
+    // ── Blocs ───────────────────────────────────────
+    const u = stats.users;
+    const d = stats.docs;
+    const c = stats.credits;
+    const r = stats.revenue;
+    const k = stats.kpis || {};
 
-    const topReasons = (stats.credits?.byReason30 || [])
-      .slice(0, 5)
-      .map((r) => `• ${r.reason}: +${r.added} / -${r.consumed} (${r.tx_count} tx)`)
-      .join("\n") || "• Aucune donnée";
+    // Utilisateurs payants réels
+    const payingUsers = u.usersRecharged || 0;
 
-    const retention = (stats.retention || [])[0]
-      ? `• Cohorte: ${String(stats.retention[0].first_week || "").slice(0, 10)}\n` +
-        `• Nouveaux: ${stats.retention[0].new_users}\n` +
-        `• Retenus W1: ${stats.retention[0].retained_w1}\n` +
-        `• Retenus W2: ${stats.retention[0].retained_w2}`
-      : "• Aucune donnée";
+    // Documents par type
+    const topDocTypes =
+      (d.byType || [])
+        .slice(0, 4)
+        .map((r) => `  • ${r.doc_type}: ${r.docs} — ${money(r.total_fcfa)} FCFA`)
+        .join("\n") || "  • Aucune donnée";
 
- const sectorLines = (stats.docs?.bySector || [])
-      .slice(0, 5)
-      .map((r) => `• ${r.business_sector}: ${r.docs} doc(s) — ${money(r.total_fcfa)} FCFA`)
-      .join("\n") || "• Aucune donnée";
+    // Pays
+    const topCountries =
+      (d.byCountry || [])
+        .filter((r) => r.country !== "unknown")
+        .slice(0, 3)
+        .map((r) => `  • ${r.country}: ${r.docs} docs — ${money(r.total_fcfa)} FCFA`)
+        .join("\n") || "  • Aucune donnée";
 
+    // Raisons crédits 30j
+    const topReasons =
+      (c.byReason30 || [])
+        .slice(0, 5)
+        .map((r) => `  • ${r.reason}: +${r.added} / -${r.consumed} (${r.tx_count} tx)`)
+        .join("\n") || "  • Aucune donnée";
+
+    // Rétention
+    const ret = (stats.retention || [])[0];
+    const retentionBlock = ret
+      ? `  • Cohorte: ${String(ret.first_week || "").slice(0, 10)}\n` +
+        `  • Nouveaux: ${ret.new_users}\n` +
+        `  • W1: ${ret.retained_w1}/${ret.new_users}${pct(ret.retained_w1, ret.new_users)}\n` +
+        `  • W2: ${ret.retained_w2}/${ret.new_users}${pct(ret.retained_w2, ret.new_users)}`
+      : "  • Aucune donnée";
+
+    // Features utilisées
+    const featuresBlock = [
+      d.stampedDocs > 0 ? `  ✅ Tampon: ${d.stampedDocs}` : `  ⬜ Tampon: 0`,
+      d.ocrDocs > 0 ? `  ✅ OCR: ${d.ocrDocs}` : `  ⬜ OCR: 0`,
+      d.geminiParsedDocs > 0 ? `  ✅ Gemini: ${d.geminiParsedDocs}` : `  ⬜ Gemini: 0`,
+    ].join("\n");
+
+    // Alerte revenus
+    const revenueAlert =
+      payingUsers === 0
+        ? `⚠️ *0 utilisateur payant — action requise*\n\n`
+        : ``;
+
+    // ── Message final ───────────────────────────────
     const msg =
-      `📊 *KADI — ANALYTICS*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 *KADI — DASHBOARD*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+
+      revenueAlert +
 
       `👥 *UTILISATEURS*\n` +
-      `• Profils enregistrés: ${stats.users.totalUsers}\n` +
-      `• Onboarding terminé: ${stats.users.onboardedUsers} (${stats.kpis?.onboardingRate || 0}%)\n` +
-      `• Actifs 1j: ${stats.users.active1d}\n` +
-      `• Actifs 7j: ${stats.users.active7}\n` +
-      `• Actifs 30j: ${stats.users.active30}\n` +
-      `• Ont créé ≥ 1 document: ${stats.users.usersWithDocs} (${stats.kpis?.activationRate || 0}%)\n\n` +
+      `  • Total: ${u.totalUsers}\n` +
+      `  • Onboardés: ${u.onboardedUsers}${pct(u.onboardedUsers, u.totalUsers)}\n` +
+      `  • Actifs 1j / 7j / 30j: ${u.active1d} / ${u.active7} / ${u.active30}\n` +
+      `  • Ont créé un doc: ${u.usersWithDocs}${pct(u.usersWithDocs, u.totalUsers)}\n` +
+      `  • Payants: ${payingUsers}${pct(payingUsers, u.active30)}\n\n` +
 
-      `📄 *PRODUIT*\n` +
-      `• Documents total: ${stats.docs.total}\n` +
-      `• 7 derniers jours: ${stats.docs.last7}\n` +
-      `• 30 derniers jours: ${stats.docs.last30}\n` +
-      `• Volume total: ${money(stats.docs.sumAll)} FCFA\n` +
-      `• Volume 30j: ${money(stats.docs.sum30)} FCFA\n` +
-      `• Panier moyen global: ${money(stats.docs.avgAll)} FCFA\n\n` +
+      `📄 *DOCUMENTS*\n` +
+      `  • Total: ${d.total} | 7j: ${d.last7} | 30j: ${d.last30}\n` +
+      `  • Volume total: ${money(d.sumAll)} FCFA\n` +
+      `  • Volume 30j: ${money(d.sum30)} FCFA\n` +
+      `  • Panier moyen: ${money(d.avgAll)} FCFA\n\n` +
 
       `📂 *PAR TYPE*\n${topDocTypes}\n\n` +
-      `🏗 *PAR SECTEUR*\n${sectorLines}\n\n` +
+
       `🌍 *PAR PAYS*\n${topCountries}\n\n` +
 
-      `🤖 *USAGE FEATURES*\n` +
-      `• OCR: ${stats.docs.ocrDocs}\n` +
-      `• Non OCR: ${stats.docs.manualDocs}\n` +
-      `• Gemini: ${stats.docs.geminiParsedDocs}\n` +
-      `• Tampon: ${stats.docs.stampedDocs}\n\n` +
+      `🤖 *FEATURES*\n${featuresBlock}\n\n` +
 
       `💳 *CRÉDITS*\n` +
-      `• Comptes crédits: ${stats.users.usersWithWallet}\n` +
-      `• Utilisateurs payants: ${stats.users.usersRecharged}\n` +
-      `• Solde total wallet: ${stats.credits.totalBalance}\n` +
-      `• Transactions totales: ${stats.credits.totalTx}\n` +
-      `• Crédits ajoutés total: ${stats.credits.creditsAdded}\n` +
-      `• Crédits consommés total: ${stats.credits.creditsConsumed}\n` +
-      `• Ajoutés 7j: ${stats.credits.added7}\n` +
-      `• Consommés 7j: ${stats.credits.consumed7}\n\n` +
+      `  • Solde wallets: ${money(c.totalBalance)}\n` +
+      `  • Ajoutés / Consommés (total): ${c.creditsAdded} / ${c.creditsConsumed}\n` +
+      `  • Ajoutés / Consommés (7j): ${c.added7} / ${c.consumed7}\n` +
+      `  • Transactions: ${c.totalTx}\n\n` +
+
+      `🧾 *CRÉDITS PAR RAISON (30j)*\n${topReasons}\n\n` +
 
       `💰 *BUSINESS*\n` +
-      `• Crédits payés 30j: ${stats.credits.addedPaid30}\n` +
-      `• Revenu estimé 30j: ${money(stats.revenue.est30)} FCFA\n` +
-      `• Conversion paiement: ${stats.kpis?.paymentConversion || 0}%\n\n` +
+      `  • Payants: ${payingUsers} utilisateurs\n` +
+      `  • Crédits payés 30j: ${c.addedPaid30}\n` +
+      `  • Revenu estimé 30j: ${money(r.est30)} FCFA\n` +
+      `  • Conversion: ${k.paymentConversion || 0}%\n\n` +
 
-      `🎫 *CODES*\n` +
-      `• Créés: ${stats.codes.codesCreated}\n` +
-      `• Utilisés: ${stats.codes.codesRedeemed}\n` +
-      `• Taux d'usage: ${stats.codes.redeemRatePct}%\n` +
-      `• Crédits via codes: ${stats.codes.creditsRedeemed}\n\n` +
+      `🎫 *CODES PROMO*\n` +
+      `  • Créés: ${stats.codes.codesCreated} | Utilisés: ${stats.codes.codesRedeemed} (${stats.codes.redeemRatePct}%)\n\n` +
 
-      `📈 *RÉTENTION*\n${retention}`;
+      `📈 *RÉTENTION*\n${retentionBlock}\n\n` +
+
+      `━━━━━━━━━━━━━━━━━━━━`;
 
     return sendText(from, msg);
   } catch (e) {
     logger.error("stats_command", e, { from });
-    return sendText(from, "❌ Erreur: impossible de calculer les stats pour le moment.");
+    return sendText(from, "❌ Erreur stats. Réessaie dans quelques secondes.");
   }
 }
 
@@ -3874,14 +3976,42 @@ async function handleIncomingMessage(value) {
     if (!value.messages?.length) return;
 
     const msg = value.messages[0];
-    const from = msg.from;
+    const identity = extractMetaIdentity(value);
 
-    if (!isValidWhatsAppId(from)) {
-      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { from });
+    const from = resolveOwnerKey(identity);
+    const waId = identity.waId;
+    const bsuid = identity.bsuid;
+
+    console.log("[KADI] META IDENTITY", {
+      waId,
+      bsuid,
+      parentBsuid: identity.parentBsuid,
+      username: identity.username,
+      msgType: msg?.type,
+    });
+
+    if (!from) {
+      logger.warn("missing_identity", "No wa_id or bsuid found in incoming webhook", {
+        messageType: msg?.type,
+      });
+      return;
+    }
+
+    if (waId && !isValidWhatsAppId(waId)) {
+      logger.warn("invalid_wa_id", "Invalid WhatsApp ID received", { waId, bsuid });
       return;
     }
 
     return await withUserLock(from, async () => {
+      try {
+        await syncMetaIdentity(identity);
+      } catch (e) {
+        logger.warn("meta_identity_sync", e.message, {
+          waId,
+          bsuid,
+        });
+      }
+
       try {
         await recordActivity(from);
       } catch (e) {
@@ -3904,6 +4034,8 @@ async function handleIncomingMessage(value) {
       if (replyIdInteractive || replyIdButton) {
         console.log("[KADI] BUTTON CLICK", {
           from,
+          waId,
+          bsuid,
           msgType: msg.type,
           replyIdInteractive,
           replyIdButton,
@@ -3927,7 +4059,7 @@ async function handleIncomingMessage(value) {
         const s = getSession(from);
         const caption = norm(msg.image?.caption || "");
 
-        if (ensureAdmin(from) && caption.toLowerCase().startsWith("/broadcastimage")) {
+        if (waId && ensureAdmin(waId) && caption.toLowerCase().startsWith("/broadcastimage")) {
           const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
           s.adminPendingAction = "broadcast_image";
           s.broadcastCaption = commandCaption || "";
@@ -3950,11 +4082,10 @@ async function handleIncomingMessage(value) {
 
       if (text.toLowerCase() === "confirmer") {
         const possibleOwnerSession = null;
-        // la confirmation sera traitée plus bas via recherche simple
       }
 
       // 1) ADMIN d'abord
-      if (await handleAdmin(from, text)) return;
+      if (waId && (await handleAdmin(waId, text))) return;
 
       // 2) Recharge code avant les flows
       const mCode = text.match(REGEX.code);
@@ -3975,18 +4106,18 @@ async function handleIncomingMessage(value) {
 
       if (await tryHandleDechargeConfirmation(from, text)) return;
 
-    // 3) Commandes globales avant les flows
-if (await handleCommand(from, text)) return;
+      // 3) Commandes globales avant les flows
+      if (await handleCommand(from, text)) return;
 
-// 4) Messages naturels WhatsApp
-if (await tryHandleNaturalMessage(from, text)) return;
+      // 4) Messages naturels WhatsApp
+      if (await tryHandleNaturalMessage(from, text)) return;
 
-// 5) Collage intelligent de plusieurs lignes produits
-if (await handleSmartItemsBlockText(from, text)) return;
+      // 5) Collage intelligent de plusieurs lignes produits
+      if (await handleSmartItemsBlockText(from, text)) return;
 
-// 6) Ensuite seulement les flows
-if (await handleProfileAnswer(from, text)) return;
-if (await handleProductFlowText(from, text)) return;
+      // 6) Ensuite seulement les flows
+      if (await handleProfileAnswer(from, text)) return;
+      if (await handleProductFlowText(from, text)) return;
 
       await sendText(from, "Tapez *MENU* pour commencer.");
     });
