@@ -145,9 +145,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const R_INNER = 275;
   const LOGO_SIZE = 300;
 
-  const title = (
-    safe(profile?.stamp_title) || "GERANT"
-  ).toUpperCase();
+  const title = safe(profile?.stamp_title).toUpperCase();
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -166,7 +164,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Logo (légèrement remonté)
+  // Logo central légèrement remonté
   if (logoBuffer && loadImage) {
     try {
       await drawCircularLogo(ctx, logoBuffer, cx, cy - 30, LOGO_SIZE);
@@ -178,12 +176,26 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     drawFallbackMonogram(ctx, profile, cx, cy - 30, 120);
   }
 
-  // Fonction sous le logo
-  ctx.fillStyle = STAMP_BLUE;
-  ctx.font = "bold 48px Arial";
-  ctx.fillText(title, cx, cy + 150);
+  // Fonction sous le logo seulement si définie
+  if (title) {
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = "bold 48px Arial";
+    ctx.fillText(title, cx, cy + 150);
+  }
 
   return canvas.toBuffer("image/png");
+}
+
+function getUploadedStampPngBuffer(profile) {
+  const p = safe(profile?.stamp_image_path);
+  if (!p) return null;
+
+  const resolved = path.isAbsolute(p) ? p : path.resolve(p);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Uploaded stamp PNG not found: ${resolved}`);
+  }
+
+  return fs.readFileSync(resolved);
 }
 
 function getDefaultFallbackStampPngBuffer() {
