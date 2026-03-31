@@ -141,9 +141,9 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const cx = size / 2;
   const cy = size / 2;
 
-  const R_OUTER = 330;
-  const R_INNER = 270;
-  const LOGO_SIZE = 300;
+  const R_OUTER = 305;
+  const R_INNER = 250;
+  const LOGO_SIZE = 335;
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
@@ -168,9 +168,9 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   // Texte circulaire haut : nom entreprise
   if (business) {
-    const radius = 300;
+    const radius = 278;
     const text = business.length > 34 ? business.slice(0, 34) : business;
-    const angleStep = Math.PI / (text.length + 4);
+    const angleStep = Math.PI / (text.length + 6);
 
     ctx.font = text.length > 24 ? "bold 30px Arial" : "bold 36px Arial";
 
@@ -189,39 +189,39 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     }
   }
 
-  // Texte circulaire bas : téléphone centré
+  // Texte circulaire bas : téléphone centré, dans le bon sens
   if (phone) {
-    const radius = 300;
+    const radius = 278;
     const text = phone;
-    const angleStep = Math.PI / (text.length + 4);
+    const angleStep = Math.PI / (text.length + 10);
 
-    ctx.font = "bold 28px Arial";
+    ctx.font = "bold 30px Arial";
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
-      const angle = Math.PI / 2 + (i - text.length / 2) * angleStep;
+      const angle = Math.PI / 2 - (i - (text.length - 1) / 2) * angleStep;
 
       ctx.save();
       ctx.translate(
         cx + Math.cos(angle) * radius,
         cy + Math.sin(angle) * radius
       );
-      ctx.rotate(angle + Math.PI / 2);
+      ctx.rotate(angle - Math.PI / 2);
       ctx.fillText(char, 0, 0);
       ctx.restore();
     }
   }
 
-  // Logo au centre, légèrement remonté
+  // Logo au centre, plus grand
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, cx, cy - 35, LOGO_SIZE);
+      await drawCircularLogo(ctx, logoBuffer, cx, cy - 28, LOGO_SIZE);
     } catch (err) {
       console.warn("[STAMP] logo failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy - 35, 115);
+      drawFallbackMonogram(ctx, profile, cx, cy - 28, 125);
     }
   } else {
-    drawFallbackMonogram(ctx, profile, cx, cy - 35, 115);
+    drawFallbackMonogram(ctx, profile, cx, cy - 28, 125);
   }
 
   // Fonction sous le logo, à l’intérieur
