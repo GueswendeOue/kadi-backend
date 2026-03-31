@@ -143,15 +143,11 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const R_OUTER = 330;
   const R_INNER = 270;
-  const LOGO_SIZE = 250;
+  const LOGO_SIZE = 300;
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
-  const city = safe(profile?.city);
-  const country = safe(profile?.country);
   const phone = safe(profile?.phone);
-
-  const locationLine = [city, country].filter(Boolean).join(" - ").toUpperCase();
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -170,57 +166,69 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Nom entreprise en arc en haut
+  // Texte circulaire haut : nom entreprise
   if (business) {
     const radius = 300;
-    const text = business.length > 30 ? business.slice(0, 30) : business;
+    const text = business.length > 34 ? business.slice(0, 34) : business;
     const angleStep = Math.PI / (text.length + 4);
 
-    ctx.font = text.length > 22 ? "bold 30px Arial" : "bold 36px Arial";
+    ctx.font = text.length > 24 ? "bold 30px Arial" : "bold 36px Arial";
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
       const angle = -Math.PI / 2 - (text.length / 2 - i) * angleStep;
 
       ctx.save();
-      ctx.translate(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+      ctx.translate(
+        cx + Math.cos(angle) * radius,
+        cy + Math.sin(angle) * radius
+      );
       ctx.rotate(angle + Math.PI / 2);
       ctx.fillText(char, 0, 0);
       ctx.restore();
     }
   }
 
-  // Logo au centre
-  if (logoBuffer && loadImage) {
-    try {
-      await drawCircularLogo(ctx, logoBuffer, cx, cy - 25, LOGO_SIZE);
-    } catch (err) {
-      console.warn("[STAMP] logo failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy - 25, 105);
+  // Texte circulaire bas : téléphone centré
+  if (phone) {
+    const radius = 300;
+    const text = phone;
+    const angleStep = Math.PI / (text.length + 4);
+
+    ctx.font = "bold 28px Arial";
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const angle = Math.PI / 2 + (i - text.length / 2) * angleStep;
+
+      ctx.save();
+      ctx.translate(
+        cx + Math.cos(angle) * radius,
+        cy + Math.sin(angle) * radius
+      );
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillText(char, 0, 0);
+      ctx.restore();
     }
-  } else {
-    drawFallbackMonogram(ctx, profile, cx, cy - 25, 105);
   }
 
-  // Fonction
+  // Logo au centre, légèrement remonté
+  if (logoBuffer && loadImage) {
+    try {
+      await drawCircularLogo(ctx, logoBuffer, cx, cy - 35, LOGO_SIZE);
+    } catch (err) {
+      console.warn("[STAMP] logo failed:", err?.message);
+      drawFallbackMonogram(ctx, profile, cx, cy - 35, 115);
+    }
+  } else {
+    drawFallbackMonogram(ctx, profile, cx, cy - 35, 115);
+  }
+
+  // Fonction sous le logo, à l’intérieur
   if (title) {
     ctx.fillStyle = STAMP_BLUE;
     ctx.font = title.length > 18 ? "bold 34px Arial" : "bold 42px Arial";
-    ctx.fillText(title, cx, cy + 140);
-  }
-
-  // Ville + pays
-  if (locationLine) {
-    ctx.fillStyle = STAMP_BLUE;
-    ctx.font = "24px Arial";
-    ctx.fillText(locationLine, cx, cy + 190);
-  }
-
-  // Téléphone
-  if (phone) {
-    ctx.fillStyle = STAMP_BLUE;
-    ctx.font = "24px Arial";
-    ctx.fillText(phone, cx, cy + 225);
+    ctx.fillText(title, cx, cy + 145);
   }
 
   return canvas.toBuffer("image/png");
