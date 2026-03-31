@@ -231,7 +231,8 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
-  const phone = safe(profile?.phone);
+  const phoneRaw = safe(profile?.phone);
+  const phone = phoneRaw ? phoneRaw.replace(/\s+/g, "") : "";
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -250,23 +251,25 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Nom entreprise en haut
+  // Nom entreprise : grand arc presque complet
   drawArcText(ctx, business, cx, cy, 266, {
-    startAngle: Math.PI * 1.18,
-    endAngle: Math.PI * 1.82,
-    minFont: 20,
-    maxFont: 38,
+    startAngle: Math.PI * 0.78,
+    endAngle: Math.PI * 2.22,
+    minFont: 16,
+    maxFont: 36,
     clockwise: true,
   });
 
-  // Téléphone en bas
-  drawArcText(ctx, phone, cx, cy, 266, {
-    startAngle: Math.PI * 0.18,
-    endAngle: Math.PI * 0.82,
-    minFont: 20,
-    maxFont: 34,
-    clockwise: false,
-  });
+  // Téléphone : petite zone au centre bas
+  if (phone) {
+    drawArcText(ctx, `TEL ${phone}`, cx, cy, 266, {
+      startAngle: Math.PI * 0.42,
+      endAngle: Math.PI * 0.58,
+      minFont: 16,
+      maxFont: 28,
+      clockwise: false,
+    });
+  }
 
   // Logo au centre
   if (logoBuffer && loadImage) {
