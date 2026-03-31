@@ -232,8 +232,8 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
-  const phoneRaw = safe(profile?.phone);
-  const phone = phoneRaw ? phoneRaw.replace(/\s+/g, "") : "";
+  const docId = safe(profile?.doc_id || profile?.docId);
+  const phone = safe(profile?.phone).replace(/\s+/g, "");
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
@@ -252,11 +252,13 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // ===== NOM ENTREPRISE : grand arc presque complet =====
+  // ===== NOM ENTREPRISE SUR PRESQUE TOUT LE CERCLE =====
   if (business) {
     const text = business;
-    const gapStart = Math.PI * 0.40; // début de l'ouverture en bas
-    const gapEnd = Math.PI * 0.60;   // fin de l'ouverture en bas
+
+    // petite ouverture en bas réservée à l'équilibre visuel
+    const gapStart = Math.PI * 0.40;
+    const gapEnd = Math.PI * 0.60;
 
     const startAngle = gapEnd;
     const endAngle = gapStart + Math.PI * 2;
@@ -307,58 +309,6 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     }
   }
 
-  // ===== NUMÉRO TÉLÉPHONE : petite ouverture basse, taille lisible =====
-  if (phone) {
-    const text = phone;
-    const startAngle = Math.PI * 0.43;
-    const endAngle = Math.PI * 0.57;
-    const availableArc = endAngle - startAngle;
-
-    let fontSize = 34; // taille proche de celle que tu préfères
-    const minFont = 18;
-
-    for (; fontSize >= minFont; fontSize--) {
-      ctx.font = `bold ${fontSize}px Arial`;
-
-      const totalWidth = text.split("").reduce((sum, ch) => {
-        return sum + ctx.measureText(ch).width;
-      }, 0);
-
-      const estimatedArc = totalWidth / TEXT_RADIUS;
-      if (estimatedArc <= availableArc * 0.92) {
-        break;
-      }
-    }
-
-    if (fontSize < minFont) fontSize = minFont;
-
-    ctx.font = `bold ${fontSize}px Arial`;
-
-    const chars = text.split("").reverse();
-    const widths = chars.map((ch) => ctx.measureText(ch).width);
-    const totalWidth = widths.reduce((a, b) => a + b, 0);
-    const totalArc = totalWidth / TEXT_RADIUS;
-
-    let angle = startAngle + (availableArc - totalArc) / 2;
-
-    for (let i = 0; i < chars.length; i++) {
-      const ch = chars[i];
-      const chArc = widths[i] / TEXT_RADIUS;
-      angle += chArc / 2;
-
-      const x = cx + Math.cos(angle) * TEXT_RADIUS;
-      const y = cy + Math.sin(angle) * TEXT_RADIUS;
-
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(angle - Math.PI / 2);
-      ctx.fillText(ch, 0, 0);
-      ctx.restore();
-
-      angle += chArc / 2;
-    }
-  }
-
   // ===== LOGO AU CENTRE =====
   if (logoBuffer && loadImage) {
     try {
@@ -371,11 +321,25 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     drawFallbackMonogram(ctx, profile, cx, cy - 18, 132);
   }
 
-  // ===== FONCTION À L’INTÉRIEUR =====
+  // ===== FONCTION =====
   if (title) {
     ctx.fillStyle = STAMP_BLUE;
     ctx.font = title.length > 18 ? "bold 32px Arial" : "bold 40px Arial";
-    ctx.fillText(title, cx, cy + 142);
+    ctx.fillText(title, cx, cy + 110);
+  }
+
+  // ===== DOC ID =====
+  if (docId) {
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = "bold 28px Arial";
+    ctx.fillText(`ID: ${docId}`, cx, cy + 150);
+  }
+
+  // ===== PHONE =====
+  if (phone) {
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = "bold 34px Arial";
+    ctx.fillText(phone, cx, cy + 192);
   }
 
   return canvas.toBuffer("image/png");
