@@ -1793,6 +1793,33 @@ function normalizeReceiptFormat(text) {
 
   return null;
 }
+async function handleStampFlow(from, text) {
+  const s = getSession(from);
+  if (!s) return false;
+
+  const t = text.trim();
+
+  // 🎯 STEP: fonction du tampon
+  if (s.step === "stamp_function") {
+    if (t === "0") {
+      s.stampProfile = s.stampProfile || {};
+      s.stampProfile.title = "";
+    } else {
+      s.stampProfile = s.stampProfile || {};
+      s.stampProfile.title = t.slice(0, 40);
+    }
+
+    s.step = null;
+
+    await sendText(from,
+      `✅ Fonction enregistrée : *${s.stampProfile.title || "Aucune"}*\n\nTapez MENU pour continuer.`
+    );
+
+    return true;
+  }
+
+  return false;
+}
 
 async function handleProductFlowText(from, text) {
   const s = getSession(from);
@@ -4270,7 +4297,11 @@ async function handleIncomingMessage(value) {
         const s = getSession(from);
         const caption = norm(msg.image?.caption || "");
 
-        if (waId && ensureAdmin(waId) && caption.toLowerCase().startsWith("/broadcastimage")) {
+        if (
+          waId &&
+          ensureAdmin(identity) &&
+          caption.toLowerCase().startsWith("/broadcastimage")
+        ) {
           const commandCaption = caption.replace(/^\/broadcastimage\s*/i, "").trim();
           s.adminPendingAction = "broadcast_image";
           s.broadcastCaption = commandCaption || "";
@@ -4291,10 +4322,6 @@ async function handleIncomingMessage(value) {
       const text = norm(msg.text?.body);
       if (!text) return;
 
-      if (text.toLowerCase() === "confirmer") {
-        const possibleOwnerSession = null;
-      }
-
       // 1) ADMIN d'abord
       if (await handleAdmin(identity, text)) return;
 
@@ -4302,6 +4329,7 @@ async function handleIncomingMessage(value) {
       const mCode = text.match(REGEX.code);
       if (mCode) {
         const result = await redeemCode({ waId: from }, mCode[1]);
+
         if (!result.ok) {
           if (result.error === "CODE_DEJA_UTILISE") {
             return sendText(from, "❌ Code déjà utilisé.");
@@ -4315,19 +4343,21 @@ async function handleIncomingMessage(value) {
         );
       }
 
+      // 3) Confirmation décharge
       if (await tryHandleDechargeConfirmation(from, text)) return;
 
-      // 3) Commandes globales avant les flows
+      // 4) Commandes globales avant les flows
       if (await handleCommand(from, text)) return;
 
-      // 4) Messages naturels WhatsApp
+      // 5) Messages naturels WhatsApp
       if (await tryHandleNaturalMessage(from, text)) return;
 
-      // 5) Collage intelligent de plusieurs lignes produits
+      // 6) Collage intelligent de plusieurs lignes produits
       if (await handleSmartItemsBlockText(from, text)) return;
 
-      // 6) Ensuite seulement les flows
+      // 7) Flows texte
       if (await handleProfileAnswer(from, text)) return;
+      if (await handleStampFlow(from, text)) return;
       if (await handleProductFlowText(from, text)) return;
 
       await sendText(from, "Tapez *MENU* pour commencer.");
