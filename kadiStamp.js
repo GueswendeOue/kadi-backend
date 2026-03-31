@@ -251,24 +251,114 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Nom entreprise : grand arc presque complet
-  drawArcText(ctx, business, cx, cy, 266, {
-    startAngle: Math.PI * 0.78,
-    endAngle: Math.PI * 2.22,
-    minFont: 16,
-    maxFont: 36,
-    clockwise: true,
-  });
+  // ===== NOM ENTREPRISE SUR PRESQUE TOUT LE CERCLE =====
+  if (business) {
+    const text = business;
+    const radius = 266;
 
-  // Téléphone : petite zone au centre bas
+    // zone réservée en bas pour le téléphone
+    const gapStart = Math.PI * 0.35; // bas-droite
+    const gapEnd = Math.PI * 0.65;   // bas-gauche
+
+    // grand arc disponible = tout sauf petite ouverture du bas
+    const startAngle = gapEnd;
+    const endAngle = gapStart + Math.PI * 2;
+    const availableArc = endAngle - startAngle;
+
+    let fontSize = 36;
+    const minFont = 16;
+
+    for (; fontSize >= minFont; fontSize--) {
+      ctx.font = `bold ${fontSize}px Arial`;
+      const totalWidth = text.split("").reduce((sum, ch) => {
+        return sum + ctx.measureText(ch).width;
+      }, 0);
+
+      const estimatedArc = totalWidth / radius;
+      if (estimatedArc <= availableArc * 0.92) {
+        break;
+      }
+    }
+
+    if (fontSize < minFont) fontSize = minFont;
+
+    ctx.font = `bold ${fontSize}px Arial`;
+
+    const chars = text.split("");
+    const widths = chars.map((ch) => ctx.measureText(ch).width);
+    const totalWidth = widths.reduce((a, b) => a + b, 0);
+    const totalArc = totalWidth / radius;
+
+    let angle = startAngle + (availableArc - totalArc) / 2;
+
+    for (let i = 0; i < chars.length; i++) {
+      const ch = chars[i];
+      const chArc = widths[i] / radius;
+      angle += chArc / 2;
+
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillText(ch, 0, 0);
+      ctx.restore();
+
+      angle += chArc / 2;
+    }
+  }
+
+  // ===== TÉLÉPHONE DANS LA PETITE OUVERTURE BASSE =====
   if (phone) {
-    drawArcText(ctx, `TEL ${phone}`, cx, cy, 266, {
-      startAngle: Math.PI * 0.42,
-      endAngle: Math.PI * 0.58,
-      minFont: 16,
-      maxFont: 28,
-      clockwise: false,
-    });
+    const text = `TEL ${phone}`;
+    const radius = 266;
+    const startAngle = Math.PI * 0.42;
+    const endAngle = Math.PI * 0.58;
+    const availableArc = endAngle - startAngle;
+
+    let fontSize = 28;
+    const minFont = 14;
+
+    for (; fontSize >= minFont; fontSize--) {
+      ctx.font = `bold ${fontSize}px Arial`;
+      const totalWidth = text.split("").reduce((sum, ch) => {
+        return sum + ctx.measureText(ch).width;
+      }, 0);
+
+      const estimatedArc = totalWidth / radius;
+      if (estimatedArc <= availableArc * 0.9) {
+        break;
+      }
+    }
+
+    if (fontSize < minFont) fontSize = minFont;
+
+    ctx.font = `bold ${fontSize}px Arial`;
+
+    const chars = text.split("");
+    const widths = chars.map((ch) => ctx.measureText(ch).width);
+    const totalWidth = widths.reduce((a, b) => a + b, 0);
+    const totalArc = totalWidth / radius;
+
+    let angle = startAngle + (availableArc - totalArc) / 2;
+
+    for (let i = 0; i < chars.length; i++) {
+      const ch = chars[i];
+      const chArc = widths[i] / radius;
+      angle += chArc / 2;
+
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle - Math.PI / 2);
+      ctx.fillText(ch, 0, 0);
+      ctx.restore();
+
+      angle += chArc / 2;
+    }
   }
 
   // Logo au centre
