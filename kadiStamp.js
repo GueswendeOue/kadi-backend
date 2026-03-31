@@ -227,6 +227,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const R_OUTER = 290;
   const R_INNER = 242;
+  const TEXT_RADIUS = 266;
   const LOGO_SIZE = 340;
 
   const business = safe(profile?.business_name).toUpperCase();
@@ -251,16 +252,12 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // ===== NOM ENTREPRISE SUR PRESQUE TOUT LE CERCLE =====
+  // ===== NOM ENTREPRISE : grand arc presque complet =====
   if (business) {
     const text = business;
-    const radius = 266;
+    const gapStart = Math.PI * 0.40; // début de l'ouverture en bas
+    const gapEnd = Math.PI * 0.60;   // fin de l'ouverture en bas
 
-    // zone réservée en bas pour le téléphone
-    const gapStart = Math.PI * 0.35; // bas-droite
-    const gapEnd = Math.PI * 0.65;   // bas-gauche
-
-    // grand arc disponible = tout sauf petite ouverture du bas
     const startAngle = gapEnd;
     const endAngle = gapStart + Math.PI * 2;
     const availableArc = endAngle - startAngle;
@@ -270,11 +267,12 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
     for (; fontSize >= minFont; fontSize--) {
       ctx.font = `bold ${fontSize}px Arial`;
+
       const totalWidth = text.split("").reduce((sum, ch) => {
         return sum + ctx.measureText(ch).width;
       }, 0);
 
-      const estimatedArc = totalWidth / radius;
+      const estimatedArc = totalWidth / TEXT_RADIUS;
       if (estimatedArc <= availableArc * 0.92) {
         break;
       }
@@ -287,17 +285,17 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     const chars = text.split("");
     const widths = chars.map((ch) => ctx.measureText(ch).width);
     const totalWidth = widths.reduce((a, b) => a + b, 0);
-    const totalArc = totalWidth / radius;
+    const totalArc = totalWidth / TEXT_RADIUS;
 
     let angle = startAngle + (availableArc - totalArc) / 2;
 
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
-      const chArc = widths[i] / radius;
+      const chArc = widths[i] / TEXT_RADIUS;
       angle += chArc / 2;
 
-      const x = cx + Math.cos(angle) * radius;
-      const y = cy + Math.sin(angle) * radius;
+      const x = cx + Math.cos(angle) * TEXT_RADIUS;
+      const y = cy + Math.sin(angle) * TEXT_RADIUS;
 
       ctx.save();
       ctx.translate(x, y);
@@ -309,25 +307,25 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     }
   }
 
-  // ===== TÉLÉPHONE DANS LA PETITE OUVERTURE BASSE =====
+  // ===== NUMÉRO TÉLÉPHONE : petite ouverture basse, taille lisible =====
   if (phone) {
-    const text = `TEL ${phone}`;
-    const radius = 266;
-    const startAngle = Math.PI * 0.42;
-    const endAngle = Math.PI * 0.58;
+    const text = phone;
+    const startAngle = Math.PI * 0.43;
+    const endAngle = Math.PI * 0.57;
     const availableArc = endAngle - startAngle;
 
-    let fontSize = 28;
-    const minFont = 14;
+    let fontSize = 34; // taille proche de celle que tu préfères
+    const minFont = 18;
 
     for (; fontSize >= minFont; fontSize--) {
       ctx.font = `bold ${fontSize}px Arial`;
+
       const totalWidth = text.split("").reduce((sum, ch) => {
         return sum + ctx.measureText(ch).width;
       }, 0);
 
-      const estimatedArc = totalWidth / radius;
-      if (estimatedArc <= availableArc * 0.9) {
+      const estimatedArc = totalWidth / TEXT_RADIUS;
+      if (estimatedArc <= availableArc * 0.92) {
         break;
       }
     }
@@ -336,20 +334,20 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
     ctx.font = `bold ${fontSize}px Arial`;
 
-    const chars = text.split("");
+    const chars = text.split("").reverse();
     const widths = chars.map((ch) => ctx.measureText(ch).width);
     const totalWidth = widths.reduce((a, b) => a + b, 0);
-    const totalArc = totalWidth / radius;
+    const totalArc = totalWidth / TEXT_RADIUS;
 
     let angle = startAngle + (availableArc - totalArc) / 2;
 
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
-      const chArc = widths[i] / radius;
+      const chArc = widths[i] / TEXT_RADIUS;
       angle += chArc / 2;
 
-      const x = cx + Math.cos(angle) * radius;
-      const y = cy + Math.sin(angle) * radius;
+      const x = cx + Math.cos(angle) * TEXT_RADIUS;
+      const y = cy + Math.sin(angle) * TEXT_RADIUS;
 
       ctx.save();
       ctx.translate(x, y);
@@ -361,7 +359,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     }
   }
 
-  // Logo au centre
+  // ===== LOGO AU CENTRE =====
   if (logoBuffer && loadImage) {
     try {
       await drawCircularLogo(ctx, logoBuffer, cx, cy - 18, LOGO_SIZE);
@@ -373,7 +371,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     drawFallbackMonogram(ctx, profile, cx, cy - 18, 132);
   }
 
-  // Fonction sous le logo
+  // ===== FONCTION À L’INTÉRIEUR =====
   if (title) {
     ctx.fillStyle = STAMP_BLUE;
     ctx.font = title.length > 18 ? "bold 32px Arial" : "bold 40px Arial";
