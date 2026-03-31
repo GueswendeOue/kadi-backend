@@ -129,6 +129,90 @@ function drawFallbackMonogram(ctx, profile, cx, cy, r) {
   ctx.fillText(mono, cx, cy);
 }
 
+function drawArcText(
+  ctx,
+  text,
+  cx,
+  cy,
+  radius,
+  {
+    startAngle,
+    endAngle,
+    minFont = 18,
+    maxFont = 40,
+    fontFamily = "Arial",
+    fontWeight = "bold",
+    clockwise = true,
+  } = {}
+) {
+  const raw = String(text || "").trim();
+  if (!raw) return;
+
+  const chars = raw.split("");
+  if (!chars.length) return;
+
+  const totalArc = Math.abs(endAngle - startAngle);
+
+  // Ajuste la taille de police selon la longueur
+  let fontSize = maxFont;
+
+  for (; fontSize >= minFont; fontSize--) {
+    ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+
+    const totalWidth = chars.reduce((sum, ch) => {
+      return sum + ctx.measureText(ch).width;
+    }, 0);
+
+    // Approximation largeur -> angle sur cercle
+    const estimatedArc = totalWidth / radius;
+
+    if (estimatedArc <= totalArc * 0.9) {
+      break;
+    }
+  }
+
+  if (fontSize < minFont) {
+    fontSize = minFont;
+  }
+
+  ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  ctx.fillStyle = STAMP_BLUE;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const charWidths = chars.map((ch) => ctx.measureText(ch).width);
+  const totalWidth = charWidths.reduce((a, b) => a + b, 0);
+  const totalTextArc = totalWidth / radius;
+
+  const arcDirection = clockwise ? 1 : -1;
+  const midAngle = (startAngle + endAngle) / 2;
+
+  let currentAngle = midAngle - arcDirection * (totalTextArc / 2);
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const chArc = charWidths[i] / radius;
+    currentAngle += arcDirection * (chArc / 2);
+
+    const x = cx + Math.cos(currentAngle) * radius;
+    const y = cy + Math.sin(currentAngle) * radius;
+
+    ctx.save();
+    ctx.translate(x, y);
+
+    if (clockwise) {
+      ctx.rotate(currentAngle + Math.PI / 2);
+    } else {
+      ctx.rotate(currentAngle - Math.PI / 2);
+    }
+
+    ctx.fillText(ch, 0, 0);
+    ctx.restore();
+
+    currentAngle += arcDirection * (chArc / 2);
+  }
+}
+
 async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   if (!createCanvas) throw new Error("canvas non dispo");
 
@@ -141,9 +225,9 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const cx = size / 2;
   const cy = size / 2;
 
-  const R_OUTER = 305;
-  const R_INNER = 250;
-  const LOGO_SIZE = 335;
+  const R_OUTER = 290;
+  const R_INNER = 242;
+  const LOGO_SIZE = 340;
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
@@ -166,69 +250,41 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Texte circulaire haut : nom entreprise
-  if (business) {
-    const radius = 278;
-    const text = business.length > 34 ? business.slice(0, 34) : business;
-    const angleStep = Math.PI / (text.length + 6);
+  // Nom entreprise en haut
+  drawArcText(ctx, business, cx, cy, 266, {
+    startAngle: Math.PI * 1.18,
+    endAngle: Math.PI * 1.82,
+    minFont: 20,
+    maxFont: 38,
+    clockwise: true,
+  });
 
-    ctx.font = text.length > 24 ? "bold 30px Arial" : "bold 36px Arial";
+  // Téléphone en bas
+  drawArcText(ctx, phone, cx, cy, 266, {
+    startAngle: Math.PI * 0.18,
+    endAngle: Math.PI * 0.82,
+    minFont: 20,
+    maxFont: 34,
+    clockwise: false,
+  });
 
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      const angle = -Math.PI / 2 - (text.length / 2 - i) * angleStep;
-
-      ctx.save();
-      ctx.translate(
-        cx + Math.cos(angle) * radius,
-        cy + Math.sin(angle) * radius
-      );
-      ctx.rotate(angle + Math.PI / 2);
-      ctx.fillText(char, 0, 0);
-      ctx.restore();
-    }
-  }
-
-  // Texte circulaire bas : téléphone centré, dans le bon sens
-  if (phone) {
-    const radius = 278;
-    const text = phone;
-    const angleStep = Math.PI / (text.length + 10);
-
-    ctx.font = "bold 30px Arial";
-
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      const angle = Math.PI / 2 - (i - (text.length - 1) / 2) * angleStep;
-
-      ctx.save();
-      ctx.translate(
-        cx + Math.cos(angle) * radius,
-        cy + Math.sin(angle) * radius
-      );
-      ctx.rotate(angle - Math.PI / 2);
-      ctx.fillText(char, 0, 0);
-      ctx.restore();
-    }
-  }
-
-  // Logo au centre, plus grand
+  // Logo au centre
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, cx, cy - 28, LOGO_SIZE);
+      await drawCircularLogo(ctx, logoBuffer, cx, cy - 18, LOGO_SIZE);
     } catch (err) {
       console.warn("[STAMP] logo failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy - 28, 125);
+      drawFallbackMonogram(ctx, profile, cx, cy - 18, 132);
     }
   } else {
-    drawFallbackMonogram(ctx, profile, cx, cy - 28, 125);
+    drawFallbackMonogram(ctx, profile, cx, cy - 18, 132);
   }
 
-  // Fonction sous le logo, à l’intérieur
+  // Fonction sous le logo
   if (title) {
     ctx.fillStyle = STAMP_BLUE;
-    ctx.font = title.length > 18 ? "bold 34px Arial" : "bold 42px Arial";
-    ctx.fillText(title, cx, cy + 145);
+    ctx.font = title.length > 18 ? "bold 32px Arial" : "bold 40px Arial";
+    ctx.fillText(title, cx, cy + 142);
   }
 
   return canvas.toBuffer("image/png");
