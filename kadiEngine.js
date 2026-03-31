@@ -2881,8 +2881,35 @@ async function maybeSendOnboarding(from) {
 // ===============================
 // ADMIN handler + Commands
 // ===============================
-function ensureAdmin(waId) {
-  return ADMIN_WA_ID && waId === ADMIN_WA_ID;
+function ensureAdmin(identityInput) {
+  const adminWaIds = ["22670626055"];
+  const adminBsuids = [
+    // ajoute ici tes BSUID admin si Meta commence à les envoyer
+    // ex: "4:123456789012345"
+  ];
+  const adminUsernames = [
+    // optionnel plus tard
+    // ex: "kadi"
+  ];
+
+  const identity =
+    typeof identityInput === "string"
+      ? {
+          waId: String(identityInput).trim() || null,
+          bsuid: null,
+          username: null,
+        }
+      : {
+          waId: String(identityInput?.waId || identityInput?.wa_id || "").trim() || null,
+          bsuid: String(identityInput?.bsuid || "").trim() || null,
+          username: String(identityInput?.username || "").trim() || null,
+        };
+
+  if (identity.waId && adminWaIds.includes(identity.waId)) return true;
+  if (identity.bsuid && adminBsuids.includes(identity.bsuid)) return true;
+  if (identity.username && adminUsernames.includes(identity.username)) return true;
+
+  return false;
 }
 
 async function broadcastToAllKnownUsers(from, text) {
@@ -2957,8 +2984,11 @@ async function cancelBroadcastImage(from) {
   return true;
 }
 
-async function handleAdmin(from, text) {
-  if (!ensureAdmin(from)) return false;
+async function handleAdmin(identity, text) {
+  if (!ensureAdmin(identity)) return false;
+
+  const from = resolveOwnerKey(identity);
+  if (!from) return false;
 
   const lower = String(text || "").toLowerCase().trim();
 
@@ -2968,20 +2998,34 @@ async function handleAdmin(from, text) {
       await sendText(from, "❌ Format: ADMIN CREATE <nb_codes> <credits_par_code>");
       return true;
     }
+
     const nb = parseInt(match[1], 10);
     const credits = parseInt(match[2], 10);
 
     try {
-      const codes = await createRechargeCodes({ count: nb, creditsEach: credits, createdBy: from });
+      const codes = await createRechargeCodes({
+        count: nb,
+        creditsEach: credits,
+        createdBy: identity?.waId || identity?.bsuid || from,
+      });
+
       let response = `✅ ${nb} codes créés (${credits} crédits chacun):\n`;
       codes.forEach((c, i) => {
         response += `${i + 1}. ${c.code} (${c.credits} crédits)\n`;
       });
+
       await sendText(from, response);
     } catch (e) {
-      logger.error("admin_create_codes", e, { from, nb, credits });
+      logger.error("admin_create_codes", e, {
+        from,
+        waId: identity?.waId || null,
+        bsuid: identity?.bsuid || null,
+        nb,
+        credits,
+      });
       await sendText(from, "❌ Erreur création codes.");
     }
+
     return true;
   }
 
@@ -2991,6 +3035,7 @@ async function handleAdmin(from, text) {
       await sendText(from, "❌ Format: ADMIN ADD <wa_id> <credits>");
       return true;
     }
+
     const targetWaId = match[1];
     const credits = parseInt(match[2], 10);
 
@@ -3000,18 +3045,98 @@ async function handleAdmin(from, text) {
     }
 
     try {
-      await addCredits(targetWaId, credits, "admin_add");
-  const balRes = await getBalance(targetWaId);
-const newBalance = balRes?.balance || 0;
+      await addCredits(
+        { waId: targetWaId },
+        credits,
+        "admin_add",
+        null,
+        {
+          source: "admin_add",
+          adminWaId: identity?.waId || null,
+          adminBsuid: identity?.bsuid || null,
+        }
+      );
 
-await sendText(
-  from,
-  `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`
-);
+      const balRes = await getBalance({ waId: targetWaId });
+      const newBalance = balRes?.balance || 0;
+
+      await sendText(
+        from,
+        `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`
+      );
     } catch (e) {
-      logger.error("admin_add_credits", e, { from, targetWaId, credits });
+      logger.error("admin_add_credits", e, {
+        from,
+        adminWaId: identity?.waId || null,
+        adminBsuid: identity?.bsuid || null,
+        targetWaId,
+        credits,
+      });
       await sendText(from, "❌ Erreur lors de l'ajout de crédits.");
     }
+
+    return true;
+  }
+
+  if (lower.startsWith("/credit")) {
+    const parts = text.trim().split(/\s+/);
+    const amount = Number(parts[1]);
+
+    if (!amount || amount <= 0) {
+      await sendText(from, "❌ Format: /credit <montant>");
+      return true;
+    }
+
+    try {
+      const result = await addCredits(
+        {
+          waId: identity?.waId || null,
+          bsuid: identity?.bsuid || null,
+          username: identity?.username || null,
+        },
+        amount,
+        "admin_self_credit",
+        null,
+        {
+          source: "admin_self_credit",
+        }
+      );
+
+      await sendText(
+        from,
+        `✅ Crédit ajouté : +${amount}\n💳 Nouveau solde : ${result?.balance || 0}`
+      );
+    } catch (e) {
+      logger.error("admin_self_credit", e, {
+        from,
+        adminWaId: identity?.waId || null,
+        adminBsuid: identity?.bsuid || null,
+        amount,
+      });
+      await sendText(from, "❌ Erreur lors du rechargement admin.");
+    }
+
+    return true;
+  }
+
+  if (lower === "/balance" || lower === "admin balance") {
+    try {
+      const balRes = await getBalance({
+        waId: identity?.waId || null,
+        bsuid: identity?.bsuid || null,
+        username: identity?.username || null,
+      });
+
+      await sendText(from, `💳 Solde admin : ${balRes?.balance || 0} crédit(s)`);
+    } catch (e) {
+      logger.error("admin_balance", e, {
+        from,
+        adminWaId: identity?.waId || null,
+        adminBsuid: identity?.bsuid || null,
+      });
+      await sendText(from, "❌ Impossible de lire le solde.");
+    }
+
     return true;
   }
 
@@ -3035,6 +3160,8 @@ await sendText(
         "• /broadcasttemplateimage\n" +
         "• /broadcastcancel\n\n" +
         "💰 Crédits:\n" +
+        "• /credit <montant>\n" +
+        "• /balance\n" +
         "• ADMIN ADD <wa_id> <credits>\n\n" +
         "🎫 Codes:\n" +
         "• ADMIN CREATE <nb_codes> <credits_par_code>"
@@ -3042,7 +3169,6 @@ await sendText(
     return true;
   }
 
-  // Template broadcast sans nouvelle image
   if (lower === "/broadcasttemplate" || lower === "broadcasttemplate") {
     if (!kadiBroadcast?.broadcastTemplateToAll) {
       await sendText(from, "❌ Module broadcast template absent.");
@@ -3053,20 +3179,23 @@ await sendText(
 
     try {
       await kadiBroadcast.broadcastTemplateToAll({
-        adminWaId: from,
+        adminWaId: identity?.waId || from,
         templateName: "relance_utilisateur_kadi",
         language: "fr",
         audience: "all_known",
       });
     } catch (e) {
-      logger.error("admin_broadcast_template", e, { from });
+      logger.error("admin_broadcast_template", e, {
+        from,
+        adminWaId: identity?.waId || null,
+        adminBsuid: identity?.bsuid || null,
+      });
       await sendText(from, "❌ Erreur lors du broadcast template.");
     }
 
     return true;
   }
 
-  // Template broadcast avec nouvelle image envoyée ensuite
   if (lower === "/broadcasttemplateimage" || lower === "broadcasttemplateimage") {
     return prepareBroadcastImage(from, text);
   }
@@ -4167,7 +4296,7 @@ async function handleIncomingMessage(value) {
       }
 
       // 1) ADMIN d'abord
-      if (waId && (await handleAdmin(waId, text))) return;
+      if (await handleAdmin(identity, text)) return;
 
       // 2) Recharge code avant les flows
       const mCode = text.match(REGEX.code);
