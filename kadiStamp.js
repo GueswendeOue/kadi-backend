@@ -141,10 +141,11 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const cx = size / 2;
   const cy = size / 2;
 
-  const R_OUTER = 320;
-  const R_INNER = 275;
-  const LOGO_SIZE = 300;
+  const R_OUTER = 330;
+  const R_INNER = 270;
+  const LOGO_SIZE = 260;
 
+  const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
 
   ctx.strokeStyle = STAMP_BLUE;
@@ -152,38 +153,64 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // Cercle externe
-  ctx.lineWidth = 7;
+  // 🔵 Cercle externe épais
+  ctx.lineWidth = 8;
   ctx.beginPath();
   ctx.arc(cx, cy, R_OUTER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Cercle interne
+  // 🔵 Cercle interne
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Logo central légèrement remonté
-  if (logoBuffer && loadImage) {
-    try {
-      await drawCircularLogo(ctx, logoBuffer, cx, cy - 30, LOGO_SIZE);
-    } catch (err) {
-      console.warn("[STAMP] logo draw failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy - 30, 120);
+  // 🌀 TEXTE CIRCULAIRE (haut)
+  if (business) {
+    const radius = 300;
+    const text = business;
+    const angleStep = Math.PI / (text.length + 4);
+
+    ctx.font = "bold 36px Arial";
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const angle = -Math.PI / 2 - (text.length / 2 - i) * angleStep;
+
+      ctx.save();
+      ctx.translate(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillText(char, 0, 0);
+      ctx.restore();
     }
-  } else {
-    drawFallbackMonogram(ctx, profile, cx, cy - 30, 120);
   }
 
-  // Fonction sous le logo seulement si définie
+  // 🔵 Logo
+  if (logoBuffer && loadImage) {
+    try {
+      await drawCircularLogo(ctx, logoBuffer, cx, cy - 20, LOGO_SIZE);
+    } catch (err) {
+      console.warn("[STAMP] logo failed:", err?.message);
+      drawFallbackMonogram(ctx, profile, cx, cy - 20, 110);
+    }
+  } else {
+    drawFallbackMonogram(ctx, profile, cx, cy - 20, 110);
+  }
+
+  // 🧾 Fonction (bas)
   if (title) {
-    ctx.fillStyle = STAMP_BLUE;
-    ctx.font = "bold 48px Arial";
+    ctx.font = "bold 44px Arial";
     ctx.fillText(title, cx, cy + 150);
   }
 
   return canvas.toBuffer("image/png");
+}
+
+const country = safe(profile?.country);
+
+if (country) {
+  ctx.font = "28px Arial";
+  ctx.fillText(country.toUpperCase(), cx, cy + 200);
 }
 
 function getUploadedStampPngBuffer(profile) {

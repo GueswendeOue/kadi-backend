@@ -3,253 +3,210 @@
 const crypto = require("crypto");
 const { supabase } = require("./supabaseClient");
 
-// (Optionnel) catalogue de coûts si tu utilises consumeFeature() ailleurs
-// ⚠️ Le pricing réel est géré côté kadiEngine (base + tampon + ocr + décharge)
 const CREDIT_COSTS = {
   pdf: 1,
   ocr_pdf: 2,
-  decharge: 2,
+  decharge_pdf: 2,
   stamp_addon: 15,
-  stamp_logo:15,
+  stamp_logo: 15,
 };
-
-function makeCode() {
-  // ex: KDI-AB12-CD34
-  const raw = crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 chars
-  return `KDI-${raw.slice(0, 4)}-${raw.slice(4, 8)}`;
-}
 
 function toInt(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? Math.trunc(x) : def;
 }
 
-async function ensureRow(waId) {
-  // garantit qu'une ligne existe
-  const { error } = await supabase
-    .from("kadi_credits")
-    .upsert({ wa_id: waId, balance: 0 }, { onConflict: "wa_id" });
-
-  if (error) throw error;
+function cleanText(v) {
+  const s = String(v || "").trim();
+  return s || null;
 }
 
-async function getBalance(waId) {
+function normalizeIdentity(input) {
+  if (typeof input === "string") {
+    return {
+      waId: cleanText(input),
+      bsuid: null,
+      username: null,
+      parentBsuid: null,
+      profileName: null,
+    };
+  }
+
+  const src = input || {};
+  return {
+    waId: cleanText(src.waId || src.wa_id),
+    bsuid: cleanText(src.bsuid),
+    username: cleanText(src.username),
+    parentBsuid: cleanText(src.parentBsuid || src.parent_bsuid),
+    profileName: cleanText(src.profileName || src.profile_name),
+  };
+}
+
+function ensureOperationKey(operationKey, prefix = "op") {
+  const clean = cleanText(operationKey);
+  return clean || `${prefix}:${crypto.randomUUID()}`;
+}
+
+async function resolveProfile(identityInput) {
+  const identity = normalizeIdentity(identityInput);
+
+  const { data, error } = await supabase.rpc("kadi_resolve_profile_v2", {
+    p_wa_id: identity.waId,
+    p_bsuid: identity.bsuid,
+    p_username: identity.username,
+    p_parent_bsuid: identity.parentBsuid,
+    p_profile_name: identity.profileName,
+  });
+
+  if (error) throw error;
+
+  return {
+    profileId: data?.profile_id || null,
+    waId: data?.wa_id || identity.waId || null,
+    bsuid: data?.bsuid || identity.bsuid || null,
+    username: data?.username || identity.username || null,
+  };
+}
+
+async function getBalance(identityInput) {
+  const resolved = await resolveProfile(identityInput);
+
   const { data, error } = await supabase
-    .from("kadi_credits")
-    .select("balance")
-    .eq("wa_id", waId)
+    .from("kadi_wallets")
+    .select("balance, profile_id")
+    .eq("profile_id", resolved.profileId)
     .maybeSingle();
 
   if (error) throw error;
 
-  if (!data) {
-    await ensureRow(waId);
-    return 0;
-  }
-
-  return toInt(data.balance, 0);
+  return {
+    ok: true,
+    profileId: resolved.profileId,
+    balance: toInt(data?.balance, 0),
+  };
 }
 
-async function consumeCredit(waId, amount = 1, reason = "pdf") {
-  const cleanWaId = String(waId || "").trim();
-  const amt = toInt(amount, 1);
-  const cleanReason = String(reason || "consume");
-
-  if (!cleanWaId) throw new Error("waId invalid");
-  if (!Number.isFinite(amt) || amt <= 0) throw new Error("amount invalid");
-
-  // 1) Essai RPC (recommandé)
-  try {
-    const { data, error } = await supabase.rpc("kadi_consume_credits", {
-      p_wa_id: cleanWaId,
-      p_amount: amt,
-      p_reason: cleanReason,
-    });
-
-    if (error) {
-      console.error("[consumeCredit] rpc error:", error.message, {
-        waId: cleanWaId,
-        amount: amt,
-        reason: cleanReason,
-      });
-    } else if (data && typeof data === "object") {
-      return {
-        ok: !!data.ok,
-        balance: toInt(data.balance, 0),
-      };
-    } else {
-      console.warn("[consumeCredit] rpc returned unexpected payload:", data);
-    }
-  } catch (err) {
-    console.error("[consumeCredit] rpc failed:", err?.message, {
-      waId: cleanWaId,
-      amount: amt,
-      reason: cleanReason,
-    });
-  }
-
-  // 2) Fallback non atomique (moins safe)
-  await ensureRow(cleanWaId);
-
-  const current = await getBalance(cleanWaId);
-  if (current < amt) {
-    return { ok: false, balance: current };
-  }
-
-  const next = current - amt;
-
-  const { error: e1 } = await supabase
-    .from("kadi_credits")
-    .upsert({ wa_id: cleanWaId, balance: next }, { onConflict: "wa_id" });
-
-  if (e1) {
-    console.error("[consumeCredit] fallback wallet update failed:", e1.message, {
-      waId: cleanWaId,
-      current,
-      next,
-      amount: amt,
-      reason: cleanReason,
-    });
-    throw e1;
-  }
-
-  const { error: e2 } = await supabase.from("kadi_credit_tx").insert({
-    wa_id: cleanWaId,
-    delta: -amt,
-    reason: cleanReason,
-  });
-
-  if (e2) {
-    console.error("[consumeCredit] fallback tx insert failed:", e2.message, {
-      waId: cleanWaId,
-      current,
-      next,
-      amount: amt,
-      reason: cleanReason,
-    });
-    throw e2;
-  }
-
-  console.log("[consumeCredit] fallback ok", {
-    waId: cleanWaId,
-    before: current,
-    delta: -amt,
-    after: next,
-    reason: cleanReason,
-  });
-
-  return { ok: true, balance: next };
-}
-
-async function addCredits(waId, amount, reason = "admin") {
-  const cleanWaId = String(waId || "").trim();
+async function consumeCredit(
+  identityInput,
+  amount = 1,
+  reason = "pdf",
+  operationKey = null,
+  meta = {}
+) {
+  const identity = normalizeIdentity(identityInput);
   const amt = toInt(amount, 0);
-  const cleanReason = String(reason || "add");
+  const cleanReason = cleanText(reason) || "consume";
+  const opKey = ensureOperationKey(operationKey, `consume:${cleanReason}`);
 
-  if (!cleanWaId) throw new Error("waId invalid");
-  if (!Number.isFinite(amt) || amt <= 0) throw new Error("amount invalid");
-
-  // 1) Essai RPC (recommandé)
-  try {
-    const { data, error } = await supabase.rpc("kadi_add_credits", {
-      p_wa_id: cleanWaId,
-      p_amount: amt,
-      p_reason: cleanReason,
-    });
-
-    if (error) {
-      console.error("[addCredits] rpc error:", error.message, {
-        waId: cleanWaId,
-        amount: amt,
-        reason: cleanReason,
-      });
-    } else if (data != null) {
-      const next = toInt(data, 0);
-
-      console.log("[addCredits] rpc ok", {
-        waId: cleanWaId,
-        delta: amt,
-        after: next,
-        reason: cleanReason,
-      });
-
-      return next;
-    } else {
-      console.warn("[addCredits] rpc returned unexpected payload:", data);
-    }
-  } catch (err) {
-    console.error("[addCredits] rpc failed:", err?.message, {
-      waId: cleanWaId,
-      amount: amt,
-      reason: cleanReason,
-    });
+  if (amt <= 0) throw new Error("amount invalid");
+  if (!identity.waId && !identity.bsuid && !identity.username) {
+    throw new Error("identity invalid");
   }
 
-  // 2) Fallback non atomique (moins safe)
-  await ensureRow(cleanWaId);
-
-  const current = await getBalance(cleanWaId);
-  const next = current + amt;
-
-  const { error: e1 } = await supabase
-    .from("kadi_credits")
-    .upsert({ wa_id: cleanWaId, balance: next }, { onConflict: "wa_id" });
-
-  if (e1) {
-    console.error("[addCredits] fallback wallet update failed:", e1.message, {
-      waId: cleanWaId,
-      current,
-      next,
-      amount: amt,
-      reason: cleanReason,
-    });
-    throw e1;
-  }
-
-  const { error: e2 } = await supabase.from("kadi_credit_tx").insert({
-    wa_id: cleanWaId,
-    delta: amt,
-    reason: cleanReason,
+  const { data, error } = await supabase.rpc("kadi_consume_credits_v2", {
+    p_wa_id: identity.waId,
+    p_bsuid: identity.bsuid,
+    p_username: identity.username,
+    p_parent_bsuid: identity.parentBsuid,
+    p_profile_name: identity.profileName,
+    p_amount: amt,
+    p_reason: cleanReason,
+    p_operation_key: opKey,
+    p_meta: meta || {},
   });
 
-  if (e2) {
-    console.error("[addCredits] fallback tx insert failed:", e2.message, {
-      waId: cleanWaId,
-      current,
-      next,
+  if (error) {
+    console.error("[consumeCredit:v2] rpc error:", error.message, {
+      identity,
       amount: amt,
       reason: cleanReason,
+      operationKey: opKey,
     });
-    throw e2;
+    throw error;
   }
 
-  console.log("[addCredits] fallback ok", {
-    waId: cleanWaId,
-    before: current,
-    delta: amt,
-    after: next,
-    reason: cleanReason,
-  });
-
-  return next;
+  return {
+    ok: !!data?.ok,
+    balance: toInt(data?.balance, 0),
+    profileId: data?.profile_id || null,
+    idempotent: !!data?.idempotent,
+    operationKey: opKey,
+  };
 }
 
-/**
- * ✅ Consommer une feature par nom (optionnel)
- * ex: consumeFeature(waId, "stamp_addon")
- */
-async function consumeFeature(waId, featureKey = "pdf") {
+async function addCredits(
+  identityInput,
+  amount,
+  reason = "admin",
+  operationKey = null,
+  meta = {}
+) {
+  const identity = normalizeIdentity(identityInput);
+  const amt = toInt(amount, 0);
+  const cleanReason = cleanText(reason) || "add";
+  const opKey = ensureOperationKey(operationKey, `add:${cleanReason}`);
+
+  if (amt <= 0) throw new Error("amount invalid");
+  if (!identity.waId && !identity.bsuid && !identity.username) {
+    throw new Error("identity invalid");
+  }
+
+  const { data, error } = await supabase.rpc("kadi_add_credits_v2", {
+    p_wa_id: identity.waId,
+    p_bsuid: identity.bsuid,
+    p_username: identity.username,
+    p_parent_bsuid: identity.parentBsuid,
+    p_profile_name: identity.profileName,
+    p_amount: amt,
+    p_reason: cleanReason,
+    p_operation_key: opKey,
+    p_meta: meta || {},
+  });
+
+  if (error) {
+    console.error("[addCredits:v2] rpc error:", error.message, {
+      identity,
+      amount: amt,
+      reason: cleanReason,
+      operationKey: opKey,
+    });
+    throw error;
+  }
+
+  return {
+    ok: !!data?.ok,
+    balance: toInt(data?.balance, 0),
+    profileId: data?.profile_id || null,
+    idempotent: !!data?.idempotent,
+    operationKey: opKey,
+  };
+}
+
+async function consumeFeature(
+  identityInput,
+  featureKey = "pdf",
+  operationKey = null,
+  meta = {}
+) {
   const key = String(featureKey || "pdf").toLowerCase();
   const cost = CREDIT_COSTS[key];
+
   if (!cost) throw new Error(`Unknown featureKey: ${featureKey}`);
-  return consumeCredit(waId, cost, key);
+
+  const opKey = ensureOperationKey(operationKey, `feature:${key}`);
+
+  return consumeCredit(identityInput, cost, key, opKey, {
+    featureKey: key,
+    cost,
+    ...meta,
+  });
 }
 
-/**
- * ✅ createRechargeCodes compatible 2 signatures:
- * - createRechargeCodes({ count, creditsEach, createdBy })
- * - createRechargeCodes(count, creditsEach, createdBy)
- */
+function makeCode() {
+  const raw = crypto.randomBytes(4).toString("hex").toUpperCase();
+  return `KDI-${raw.slice(0, 4)}-${raw.slice(4, 8)}`;
+}
+
 async function createRechargeCodes(arg1, arg2, arg3) {
   let count, creditsEach, createdBy;
 
@@ -284,32 +241,44 @@ async function createRechargeCodes(arg1, arg2, arg3) {
   return data || [];
 }
 
-async function redeemCode({ waId, code }) {
-  const clean = String(code || "").trim().toUpperCase();
+async function redeemCode(identityInput, code) {
+  const identity = normalizeIdentity(identityInput);
+  const cleanCode = String(code || "").trim().toUpperCase();
 
-  const { data, error } = await supabase
-    .from("kadi_recharge_codes")
-    .select("*")
-    .eq("code", clean)
-    .maybeSingle();
+  if (!cleanCode) throw new Error("code invalid");
+  if (!identity.waId && !identity.bsuid && !identity.username) {
+    throw new Error("identity invalid");
+  }
 
-  if (error) throw error;
-  if (!data) return { ok: false, error: "CODE_INVALIDE" };
-  if (data.redeemed_at) return { ok: false, error: "CODE_DEJA_UTILISE" };
+  const { data, error } = await supabase.rpc("kadi_redeem_code_v2", {
+    p_code: cleanCode,
+    p_wa_id: identity.waId,
+    p_bsuid: identity.bsuid,
+    p_username: identity.username,
+    p_parent_bsuid: identity.parentBsuid,
+    p_profile_name: identity.profileName,
+  });
 
-  const { error: e2 } = await supabase
-    .from("kadi_recharge_codes")
-    .update({ redeemed_at: new Date().toISOString(), redeemed_by: waId })
-    .eq("code", clean);
+  if (error) {
+    console.error("[redeemCode:v2] rpc error:", error.message, {
+      identity,
+      code: cleanCode,
+    });
+    throw error;
+  }
 
-  if (e2) throw e2;
-
-  const newBal = await addCredits(waId, data.credits, "code_redeem");
-  return { ok: true, added: data.credits, balance: newBal };
+  return {
+    ok: !!data?.ok,
+    error: data?.error || null,
+    added: toInt(data?.added, 0),
+    balance: toInt(data?.balance, 0),
+    idempotent: !!data?.idempotent,
+  };
 }
 
 module.exports = {
   CREDIT_COSTS,
+  resolveProfile,
   getBalance,
   addCredits,
   consumeCredit,

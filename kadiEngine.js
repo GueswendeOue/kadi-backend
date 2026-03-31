@@ -57,6 +57,7 @@ if (process.env.KADI_DEBUG_PDF_MODULE === "1") {
 const { analyzeSmartBlock } = require("./kadiSmartAnalyzer");
 const { parseNaturalWhatsAppMessage } = require("./kadiNaturalParser");
 const { logLearningEvent } = require("./kadiLearningLogger");
+const crypto = require("crypto");
 
 const {
   detectDechargeType,
@@ -1616,7 +1617,9 @@ async function handleLogoImage(from, msg) {
 // Credits
 // ===============================
 async function replyBalance(from) {
-  const bal = await getBalance(from);
+  const balRes = await getBalance(from);
+  const bal = balRes?.balance || 0;
+
   await sendText(
     from,
     `💳 *Votre solde KADI* : ${bal} crédit(s)\n\n` +
@@ -2521,13 +2524,34 @@ async function createAndSendPdf(from) {
       ? "decharge_pdf"
       : "pdf";
 
+  // idempotence métier
+  draft.requestId = draft.requestId || crypto.randomUUID();
+
+  const consumeOperationKey = `pdf:consume:${draft.requestId}`;
+  const duplicateRollbackOperationKey = `pdf:duplicate:${draft.requestId}`;
+  const failedRollbackOperationKey = `pdf:rollback:${draft.requestId}`;
+
   s.isGeneratingPdf = true;
 
   let debited = false;
   let successAfterDebit = false;
+  let finalBalance = 0;
+  let duplicateDoc = false;
 
   try {
-    const cons = await consumeCredit(from, cost, reason);
+    const cons = await consumeCredit(
+      { waId: from },
+      cost,
+      reason,
+      consumeOperationKey,
+      {
+        requestId: draft.requestId,
+        docType: draft.type || null,
+        docNumber: draft.docNumber || null,
+        factureKind: draft.factureKind || null,
+        source: draft.source || null,
+      }
+    );
 
     if (!cons.ok) {
       await sendText(
@@ -2538,6 +2562,7 @@ async function createAndSendPdf(from) {
     }
 
     debited = true;
+    finalBalance = cons.balance;
 
     const computedFinance = computeFinance(draft);
     draft.finance = {
@@ -2603,6 +2628,7 @@ async function createAndSendPdf(from) {
       usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
       usedGeminiParse: !!draft?.meta?.usedGeminiParse,
       businessSector: draft?.meta?.businessSector || null,
+      requestId: draft.requestId,
     });
 
     draft.status = "generated";
@@ -2617,9 +2643,6 @@ async function createAndSendPdf(from) {
     if (!up?.id) {
       throw new Error("Upload PDF échoué");
     }
-
-    let duplicateDoc = false;
-    let refundedBalance = cons.balance;
 
     try {
       const saved = await saveDocument({ waId: from, doc: draft });
@@ -2636,12 +2659,24 @@ async function createAndSendPdf(from) {
         duplicateDoc = true;
         draft.savedDocumentId = "duplicate";
 
-        // remboursement car même document déjà enregistré
         try {
-          refundedBalance = await addCredits(from, cost, "rollback_duplicate_doc");
+          const rb = await addCredits(
+            { waId: from },
+            cost,
+            "rollback_duplicate_doc",
+            duplicateRollbackOperationKey,
+            {
+              requestId: draft.requestId,
+              docType: draft.type || null,
+              docNumber: draft.docNumber || null,
+              factureKind: draft.factureKind || null,
+            }
+          );
+
+          finalBalance = rb.balance;
         } catch (rb) {
           console.error("rollback duplicate doc failed:", rb?.message);
-          refundedBalance = cons.balance;
+          finalBalance = cons.balance;
         }
       } else {
         throw e;
@@ -2654,8 +2689,8 @@ async function createAndSendPdf(from) {
     draft.savedPdfMediaId = up.id;
     draft.savedPdfFilename = fileName;
     draft.savedPdfCaption = duplicateDoc
-      ? `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nℹ️ Ce document avait déjà été généré.\nAucun crédit supplémentaire n’a été consommé.\nSolde: ${refundedBalance} crédit(s)`
-      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${cost} crédit(s)\nSolde: ${cons.balance} crédit(s)`;
+      ? `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nℹ️ Ce document avait déjà été généré.\nAucun crédit supplémentaire n’a été consommé.\nSolde: ${finalBalance} crédit(s)`
+      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${cost} crédit(s)\nSolde: ${finalBalance} crédit(s)`;
 
     await sendDocument({
       to: from,
@@ -2664,14 +2699,30 @@ async function createAndSendPdf(from) {
       caption: draft.savedPdfCaption,
     });
 
-    s.step = "doc_already_generated";
-    await sendAlreadyGeneratedMenu(from);
+    if (duplicateDoc) {
+      s.step = "doc_already_generated";
+      await sendAlreadyGeneratedMenu(from);
+    } else {
+      s.step = "doc_generated";
+      await sendGeneratedSuccessMenu(from);
+    }
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
     if (debited && !successAfterDebit) {
       try {
-        await addCredits(from, cost, "rollback_pdf_failed");
+        await addCredits(
+          { waId: from },
+          cost,
+          "rollback_pdf_failed",
+          failedRollbackOperationKey,
+          {
+            requestId: draft.requestId,
+            docType: draft.type || null,
+            docNumber: draft.docNumber || null,
+            factureKind: draft.factureKind || null,
+          }
+        );
       } catch (rb) {
         console.error("rollback credits failed:", rb?.message);
       }
@@ -2686,15 +2737,33 @@ async function createAndSendPdf(from) {
 
 // --- UI / Messages ---
 
+function buildGeneratedSuccessMessage() {
+  return (
+    "✅ Document généré avec succès.\n\n" +
+    "Que voulez-vous faire maintenant ?"
+  );
+}
+
 function buildAlreadyGeneratedMessage() {
   return (
-    "📄 *Ce document a déjà été généré.*\n\n" +
-    "Vous pouvez le recevoir à nouveau gratuitement ou le modifier."
+    "📄 Ce document a déjà été généré.\n\n" +
+    "Aucun crédit supplémentaire ne sera consommé.\n\n" +
+    "Que voulez-vous faire ?"
   );
 }
 
 
 // --- Menus ---
+
+async function sendGeneratedSuccessMenu(to) {
+  const text = buildGeneratedSuccessMessage();
+
+  await sendButtons(to, text, [
+    { id: "DOC_RESEND_LAST_PDF", title: "📄 Recevoir" },
+    { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+    { id: "DOC_CANCEL", title: "🏠 Menu" },
+  ]);
+}
 
 async function sendAlreadyGeneratedMenu(to) {
   const text = buildAlreadyGeneratedMessage();
@@ -2725,16 +2794,18 @@ async function ensureWelcomeCredits(waId) {
     }
 
     // Si l'utilisateur a déjà un solde positif, on ne redonne pas
-    const bal = await getBalance(waId);
-    if (Number(bal || 0) > 0) {
-      _WELCOME_CACHE.set(waId, Date.now());
+  const balRes = await getBalance(waId);
+const bal = balRes?.balance || 0;
 
-      try {
-        await updateProfile(waId, { welcome_credits_granted: true });
-      } catch (_) {}
+if (bal > 0) {
+  _WELCOME_CACHE.set(waId, Date.now());
 
-      return;
-    }
+  try {
+    await updateProfile(waId, { welcome_credits_granted: true });
+  } catch (_) {}
+
+  return;
+}
 
     // Donne les crédits UNE seule fois
     await addCredits(waId, WELCOME_CREDITS, "welcome");
@@ -2907,8 +2978,13 @@ async function handleAdmin(from, text) {
 
     try {
       await addCredits(targetWaId, credits, "admin_add");
-      const newBalance = await getBalance(targetWaId);
-      await sendText(from, `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`);
+  const balRes = await getBalance(targetWaId);
+const newBalance = balRes?.balance || 0;
+
+await sendText(
+  from,
+  `✅ ${credits} crédits ajoutés à ${targetWaId}\nNouveau solde: ${newBalance}`
+);
     } catch (e) {
       logger.error("admin_add_credits", e, { from, targetWaId, credits });
       await sendText(from, "❌ Erreur lors de l'ajout de crédits.");
@@ -3695,7 +3771,12 @@ async function handleInteractiveReply(from, replyId) {
     }
 
     if (p?.stamp_paid !== true) {
-      const res = await consumeFeature(from, "stamp_addon");
+      const res = await consumeFeature(
+        { waId: from },
+        "stamp_addon",
+        `stamp:addon:${from}`,
+        { feature: "stamp_addon" }
+      );
 
       if (!res?.ok) {
         await sendText(
@@ -3857,7 +3938,6 @@ async function handleInteractiveReply(from, replyId) {
       return;
     }
 
-    // ✅ Si déjà généré, on propose le menu premium
     if (draft.savedDocumentId || draft.savedPdfMediaId) {
       s.step = "doc_already_generated";
       await sendAlreadyGeneratedMenu(from);
@@ -3882,7 +3962,7 @@ async function handleInteractiveReply(from, replyId) {
 
   if (replyId === "DOC_CANCEL") {
     resetDraftSession(s);
-    await sendText(from, "❌ Annulé.");
+    await sendText(from, "✅ Retour au menu.");
     return sendHomeMenu(from);
   }
 
@@ -3900,7 +3980,7 @@ async function handleInteractiveReply(from, replyId) {
       filename: draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
       caption:
         draft.savedPdfCaption ||
-        "✅ Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
+        "📄 Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
     });
 
     s.step = "doc_already_generated";
@@ -3912,59 +3992,38 @@ async function handleInteractiveReply(from, replyId) {
     const draft = s.lastDocDraft;
 
     if (!draft) {
-      await sendText(from, "❌ Aucun document à corriger.");
+      await sendText(from, "❌ Aucun document à modifier.");
       return;
     }
 
-    // ✅ Comme il s'agit d'une version modifiée, on repart sur une nouvelle génération
+    // On garde le contenu métier, mais on remet à zéro l’ancienne génération
     draft.savedDocumentId = null;
     draft.savedPdfMediaId = null;
     draft.savedPdfFilename = null;
     draft.savedPdfCaption = null;
-    draft.docNumber = null;
     draft.status = "draft";
+
+    // Nouvelle génération = nouveau débit = nouvelle clé idempotente
+    draft.requestId = null;
 
     s.step = "doc_review";
 
     await sendText(
       from,
-      "✏️ D’accord. Vous pouvez corriger ce document maintenant.\nUne nouvelle génération sera faite après vos modifications."
+      "✏️ *Mode modification activé.*\n\n" +
+        "Vous pouvez corriger puis régénérer le document.\n" +
+        "Chaque nouvelle génération consommera le coût normal du document."
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
       { id: "DOC_ADD_MORE", title: "➕ Modifier" },
-      { id: "DOC_CONFIRM", title: "📄 Regénérer" },
+      { id: "DOC_CONFIRM", title: "📄 Régénérer" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
     return;
   }
 
   await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
-}
-
-async function tryHandleDechargeConfirmation(from, text) {
-  if (String(text || "").trim().toLowerCase() !== "confirmer") return false;
-
-  // ⚠️ V1 simple:
-  // ici on ne cherche pas encore dans toute la base.
-  // On suppose qu'on retrouvera la décharge via kadiRepo plus tard.
-  // Pour l'instant, on enregistre seulement un message utile.
-  await sendText(
-    from,
-    "✅ Votre confirmation a été reçue.\nSi une décharge KADI vous a été envoyée, elle peut maintenant être finalisée."
-  );
-
-  const p = await getOrCreateProfile(from);
-  const isFirstTime = !p?.onboarding_done;
-  const kadiWaLink = `https://wa.me/${process.env.KADI_E164 || "22679239027"}`;
-
-  const followup = buildPostConfirmationMessage({
-    isFirstTime,
-    kadiWaLink,
-  });
-
-  await sendText(from, followup);
-  return true;
 }
 
 async function handleIncomingMessage(value) {
@@ -4090,7 +4149,7 @@ async function handleIncomingMessage(value) {
       // 2) Recharge code avant les flows
       const mCode = text.match(REGEX.code);
       if (mCode) {
-        const result = await redeemCode({ waId: from, code: mCode[1] });
+        const result = await redeemCode({ waId: from }, mCode[1]);
         if (!result.ok) {
           if (result.error === "CODE_DEJA_UTILISE") {
             return sendText(from, "❌ Code déjà utilisé.");
