@@ -203,14 +203,13 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     ctx.fillText(title, cx, cy + 150);
   }
 
+  const country = safe(profile?.country);
+  if (country) {
+    ctx.font = "28px Arial";
+    ctx.fillText(country.toUpperCase(), cx, cy + 205);
+  }
+
   return canvas.toBuffer("image/png");
-}
-
-const country = safe(profile?.country);
-
-if (country) {
-  ctx.font = "28px Arial";
-  ctx.fillText(country.toUpperCase(), cx, cy + 200);
 }
 
 function getUploadedStampPngBuffer(profile) {
