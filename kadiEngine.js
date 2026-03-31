@@ -21,8 +21,10 @@ let kadiSignature = null;
 
 try {
   kadiStamp = require("./kadiStamp");
+  console.log("✅ kadiStamp module loaded");
 } catch (e) {
-  console.warn("⚠️ kadiStamp module not found, stamp will be skipped");
+  console.warn("⚠️ kadiStamp load failed:", e?.message);
+  console.warn(e?.stack);
 }
 try {
   kadiSignature = require("./kadiSignature");
