@@ -1219,6 +1219,27 @@ async function tryHandleNaturalMessage(from, text) {
   return false;
 }
 
+async function tryHandleDechargeConfirmation(from, text) {
+  if (String(text || "").trim().toLowerCase() !== "confirmer") return false;
+
+  await sendText(
+    from,
+    "✅ Votre confirmation a été reçue.\nSi une décharge KADI vous a été envoyée, elle peut maintenant être finalisée."
+  );
+
+  const p = await getOrCreateProfile(from);
+  const isFirstTime = !p?.onboarding_done;
+  const kadiWaLink = `https://wa.me/${process.env.KADI_E164 || "22679239027"}`;
+
+  const followup = buildPostConfirmationMessage({
+    isFirstTime,
+    kadiWaLink,
+  });
+
+  await sendText(from, followup);
+  return true;
+}
+
 async function handleSmartItemsBlockText(from, text) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
