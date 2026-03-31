@@ -143,35 +143,40 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   const R_OUTER = 330;
   const R_INNER = 270;
-  const LOGO_SIZE = 260;
+  const LOGO_SIZE = 250;
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
+  const city = safe(profile?.city);
+  const country = safe(profile?.country);
+  const phone = safe(profile?.phone);
+
+  const locationLine = [city, country].filter(Boolean).join(" - ").toUpperCase();
 
   ctx.strokeStyle = STAMP_BLUE;
   ctx.fillStyle = STAMP_BLUE;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  // 🔵 Cercle externe épais
+  // Cercle externe
   ctx.lineWidth = 8;
   ctx.beginPath();
   ctx.arc(cx, cy, R_OUTER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // 🔵 Cercle interne
+  // Cercle interne
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(cx, cy, R_INNER, 0, Math.PI * 2);
   ctx.stroke();
 
-  // 🌀 TEXTE CIRCULAIRE (haut)
+  // Nom entreprise en arc en haut
   if (business) {
     const radius = 300;
-    const text = business;
+    const text = business.length > 30 ? business.slice(0, 30) : business;
     const angleStep = Math.PI / (text.length + 4);
 
-    ctx.font = "bold 36px Arial";
+    ctx.font = text.length > 22 ? "bold 30px Arial" : "bold 36px Arial";
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
@@ -185,28 +190,37 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     }
   }
 
-  // 🔵 Logo
+  // Logo au centre
   if (logoBuffer && loadImage) {
     try {
-      await drawCircularLogo(ctx, logoBuffer, cx, cy - 20, LOGO_SIZE);
+      await drawCircularLogo(ctx, logoBuffer, cx, cy - 25, LOGO_SIZE);
     } catch (err) {
       console.warn("[STAMP] logo failed:", err?.message);
-      drawFallbackMonogram(ctx, profile, cx, cy - 20, 110);
+      drawFallbackMonogram(ctx, profile, cx, cy - 25, 105);
     }
   } else {
-    drawFallbackMonogram(ctx, profile, cx, cy - 20, 110);
+    drawFallbackMonogram(ctx, profile, cx, cy - 25, 105);
   }
 
-  // 🧾 Fonction (bas)
+  // Fonction
   if (title) {
-    ctx.font = "bold 44px Arial";
-    ctx.fillText(title, cx, cy + 150);
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = title.length > 18 ? "bold 34px Arial" : "bold 42px Arial";
+    ctx.fillText(title, cx, cy + 140);
   }
 
-  const country = safe(profile?.country);
-  if (country) {
-    ctx.font = "28px Arial";
-    ctx.fillText(country.toUpperCase(), cx, cy + 205);
+  // Ville + pays
+  if (locationLine) {
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = "24px Arial";
+    ctx.fillText(locationLine, cx, cy + 190);
+  }
+
+  // Téléphone
+  if (phone) {
+    ctx.fillStyle = STAMP_BLUE;
+    ctx.font = "24px Arial";
+    ctx.fillText(phone, cx, cy + 225);
   }
 
   return canvas.toBuffer("image/png");
