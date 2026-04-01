@@ -1797,24 +1797,31 @@ async function handleStampFlow(from, text) {
   const s = getSession(from);
   if (!s) return false;
 
-  const t = text.trim();
+  const t = String(text || "").trim();
+  if (!t) return false;
 
-  // 🎯 STEP: fonction du tampon
-  if (s.step === "stamp_function") {
-    if (t === "0") {
-      s.stampProfile = s.stampProfile || {};
-      s.stampProfile.title = "";
-    } else {
-      s.stampProfile = s.stampProfile || {};
-      s.stampProfile.title = t.slice(0, 40);
-    }
+  // 🔥 accepte plusieurs noms de step (safe)
+  if (
+    s.step === "stamp_title" ||
+    s.step === "stamp_function" ||
+    s.step === "stamp_role"
+  ) {
+    const value = t === "0" ? "" : t.slice(0, 40);
+
+    await updateProfile(from, {
+      stamp_title: value || null,
+    });
 
     s.step = null;
 
-    await sendText(from,
-      `✅ Fonction enregistrée : *${s.stampProfile.title || "Aucune"}*\n\nTapez MENU pour continuer.`
+    await sendText(
+      from,
+      value
+        ? `✅ Fonction enregistrée : *${value}*`
+        : "✅ Fonction du tampon effacée."
     );
 
+    await sendStampMenu(from);
     return true;
   }
 
