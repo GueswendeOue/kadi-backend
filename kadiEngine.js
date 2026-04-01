@@ -1484,6 +1484,7 @@ async function sendStampMenu(to) {
     { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },
     { id: "STAMP_EDIT_TITLE", title: "Fonction" },
     { id: "STAMP_MORE", title: "Position/Taille" },
+    { id: "BACK_HOME", title: "Menu" },
   ]);
 }
 
