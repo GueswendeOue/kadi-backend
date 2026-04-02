@@ -228,7 +228,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const R_OUTER = 292;
   const R_INNER = 244;
   const TEXT_RADIUS = 268;
-  const LOGO_SIZE = 330;
+  const LOGO_SIZE = 320;
 
   const business = safe(profile?.business_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
@@ -240,7 +240,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   ctx.textBaseline = "middle";
 
   // Cercle externe
-  ctx.lineWidth = 8;
+  ctx.lineWidth = 9;
   ctx.beginPath();
   ctx.arc(cx, cy, R_OUTER, 0, Math.PI * 2);
   ctx.stroke();
@@ -309,12 +309,12 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   // ===== TÉLÉPHONE DANS L’ARC BAS =====
   if (phone) {
     const text = phone.split("").reverse().join("");
-    const startAngle = Math.PI * 0.435;
-    const endAngle = Math.PI * 0.565;
+    const startAngle = Math.PI * 0.445;
+    const endAngle = Math.PI * 0.575;
     const availableArc = endAngle - startAngle;
 
-    let fontSize = 34;
-    const minFont = 18;
+    let fontSize = 38;
+    const minFont = 20;
 
     for (; fontSize >= minFont; fontSize--) {
       ctx.font = `bold ${fontSize}px Arial`;
