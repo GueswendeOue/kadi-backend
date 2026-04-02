@@ -71,7 +71,6 @@ app.post(
     },
   }),
   (req, res) => {
-    // répondre immédiatement à Meta
     res.status(200).send("EVENT_RECEIVED");
 
     try {
@@ -87,24 +86,22 @@ app.post(
           const value = change.value;
           if (!value) continue;
 
-          // 1) Traiter les statuts WhatsApp
           const statuses = extractStatusesFromWebhookValue(value);
           if (statuses.length) {
             Promise.resolve(handleIncomingStatuses(statuses)).catch((e) => {
-              console.error("💥 handleIncomingStatuses error:", e.message);
+              console.error("💥 handleIncomingStatuses error:", e);
             });
           }
 
-          // 2) Traiter les messages entrants
           if (value.messages?.length) {
             Promise.resolve(handleIncomingMessage(value)).catch((e) => {
-              console.error("💥 handleIncomingMessage error:", e.message);
+              console.error("💥 handleIncomingMessage error:", e);
             });
           }
         }
       }
     } catch (e) {
-      console.error("💥 Webhook fatal error:", e.message);
+      console.error("💥 Webhook fatal error:", e);
     }
   }
 );
@@ -117,18 +114,22 @@ app.listen(PORT, () => {
       `⏱ Devis follow-up worker started (every ${FOLLOWUP_INTERVAL_MS} ms, batch ${FOLLOWUP_BATCH_SIZE})`
     );
 
-    // petit premier tick au démarrage
-    setTimeout(() => {
-      processDevisFollowups(FOLLOWUP_BATCH_SIZE).catch((e) => {
-        console.error("💥 processDevisFollowups startup error:", e.message);
-      });
+    setTimeout(async () => {
+      try {
+        const sent = await processDevisFollowups(FOLLOWUP_BATCH_SIZE);
+        console.log(`✅ processDevisFollowups startup ok: ${sent} followup(s) sent`);
+      } catch (e) {
+        console.error("💥 processDevisFollowups startup error FULL:", e);
+      }
     }, 15000);
 
-    // boucle régulière
-    setInterval(() => {
-      processDevisFollowups(FOLLOWUP_BATCH_SIZE).catch((e) => {
-        console.error("💥 processDevisFollowups interval error:", e.message);
-      });
+    setInterval(async () => {
+      try {
+        const sent = await processDevisFollowups(FOLLOWUP_BATCH_SIZE);
+        console.log(`✅ processDevisFollowups interval ok: ${sent} followup(s) sent`);
+      } catch (e) {
+        console.error("💥 processDevisFollowups interval error FULL:", e);
+      }
     }, FOLLOWUP_INTERVAL_MS);
   } else {
     console.warn("⚠️ processDevisFollowups is not available from kadiEngine");
