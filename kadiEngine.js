@@ -1979,6 +1979,20 @@ function resetDraftSession(s) {
   s.broadcastCaption = null;
 }
 
+async function sendReceiptFormatMenu(to) {
+  const text =
+    "🧾 *Reçu*\n\n" +
+    "Quel format voulez-vous ?\n\n" +
+    "• 🧾 Ticket → petit format, facile à envoyer\n" +
+    "• 📄 A4 → format professionnel complet";
+
+  await sendButtons(to, text, [
+    { id: "RECEIPT_FORMAT_COMPACT", title: "🧾 Ticket" },
+    { id: "RECEIPT_FORMAT_A4", title: "📄 A4" },
+    { id: "BACK_DOCS", title: "🔙 Retour" },
+  ]);
+}
+
 async function startDocFlow(from, mode, factureKind = null) {
   const s = getSession(from);
 
@@ -2023,19 +2037,10 @@ async function startDocFlow(from, mode, factureKind = null) {
       ? "📝 Devis"
       : "🧾 Reçu";
 
-  // Cas spécial : reçu → demander le format d'abord
+  // Cas spécial : reçu → demander le format avec boutons
   if (modeNorm === "reçu" || modeNorm === "recu") {
     s.step = "receipt_format";
-
-    await sendText(
-      from,
-      `${title}\n\n` +
-        `Quel format voulez-vous ?\n\n` +
-        `• RAPIDE → facile à partager sur WhatsApp\n` +
-        `• PRO → version A4 plus formelle\n\n` +
-        `Répondez : RAPIDE ou PRO`
-    );
-    return;
+    return sendReceiptFormatMenu(from);
   }
 
   s.step = "doc_client";
@@ -4214,6 +4219,39 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_DOCS") return sendDocsMenu(from);
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+  if (replyId === "RECEIPT_FORMAT_COMPACT") {
+  if (!s.lastDocDraft) {
+    await sendText(from, "❌ Aucun document en cours.");
+    return;
+  }
+
+  s.lastDocDraft.receiptFormat = "compact";
+  s.step = "doc_client";
+
+  await sendText(from, "🧾 Format ticket sélectionné.");
+  await sendText(
+    from,
+    `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
+  );
+  return;
+}
+
+if (replyId === "RECEIPT_FORMAT_A4") {
+  if (!s.lastDocDraft) {
+    await sendText(from, "❌ Aucun document en cours.");
+    return;
+  }
+
+  s.lastDocDraft.receiptFormat = "a4";
+  s.step = "doc_client";
+
+  await sendText(from, "📄 Format A4 sélectionné.");
+  await sendText(
+    from,
+    `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
+  );
+  return;
+}
 
   const followupFacture = replyId.match(/^FOLLOWUP_FACTURE_(.+)$/);
   if (followupFacture) {
