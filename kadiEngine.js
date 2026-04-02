@@ -15,6 +15,8 @@ const logger = {
     console.log(`[KADI/METRIC/${name}] ${duration}ms`, { success, ...meta }),
 };
 
+const { supabase } = require("./supabaseClient");
+
 // ================= Optional modules (Tampon/Signature/Broadcast) =================
 let kadiStamp = null;
 let kadiSignature = null;
