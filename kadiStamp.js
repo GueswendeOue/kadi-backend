@@ -308,52 +308,52 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
 
   // ===== TÉLÉPHONE DANS L’ARC BAS =====
   if (phone) {
-    const text = phone.split("").reverse().join("");
-    const startAngle = Math.PI * 0.445;
-    const endAngle = Math.PI * 0.575;
-    const availableArc = endAngle - startAngle;
+const text = phone.split("").reverse().join("");
 
-    let fontSize = 44;
-    const minFont = 24;
+// arc un peu plus large
+const startAngle = Math.PI * 0.44;
+const endAngle = Math.PI * 0.60;
+const availableArc = endAngle - startAngle;
 
-    for (; fontSize >= minFont; fontSize--) {
-      ctx.font = `bold ${fontSize}px Arial`;
+let fontSize = 48; // 👈 plus grand
+const minFont = 28;
 
-      const totalWidth = text.split("").reduce((sum, ch) => {
-        return sum + ctx.measureText(ch).width;
-      }, 0);
+for (; fontSize >= minFont; fontSize--) {
+  ctx.font = `bold ${fontSize}px Arial`;
 
-      const estimatedArc = totalWidth / TEXT_RADIUS;
-      if (estimatedArc <= availableArc * 0.94) break;
-    }
+  const totalWidth = text.split("").reduce((sum, ch) => {
+    return sum + ctx.measureText(ch).width;
+  }, 0);
 
-    if (fontSize < minFont) fontSize = minFont;
+  const estimatedArc = totalWidth / TEXT_RADIUS;
+  if (estimatedArc <= availableArc * 0.95) break;
+}
 
-    ctx.font = `bold ${fontSize}px Arial`;
+ctx.font = `bold ${fontSize}px Arial`;
 
-    const chars = text.split("");
-    const widths = chars.map((ch) => ctx.measureText(ch).width);
-    const totalWidth = widths.reduce((a, b) => a + b, 0);
-    const totalArc = totalWidth / TEXT_RADIUS;
+const chars = text.split("");
+const widths = chars.map((ch) => ctx.measureText(ch).width);
+const totalWidth = widths.reduce((a, b) => a + b, 0);
+const totalArc = totalWidth / TEXT_RADIUS;
 
-    let angle = startAngle + (availableArc - totalArc) / 2;
+let angle = startAngle + (availableArc - totalArc) / 2;
 
-    for (let i = 0; i < chars.length; i++) {
-      const ch = chars[i];
-      const chArc = widths[i] / TEXT_RADIUS;
-      angle += chArc / 2;
+for (let i = 0; i < chars.length; i++) {
+  const ch = chars[i];
+  const chArc = widths[i] / TEXT_RADIUS;
+  angle += chArc / 2;
 
-      const x = cx + Math.cos(angle) * TEXT_RADIUS;
-      const y = cy + Math.sin(angle) * TEXT_RADIUS;
+  const x = cx + Math.cos(angle) * TEXT_RADIUS;
+  const y = cy + Math.sin(angle) * TEXT_RADIUS;
 
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(angle - Math.PI / 2);
-      ctx.fillText(ch, 0, 0);
-      ctx.restore();
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle - Math.PI / 2);
+  ctx.fillText(ch, 0, 0);
+  ctx.restore();
 
-      angle += chArc / 2;
-    }
+  angle += chArc / 2;
+}
   }
 
   // ===== LOGO AU CENTRE =====
