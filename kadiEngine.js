@@ -2946,7 +2946,6 @@ function buildGeneratedSuccessMessage() {
 function buildAlreadyGeneratedMessage() {
   return (
     "📄 Ce document a déjà été généré.\n\n" +
-    "Aucun crédit supplémentaire ne sera consommé.\n\n" +
     "Que voulez-vous faire ?"
   );
 }
@@ -2958,7 +2957,7 @@ async function sendGeneratedSuccessMenu(to) {
   const text = buildGeneratedSuccessMessage();
 
   await sendButtons(to, text, [
-    { id: "DOC_RESEND_LAST_PDF", title: "📄 Recevoir" },
+    { id: "DOC_RESTART", title: "📤 Nouveau doc" },
     { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
     { id: "DOC_CANCEL", title: "🏠 Menu" },
   ]);
@@ -2968,7 +2967,7 @@ async function sendAlreadyGeneratedMenu(to) {
   const text = buildAlreadyGeneratedMessage();
 
   await sendButtons(to, text, [
-    { id: "DOC_RESEND_LAST_PDF", title: "📄 Recevoir" },
+    { id: "DOC_RESTART", title: "📤 Nouveau doc" },
     { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
     { id: "DOC_CANCEL", title: "🏠 Menu" },
   ]);
