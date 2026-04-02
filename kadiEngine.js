@@ -94,6 +94,197 @@ function makeDraftMeta(overrides = {}) {
   };
 }
 
+function cloneDraftToNewDocType(draft, targetType) {
+  if (!draft) return null;
+
+  const clonedItems = Array.isArray(draft.items)
+    ? draft.items.map((it) => ({ ...it }))
+    : [];
+
+  const next = {
+    ...draft,
+    type: targetType,
+    factureKind: targetType === "facture" ? "definitive" : null,
+    docNumber: null,
+    savedDocumentId: null,
+    savedPdfMediaId: null,
+    savedPdfFilename: null,
+    savedPdfCaption: null,
+    requestId: null,
+    status: "draft",
+    source: draft.source || "product",
+    items: clonedItems,
+    finance: clonedItems.length
+      ? computeFinance({ items: clonedItems })
+      : draft.finance || null,
+    meta: makeDraftMeta({
+      ...(draft.meta || {}),
+      convertedFromType: draft.type || null,
+      convertedAt: new Date().toISOString(),
+    }),
+  };
+
+  if (targetType === "recu") {
+    next.receiptFormat = draft.receiptFormat || "a4";
+  } else {
+    delete next.receiptFormat;
+  }
+
+  return next;
+}
+
+async function createDevisFollowup({ waId, documentId, docNumber, sourceDoc, dueAt }) {
+  const { error } = await supabase.from("kadi_devis_followups").insert({
+    wa_id: waId,
+    document_id: documentId || null,
+    doc_number: docNumber,
+    source_doc: sourceDoc || null,
+    due_at: new Date(dueAt).toISOString(),
+    status: "pending",
+    attempts: 0,
+    postponed_count: 0,
+  });
+
+  if (error) throw error;
+}
+
+async function markDevisFollowupSent(id) {
+  const { error } = await supabase
+    .from("kadi_devis_followups")
+    .update({
+      status: "sent",
+      sent_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+async function postponeDevisFollowup(id, hours = 24) {
+  const { data, error: readError } = await supabase
+    .from("kadi_devis_followups")
+    .select("postponed_count")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (readError) throw readError;
+
+  const { error } = await supabase
+    .from("kadi_devis_followups")
+    .update({
+      status: "pending",
+      due_at: new Date(Date.now() + hours * 60 * 60 * 1000).toISOString(),
+      postponed_count: Number(data?.postponed_count || 0) + 1,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+async function markDevisFollowupConverted(id, convertedTo) {
+  const { error } = await supabase
+    .from("kadi_devis_followups")
+    .update({
+      status: "converted",
+      converted_to: convertedTo,
+      converted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+async function markDevisFollowupDismissed(id) {
+  const { error } = await supabase
+    .from("kadi_devis_followups")
+    .update({
+      status: "dismissed",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+async function getDueDevisFollowups(limit = 20) {
+  const { data, error } = await supabase
+    .from("kadi_devis_followups")
+    .select("*")
+    .eq("status", "pending")
+    .lte("due_at", new Date().toISOString())
+    .order("due_at", { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function sendDevisFollowupMessage(row) {
+  const text =
+    `📄 Votre devis ${row.doc_number} est prêt depuis 24h.\n\n` +
+    `Avez-vous conclu avec le client ?\n\n` +
+    `Vous pouvez maintenant le transformer rapidement en :\n` +
+    `• Facture\n• Reçu`;
+
+  await sendButtons(row.wa_id, text, [
+    { id: `FOLLOWUP_FACTURE_${row.id}`, title: "📄 Faire facture" },
+    { id: `FOLLOWUP_RECU_${row.id}`, title: "🧾 Faire reçu" },
+    { id: `FOLLOWUP_LATER_${row.id}`, title: "⏳ Plus tard" },
+  ]);
+}
+
+async function processDevisFollowups(limit = 20) {
+  const rows = await getDueDevisFollowups(limit);
+  if (!rows.length) return 0;
+
+  let sent = 0;
+
+  for (const row of rows) {
+    try {
+      await sendDevisFollowupMessage(row);
+
+      const { error } = await supabase
+        .from("kadi_devis_followups")
+        .update({
+          status: "sent",
+          sent_at: new Date().toISOString(),
+          attempts: Number(row.attempts || 0) + 1,
+          updated_at: new Date().toISOString(),
+          last_error: null,
+        })
+        .eq("id", row.id);
+
+      if (error) throw error;
+      sent += 1;
+    } catch (e) {
+      await supabase
+        .from("kadi_devis_followups")
+        .update({
+          last_error: String(e?.message || e || "unknown_error"),
+          attempts: Number(row.attempts || 0) + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id);
+    }
+  }
+
+  return sent;
+}
+
+async function getDevisFollowupById(id) {
+  const { data, error } = await supabase
+    .from("kadi_devis_followups")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 // ================= Supabase Storage =================
 const {
   uploadLogoBuffer,
@@ -2892,6 +3083,26 @@ async function createAndSendPdf(from) {
       caption: draft.savedPdfCaption,
     });
 
+    if (draft.type === "devis" && !duplicateDoc) {
+      try {
+        await createDevisFollowup({
+          waId: from,
+          documentId: draft.savedDocumentId,
+          docNumber: draft.docNumber,
+          sourceDoc: {
+            client: draft.client || null,
+            items: draft.items || [],
+            finance: draft.finance || null,
+            date: draft.date || null,
+            source: draft.source || null,
+          },
+          dueAt: Date.now() + 24 * 60 * 60 * 1000,
+        });
+      } catch (e) {
+        console.warn("followup create error:", e?.message);
+      }
+    }
+
     resetStampChoice(s);
 
     if (duplicateDoc) {
@@ -2936,16 +3147,16 @@ async function createAndSendPdf(from) {
 
 // --- UI / Messages ---
 
-function buildGeneratedSuccessMessage() {
+function buildGeneratedSuccessMessage(draft = null) {
   return (
-    "✅ Document généré avec succès.\n\n" +
+    `✅ ${draft?.type === "devis" ? "Devis" : "Document"} généré avec succès.\n\n` +
     "Que voulez-vous faire maintenant ?"
   );
 }
 
-function buildAlreadyGeneratedMessage() {
+function buildAlreadyGeneratedMessage(draft = null) {
   return (
-    "📄 Ce document a déjà été généré.\n\n" +
+    `📄 ${draft?.type === "devis" ? "Ce devis" : "Ce document"} a déjà été généré.\n\n` +
     "Que voulez-vous faire ?"
   );
 }
@@ -2954,7 +3165,9 @@ function buildAlreadyGeneratedMessage() {
 // --- Menus ---
 
 async function sendGeneratedSuccessMenu(to) {
-  const text = buildGeneratedSuccessMessage();
+  const s = getSession(to);
+  const draft = s?.lastDocDraft || null;
+  const text = buildGeneratedSuccessMessage(draft);
 
   await sendButtons(to, text, [
     { id: "DOC_RESTART", title: "📤 Nouveau doc" },
@@ -2964,7 +3177,9 @@ async function sendGeneratedSuccessMenu(to) {
 }
 
 async function sendAlreadyGeneratedMenu(to) {
-  const text = buildAlreadyGeneratedMessage();
+  const s = getSession(to);
+  const draft = s?.lastDocDraft || null;
+  const text = buildAlreadyGeneratedMessage(draft);
 
   await sendButtons(to, text, [
     { id: "DOC_RESTART", title: "📤 Nouveau doc" },
@@ -4000,6 +4215,94 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
+  const followupFacture = replyId.match(/^FOLLOWUP_FACTURE_(.+)$/);
+  if (followupFacture) {
+    const followupId = followupFacture[1];
+    const row = await getDevisFollowupById(followupId);
+
+    if (!row || !row.source_doc) {
+      await sendText(from, "❌ Devis introuvable.");
+      return;
+    }
+
+    s.lastDocDraft = cloneDraftToNewDocType(
+      {
+        type: "devis",
+        factureKind: null,
+        docNumber: row.doc_number,
+        date: row.source_doc?.date || formatDateISO(),
+        client: row.source_doc?.client || null,
+        items: row.source_doc?.items || [],
+        finance: row.source_doc?.finance || null,
+        source: row.source_doc?.source || "product",
+        meta: makeDraftMeta(),
+      },
+      "facture"
+    );
+
+    s.step = "doc_review";
+
+    await markDevisFollowupConverted(followupId, "facture");
+
+    await sendText(from, "✅ J’ai repris votre devis pour créer une facture.");
+
+    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(s.lastDocDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    return sendPreviewMenu(from);
+  }
+
+  const followupRecu = replyId.match(/^FOLLOWUP_RECU_(.+)$/);
+  if (followupRecu) {
+    const followupId = followupRecu[1];
+    const row = await getDevisFollowupById(followupId);
+
+    if (!row || !row.source_doc) {
+      await sendText(from, "❌ Devis introuvable.");
+      return;
+    }
+
+    s.lastDocDraft = cloneDraftToNewDocType(
+      {
+        type: "devis",
+        factureKind: null,
+        docNumber: row.doc_number,
+        date: row.source_doc?.date || formatDateISO(),
+        client: row.source_doc?.client || null,
+        items: row.source_doc?.items || [],
+        finance: row.source_doc?.finance || null,
+        source: row.source_doc?.source || "product",
+        meta: makeDraftMeta(),
+      },
+      "recu"
+    );
+
+    s.step = "doc_review";
+
+    await markDevisFollowupConverted(followupId, "recu");
+
+    await sendText(from, "✅ J’ai repris votre devis pour créer un reçu.");
+
+    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(s.lastDocDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    return sendPreviewMenu(from);
+  }
+
+  const followupLater = replyId.match(/^FOLLOWUP_LATER_(.+)$/);
+  if (followupLater) {
+    const followupId = followupLater[1];
+    await postponeDevisFollowup(followupId, 24);
+    await sendText(from, "⏳ D’accord, je vous le rappellerai dans 24h.");
+    return;
+  }
+
   if (
     replyId === "SMARTBLOCK_DEVIS" ||
     replyId === "SMARTBLOCK_FACTURE" ||
@@ -4603,4 +4906,5 @@ module.exports = {
   handleIncomingStatuses,
   isValidWhatsAppId,
   isValidEmail,
+  processDevisFollowups,
 };

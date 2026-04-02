@@ -11,6 +11,7 @@ const {
 const {
   handleIncomingMessage,
   handleIncomingStatuses,
+  processDevisFollowups,
 } = require("./kadiEngine");
 
 console.log("🟢 KADI booting...");
@@ -27,6 +28,13 @@ console.log("ENV CHECK:", {
 const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
+
+const FOLLOWUP_INTERVAL_MS = Number(
+  process.env.KADI_DEVIS_FOLLOWUP_INTERVAL_MS || 5 * 60 * 1000
+);
+const FOLLOWUP_BATCH_SIZE = Number(
+  process.env.KADI_DEVIS_FOLLOWUP_BATCH_SIZE || 20
+);
 
 // Standard parsing
 app.use(express.urlencoded({ extended: true }));
@@ -103,4 +111,26 @@ app.post(
 
 app.listen(PORT, () => {
   console.log("🚀 KADI server listening on", PORT);
+
+  if (typeof processDevisFollowups === "function") {
+    console.log(
+      `⏱ Devis follow-up worker started (every ${FOLLOWUP_INTERVAL_MS} ms, batch ${FOLLOWUP_BATCH_SIZE})`
+    );
+
+    // petit premier tick au démarrage
+    setTimeout(() => {
+      processDevisFollowups(FOLLOWUP_BATCH_SIZE).catch((e) => {
+        console.error("💥 processDevisFollowups startup error:", e.message);
+      });
+    }, 15000);
+
+    // boucle régulière
+    setInterval(() => {
+      processDevisFollowups(FOLLOWUP_BATCH_SIZE).catch((e) => {
+        console.error("💥 processDevisFollowups interval error:", e.message);
+      });
+    }, FOLLOWUP_INTERVAL_MS);
+  } else {
+    console.warn("⚠️ processDevisFollowups is not available from kadiEngine");
+  }
 });
