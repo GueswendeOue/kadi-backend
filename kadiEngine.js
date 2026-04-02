@@ -321,6 +321,39 @@ function computeBasePdfCost(draft) {
 function formatBaseCostLine(cost) {
   return `💳 Coût: *${cost} crédit(s)*`;
 }
+function hasStampProfileReady(profile) {
+  return !!(
+    safe(profile?.business_name) &&
+    safe(profile?.phone) &&
+    safe(profile?.stamp_title)
+  );
+}
+
+function resetStampChoice(session) {
+  session.addStampForNextDoc = false;
+  session.stampMode = null;
+}
+
+function buildPreGenerateStampMessage() {
+  return (
+    "📄 Votre document est prêt à être généré.\n\n" +
+    "✨ Ajouter un tampon professionnel ?\n" +
+    "✔️ Rend votre document plus crédible\n" +
+    "✔️ Donne une image professionnelle\n" +
+    "💳 Coût du tampon sur ce document : *1 crédit*"
+  );
+}
+
+async function sendPreGenerateStampMenu(to) {
+  const text = buildPreGenerateStampMessage();
+
+  return sendButtons(to, text, [
+    { id: "PRESTAMP_ADD_ONCE", title: "🟦 Ajouter tampon" },
+    { id: "PRESTAMP_SKIP", title: "⚪ Sans tampon" },
+    { id: "PROFILE_STAMP", title: "💎 Tampon illimité" },
+  ]);
+}
+
 
 // ===============================
 // User locks (anti-concurrence)
@@ -1505,7 +1538,7 @@ async function sendAfterProductMenu(to) {
 
 async function sendPreviewMenu(to) {
   return sendButtons(to, "✅ Valider le document ?", [
-    { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
+    { id: "DOC_CONFIRM", title: "✅ Continuer" },
     { id: "DOC_ADD_MORE", title: "➕ Nouveau produit" },
     { id: "DOC_CANCEL", title: "❌ Annuler" },
   ]);
@@ -2619,6 +2652,8 @@ async function createAndSendPdf(from) {
     savedDocumentId: draft?.savedDocumentId || null,
     savedPdfMediaId: draft?.savedPdfMediaId || null,
     isGeneratingPdf: !!s.isGeneratingPdf,
+    addStampForNextDoc: !!s.addStampForNextDoc,
+    stampMode: s.stampMode || null,
   });
 
   if (!draft) {
@@ -2626,13 +2661,11 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  // Anti double clic
   if (s.isGeneratingPdf) {
     await sendText(from, "⏳ Génération déjà en cours... veuillez patienter.");
     return;
   }
 
-  // Si déjà généré dans la session, proposer un choix UX
   if (draft.savedDocumentId || draft.savedPdfMediaId) {
     s.step = "doc_already_generated";
     await sendAlreadyGeneratedMenu(from);
@@ -2652,15 +2685,14 @@ async function createAndSendPdf(from) {
     return;
   }
 
-  const cost = computeBasePdfCost(draft);
-  const reason =
+  const baseCost = computeBasePdfCost(draft);
+  const baseReason =
     draft.source === "ocr"
       ? "ocr_pdf"
       : draft.type === "decharge"
       ? "decharge_pdf"
       : "pdf";
 
-  // idempotence métier
   draft.requestId = draft.requestId || crypto.randomUUID();
 
   const consumeOperationKey = `pdf:consume:${draft.requestId}`;
@@ -2675,10 +2707,24 @@ async function createAndSendPdf(from) {
   let duplicateDoc = false;
 
   try {
+    const profile = await getOrCreateProfile(from);
+
+    const usePaidStamp =
+      profile?.stamp_enabled === true && profile?.stamp_paid === true;
+
+    const useOneTimeStamp =
+      s.addStampForNextDoc === true &&
+      s.stampMode === "one_time" &&
+      profile?.stamp_paid !== true;
+
+    const stampExtraCost = useOneTimeStamp ? 1 : 0;
+    const totalCost = baseCost + stampExtraCost;
+    const finalReason = useOneTimeStamp ? `${baseReason}_stamp_once` : baseReason;
+
     const cons = await consumeCredit(
       { waId: from },
-      cost,
-      reason,
+      totalCost,
+      finalReason,
       consumeOperationKey,
       {
         requestId: draft.requestId,
@@ -2686,13 +2732,17 @@ async function createAndSendPdf(from) {
         docNumber: draft.docNumber || null,
         factureKind: draft.factureKind || null,
         source: draft.source || null,
+        baseCost,
+        stampExtraCost,
+        usePaidStamp,
+        useOneTimeStamp,
       }
     );
 
     if (!cons.ok) {
       await sendText(
         from,
-        `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${cost} crédit(s).\n👉 Tapez RECHARGE.`
+        `❌ Solde insuffisant.\nVous avez ${cons.balance} crédit(s).\nCe document coûte ${totalCost} crédit(s).\n👉 Tapez RECHARGE.`
       );
       return;
     }
@@ -2714,8 +2764,6 @@ async function createAndSendPdf(from) {
         dateISO: draft.date,
       });
     }
-
-    const profile = await getOrCreateProfile(from);
 
     let logoBuf = null;
     if (profile?.logo_path) {
@@ -2756,15 +2804,25 @@ async function createAndSendPdf(from) {
       logoBuffer: logoBuf,
     });
 
-    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, profile, logoBuf);
+    const stampProfile =
+      usePaidStamp || useOneTimeStamp
+        ? {
+            ...profile,
+            stamp_enabled: true,
+            stamp_paid: true,
+          }
+        : profile;
+
+    pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, stampProfile, logoBuf);
 
     draft.meta = makeDraftMeta({
       ...(draft.meta || {}),
-      creditsConsumed: cost,
-      usedStamp: !!(profile?.stamp_enabled === true && profile?.stamp_paid === true),
+      creditsConsumed: totalCost,
+      usedStamp: !!(usePaidStamp || useOneTimeStamp),
       usedGeminiParse: !!draft?.meta?.usedGeminiParse,
       businessSector: draft?.meta?.businessSector || null,
       requestId: draft.requestId,
+      stampMode: usePaidStamp ? "unlimited" : useOneTimeStamp ? "one_time" : "none",
     });
 
     draft.status = "generated";
@@ -2798,7 +2856,7 @@ async function createAndSendPdf(from) {
         try {
           const rb = await addCredits(
             { waId: from },
-            cost,
+            totalCost,
             "rollback_duplicate_doc",
             duplicateRollbackOperationKey,
             {
@@ -2821,12 +2879,11 @@ async function createAndSendPdf(from) {
 
     successAfterDebit = true;
 
-    // Conserver les infos pour renvoi gratuit
     draft.savedPdfMediaId = up.id;
     draft.savedPdfFilename = fileName;
     draft.savedPdfCaption = duplicateDoc
       ? `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nℹ️ Ce document avait déjà été généré.\nAucun crédit supplémentaire n’a été consommé.\nSolde: ${finalBalance} crédit(s)`
-      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${cost} crédit(s)\nSolde: ${finalBalance} crédit(s)`;
+      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${totalCost} crédit(s)\nSolde: ${finalBalance} crédit(s)`;
 
     await sendDocument({
       to: from,
@@ -2834,6 +2891,8 @@ async function createAndSendPdf(from) {
       filename: draft.savedPdfFilename,
       caption: draft.savedPdfCaption,
     });
+
+    resetStampChoice(s);
 
     if (duplicateDoc) {
       s.step = "doc_already_generated";
@@ -2847,9 +2906,13 @@ async function createAndSendPdf(from) {
 
     if (debited && !successAfterDebit) {
       try {
+        const stampExtraCost =
+          s.addStampForNextDoc === true && s.stampMode === "one_time" ? 1 : 0;
+        const totalCost = baseCost + stampExtraCost;
+
         await addCredits(
           { waId: from },
-          cost,
+          totalCost,
           "rollback_pdf_failed",
           failedRollbackOperationKey,
           {
@@ -3938,97 +4001,6 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
-  // ===============================
-  // Recharge / packs
-  // ===============================
-  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
-
-  if (replyId === "CREDITS_RECHARGE") {
-    return replyRechargeInfo(from);
-  }
-
-  const offer = getRechargeOfferById(replyId);
-  if (offer) {
-    s.step = "recharge_payment_choice";
-    s.pendingRechargePack = offer.id;
-    s.pendingRechargeAmount = offer.amountFcfa;
-    return sendRechargePaymentMenu(from, offer);
-  }
-
-  if (replyId.startsWith("PAY_MM_")) {
-    const amount = Number(replyId.replace("PAY_MM_", ""));
-    const offers = Object.values(getRechargeOffers());
-    const selected = offers.find((x) => x.amountFcfa === amount);
-
-    if (!selected) {
-      await sendText(from, "❌ Pack introuvable.");
-      return sendRechargePacksMenu(from);
-    }
-
-    s.step = "recharge_proof";
-    s.pendingRechargePack = selected.id;
-    s.pendingRechargeAmount = selected.amountFcfa;
-
-    const lines = [
-      `💳 *${selected.label}*`,
-      ``,
-      `✅ Orange Money`,
-      `📌 Numéro : *${OM_NUMBER}*`,
-      `👤 Nom : *${OM_NAME}*`,
-      `💰 Montant : *${selected.amountFcfa}F*`,
-      ``,
-      `📦 Vous recevrez :`,
-      `• ${selected.credits} crédits`,
-    ];
-
-    if (selected.includesStamp) {
-      lines.push(`• Tampon professionnel OFFERT 🎁`);
-    }
-
-    lines.push(
-      "",
-      "📎 Après paiement, envoyez ici votre *preuve* (capture d'écran)."
-    );
-
-    await sendText(from, lines.join("\n"));
-    return;
-  }
-
-  if (replyId.startsWith("PAY_CODE_")) {
-    const amount = Number(replyId.replace("PAY_CODE_", ""));
-    const offers = Object.values(getRechargeOffers());
-    const selected = offers.find((x) => x.amountFcfa === amount);
-
-    if (!selected) {
-      await sendText(from, "❌ Pack introuvable.");
-      return sendRechargePacksMenu(from);
-    }
-
-    s.step = "recharge_code";
-    s.pendingRechargePack = selected.id;
-    s.pendingRechargeAmount = selected.amountFcfa;
-
-    const lines = [
-      `🎫 *${selected.label}*`,
-      ``,
-      `Envoyez votre code recharge au format :`,
-      `*CODE KDI-XXXX-XXXX*`,
-      ``,
-      `📦 Ce pack contient :`,
-      `• ${selected.credits} crédits`,
-    ];
-
-    if (selected.includesStamp) {
-      lines.push(`• Tampon professionnel OFFERT 🎁`);
-    }
-
-    await sendText(from, lines.join("\n"));
-    return;
-  }
-
-  // ===============================
-  // Smart block
-  // ===============================
   if (
     replyId === "SMARTBLOCK_DEVIS" ||
     replyId === "SMARTBLOCK_FACTURE" ||
@@ -4218,6 +4190,9 @@ async function handleInteractiveReply(from, replyId) {
     return sendStampMenu(from);
   }
 
+  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
+  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
+
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
@@ -4301,8 +4276,63 @@ async function handleInteractiveReply(from, replyId) {
       return;
     }
 
-    draft._saving = true;
+    const p = await getOrCreateProfile(from);
 
+    if (p?.stamp_paid === true && p?.stamp_enabled === true) {
+      resetStampChoice(s);
+
+      draft._saving = true;
+      try {
+        await createAndSendPdf(from);
+        return;
+      } finally {
+        draft._saving = false;
+      }
+    }
+
+    await sendPreGenerateStampMenu(from);
+    return;
+  }
+
+  if (replyId === "PRESTAMP_SKIP") {
+    resetStampChoice(s);
+
+    const draft = s.lastDocDraft;
+    if (!draft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
+
+    draft._saving = true;
+    try {
+      await createAndSendPdf(from);
+      return;
+    } finally {
+      draft._saving = false;
+    }
+  }
+
+  if (replyId === "PRESTAMP_ADD_ONCE") {
+    const p = await getOrCreateProfile(from);
+
+    if (!hasStampProfileReady(p)) {
+      await sendText(
+        from,
+        "⚠️ Pour un tampon propre, complétez d’abord votre profil entreprise.\n\nAllez dans Profil > Configurer, puis revenez générer votre document."
+      );
+      return sendProfileMenu(from);
+    }
+
+    s.addStampForNextDoc = true;
+    s.stampMode = "one_time";
+
+    const draft = s.lastDocDraft;
+    if (!draft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
+
+    draft._saving = true;
     try {
       await createAndSendPdf(from);
       return;
