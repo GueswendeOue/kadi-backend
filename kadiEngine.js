@@ -1409,10 +1409,80 @@ async function sendFactureKindMenu(to) {
   ]);
 }
 
+function getRechargeOffers() {
+  return {
+    PACK_1000: {
+      id: "PACK_1000",
+      amountFcfa: 1000,
+      credits: 10,
+      label: "Pack 1000F",
+      bonusText: null,
+      includesStamp: false,
+    },
+    PACK_2000: {
+      id: "PACK_2000",
+      amountFcfa: 2000,
+      credits: 25,
+      label: "Pack 2000F",
+      bonusText: "⭐ Recommandé",
+      includesStamp: false,
+    },
+    PACK_5000: {
+      id: "PACK_5000",
+      amountFcfa: 5000,
+      credits: 50,
+      label: "Pack 5000F",
+      bonusText: "🎁 Tampon PRO offert",
+      includesStamp: true,
+    },
+  };
+}
+
+function getRechargeOfferById(replyId) {
+  return getRechargeOffers()[replyId] || null;
+}
+
+async function sendRechargePacksMenu(to) {
+  return sendButtons(to, "💰 Choisissez un pack KADI :", [
+    { id: "PACK_1000", title: "Pack 1000F" },
+    { id: "PACK_2000", title: "Pack 2000F" },
+    { id: "PACK_5000", title: "Pack 5000F" },
+  ]);
+}
+
+async function sendRechargePaymentMenu(to, offer) {
+  if (!offer) {
+    await sendText(to, "❌ Offre introuvable.");
+    return sendRechargePacksMenu(to);
+  }
+
+  const lines = [
+    `💳 *${offer.label}*`,
+    ``,
+    `• ${offer.credits} crédits`,
+  ];
+
+  if (offer.includesStamp) {
+    lines.push(`• Tampon professionnel OFFERT 🎁`);
+  }
+
+  if (offer.bonusText) {
+    lines.push(`• ${offer.bonusText}`);
+  }
+
+  lines.push("", "Choisissez un mode :", "");
+
+  await sendButtons(to, lines.join("\n"), [
+    { id: `PAY_MM_${offer.amountFcfa}`, title: "Mobile Money" },
+    { id: `PAY_CODE_${offer.amountFcfa}`, title: "Code recharge" },
+    { id: "CREDITS_RECHARGE", title: "Retour" },
+  ]);
+}
+
 async function sendCreditsMenu(to) {
   return sendButtons(to, "💳 Crédits KADI", [
     { id: "CREDITS_SOLDE", title: "Voir solde" },
-    { id: "CREDITS_RECHARGE", title: "Recharger" },
+    { id: "CREDITS_RECHARGE", title: "Acheter pack" },
     { id: "BACK_HOME", title: "Menu" },
   ]);
 }
@@ -1656,11 +1726,19 @@ async function replyBalance(from) {
 
 async function replyRechargeInfo(from) {
   const s = getSession(from);
-  s.step = "recharge_proof";
+  s.step = "recharge_pack_menu";
+  s.pendingRechargePack = null;
+  s.pendingRechargeAmount = null;
+
   await sendText(
     from,
-    `💰 *Recharger vos crédits KADI*\n\n✅ Orange Money\n📌 Numéro : *${OM_NUMBER}*\n👤 Nom : *${OM_NAME}*\n💳 Offre : *${PRICE_LABEL}*\n\n📎 Après paiement, envoyez ici une *preuve* (capture d'écran).\n\n🔑 Si vous avez un code: *CODE KDI-XXXX-XXXX*`
+    "💰 *Packs disponibles*\n\n" +
+      "🟢 1000F → 10 crédits\n" +
+      "🟡 2000F → 25 crédits ⭐ recommandé\n" +
+      "💎 5000F → 50 crédits + tampon PRO OFFERT 🎁"
   );
+
+  return sendRechargePacksMenu(from);
 }
 
 // ===============================
@@ -3759,6 +3837,8 @@ async function handleCommand(from, text) {
     s.pendingOcrMediaId = null;
     s.adminPendingAction = null;
     s.broadcastCaption = null;
+    s.pendingRechargePack = null;
+    s.pendingRechargeAmount = null;
 
     await sendHomeMenu(from);
     return true;
@@ -3779,6 +3859,8 @@ async function handleCommand(from, text) {
     s.pendingOcrMediaId = null;
     s.adminPendingAction = null;
     s.broadcastCaption = null;
+    s.pendingRechargePack = null;
+    s.pendingRechargeAmount = null;
 
     await sendText(from, "❌ Action annulée.");
     await sendHomeMenu(from);
@@ -3789,22 +3871,22 @@ async function handleCommand(from, text) {
   // Commandes générales
   // ===============================
   if (lower === "/stats" || lower === "stats") return handleStatsCommand(from, text);
-if (lower === "/statsmini" || lower === "statsmini") return handleStatsMiniCommand(from);
-if (lower === "/statsdocs" || lower === "statsdocs") return handleStatsDocsCommand(from);
-if (lower === "/statscredits" || lower === "statscredits") return handleStatsCreditsCommand(from);
-if (lower === "/statsusers" || lower === "statsusers") return handleStatsUsersCommand(from);
-if (lower === "/alert" || lower === "/alerts" || lower === "alert" || lower === "alerts") {
-  return handleAlertsCommand(from);
-}
-if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
-if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
+  if (lower === "/statsmini" || lower === "statsmini") return handleStatsMiniCommand(from);
+  if (lower === "/statsdocs" || lower === "statsdocs") return handleStatsDocsCommand(from);
+  if (lower === "/statscredits" || lower === "statscredits") return handleStatsCreditsCommand(from);
+  if (lower === "/statsusers" || lower === "statsusers") return handleStatsUsersCommand(from);
+  if (lower === "/alert" || lower === "/alerts" || lower === "alert" || lower === "alerts") {
+    return handleAlertsCommand(from);
+  }
+  if (lower.startsWith("/top") || lower.startsWith("top")) return handleTopCommand(from, text);
+  if (lower.startsWith("/export") || lower.startsWith("export")) return handleExportCommand(from, text);
 
   if (lower === "solde" || lower === "credits" || lower === "crédits" || lower === "balance") {
     await replyBalance(from);
     return true;
   }
 
-  if (lower === "recharge") {
+  if (lower === "recharge" || lower === "acheter pack" || lower === "pack") {
     await replyRechargeInfo(from);
     return true;
   }
@@ -3856,6 +3938,97 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
+  // ===============================
+  // Recharge / packs
+  // ===============================
+  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
+
+  if (replyId === "CREDITS_RECHARGE") {
+    return replyRechargeInfo(from);
+  }
+
+  const offer = getRechargeOfferById(replyId);
+  if (offer) {
+    s.step = "recharge_payment_choice";
+    s.pendingRechargePack = offer.id;
+    s.pendingRechargeAmount = offer.amountFcfa;
+    return sendRechargePaymentMenu(from, offer);
+  }
+
+  if (replyId.startsWith("PAY_MM_")) {
+    const amount = Number(replyId.replace("PAY_MM_", ""));
+    const offers = Object.values(getRechargeOffers());
+    const selected = offers.find((x) => x.amountFcfa === amount);
+
+    if (!selected) {
+      await sendText(from, "❌ Pack introuvable.");
+      return sendRechargePacksMenu(from);
+    }
+
+    s.step = "recharge_proof";
+    s.pendingRechargePack = selected.id;
+    s.pendingRechargeAmount = selected.amountFcfa;
+
+    const lines = [
+      `💳 *${selected.label}*`,
+      ``,
+      `✅ Orange Money`,
+      `📌 Numéro : *${OM_NUMBER}*`,
+      `👤 Nom : *${OM_NAME}*`,
+      `💰 Montant : *${selected.amountFcfa}F*`,
+      ``,
+      `📦 Vous recevrez :`,
+      `• ${selected.credits} crédits`,
+    ];
+
+    if (selected.includesStamp) {
+      lines.push(`• Tampon professionnel OFFERT 🎁`);
+    }
+
+    lines.push(
+      "",
+      "📎 Après paiement, envoyez ici votre *preuve* (capture d'écran)."
+    );
+
+    await sendText(from, lines.join("\n"));
+    return;
+  }
+
+  if (replyId.startsWith("PAY_CODE_")) {
+    const amount = Number(replyId.replace("PAY_CODE_", ""));
+    const offers = Object.values(getRechargeOffers());
+    const selected = offers.find((x) => x.amountFcfa === amount);
+
+    if (!selected) {
+      await sendText(from, "❌ Pack introuvable.");
+      return sendRechargePacksMenu(from);
+    }
+
+    s.step = "recharge_code";
+    s.pendingRechargePack = selected.id;
+    s.pendingRechargeAmount = selected.amountFcfa;
+
+    const lines = [
+      `🎫 *${selected.label}*`,
+      ``,
+      `Envoyez votre code recharge au format :`,
+      `*CODE KDI-XXXX-XXXX*`,
+      ``,
+      `📦 Ce pack contient :`,
+      `• ${selected.credits} crédits`,
+    ];
+
+    if (selected.includesStamp) {
+      lines.push(`• Tampon professionnel OFFERT 🎁`);
+    }
+
+    await sendText(from, lines.join("\n"));
+    return;
+  }
+
+  // ===============================
+  // Smart block
+  // ===============================
   if (
     replyId === "SMARTBLOCK_DEVIS" ||
     replyId === "SMARTBLOCK_FACTURE" ||
@@ -4045,9 +4218,6 @@ async function handleInteractiveReply(from, replyId) {
     return sendStampMenu(from);
   }
 
-  if (replyId === "CREDITS_SOLDE") return replyBalance(from);
-  if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
-
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
     const item = makeItem(it.label, it.qty, it.unitPrice);
@@ -4183,14 +4353,11 @@ async function handleInteractiveReply(from, replyId) {
       return;
     }
 
-    // On garde le contenu métier, mais on remet à zéro l’ancienne génération
     draft.savedDocumentId = null;
     draft.savedPdfMediaId = null;
     draft.savedPdfFilename = null;
     draft.savedPdfCaption = null;
     draft.status = "draft";
-
-    // Nouvelle génération = nouveau débit = nouvelle clé idempotente
     draft.requestId = null;
 
     s.step = "doc_review";
