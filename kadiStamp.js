@@ -313,8 +313,8 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
     const endAngle = Math.PI * 0.575;
     const availableArc = endAngle - startAngle;
 
-    let fontSize = 38;
-    const minFont = 20;
+    let fontSize = 44;
+    const minFont = 24;
 
     for (; fontSize >= minFont; fontSize--) {
       ctx.font = `bold ${fontSize}px Arial`;
