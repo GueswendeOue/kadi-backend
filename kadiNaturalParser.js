@@ -13,6 +13,10 @@ function cleanText(input = "") {
     .trim();
 }
 
+function escapeRegExp(str = "") {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function parseMoneyToken(token = "") {
   let t = cleanText(token)
     .replace(/fcfa|fc|f\b/g, "")
@@ -47,19 +51,138 @@ function parseMoneyToken(token = "") {
   return null;
 }
 
-function findLastMoneyAmount(text = "") {
+function findMoneyMatches(text = "") {
   const raw = String(text || "");
-  const matches =
-    raw.match(
-      /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi
-    ) || [];
+  const regex =
+    /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi;
 
-  let last = null;
-  for (const m of matches) {
-    const value = parseMoneyToken(m);
-    if (Number.isFinite(value) && value > 0) last = value;
+  const matches = raw.match(regex) || [];
+  return matches
+    .map((m) => ({
+      raw: m,
+      value: parseMoneyToken(m),
+    }))
+    .filter((x) => Number.isFinite(x.value) && x.value > 0);
+}
+
+function findLastMoneyAmount(text = "") {
+  const matches = findMoneyMatches(text);
+  if (!matches.length) return null;
+  return matches[matches.length - 1].value;
+}
+
+function countNumberTokens(text = "") {
+  const raw = String(text || "");
+  const matches = raw.match(/\d+(?:[.,]\d+)?/g) || [];
+  return matches.length;
+}
+
+function hasExplicitPriceMarker(text = "") {
+  const t = cleanText(text);
+  return /\bpu\b|\bprix\b|\bmontant\b|\btotal\b|\bmt\b|\bfcfa\b|\bfc\b|\bf\b/.test(t);
+}
+
+function hasExplicitQtyMarker(text = "") {
+  const t = cleanText(text);
+  return /\bqte\b|\bqté\b|\bquantite\b|\bquantité\b|\bx\b|\bfois\b/.test(t);
+}
+
+function hasStrongStructuredLineSignal(text = "") {
+  const t = cleanText(text);
+
+  return (
+    hasExplicitPriceMarker(t) ||
+    hasExplicitQtyMarker(t) ||
+    /\b\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\b/.test(t) ||
+    /\b\d+(?:[.,]\d+)?\s+(sac|sacs|bidon|bidons|rouleau|rouleaux|carton|cartons|piece|pieces|pièce|pièces|barre|barres|kg|tonne|tonnes)\b/i.test(
+      t
+    )
+  );
+}
+
+function isLikelyHumanOrCompanySegment(segment = "") {
+  const s = String(segment || "").trim();
+  if (!s) return false;
+
+  const t = cleanText(s);
+
+  // Marqueurs très forts de client
+  if (
+    /\b(monsieur|mr|mme|madame|mademoiselle|client|societe|société|entreprise|ets|eurl|sarl|sa)\b/.test(
+      t
+    )
+  ) {
+    return true;
   }
-  return last;
+
+  // 1 à 5 mots "propres", sans verbe d'action métier
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length >= 1 && words.length <= 5) {
+    if (
+      !/\b(installation|reparation|réparation|maintenance|travaux|construction|location|loyer|paiement|versement|devis|facture|recu|reçu|decharge|décharge|proposition|prix|tube|pvc|robinet|ciment|fer|main|oeuvre|main d oeuvre)\b/.test(
+        t
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function extractClientCandidateSegments(text = "") {
+  const raw = String(text || "").trim();
+  const lowered = cleanText(raw);
+  const results = [];
+
+  // 1) segments après "pour"
+  const pourRegex = /\bpour\s+([^,;]+)/gi;
+  let m;
+  while ((m = pourRegex.exec(raw)) !== null) {
+    const seg = String(m[1] || "").trim();
+    if (seg) {
+      results.push({
+        source: "pour",
+        value: seg,
+        index: m.index,
+      });
+    }
+  }
+
+  // 2) segments après "chez"
+  const chezRegex = /\bchez\s+([^,;]+)/gi;
+  while ((m = chezRegex.exec(raw)) !== null) {
+    const seg = String(m[1] || "").trim();
+    if (seg) {
+      results.push({
+        source: "chez",
+        value: seg,
+        index: m.index,
+      });
+    }
+  }
+
+  // 3) segments après "client"
+  const clientRegex = /\bclient\s*:?\s*([^,;]+)/gi;
+  while ((m = clientRegex.exec(raw)) !== null) {
+    const seg = String(m[1] || "").trim();
+    if (seg) {
+      results.push({
+        source: "client",
+        value: seg,
+        index: m.index,
+      });
+    }
+  }
+
+  // on privilégie le dernier segment "pour..." si lui ressemble à un client
+  return results;
+}
+
+function removeOneOccurrenceInsensitive(text = "", chunk = "") {
+  if (!chunk) return String(text || "");
+  const re = new RegExp(escapeRegExp(chunk), "i");
+  return String(text || "").replace(re, " ");
 }
 
 // ===============================
@@ -80,20 +203,22 @@ function detectDocTypeFromText(text = "") {
 // CLIENT
 // ===============================
 function extractClientFromText(text = "") {
-  const raw = String(text || "").trim();
+  const candidates = extractClientCandidateSegments(text);
 
-  const patterns = [
-    /\bpour\s+(mr\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-    /\bpour\s+(mme\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-    /\bpour\s+(m\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-    /\bpour\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-    /\bchez\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-    /\bclient\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i,
-  ];
+  if (!candidates.length) return null;
 
-  for (const p of patterns) {
-    const m = raw.match(p);
-    if (m && m[1]) return m[1].trim();
+  // 1) priorité au dernier segment qui ressemble fortement à un client
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const seg = candidates[i].value;
+    if (isLikelyHumanOrCompanySegment(seg)) {
+      return seg.trim();
+    }
+  }
+
+  // 2) fallback : dernier segment brut mais raisonnable
+  const last = candidates[candidates.length - 1]?.value || "";
+  if (last && last.split(/\s+/).length <= 6) {
+    return last.trim();
   }
 
   return null;
@@ -115,23 +240,31 @@ function looksLikeSimplePaymentMessage(text = "") {
 
 function extractSimplePaymentMotif(text = "") {
   const raw = String(text || "").trim();
+  const client = extractClientFromText(raw);
 
-  let motif = raw.replace(
+  let motif = raw;
+
+  // retire montants
+  motif = motif.replace(
     /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
     " "
   );
 
+  // retire mots de commande
   motif = motif
     .replace(/\bfais(?:\s+moi)?\b/gi, " ")
-    .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcréer\b/gi, " ")
-    .replace(/\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi, " ")
-    .replace(/\bpour\s+(mr\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+(mme\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+(m\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bchez\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcreer\b|\bcréer\b/gi, " ")
+    .replace(/\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi, " ");
+
+  // retire le segment client détecté, seulement celui-là
+  if (client) {
+    motif = removeOneOccurrenceInsensitive(motif, client)
+      .replace(/\bpour\b/gi, " ")
+      .replace(/\bchez\b/gi, " ")
+      .replace(/\bclient\b/gi, " ");
+  }
+
+  motif = motif.replace(/\s+/g, " ").trim();
 
   if (!motif) return "Paiement";
   return motif;
@@ -169,37 +302,50 @@ function splitNaturalSegments(text = "") {
     .filter(Boolean);
 }
 
-function parseNaturalItemSegment(segment = "") {
+function parseStructuredItemSegment(segment = "") {
   const raw = String(segment || "").trim();
   if (!raw) return null;
 
   const amount = findLastMoneyAmount(raw);
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
-  const clean = cleanText(raw)
-    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\bdecharge\b/g, " ")
-    .replace(/\bpour\b|\bchez\b|\bclient\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const t = cleanText(raw);
+  const numberCount = countNumberTokens(raw);
 
-  const qtyMatch =
-    clean.match(
-      /\b(\d+(?:[.,]\d+)?)\s*(sac|sacs|bidon|bidons|rouleau|rouleaux|carton|cartons|piece|pieces|barre|barres|kg|tonne|tonnes)\b/i
-    ) || clean.match(/\b(\d+(?:[.,]\d+)?)\b/i);
+  // Si la ligne n'a qu'un seul nombre et aucun marqueur fort,
+  // on ne la traite PAS comme ligne structurée.
+  if (numberCount <= 1 && !hasStrongStructuredLineSignal(t)) {
+    return null;
+  }
 
   let qty = 1;
+
+  const qtyMatch =
+    t.match(/\bqte\s*[:=]?\s*(\d+(?:[.,]\d+)?)\b/i) ||
+    t.match(/\bqt[eé]\s*[:=]?\s*(\d+(?:[.,]\d+)?)\b/i) ||
+    t.match(/\bquantit[eé]\s*[:=]?\s*(\d+(?:[.,]\d+)?)\b/i) ||
+    t.match(/\b(\d+(?:[.,]\d+)?)\s*[x×]\s*\d+(?:[.,]\d+)?\b/i) ||
+    t.match(
+      /\b(\d+(?:[.,]\d+)?)\s*(sac|sacs|bidon|bidons|rouleau|rouleaux|carton|cartons|piece|pieces|pi[eè]ce|pi[eè]ces|barre|barres|kg|tonne|tonnes)\b/i
+    );
+
   if (qtyMatch) {
     const q = Number(String(qtyMatch[1]).replace(",", "."));
     if (Number.isFinite(q) && q > 0 && q <= 1000) qty = q;
   }
 
-  const label = raw
+  let label = raw;
+
+  // retire seulement les marqueurs et montants si ligne clairement structurée
+  label = label
     .replace(
       /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
       " "
     )
-    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\bdécharge\b|\bdecharge\b/gi, " ")
+    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdécharge\b|\bdecharge\b/gi, " ")
+    .replace(/\bqte\b|\bqt[eé]\b|\bquantit[eé]\b|\bpu\b|\bprix\b|\bmontant\b|\bmt\b/gi, " ")
     .replace(/\bpour\b|\bchez\b|\bclient\b/gi, " ")
+    .replace(/[=:]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -221,7 +367,7 @@ function parseNaturalItemsMessage(text = "") {
 
   const items = [];
   for (const seg of segments) {
-    const item = parseNaturalItemSegment(seg);
+    const item = parseStructuredItemSegment(seg);
     if (item) items.push(item);
   }
 
@@ -238,25 +384,33 @@ function parseNaturalItemsMessage(text = "") {
 // ===============================
 // INTENT ONLY MESSAGE
 // ===============================
+function extractIntentMotif(text = "", client = null) {
+  let motif = String(text || "").trim();
+
+  motif = motif
+    .replace(/\bfais(?:\s+moi)?\b/gi, " ")
+    .replace(/\bje veux\b/gi, " ")
+    .replace(/\bcree\b|\bcrée\b|\bcreer\b|\bcréer\b/gi, " ")
+    .replace(/\bun\b|\bune\b/gi, " ")
+    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/gi, " ");
+
+  if (client) {
+    motif = removeOneOccurrenceInsensitive(motif, client)
+      .replace(/\bpour\b/gi, " ")
+      .replace(/\bchez\b/gi, " ")
+      .replace(/\bclient\b/gi, " ");
+  }
+
+  motif = motif.replace(/\s+/g, " ").trim();
+  return motif || null;
+}
+
 function parseNaturalIntentOnlyMessage(text = "") {
   const docType = detectDocTypeFromText(text);
   if (!docType) return null;
 
   const client = extractClientFromText(text);
-  const raw = String(text || "").trim();
-
-  const motif = raw
-    .replace(/\bfais(?:\s+moi)?\b/gi, " ")
-    .replace(/\bje veux\b/gi, " ")
-    .replace(/\bcree\b|\bcrée\b|\bcreer\b|\bcréer\b/gi, " ")
-    .replace(/\bun\b|\bune\b/gi, " ")
-    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/gi, " ")
-    .replace(/\bpour\s+(mr\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+(mme\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+(m\.?\s+[A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\bpour\s+([A-Za-zÀ-ÿ'-]+(?:\s+[A-Za-zÀ-ÿ'-]+){0,2})/i, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const motif = extractIntentMotif(text, client);
 
   return {
     kind: "intent_only",
