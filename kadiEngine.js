@@ -1206,12 +1206,38 @@ function buildSmartMismatchMessage({ gapInfo, hint }) {
 
 async function tryHandleNaturalMessage(from, text) {
   const s = getSession(from);
-  const parsed = parseNaturalWhatsAppMessage(text);
+  const rawText = String(text || "").trim();
+  const parsed = parseNaturalWhatsAppMessage(rawText);
+
+  // 🔥 FALLBACK ULTRA CLEAN :
+  // si on est à l'étape "Nom / Désignation ?" et que le parser naturel
+  // ne détecte pas une ligne structurée fiable, on garde le texte tel quel
+  // comme désignation puis on demande le prix.
+  if (s.lastDocDraft && s.step === "item_label") {
+    const parsedAsStructured =
+      parsed &&
+      (parsed.kind === "items" || parsed.kind === "simple_payment");
+
+    if (!parsedAsStructured) {
+      if (rawText.length < 2) return true;
+
+      s.itemDraft = {
+        label: rawText.slice(0, LIMITS.maxItemLabelLength),
+        qty: 1,
+        unitPrice: null,
+      };
+
+      s.step = "item_price";
+
+      await sendText(from, `💰 Quel est le prix pour : *${rawText}* ?`);
+      return true;
+    }
+  }
 
   if (!parsed) {
     await logLearningEvent({
       waId: from,
-      rawText: text,
+      rawText,
       parseSuccess: false,
       failureReason: "natural_not_understood",
       itemsCount: 0,
@@ -1225,7 +1251,7 @@ async function tryHandleNaturalMessage(from, text) {
     const detectedType = parsed.docType;
 
     if (!detectedType) {
-      s.pendingSmartBlockText = String(text || "").trim();
+      s.pendingSmartBlockText = rawText;
 
       await sendButtons(
         from,
@@ -1288,7 +1314,7 @@ async function tryHandleNaturalMessage(from, text) {
     if (!safe(draft.client)) {
       await logLearningEvent({
         waId: from,
-        rawText: text,
+        rawText,
         parseSuccess: true,
         failureReason: "client_missing",
         itemsCount: 1,
@@ -1315,7 +1341,6 @@ async function tryHandleNaturalMessage(from, text) {
     return true;
   }
 
-  // 🔥 NOUVEAU : INTENT ONLY
   if (parsed.kind === "intent_only") {
     if (draft.type === "decharge") {
       if (parsed.client && !draft.client) {
@@ -1396,7 +1421,7 @@ async function tryHandleNaturalMessage(from, text) {
     if (!safe(draft.client)) {
       await logLearningEvent({
         waId: from,
-        rawText: text,
+        rawText,
         parseSuccess: true,
         failureReason: "client_missing",
         itemsCount: draft.items.length || 0,
@@ -1438,7 +1463,7 @@ async function tryHandleNaturalMessage(from, text) {
 
   await logLearningEvent({
     waId: from,
-    rawText: text,
+    rawText,
     parseSuccess: false,
     failureReason: "natural_not_understood",
     itemsCount: 0,
