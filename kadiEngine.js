@@ -1203,7 +1203,6 @@ function buildSmartMismatchMessage({ gapInfo, hint }) {
     warning: true,
   };
 }
-
 async function tryHandleNaturalMessage(from, text) {
   const s = getSession(from);
   const rawText = String(text || "").trim();
@@ -1227,7 +1226,7 @@ async function tryHandleNaturalMessage(from, text) {
         unitPrice: null,
       };
 
-      s.step = "item_price";
+      s.step = "item_pu";
 
       await sendText(from, `💰 Quel est le prix pour : *${rawText}* ?`);
       return true;
@@ -1235,6 +1234,33 @@ async function tryHandleNaturalMessage(from, text) {
   }
 
   if (!parsed) {
+    // 🔥 Nouveau fallback intelligent :
+    // si aucun draft n'est actif, on propose directement le type de document
+    // au lieu de renvoyer vers MENU.
+    if (!s.lastDocDraft && rawText.length >= 3) {
+      s.pendingSmartBlockText = rawText;
+
+      await sendButtons(
+        from,
+        "🧠 J’ai reconnu un texte.\n\nQuel document voulez-vous créer ?",
+        [
+          { id: "SMARTBLOCK_DEVIS", title: "Devis" },
+          { id: "SMARTBLOCK_FACTURE", title: "Facture" },
+          { id: "SMARTBLOCK_RECU", title: "Reçu" },
+        ]
+      );
+
+      await logLearningEvent({
+        waId: from,
+        rawText,
+        parseSuccess: false,
+        failureReason: "natural_text_without_doc_type",
+        itemsCount: 0,
+      });
+
+      return true;
+    }
+
     await logLearningEvent({
       waId: from,
       rawText,
@@ -1471,6 +1497,7 @@ async function tryHandleNaturalMessage(from, text) {
 
   return false;
 }
+
 
 async function tryHandleDechargeConfirmation(from, text) {
   if (String(text || "").trim().toLowerCase() !== "confirmer") return false;
