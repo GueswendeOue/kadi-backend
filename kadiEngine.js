@@ -2214,7 +2214,6 @@ async function handleProductFlowText(from, text) {
       }
     }
 
-    // Flow normal vers aperçu
     s.step = "doc_review";
 
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
@@ -2228,7 +2227,7 @@ async function handleProductFlowText(from, text) {
   }
 
   // ===============================
-  // Choix du format de reçu
+  // Choix du format de reçu (fallback texte)
   // ===============================
   if (s.step === "receipt_format") {
     const format = normalizeReceiptFormat(t);
@@ -2236,7 +2235,7 @@ async function handleProductFlowText(from, text) {
     if (!format) {
       await sendText(
         from,
-        "Répondez simplement :\n• RAPIDE → version WhatsApp\n• PRO → version A4"
+        "Répondez simplement :\n• TICKET\n• A4"
       );
       return true;
     }
@@ -2249,8 +2248,8 @@ async function handleProductFlowText(from, text) {
     await sendText(
       from,
       format === "compact"
-        ? "✅ Reçu rapide sélectionné.\n\n👤 Quel est le nom du client ?"
-        : "✅ Reçu professionnel A4 sélectionné.\n\n👤 Quel est le nom du client ?"
+        ? "🧾 Format ticket sélectionné.\n\n👤 Quel est le nom du client ?"
+        : "📄 Format A4 sélectionné.\n\n👤 Quel est le nom du client ?"
     );
     return true;
   }
@@ -2281,7 +2280,10 @@ async function handleProductFlowText(from, text) {
     const n = isZero ? 0 : parseNumberSmart(t);
 
     if (!isZero && (n == null || n < 0)) {
-      await sendText(from, "❌ Montant invalide. Réessayez (ex: 100000) ou tapez 0.");
+      await sendText(
+        from,
+        "❌ Montant invalide. Réessayez (ex: 100000) ou tapez *0*."
+      );
       return true;
     }
 
@@ -2394,6 +2396,7 @@ async function handleProductFlowText(from, text) {
 
   if (s.step === "item_qty") {
     const n = parseNumberSmart(t);
+
     if (!n || n <= 0) {
       await sendText(from, "❌ Quantité invalide. Réessayez (ex: 2).");
       return true;
@@ -2405,15 +2408,20 @@ async function handleProductFlowText(from, text) {
     return true;
   }
 
-  if (s.step === "item_pu") {
+  // 🔥 Compatibilité forte :
+  // on supporte item_pu ET item_price
+  if (s.step === "item_pu" || s.step === "item_price") {
     const n = parseNumberSmart(t);
+
     if (n == null || n < 0) {
       await sendText(from, "❌ Prix invalide. Réessayez (ex: 5000).");
       return true;
     }
 
     s.itemDraft = s.itemDraft || {};
+    s.itemDraft.qty = s.itemDraft.qty || 1;
     s.itemDraft.unitPrice = n;
+
     await sendItemConfirmMenu(from);
     return true;
   }
@@ -2421,25 +2429,26 @@ async function handleProductFlowText(from, text) {
   // ===============================
   // Tampon
   // ===============================
-if (s.step === "stamp_title") {
-  const raw = String(text || "").trim();
-  const cleaned = raw.replace(/\s+/g, " ");
-  const val = cleaned === "0" || !cleaned ? null : cleaned.slice(0, 30);
+  if (s.step === "stamp_title") {
+    const raw = String(text || "").trim();
+    const cleaned = raw.replace(/\s+/g, " ");
+    const val = cleaned === "0" || !cleaned ? null : cleaned.slice(0, 30);
 
-  await updateProfile(from, { stamp_title: val });
+    await updateProfile(from, { stamp_title: val });
 
-  s.step = null;
+    s.step = null;
 
-  await sendText(
-    from,
-    val
-      ? `✅ Fonction tampon mise à jour : ${val}`
-      : "✅ Fonction tampon effacée."
-  );
+    await sendText(
+      from,
+      val
+        ? `✅ Fonction tampon mise à jour : ${val}`
+        : "✅ Fonction tampon effacée."
+    );
 
-  await sendStampMenu(from);
-  return true;
-}
+    await sendStampMenu(from);
+    return true;
+  }
+
   return false;
 }
 
