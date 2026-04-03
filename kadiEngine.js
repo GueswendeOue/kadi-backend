@@ -2171,48 +2171,10 @@ async function handleProductFlowText(from, text) {
   if (!t) return false;
 
   // ===============================
-  // Client manquant avant aperçu PDF
+  // Client manquant avant preview
   // ===============================
   if (s.step === "missing_client_pdf") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
-
-    const draft = s.lastDocDraft;
-
-    // Cas spécial : document issu d’un bloc intelligent
-    if (draft?.source === "smart_block") {
-      const analysis = analyzeSmartBlock({
-        items: draft.items || [],
-        computedTotal: draft?.finance?.gross || 0,
-        materialTotal: draft?.meta?.detectedMaterialTotal,
-        grandTotal: draft?.meta?.detectedGrandTotal,
-      });
-
-      draft.meta = makeDraftMeta({
-        ...(draft.meta || {}),
-        businessType: analysis.businessType,
-        totalsGap: analysis.gapInfo.gap,
-        totalsGapSeverity: analysis.gapInfo.severity,
-        missingHint: analysis.hint,
-      });
-
-      const smartMessage = buildSmartMismatchMessage({
-        businessType: analysis.businessType,
-        gapInfo: analysis.gapInfo,
-        hint: analysis.hint,
-      });
-
-      if (smartMessage.warning) {
-        await sendText(from, smartMessage.text);
-
-        await sendButtons(from, "Que voulez-vous faire ?", [
-          { id: "SMARTBLOCK_FIX", title: "Corriger" },
-          { id: "SMARTBLOCK_CONTINUE", title: "Continuer" },
-        ]);
-
-        s.step = "smartblock_warning";
-        return true;
-      }
-    }
 
     s.step = "doc_review";
 
@@ -2227,159 +2189,7 @@ async function handleProductFlowText(from, text) {
   }
 
   // ===============================
-  // Choix du format de reçu (fallback texte)
-  // ===============================
-  if (s.step === "receipt_format") {
-    const format = normalizeReceiptFormat(t);
-
-    if (!format) {
-      await sendText(
-        from,
-        "Répondez simplement :\n• TICKET\n• A4"
-      );
-      return true;
-    }
-
-    s.lastDocDraft = s.lastDocDraft || {};
-    s.lastDocDraft.receiptFormat = format;
-
-    s.step = "doc_client";
-
-    await sendText(
-      from,
-      format === "compact"
-        ? "🧾 Format ticket sélectionné.\n\n👤 Quel est le nom du client ?"
-        : "📄 Format A4 sélectionné.\n\n👤 Quel est le nom du client ?"
-    );
-    return true;
-  }
-
-  // ===============================
-  // Flow décharge séparé
-  // ===============================
-  if (s.step === "decharge_client") {
-    s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
-    s.step = "decharge_motif";
-    await sendText(from, "📝 Quel est le motif de la décharge ?");
-    return true;
-  }
-
-  if (s.step === "decharge_motif") {
-    s.lastDocDraft.motif = t.slice(0, LIMITS.maxItemLabelLength);
-    s.lastDocDraft.dechargeType = detectDechargeType(t);
-    s.step = "decharge_amount";
-    await sendText(
-      from,
-      "💰 Quel est le montant ?\nSi pas de montant, tapez *0*."
-    );
-    return true;
-  }
-
-  if (s.step === "decharge_amount") {
-    const isZero = t === "0";
-    const n = isZero ? 0 : parseNumberSmart(t);
-
-    if (!isZero && (n == null || n < 0)) {
-      await sendText(
-        from,
-        "❌ Montant invalide. Réessayez (ex: 100000) ou tapez *0*."
-      );
-      return true;
-    }
-
-    const amount = isZero ? 0 : n;
-
-    s.lastDocDraft.items = [
-      makeItem(s.lastDocDraft.motif || "Décharge", 1, amount),
-    ];
-    s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
-
-    s.step = "decharge_confirm_target";
-    await sendText(
-      from,
-      "📲 Voulez-vous envoyer cette décharge à l’autre partie pour confirmation WhatsApp ?\n\nRépondez par :\n• OUI\n• NON"
-    );
-    return true;
-  }
-
-  if (s.step === "decharge_confirm_target") {
-    const answer = t.toLowerCase();
-
-    if (answer === "oui") {
-      s.step = "decharge_target_wa";
-      await sendText(
-        from,
-        "📱 Entrez le numéro WhatsApp de l’autre partie au format simple.\nEx: 70112233 ou 22670112233"
-      );
-      return true;
-    }
-
-    if (answer === "non") {
-      s.lastDocDraft.confirmation = {
-        requested: false,
-        targetWaId: null,
-        confirmed: false,
-        confirmedAt: null,
-        confirmedBy: null,
-      };
-
-      s.step = "doc_review";
-
-      const preview = buildDechargePreviewMessage({
-        doc: s.lastDocDraft,
-        money,
-      });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(s.lastDocDraft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      await sendPreviewMenu(from);
-      return true;
-    }
-
-    await sendText(from, "Répondez seulement par *OUI* ou *NON*.");
-    return true;
-  }
-
-  if (s.step === "decharge_target_wa") {
-    let target = t.replace(/\D/g, "");
-
-    if (target.length === 8) {
-      target = `226${target}`;
-    }
-
-    if (!isValidWhatsAppId(target)) {
-      await sendText(from, "❌ Numéro invalide. Réessayez.");
-      return true;
-    }
-
-    s.lastDocDraft.confirmation = {
-      requested: true,
-      targetWaId: target,
-      confirmed: false,
-      confirmedAt: null,
-      confirmedBy: null,
-    };
-
-    const preview = buildDechargePreviewMessage({
-      doc: s.lastDocDraft,
-      money,
-    });
-
-    await sendText(from, preview);
-
-    await sendButtons(from, "Valider l’envoi de la demande de confirmation ?", [
-      { id: "DECHARGE_SEND_CONFIRMATION", title: "Envoyer" },
-      { id: "DOC_CANCEL", title: "Annuler" },
-    ]);
-
-    s.step = "decharge_send_confirmation";
-    return true;
-  }
-
-  // ===============================
-  // Flow manuel produit par produit
+  // CLIENT
   // ===============================
   if (s.step === "doc_client") {
     s.lastDocDraft.client = t.slice(0, LIMITS.maxClientNameLength);
@@ -2387,34 +2197,71 @@ async function handleProductFlowText(from, text) {
     return true;
   }
 
+  // ===============================
+  // 🔥 ITEM LABEL (INTELLIGENT)
+  // ===============================
   if (s.step === "item_label") {
-    s.itemDraft = s.itemDraft || {};
-    s.itemDraft.label = t.slice(0, LIMITS.maxItemLabelLength);
-    await askItemQty(from);
-    return true;
-  }
+    const raw = String(text || "").trim();
 
-  if (s.step === "item_qty") {
-    const n = parseNumberSmart(t);
+    const parsed = parseNaturalWhatsAppMessage(raw);
 
-    if (!n || n <= 0) {
-      await sendText(from, "❌ Quantité invalide. Réessayez (ex: 2).");
+    const isStructured =
+      parsed &&
+      (parsed.kind === "items" || parsed.kind === "simple_payment");
+
+    // ===== CAS STRUCTURÉ =====
+    if (isStructured && parsed.kind === "items" && parsed.items?.length === 1) {
+      const it = parsed.items[0];
+
+      s.itemDraft = {
+        label: String(it.label || "").slice(0, LIMITS.maxItemLabelLength),
+        qty: it.qty || 1,
+        unitPrice: it.unitPrice ?? null,
+      };
+
+      // manque prix
+      if (s.itemDraft.unitPrice == null) {
+        s.step = "item_pu";
+        await sendText(from, `💰 Prix pour : *${s.itemDraft.label}* ?`);
+        return true;
+      }
+
+      // 🔥 ajout direct
+      const item = makeItem(
+        s.itemDraft.label,
+        s.itemDraft.qty,
+        s.itemDraft.unitPrice
+      );
+
+      s.lastDocDraft.items.push(item);
+      s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
+      s.itemDraft = null;
+
+      await sendText(from, "✅ Produit ajouté.");
+      await sendAfterProductMenu(from);
       return true;
     }
 
-    s.itemDraft = s.itemDraft || {};
-    s.itemDraft.qty = n;
-    await askItemPu(from);
+    // ===== CAS SIMPLE =====
+    s.itemDraft = {
+      label: raw.slice(0, LIMITS.maxItemLabelLength),
+      qty: 1,
+      unitPrice: null,
+    };
+
+    s.step = "item_pu";
+    await sendText(from, `💰 Prix pour : *${raw}* ?`);
     return true;
   }
 
-  // 🔥 Compatibilité forte :
-  // on supporte item_pu ET item_price
+  // ===============================
+  // 🔥 PRIX → AUTO ADD
+  // ===============================
   if (s.step === "item_pu" || s.step === "item_price") {
     const n = parseNumberSmart(t);
 
     if (n == null || n < 0) {
-      await sendText(from, "❌ Prix invalide. Réessayez (ex: 5000).");
+      await sendText(from, "❌ Prix invalide. Ex: 5000");
       return true;
     }
 
@@ -2422,34 +2269,33 @@ async function handleProductFlowText(from, text) {
     s.itemDraft.qty = s.itemDraft.qty || 1;
     s.itemDraft.unitPrice = n;
 
-    await sendItemConfirmMenu(from);
-    return true;
-  }
-
-  // ===============================
-  // Tampon
-  // ===============================
-  if (s.step === "stamp_title") {
-    const raw = String(text || "").trim();
-    const cleaned = raw.replace(/\s+/g, " ");
-    const val = cleaned === "0" || !cleaned ? null : cleaned.slice(0, 30);
-
-    await updateProfile(from, { stamp_title: val });
-
-    s.step = null;
-
-    await sendText(
-      from,
-      val
-        ? `✅ Fonction tampon mise à jour : ${val}`
-        : "✅ Fonction tampon effacée."
+    const item = makeItem(
+      s.itemDraft.label,
+      s.itemDraft.qty,
+      s.itemDraft.unitPrice
     );
 
-    await sendStampMenu(from);
+    s.lastDocDraft.items.push(item);
+    s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
+
+    s.itemDraft = null;
+
+    await sendText(from, "✅ Produit ajouté.");
+    await sendAfterProductMenu(from);
     return true;
   }
 
+  // ===============================
+  // FALLBACK SAFE
+  // ===============================
   return false;
+}
+
+async function sendAfterProductMenu(from) {
+  await sendButtons(from, "Que voulez-vous faire ?", [
+    { id: "ADD_ITEM", title: "➕ Ajouter" },
+    { id: "DOC_REVIEW", title: "✅ Terminer" },
+  ]);
 }
 
 // ===============================
