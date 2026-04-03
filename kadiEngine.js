@@ -2293,8 +2293,8 @@ async function handleProductFlowText(from, text) {
 
 async function sendAfterProductMenu(from) {
   await sendButtons(from, "Que voulez-vous faire ?", [
-    { id: "ADD_ITEM", title: "➕ Ajouter" },
-    { id: "DOC_REVIEW", title: "✅ Terminer" },
+    { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+    { id: "DOC_FINISH", title: "✅ Terminer" },
   ]);
 }
 
