@@ -2839,6 +2839,37 @@ async function handleIncomingImage(from, msg) {
 // ===============================
 // PDF creation
 // ===============================
+async function saveDocumentWithRetry({ waId, draft, maxAttempts = 3 }) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const saved = await saveDocument({ waId, doc: draft });
+      return saved;
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      lastError = e;
+
+      if (!msg.startsWith("DOC_NUMBER_ALREADY_EXISTS")) {
+        throw e;
+      }
+
+      console.warn(
+        `[KADI] doc number collision detected (attempt ${attempt}/${maxAttempts}) for ${draft.docNumber}`
+      );
+
+      draft.docNumber = await nextDocNumber({
+        waId,
+        mode: draft.type,
+        factureKind: draft.factureKind,
+        dateISO: draft.date,
+      });
+    }
+  }
+
+  throw lastError || new Error("SAVE_DOCUMENT_FAILED_AFTER_RETRY");
+}
+
 async function createAndSendPdf(from) {
   const s = getSession(from);
   const draft = s.lastDocDraft;
@@ -2894,7 +2925,6 @@ async function createAndSendPdf(from) {
   draft.requestId = draft.requestId || crypto.randomUUID();
 
   const consumeOperationKey = `pdf:consume:${draft.requestId}`;
-  const duplicateRollbackOperationKey = `pdf:duplicate:${draft.requestId}`;
   const failedRollbackOperationKey = `pdf:rollback:${draft.requestId}`;
 
   s.isGeneratingPdf = true;
@@ -2902,7 +2932,6 @@ async function createAndSendPdf(from) {
   let debited = false;
   let successAfterDebit = false;
   let finalBalance = 0;
-  let duplicateDoc = false;
 
   try {
     const profile = await getOrCreateProfile(from);
@@ -3036,52 +3065,22 @@ async function createAndSendPdf(from) {
       throw new Error("Upload PDF échoué");
     }
 
-    try {
-      const saved = await saveDocument({ waId: from, doc: draft });
-      draft.savedDocumentId = saved?.id || "generated";
-    } catch (e) {
-      const msg = String(e?.message || e || "");
-      console.warn("saveDocument error:", msg);
+    const saved = await saveDocumentWithRetry({
+      waId: from,
+      draft,
+      maxAttempts: 3,
+    });
 
-      if (
-        msg.includes("kadi_documents_doc_number_uniq") ||
-        msg.includes("DOC_NUMBER_ALREADY_EXISTS") ||
-        msg.includes("duplicate key value")
-      ) {
-        duplicateDoc = true;
-        draft.savedDocumentId = "duplicate";
-
-        try {
-          const rb = await addCredits(
-            { waId: from },
-            totalCost,
-            "rollback_duplicate_doc",
-            duplicateRollbackOperationKey,
-            {
-              requestId: draft.requestId,
-              docType: draft.type || null,
-              docNumber: draft.docNumber || null,
-              factureKind: draft.factureKind || null,
-            }
-          );
-
-          finalBalance = rb.balance;
-        } catch (rb) {
-          console.error("rollback duplicate doc failed:", rb?.message);
-          finalBalance = cons.balance;
-        }
-      } else {
-        throw e;
-      }
-    }
-
+    draft.savedDocumentId = saved?.id || "generated";
     successAfterDebit = true;
 
     draft.savedPdfMediaId = up.id;
     draft.savedPdfFilename = fileName;
-    draft.savedPdfCaption = duplicateDoc
-      ? `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nℹ️ Ce document avait déjà été généré.\nAucun crédit supplémentaire n’a été consommé.\nSolde: ${finalBalance} crédit(s)`
-      : `✅ ${title} ${draft.docNumber}\nTotal: ${money(total)} FCFA\nCoût: ${totalCost} crédit(s)\nSolde: ${finalBalance} crédit(s)`;
+    draft.savedPdfCaption =
+      `✅ ${title} ${draft.docNumber}\n` +
+      `Total: ${money(total)} FCFA\n` +
+      `Coût: ${totalCost} crédit(s)\n` +
+      `Solde: ${finalBalance} crédit(s)`;
 
     await sendDocument({
       to: from,
@@ -3090,7 +3089,7 @@ async function createAndSendPdf(from) {
       caption: draft.savedPdfCaption,
     });
 
-    if (draft.type === "devis" && !duplicateDoc) {
+    if (draft.type === "devis") {
       try {
         await createDevisFollowup({
           waId: from,
@@ -3112,13 +3111,8 @@ async function createAndSendPdf(from) {
 
     resetStampChoice(s);
 
-    if (duplicateDoc) {
-      s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from);
-    } else {
-      s.step = "doc_generated";
-      await sendGeneratedSuccessMenu(from);
-    }
+    s.step = "doc_generated";
+    await sendGeneratedSuccessMenu(from);
   } catch (e) {
     console.error("createAndSendPdf error:", e?.message);
 
