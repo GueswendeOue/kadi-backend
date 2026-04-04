@@ -42,11 +42,6 @@ const {
   readTopup,
 } = require("./kadiPayments");
 
-const { getPendingTopupByWaId } = require("./kadiPaymentsRepo");
-const {
-  readTopup,
-  markTopupProofImageReceived,
-} = require("./kadiPayments");
 
 const { notifyAdminTopupReview } = require("./kadiAdminNotifications");
 
