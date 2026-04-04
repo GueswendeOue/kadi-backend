@@ -1715,39 +1715,6 @@ async function sendFactureKindMenu(to) {
   ]);
 }
 
-function getRechargeOffers() {
-  return {
-    PACK_1000: {
-      id: "PACK_1000",
-      amountFcfa: 1000,
-      credits: 10,
-      label: "Pack 1000F",
-      bonusText: null,
-      includesStamp: false,
-    },
-    PACK_2000: {
-      id: "PACK_2000",
-      amountFcfa: 2000,
-      credits: 25,
-      label: "Pack 2000F",
-      bonusText: "⭐ Recommandé",
-      includesStamp: false,
-    },
-    PACK_5000: {
-      id: "PACK_5000",
-      amountFcfa: 5000,
-      credits: 50,
-      label: "Pack 5000F",
-      bonusText: "🎁 Tampon PRO offert",
-      includesStamp: true,
-    },
-  };
-}
-
-function getRechargeOfferById(replyId) {
-  return getRechargeOffers()[replyId] || null;
-}
-
 async function sendRechargePacksMenu(to) {
   return sendButtons(to, "💰 Choisissez un pack KADI :", [
     { id: "PACK_1000", title: "Pack 1000F" },
