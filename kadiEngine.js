@@ -1715,42 +1715,6 @@ async function sendFactureKindMenu(to) {
   ]);
 }
 
-async function sendRechargePacksMenu(to) {
-  return sendButtons(to, "💰 Choisissez un pack KADI :", [
-    { id: "PACK_1000", title: "Pack 1000F" },
-    { id: "PACK_2000", title: "Pack 2000F" },
-    { id: "PACK_5000", title: "Pack 5000F" },
-  ]);
-}
-
-async function sendRechargePaymentMenu(to, offer) {
-  if (!offer) {
-    await sendText(to, "❌ Offre introuvable.");
-    return sendRechargePacksMenu(to);
-  }
-
-  const lines = [
-    `💳 *${offer.label}*`,
-    ``,
-    `• ${offer.credits} crédits`,
-  ];
-
-  if (offer.includesStamp) {
-    lines.push(`• Tampon professionnel OFFERT 🎁`);
-  }
-
-  if (offer.bonusText) {
-    lines.push(`• ${offer.bonusText}`);
-  }
-
-  lines.push("", "Choisissez un mode :", "");
-
-  await sendButtons(to, lines.join("\n"), [
-    { id: `PAY_MM_${offer.amountFcfa}`, title: "Mobile Money" },
-    { id: `PAY_CODE_${offer.amountFcfa}`, title: "Code recharge" },
-    { id: "CREDITS_RECHARGE", title: "Retour" },
-  ]);
-}
 
 async function sendCreditsMenu(to) {
   return sendButtons(to, "💳 Crédits KADI", [
@@ -2300,12 +2264,6 @@ async function handleProductFlowText(from, text) {
   return false;
 }
 
-async function sendAfterProductMenu(from) {
-  await sendButtons(from, "Que voulez-vous faire ?", [
-    { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
-    { id: "DOC_FINISH", title: "✅ Terminer" },
-  ]);
-}
 
 // ===============================
 // OCR helpers
