@@ -17,6 +17,22 @@ const logger = {
 
 const { supabase } = require("./supabaseClient");
 
+const {
+  getRechargeOffers,
+  getRechargeOfferById,
+} = require("./kadiRechargeConfig");
+
+const {
+  sendRechargePacksMenu,
+  sendRechargePaymentMethodMenu,
+  sendOrangeMoneyInstructions,
+  sendPispiInstructions,
+} = require("./kadiRechargeUi");
+
+const {
+  createManualOrangeMoneyTopup,
+} = require("./kadiPayments");
+
 // ================= Optional modules (Tampon/Signature/Broadcast) =================
 let kadiStamp = null;
 let kadiSignature = null;
@@ -2003,19 +2019,6 @@ async function replyBalance(from) {
 }
 
 async function replyRechargeInfo(from) {
-  const s = getSession(from);
-  s.step = "recharge_pack_menu";
-  s.pendingRechargePack = null;
-  s.pendingRechargeAmount = null;
-
-  await sendText(
-    from,
-    "💰 *Packs disponibles*\n\n" +
-      "🟢 1000F → 10 crédits\n" +
-      "🟡 2000F → 25 crédits ⭐ recommandé\n" +
-      "💎 5000F → 50 crédits + tampon PRO OFFERT 🎁"
-  );
-
   return sendRechargePacksMenu(from);
 }
 
@@ -4122,39 +4125,40 @@ async function handleInteractiveReply(from, replyId) {
   if (replyId === "HOME_DOCS") return sendDocsMenu(from);
   if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
   if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+
   if (replyId === "RECEIPT_FORMAT_COMPACT") {
-  if (!s.lastDocDraft) {
-    await sendText(from, "❌ Aucun document en cours.");
+    if (!s.lastDocDraft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
+
+    s.lastDocDraft.receiptFormat = "compact";
+    s.step = "doc_client";
+
+    await sendText(from, "🧾 Format ticket sélectionné.");
+    await sendText(
+      from,
+      `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
+    );
     return;
   }
 
-  s.lastDocDraft.receiptFormat = "compact";
-  s.step = "doc_client";
+  if (replyId === "RECEIPT_FORMAT_A4") {
+    if (!s.lastDocDraft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
 
-  await sendText(from, "🧾 Format ticket sélectionné.");
-  await sendText(
-    from,
-    `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
-  );
-  return;
-}
+    s.lastDocDraft.receiptFormat = "a4";
+    s.step = "doc_client";
 
-if (replyId === "RECEIPT_FORMAT_A4") {
-  if (!s.lastDocDraft) {
-    await sendText(from, "❌ Aucun document en cours.");
+    await sendText(from, "📄 Format A4 sélectionné.");
+    await sendText(
+      from,
+      `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
+    );
     return;
   }
-
-  s.lastDocDraft.receiptFormat = "a4";
-  s.step = "doc_client";
-
-  await sendText(from, "📄 Format A4 sélectionné.");
-  await sendText(
-    from,
-    `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`
-  );
-  return;
-}
 
   const followupFacture = replyId.match(/^FOLLOWUP_FACTURE_(.+)$/);
   if (followupFacture) {
@@ -4435,6 +4439,104 @@ if (replyId === "RECEIPT_FORMAT_A4") {
 
   if (replyId === "CREDITS_SOLDE") return replyBalance(from);
   if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
+
+  // ===============================
+  // Recharge crédits
+  // ===============================
+  const selectedOffer = getRechargeOfferById(replyId);
+  if (selectedOffer) {
+    s.pendingRechargePack = selectedOffer.id;
+    s.pendingRechargeAmount = selectedOffer.amountFcfa;
+    s.pendingRechargeCredits = selectedOffer.credits;
+    s.pendingRechargeIncludesStamp = !!selectedOffer.includesStamp;
+    s.pendingTopupId = null;
+    s.pendingTopupReference = null;
+    s.pendingTopupMethod = null;
+
+    return sendRechargePaymentMethodMenu(from, selectedOffer);
+  }
+
+  if (replyId.startsWith("PAY_OM_")) {
+    const amount = Number(replyId.replace("PAY_OM_", ""));
+    const offer = Object.values(getRechargeOffers()).find(
+      (x) => x.amountFcfa === amount
+    );
+
+    if (!offer) {
+      await sendText(from, "❌ Pack introuvable.");
+      return sendRechargePacksMenu(from);
+    }
+
+    const topup = await createManualOrangeMoneyTopup({
+      waId: from,
+      amountFcfa: offer.amountFcfa,
+      credits: offer.credits,
+      includesStamp: !!offer.includesStamp,
+    });
+
+    s.pendingRechargePack = offer.id;
+    s.pendingRechargeAmount = offer.amountFcfa;
+    s.pendingRechargeCredits = offer.credits;
+    s.pendingRechargeIncludesStamp = !!offer.includesStamp;
+    s.pendingTopupId = topup.id;
+    s.pendingTopupReference = topup.reference;
+    s.pendingTopupMethod = "orange_money";
+    s.step = "recharge_proof";
+
+    return sendOrangeMoneyInstructions(from, offer);
+  }
+
+  if (replyId.startsWith("PAY_PISPI_")) {
+    const amount = Number(replyId.replace("PAY_PISPI_", ""));
+    const offer = Object.values(getRechargeOffers()).find(
+      (x) => x.amountFcfa === amount
+    );
+
+    if (!offer) {
+      await sendText(from, "❌ Pack introuvable.");
+      return sendRechargePacksMenu(from);
+    }
+
+    s.pendingRechargePack = offer.id;
+    s.pendingRechargeAmount = offer.amountFcfa;
+    s.pendingRechargeCredits = offer.credits;
+    s.pendingRechargeIncludesStamp = !!offer.includesStamp;
+    s.pendingTopupId = null;
+    s.pendingTopupReference = null;
+    s.pendingTopupMethod = "pispi";
+    s.step = "pispi_pending";
+
+    return sendPispiInstructions(from, offer);
+  }
+
+  if (replyId.startsWith("OM_PAID_")) {
+    s.step = "recharge_proof";
+    await sendText(
+      from,
+      "⏳ D’accord.\n\nEnvoyez maintenant :\n• le message de transaction\nOU\n• une capture d’écran du paiement."
+    );
+    return;
+  }
+
+  if (replyId.startsWith("OM_SEND_PROOF_")) {
+    s.step = "recharge_proof";
+    await sendText(
+      from,
+      "📎 Envoyez la preuve ici :\n• capture d’écran\nOU\n• message de confirmation Orange Money"
+    );
+    return;
+  }
+
+  if (replyId.startsWith("PISPI_CHECK_")) {
+    await sendText(from, "🔍 Vérification du paiement en cours...");
+
+    // TODO: brancher ici le vrai check PI-SPI sandbox
+    await sendText(
+      from,
+      "⚠️ Paiement non détecté pour le moment.\n\nSi vous êtes en mode test PI-SPI, terminez d’abord le parcours dans l’application compatible puis réessayez."
+    );
+    return;
+  }
 
   if (replyId === "ITEM_SAVE") {
     const it = s.itemDraft || {};
