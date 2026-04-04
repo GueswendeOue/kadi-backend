@@ -1,6 +1,6 @@
 "use strict";
 
-const { createTopup, updateTopup } = require("./kadiPaymentsRepo");
+const { createTopup, updateTopup, getTopupById } = require("./kadiPaymentsRepo");
 
 function buildTopupReference({ waId, amountFcfa }) {
   const safeWa = String(waId || "").replace(/\D/g, "");
@@ -28,16 +28,48 @@ async function createManualOrangeMoneyTopup({
   });
 }
 
-async function markTopupProofReceived(id, patch = {}) {
+async function markTopupProofTextReceived(id, proofText) {
   return updateTopup(id, {
-    ...patch,
+    proof_text: String(proofText || "").trim(),
     status: "pending_review",
     updated_at: new Date().toISOString(),
   });
 }
 
+async function markTopupProofImageReceived(id, proofImageUrl) {
+  return updateTopup(id, {
+    proof_image_url: proofImageUrl || null,
+    status: "pending_review",
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function approveTopup(id) {
+  return updateTopup(id, {
+    status: "approved",
+    approved_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function rejectTopup(id, reason = null) {
+  return updateTopup(id, {
+    status: "rejected",
+    rejection_reason: reason,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function readTopup(id) {
+  return getTopupById(id);
+}
+
 module.exports = {
   buildTopupReference,
   createManualOrangeMoneyTopup,
-  markTopupProofReceived,
+  markTopupProofTextReceived,
+  markTopupProofImageReceived,
+  approveTopup,
+  rejectTopup,
+  readTopup,
 };

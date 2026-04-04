@@ -33,6 +33,21 @@ const {
   createManualOrangeMoneyTopup,
 } = require("./kadiPayments");
 
+const { getPendingTopupByWaId } = require("./kadiPaymentsRepo");
+const {
+  markTopupProofTextReceived,
+  markTopupProofImageReceived,
+  approveTopup,
+  rejectTopup,
+  readTopup,
+} = require("./kadiPayments");
+
+const { getPendingTopupByWaId } = require("./kadiPaymentsRepo");
+const {
+  readTopup,
+  markTopupProofImageReceived,
+} = require("./kadiPayments");
+
 // ================= Optional modules (Tampon/Signature/Broadcast) =================
 let kadiStamp = null;
 let kadiSignature = null;
@@ -2731,14 +2746,60 @@ async function handleAdminBroadcastImage(from, msg) {
 async function handleIncomingImage(from, msg) {
   const s = getSession(from);
 
+  // ===============================
+  // Admin broadcast image
+  // ===============================
   if (await handleAdminBroadcastImage(from, msg)) return;
 
-  if (s.step === "profile" && s.profileStep === "logo") return handleLogoImage(from, msg);
+  // ===============================
+  // Logo profil
+  // ===============================
+  if (s.step === "profile" && s.profileStep === "logo") {
+    return handleLogoImage(from, msg);
+  }
 
   const mediaId = msg?.image?.id;
-  if (!mediaId) return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
+  if (!mediaId) {
+    return sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
+  }
 
+  // ===============================
+  // Preuve recharge Orange Money (image)
+  // ===============================
+  if (s.step === "recharge_proof") {
+    let topup = null;
+
+    if (s.pendingTopupId) {
+      topup = await readTopup(s.pendingTopupId);
+    }
+
+    if (!topup) {
+      topup = await getPendingTopupByWaId(from);
+    }
+
+    if (!topup) {
+      return sendText(from, "❌ Aucune recharge en attente trouvée.");
+    }
+
+    // Remplace plus tard par un vrai upload vers Supabase Storage si tu veux
+    const proofImageUrl = `whatsapp://media/${mediaId}`;
+
+    const updated = await markTopupProofImageReceived(topup.id, proofImageUrl);
+
+    await sendText(
+      from,
+      "⏳ Capture reçue.\n\nVotre recharge est en attente de validation.\nVous recevrez un message dès que ce sera validé."
+    );
+
+    await notifyAdminTopupReview(from, updated, "image");
+    return;
+  }
+
+  // ===============================
+  // OCR document
+  // ===============================
   s.pendingOcrMediaId = mediaId;
+
   return sendButtons(from, "📷 Photo reçue. Générer quel document ?", [
     { id: "OCR_DEVIS", title: "Devis" },
     { id: "OCR_FACTURE", title: "Facture" },
