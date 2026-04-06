@@ -78,9 +78,122 @@ function makeKadiInteractiveFlow(deps) {
     replyRechargeInfo,
   } = deps;
 
+  async function sendCurrentDraftPreview(from, draft) {
+    const preview = buildPreviewMessage({ doc: draft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    return sendPreviewMenu(from);
+  }
+
+  function buildDraftFromIntent(intent) {
+    return {
+      type: intent?.docType || "devis",
+      factureKind:
+        intent?.docType === "facture"
+          ? intent?.factureKind || "definitive"
+          : null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: intent?.client || null,
+      motif: intent?.motif || null,
+      items: Array.isArray(intent?.items)
+        ? intent.items.map((it) => ({
+            label: String(it?.label || "Produit").trim(),
+            qty: Number(it?.qty || 1),
+            unitPrice:
+              it?.unitPrice == null ? null : Number(it.unitPrice || 0),
+          }))
+        : [],
+      finance: null,
+      source: intent?.source || "voice",
+      meta: makeDraftMeta({
+        origin: "intent_engine",
+        confidence: Number(intent?.confidence || 0),
+      }),
+    };
+  }
+
   async function handleInteractiveReply(from, replyId) {
     const s = getSession(from);
 
+    // ===============================
+    // INTENT REVIEW (VOICE / IA)
+    // ===============================
+    if (replyId === "INTENT_OK") {
+      const intent = s.intent || null;
+
+      if (!intent) {
+        await sendText(from, "❌ Analyse introuvable. Renvoyez votre message.");
+        return;
+      }
+
+      if (Array.isArray(intent.missing) && intent.missing.length > 0) {
+        if (intent.missing.includes("client")) {
+          s.step = "intent_fix_client";
+          await sendText(from, "👤 Quel est le nom du client ?");
+          return;
+        }
+
+        if (intent.missing.includes("price")) {
+          const item = Array.isArray(intent.items)
+            ? intent.items.find((i) => !i?.unitPrice)
+            : null;
+
+          s.step = "intent_fix_price";
+          s.intentPendingItemLabel = item?.label || null;
+
+          await sendText(
+            from,
+            `💰 Quel est le prix pour : *${
+              item?.label || "cet article"
+            }* ?`
+          );
+          return;
+        }
+
+        if (intent.missing.includes("items")) {
+          s.step = "intent_fix_items";
+          await sendText(
+            from,
+            "📦 Je n’ai pas bien compris les éléments.\n\nÉcrivez-les clairement."
+          );
+          return;
+        }
+      }
+
+      s.lastDocDraft = buildDraftFromIntent(intent);
+      s.step = "doc_review";
+      s.intent = null;
+      s.intentPendingItemLabel = null;
+
+      return sendCurrentDraftPreview(from, s.lastDocDraft);
+    }
+
+    if (replyId === "INTENT_FIX") {
+      const intent = s.intent || null;
+
+      if (!intent) {
+        await sendText(from, "❌ Analyse introuvable. Renvoyez votre message.");
+        return;
+      }
+
+      s.step = "intent_fix";
+
+      await sendText(
+        from,
+        "✏️ Corrigez les informations en une phrase.\n\n" +
+          "Exemple :\n" +
+          "Devis pour Moussa, 2 portes à 25000 et 2 fenêtres à 5000"
+      );
+      return;
+    }
+
+    // ===============================
+    // SMART BLOCK
+    // ===============================
     if (replyId === "SMARTBLOCK_FIX") {
       return sendText(
         from,
@@ -96,15 +209,7 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       s.step = "doc_review";
-
-      const preview = buildPreviewMessage({ doc: draft });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(draft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      await sendPreviewMenu(from);
-      return;
+      return sendCurrentDraftPreview(from, draft);
     }
 
     if (replyId === "BACK_HOME") return sendHomeMenu(from);
@@ -144,13 +249,12 @@ function makeKadiInteractiveFlow(deps) {
       );
     }
 
-    // Recharge rapide utilisée dans onboarding / alertes
     if (replyId === "RECHARGE_1000" || replyId === "RECHARGE_2000") {
       return sendRechargePacksMenu(from);
     }
 
     // ===============================
-    // Reçu format
+    // REÇU FORMAT
     // ===============================
     if (replyId === "RECEIPT_FORMAT_COMPACT") {
       if (!s.lastDocDraft) {
@@ -181,7 +285,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Followups devis
+    // FOLLOWUPS DEVIS
     // ===============================
     const followupFacture = replyId.match(/^FOLLOWUP_FACTURE_(.+)$/);
     if (followupFacture) {
@@ -211,16 +315,9 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_review";
 
       await markDevisFollowupConverted(followupId, "facture");
-
       await sendText(from, "✅ J’ai repris votre devis pour créer une facture.");
 
-      const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(s.lastDocDraft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      return sendPreviewMenu(from);
+      return sendCurrentDraftPreview(from, s.lastDocDraft);
     }
 
     const followupRecu = replyId.match(/^FOLLOWUP_RECU_(.+)$/);
@@ -251,16 +348,9 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_review";
 
       await markDevisFollowupConverted(followupId, "recu");
-
       await sendText(from, "✅ J’ai repris votre devis pour créer un reçu.");
 
-      const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(s.lastDocDraft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      return sendPreviewMenu(from);
+      return sendCurrentDraftPreview(from, s.lastDocDraft);
     }
 
     const followupLater = replyId.match(/^FOLLOWUP_LATER_(.+)$/);
@@ -272,7 +362,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Smart block -> route natural
+    // SMART BLOCK -> NATURAL
     // ===============================
     if (
       replyId === "SMARTBLOCK_DEVIS" ||
@@ -323,7 +413,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Catalogue docs
+    // CATALOGUE DOCS
     // ===============================
     if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
     if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
@@ -390,7 +480,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Profil / tampon
+    // PROFIL / TAMPON
     // ===============================
     if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
@@ -496,7 +586,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Crédits / recharge
+    // CRÉDITS / RECHARGE
     // ===============================
     if (replyId === "CREDITS_SOLDE") return replyBalance(from);
     if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
@@ -685,21 +775,14 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // Produit / preview / PDF
+    // PRODUIT / PREVIEW / PDF
     // ===============================
     if (replyId === "ITEM_EDIT") return askItemLabel(from);
     if (replyId === "DOC_ADD_MORE") return askItemLabel(from);
 
     if (replyId === "DOC_FINISH") {
       s.step = "doc_review";
-
-      const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(s.lastDocDraft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      return sendPreviewMenu(from);
+      return sendCurrentDraftPreview(from, s.lastDocDraft);
     }
 
     if (replyId === "DECHARGE_SEND_CONFIRMATION") {
@@ -845,7 +928,8 @@ function makeKadiInteractiveFlow(deps) {
       await sendDocument({
         to: from,
         mediaId: draft.savedPdfMediaId,
-        filename: draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+        filename:
+          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
         caption:
           draft.savedPdfCaption ||
           "📄 Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
