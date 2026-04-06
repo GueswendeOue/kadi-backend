@@ -129,12 +129,7 @@ const kadiSignature = require("./kadiSignature");
 const kadiBroadcast = require("./kadiBroadcast");
 
 // OCR
-const {
-  ocrImageToText,
-  geminiIsEnabled,
-  ocrLooksGood,
-  geminiOcrImageBuffer,
-} = require("./kadiOcr");
+const { kadiOcrEngine } = require("./kadiOcrEngine");
 
 // Smart block
 const {
@@ -412,11 +407,11 @@ const { processOcrImageToDraft } = makeKadiOcrFlow({
   computeBasePdfCost,
   formatBaseCostLine,
   logger,
-  ocrImageToText,
-  geminiIsEnabled,
-  ocrLooksGood,
-  geminiOcrImageBuffer,
-  parseInvoiceTextWithGemini,
+  ocrImageToText: kadiOcrEngine,
+geminiIsEnabled: () => false,
+ocrLooksGood: () => true,
+geminiOcrImageBuffer: null,
+parseInvoiceTextWithGemini: null,
   parseNumberSmart,
   sanitizeOcrLabel,
   looksLikeRealItemLabel,
@@ -651,6 +646,44 @@ const { handleCommand, handleAdmin } = makeKadiCommandFlow({
 // ===============================
 // Main routing
 // ===============================
+async function tryHandleGodMode(from, text) {
+  try {
+    if (!text || text.length < 3) return false;
+
+    const draft = await kadiNLUEngine(text);
+
+    if (!draft || !draft.items || draft.items.length === 0) {
+      return false;
+    }
+
+    const s = getSession(from);
+
+    s.lastDocDraft = {
+      type: draft.docType || "devis",
+      client: draft.client || "Client",
+      items: draft.items,
+      meta: makeDraftMeta(),
+    };
+
+    const lines = draft.items
+      .map(
+        (i) =>
+          `• ${i.label} x${i.qty} = ${money(i.unitPrice || 0)}`
+      )
+      .join("\n");
+
+    await sendText(
+      from,
+      `🔥 ${draft.docType.toUpperCase()} prêt (${draft.client})\n\n${lines}\n\n💰 Total: ${money(draft.total)} FCFA`
+    );
+
+    return true;
+  } catch (e) {
+    console.warn("[KADI GOD MODE ERROR]", e?.message);
+    return false;
+  }
+}
+
 async function handleIncomingMessage(value) {
   const messages = value?.messages || [];
   if (!messages.length) return;
@@ -697,7 +730,11 @@ async function handleIncomingMessage(value) {
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileAnswer(from, text)) return;
           if (await handleStampFlow(from, text)) return;
-          if (await tryHandleNaturalMessage(from, text)) return;
+          // 🔥 GOD MODE FIRST
+if (await tryHandleGodMode(from, text)) return;
+
+// 🔁 fallback existant
+if (await tryHandleNaturalMessage(from, text)) return;
           if (await handleSmartItemsBlockText(from, text)) return;
           if (await handleProductFlowText(from, text)) return;
 
