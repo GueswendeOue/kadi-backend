@@ -3,6 +3,9 @@
 const OpenAI = require("openai");
 const { buildIntent } = require("./kadiIntentEngine");
 const { buildIntentMessage, getNextQuestion } = require("./kadiIntentUx");
+const { normalizeMooreBusinessText } = require("./kadiMooreNormalizer");
+console.log("[KADI/AUDIO] raw transcript:", transcript.text);
+console.log("[KADI/AUDIO] normalized transcript:", text);
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v21.0";
@@ -155,7 +158,9 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       language: "fr",
     });
 
-    const text = normalizeTranscript(transcript.text);
+    const text = normalizeMooreBusinessText(
+  normalizeTranscript(transcript.text)
+);
 
     if (!text) {
       await sendText(
