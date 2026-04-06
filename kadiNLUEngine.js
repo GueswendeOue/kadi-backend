@@ -1,6 +1,6 @@
 "use strict";
 
-const { parseNaturalWithOpenAI } = require("./kadiNLU");
+const { parseNaturalWithOpenAI } = require("./kadiOpenAI");
 const { extractItemsFromText } = require("./kadiItemsExtractor");
 const { detectClient } = require("./kadiClientDetector");
 const { autoFixDraft } = require("./kadiAutoFix");
@@ -32,7 +32,35 @@ async function kadiNLUEngine(text) {
   // 🔥 2. GOD MODE FALLBACK
   console.warn("[KADI NLU] FALLBACK GOD MODE");
 
-  const items = extractItemsFromText(text);
+  let items = extractItemsFromText(text);
+
+// 🔥 PATCH INTELLIGENT (qty + price)
+items = items.map((item) => {
+  const t = text.toLowerCase();
+
+  let qty = item.qty || 1;
+  let price = item.unitPrice || 0;
+
+  // 🔢 Quantités
+  if (/deux|2/.test(t)) qty = 2;
+  else if (/trois|3/.test(t)) qty = 3;
+  else if (/quatre|4/.test(t)) qty = 4;
+
+  // 💰 Prix
+  const priceMatch = t.match(/(\d+[\s\d]*)/);
+  if (priceMatch) {
+    price = Number(priceMatch[1].replace(/\s/g, ""));
+  }
+
+  return {
+    label: item.label,
+    qty,
+    unitPrice: price,
+  };
+});
+
+// DEBUG
+console.log("[KADI PATCH ITEMS]", items);
 
   const draft = autoFixDraft({
     docType: result?.docType || "devis",

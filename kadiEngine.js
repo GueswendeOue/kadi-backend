@@ -52,7 +52,7 @@ const { makeKadiCreditsUi } = require("./kadiCreditsUi");
 // AI / parsing
 // ===============================
 const { handleIncomingAudioMessage } = require("./kadiAudio");
-const { parseNaturalWithOpenAI } = require("./kadiNlu");
+const { parseNaturalWithOpenAI } = require("./kadiOpenAI");
 const { parseNaturalWhatsAppMessage } = require("./kadiNaturalParser");
 
 // ===============================
