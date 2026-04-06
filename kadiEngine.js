@@ -6,8 +6,15 @@
 const { supabase } = require("./supabaseClient");
 const { getSession } = require("./kadiState");
 const { withUserLock } = require("./kadiLocks");
-const { extractMetaIdentity, resolveOwnerKey, syncMetaIdentity } = require("./kadiIdentity");
-const { ensureWelcomeCredits, maybeSendOnboarding } = require("./kadiOnboarding");
+const {
+  extractMetaIdentity,
+  resolveOwnerKey,
+  syncMetaIdentity,
+} = require("./kadiIdentity");
+const {
+  ensureWelcomeCredits,
+  maybeSendOnboarding,
+} = require("./kadiOnboarding");
 
 // ===============================
 // Messaging / WhatsApp
@@ -39,6 +46,7 @@ const {
 
 const { makeDraftHelpers } = require("./kadiDraftHelpers");
 const { makeKadiMenus } = require("./kadiMenus");
+const { makeKadiCreditsUi } = require("./kadiCreditsUi");
 
 // ===============================
 // AI / parsing
@@ -91,7 +99,6 @@ const { notifyAdminTopupReview } = require("./kadiAdminNotifications");
 // ===============================
 // Existing repos / services
 // ===============================
-// Ajuste ces imports selon tes vrais fichiers existants.
 const {
   getOrCreateProfile,
   updateProfile,
@@ -106,31 +113,30 @@ const {
   addCredits,
   consumeCredit,
   consumeFeature,
+  createRechargeCodes,
+  redeemCode,
 } = require("./kadiCreditsRepo");
 
-const {
-  saveDocument,
-  nextDocNumber,
-} = require("./kadiDocumentsRepo"); // ajuste si besoin
+const { getStats, getTopClients, getDocsForExport } = require("./kadiStatsRepo");
 
-const {
-  buildPdfBuffer,
-  buildDechargeText,
-} = require("./kadiPdfBuilder"); // ajuste si besoin
+const { saveDocument } = require("./kadiRepo");
+const { nextDocNumber } = require("./kadiCounterRepo");
+const { buildPdfBuffer } = require("./kadiPdf");
+const { parseInvoiceTextWithGemini } = require("./kadiGemini");
 
 const kadiStamp = require("./kadiStamp");
 const kadiSignature = require("./kadiSignature");
 const kadiBroadcast = require("./kadiBroadcast");
 
-// OCR / Gemini — ajuste selon tes vrais helpers
+// OCR
 const {
   ocrImageToText,
   geminiIsEnabled,
   ocrLooksGood,
   geminiOcrImageBuffer,
-  parseInvoiceTextWithGemini,
 } = require("./kadiOcr");
 
+// Smart block
 const {
   analyzeSmartBlock,
   parseItemsBlockSmart,
@@ -138,25 +144,17 @@ const {
   buildSmartMismatchMessage,
   sanitizeOcrLabel,
   looksLikeRealItemLabel,
-} = require("./kadiSmartBlock"); // ajuste si besoin
+} = require("./kadiSmartBlock");
 
+// Décharge
 const {
   detectDechargeType,
   initDechargeDraft,
   buildDechargePreviewMessage,
   buildDechargeConfirmationMessage,
   buildPostConfirmationMessage,
-} = require("./kadiDecharge"); // ajuste si besoin
-
-const {
-  createRechargeCodes,
-  redeemCode,
-  getStats,
-  getTopClients,
-  getDocsForExport,
-} = require("./kadiAdminRepo"); // ajuste si besoin
-
-const { replyBalance, replyRechargeInfo } = require("./kadiCreditsUi"); // ajuste si besoin
+  buildDechargeText,
+} = require("./kadiDecharge");
 
 const logger = {
   info: (context, message, meta = {}) =>
@@ -199,10 +197,91 @@ function ensureAdmin(identityInput) {
   const raw =
     typeof identityInput === "string"
       ? identityInput
-      : identityInput?.wa_id || identityInput?.waId || identityInput?.from || "";
+      : identityInput?.wa_id ||
+        identityInput?.waId ||
+        identityInput?.from ||
+        "";
   const from = String(raw || "").trim();
   const adminWaId = String(process.env.ADMIN_WA_ID || "").trim();
   return !!from && !!adminWaId && from === adminWaId;
+}
+
+function parseNumberSmart(input) {
+  const raw = String(input || "").trim().toLowerCase();
+  if (!raw) return null;
+
+  let s = raw.replace(/\s/g, "").replace(/fcfa/g, "").replace(/f$/g, "");
+  let multiplier = 1;
+
+  if (s.endsWith("k")) {
+    multiplier = 1000;
+    s = s.slice(0, -1);
+  } else if (s.endsWith("m")) {
+    multiplier = 1000000;
+    s = s.slice(0, -1);
+  }
+
+  s = s.replace(/,/g, ".");
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+
+  return Math.round(n * multiplier);
+}
+
+async function logLearningEvent(payload = {}) {
+  try {
+    logger.info("learning", "event", payload);
+  } catch (_) {}
+}
+
+async function uploadCampaignImageBuffer({ userId, buffer, mimeType, filename }) {
+  const finalName = `${filename || `campaign-${Date.now()}`}.jpg`;
+  const up = await uploadMediaBuffer({
+    buffer,
+    filename: finalName,
+    mimeType: mimeType || "image/jpeg",
+  });
+
+  return {
+    filePath: up?.id ? `whatsapp-media/${up.id}` : finalName,
+    mediaId: up?.id || null,
+  };
+}
+
+async function getSignedCampaignUrl(filePath) {
+  return filePath;
+}
+
+async function broadcastToAllKnownUsers(from, text) {
+  if (kadiBroadcast?.broadcastToAll) {
+    return kadiBroadcast.broadcastToAll({
+      adminWaId: from,
+      message: text,
+    });
+  }
+
+  await sendText(from, "⚠️ Module broadcast non disponible.");
+}
+
+async function handleStatsCommand(from) {
+  try {
+    const stats = await getStats({
+      packCredits: PACK_CREDITS,
+      packPriceFcfa: PACK_PRICE_FCFA,
+    });
+
+    const msg =
+      `📊 *KADI STATS*\n\n` +
+      `👥 Utilisateurs: ${stats?.users?.totalUsers || 0}\n` +
+      `🔥 Actifs 7j: ${stats?.users?.active7 || 0}\n` +
+      `📄 Docs total: ${stats?.docs?.total || 0}\n` +
+      `📅 Docs 30j: ${stats?.docs?.last30 || 0}\n` +
+      `💰 Volume total: ${money(stats?.docs?.sumAll || 0)} FCFA`;
+
+    await sendText(from, msg);
+  } catch (e) {
+    await sendText(from, "❌ Impossible de charger les stats.");
+  }
 }
 
 // ===============================
@@ -251,6 +330,12 @@ const {
   sendList,
   getOrCreateProfile,
   STAMP_ONE_TIME_COST,
+});
+
+const { replyBalance, replyRechargeInfo } = makeKadiCreditsUi({
+  sendText,
+  getBalance,
+  sendRechargePacksMenu,
 });
 
 // ===============================
@@ -311,9 +396,7 @@ const {
 // ===============================
 // OCR flow
 // ===============================
-const {
-  processOcrImageToDraft,
-} = makeKadiOcrFlow({
+const { processOcrImageToDraft } = makeKadiOcrFlow({
   getSession,
   sendText,
   sendButtons,
@@ -334,7 +417,7 @@ const {
   ocrLooksGood,
   geminiOcrImageBuffer,
   parseInvoiceTextWithGemini,
-  parseNumberSmart, // doit exister dans ton code
+  parseNumberSmart,
   sanitizeOcrLabel,
   looksLikeRealItemLabel,
 });
@@ -364,7 +447,7 @@ const {
   computeFinance,
   makeItem,
   parseNaturalWhatsAppMessage,
-  parseNumberSmart, // doit exister dans ton code
+  parseNumberSmart,
   buildPreviewMessage,
   computeBasePdfCost,
   formatBaseCostLine,
@@ -404,7 +487,7 @@ const {
   parseNaturalWhatsAppMessage,
   parseNaturalWithOpenAI,
   analyzeSmartBlock,
-  logLearningEvent, // doit exister dans ton code
+  logLearningEvent,
   detectDechargeType,
   buildDechargePreviewMessage,
   initDechargeDraft,
@@ -450,17 +533,12 @@ const {
   validateDraft,
   resetStampChoice,
   buildDechargeText,
-  PDF_SIMPLE_CREDITS,
-  OCR_PDF_CREDITS,
-  DECHARGE_CREDITS,
 });
 
 // ===============================
 // Image flow
 // ===============================
-const {
-  handleIncomingImage,
-} = makeKadiImageFlow({
+const { handleIncomingImage } = makeKadiImageFlow({
   getSession,
   sendText,
   sendButtons,
@@ -474,8 +552,8 @@ const {
   markTopupProofImageReceived,
   notifyAdminTopupReview,
   processOcrImageToDraft,
-  uploadCampaignImageBuffer, // ajuste si besoin
-  getSignedCampaignUrl,      // ajuste si besoin
+  uploadCampaignImageBuffer,
+  getSignedCampaignUrl,
   ensureAdmin,
   resetAdminBroadcastState,
   kadiBroadcast,
@@ -484,9 +562,7 @@ const {
 // ===============================
 // Interactive flow
 // ===============================
-const {
-  handleInteractiveReply,
-} = makeKadiInteractiveFlow({
+const { handleInteractiveReply } = makeKadiInteractiveFlow({
   getSession,
   sendText,
   sendButtons,
@@ -557,10 +633,7 @@ const {
 // ===============================
 // Command flow
 // ===============================
-const {
-  handleCommand,
-  handleAdmin,
-} = makeKadiCommandFlow({
+const { handleCommand, handleAdmin } = makeKadiCommandFlow({
   getSession,
   sendText,
   sendButtons,
@@ -570,8 +643,8 @@ const {
   sendRechargePacksMenu,
   sendDocsMenu,
   ensureAdmin,
-  broadcastToAllKnownUsers, // doit exister dans ton code ou kadiBroadcast
-  handleStatsCommand,       // doit exister dans ton code
+  broadcastToAllKnownUsers,
+  handleStatsCommand,
   norm,
 });
 
@@ -634,7 +707,10 @@ async function handleIncomingMessage(value) {
           );
         }
 
-        return sendText(from, "❌ Type de message non supporté pour le moment.");
+        return sendText(
+          from,
+          "❌ Type de message non supporté pour le moment."
+        );
       } catch (err) {
         console.error("[KADI] handleIncomingMessage error:", err);
         await sendText(from, "❌ Une erreur est survenue. Réessayez.");
