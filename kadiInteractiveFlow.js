@@ -73,6 +73,9 @@ function makeKadiInteractiveFlow(deps) {
     // misc
     formatDateISO,
     sendDocument,
+    startProfileFlow,
+    replyBalance,
+    replyRechargeInfo,
   } = deps;
 
   async function handleInteractiveReply(from, replyId) {
@@ -107,9 +110,44 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "BACK_HOME") return sendHomeMenu(from);
     if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
+    // ===============================
+    // HOME / ONBOARDING
+    // ===============================
     if (replyId === "HOME_DOCS") return sendDocsMenu(from);
     if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
     if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+
+    if (replyId === "HOME_OCR") {
+      s.step = "awaiting_ocr_image";
+      return sendText(
+        from,
+        "📷 Envoyez la photo de votre facture, devis ou reçu.\n\nJe vais la transformer en document propre."
+      );
+    }
+
+    if (replyId === "HOME_TUTORIAL") {
+      return sendText(
+        from,
+        `📚 *Exemples KADI*\n\n` +
+          `• Devis pour Moussa, 2 portes à 25000\n` +
+          `• Facture pour Awa, 5 pagnes à 3000\n` +
+          `• Reçu loyer avril 100000 pour Adama\n` +
+          `• Décharge pour prêt de 50000 à Issa\n\n` +
+          `Vous pouvez aussi envoyer un vocal ou une photo.`
+      );
+    }
+
+    if (replyId === "HOME_HISTORY") {
+      return sendText(
+        from,
+        "📚 Historique en cours de préparation.\n\nTapez MENU pour continuer."
+      );
+    }
+
+    // Recharge rapide utilisée dans onboarding / alertes
+    if (replyId === "RECHARGE_1000" || replyId === "RECHARGE_2000") {
+      return sendRechargePacksMenu(from);
+    }
 
     // ===============================
     // Reçu format
@@ -355,8 +393,9 @@ function makeKadiInteractiveFlow(deps) {
     // Profil / tampon
     // ===============================
     if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
+
     if (replyId === "PROFILE_EDIT") {
-      return deps.startProfileFlow(from);
+      return startProfileFlow(from);
     }
 
     if (replyId === "STAMP_TOGGLE") {
@@ -459,8 +498,8 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     // Crédits / recharge
     // ===============================
-    if (replyId === "CREDITS_SOLDE") return deps.replyBalance(from);
-    if (replyId === "CREDITS_RECHARGE") return deps.replyRechargeInfo(from);
+    if (replyId === "CREDITS_SOLDE") return replyBalance(from);
+    if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
     const selectedOffer = getRechargeOfferById(replyId);
     if (selectedOffer) {
