@@ -1,6 +1,8 @@
 "use strict";
 
 const OpenAI = require("openai");
+const { buildIntent } = require("./kadiIntentEngine");
+const { buildIntentMessage, getNextQuestion } = require("./kadiIntentUx");
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v21.0";
@@ -31,7 +33,9 @@ function normalizeTranscript(text = "") {
 async function getWhatsAppMediaUrl(mediaId) {
   if (!mediaId) throw new Error("mediaId manquant");
 
-  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${encodeURIComponent(mediaId)}`;
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${encodeURIComponent(
+    mediaId
+  )}`;
 
   const res = await fetch(url, {
     method: "GET",
@@ -101,7 +105,7 @@ async function transcribeAudioBuffer(buffer, options = {}) {
     language: options.language || "fr",
     prompt:
       options.prompt ||
-      "Transcrire clairement un message vocal WhatsApp en français pour création de devis, facture ou reçu. Conserver noms, montants, produits et quantités.",
+      "Transcrire clairement un message vocal WhatsApp en français pour création de devis, facture, reçu ou décharge. Conserver noms, montants, produits et quantités. Ne pas inventer.",
   });
 
   return {
@@ -111,7 +115,7 @@ async function transcribeAudioBuffer(buffer, options = {}) {
 }
 
 async function handleIncomingAudioMessage(msg, value, deps) {
-  const { sendText, tryHandleNaturalMessage, handleProductFlowText } = deps || {};
+  const { sendText, sendButtons, getSession } = deps || {};
 
   if (msg?.type !== "audio") return false;
 
@@ -119,18 +123,28 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     throw new Error("sendText manquant dans deps");
   }
 
+  if (typeof sendButtons !== "function") {
+    throw new Error("sendButtons manquant dans deps");
+  }
+
+  if (typeof getSession !== "function") {
+    throw new Error("getSession manquant dans deps");
+  }
+
   const from = msg?.from;
   const mediaId = msg?.audio?.id;
 
   if (!from || !mediaId) {
-    await sendText(
-      from,
-      "❌ Message vocal invalide. Essayez de renvoyer le vocal ou d’écrire votre demande."
-    );
+    if (from) {
+      await sendText(
+        from,
+        "❌ Message vocal invalide. Essayez de renvoyer le vocal ou d’écrire votre demande."
+      );
+    }
     return true;
   }
 
-  await sendText(from, "🎤 Reçu, je traite votre message...");
+  await sendText(from, "🎤 Analyse du vocal en cours...");
 
   try {
     const mediaMeta = await getWhatsAppMediaUrl(mediaId);
@@ -151,20 +165,28 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    if (typeof tryHandleNaturalMessage === "function") {
-      const handledNatural = await tryHandleNaturalMessage(from, text);
-      if (handledNatural) return true;
+    const s = getSession(from);
+    const intent = buildIntent(text);
+
+    s.intent = intent;
+    s.intentRawText = text;
+    s.step = "intent_review";
+
+    const msgText = buildIntentMessage(intent);
+
+    const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
+
+    if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
+      buttons.unshift({ id: "INTENT_OK", title: "✅ Valider" });
     }
 
-    if (typeof handleProductFlowText === "function") {
-      const handledProduct = await handleProductFlowText(from, text);
-      if (handledProduct) return true;
+    await sendButtons(from, msgText, buttons);
+
+    const nextQuestion = getNextQuestion(intent);
+    if (nextQuestion) {
+      await sendText(from, nextQuestion);
     }
 
-    await sendText(
-      from,
-      `🎤 J’ai transcrit :\n"${text}"\n\nJe n’ai pas pu l’utiliser directement. Essayez avec une phrase simple, par exemple :\n“Reçu loyer février 100000 pour Adama.”`
-    );
     return true;
   } catch (error) {
     console.error("[KADI/AUDIO] error:", error);

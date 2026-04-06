@@ -704,8 +704,8 @@ async function handleIncomingMessage(value) {
         if (msg.type === "audio") {
           return handleIncomingAudioMessage(msg, value, {
             sendText,
-            tryHandleNaturalMessage,
-            handleProductFlowText,
+            sendButtons,
+            getSession,
           });
         }
 
