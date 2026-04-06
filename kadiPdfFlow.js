@@ -38,21 +38,13 @@ function makeKadiPdfFlow(deps) {
     validateDraft,
     resetStampChoice,
     buildDechargeText,
-
-    // menus / messages
-    sendGeneratedSuccessMenu,
-    sendAlreadyGeneratedMenu,
-
-    // config
-    PDF_SIMPLE_CREDITS,
-    OCR_PDF_CREDITS,
-    DECHARGE_CREDITS,
   } = deps;
 
   async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null) {
     let buf = pdfBuffer;
 
-    const canStamp = profile?.stamp_enabled === true && profile?.stamp_paid === true;
+    const canStamp =
+      profile?.stamp_enabled === true && profile?.stamp_paid === true;
 
     if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
       try {
@@ -184,7 +176,9 @@ function makeKadiPdfFlow(deps) {
 
       const stampExtraCost = useOneTimeStamp ? 1 : 0;
       const totalCost = baseCost + stampExtraCost;
-      const finalReason = useOneTimeStamp ? `${baseReason}_stamp_once` : baseReason;
+      const finalReason = useOneTimeStamp
+        ? `${baseReason}_stamp_once`
+        : baseReason;
 
       const cons = await consumeCredit(
         { waId: from },
@@ -278,7 +272,11 @@ function makeKadiPdfFlow(deps) {
             }
           : profile;
 
-      pdfBuf = await applyStampAndSignatureIfAny(pdfBuf, stampProfile, logoBuf);
+      pdfBuf = await applyStampAndSignatureIfAny(
+        pdfBuf,
+        stampProfile,
+        logoBuf
+      );
 
       draft.meta = makeDraftMeta({
         ...(draft.meta || {}),
@@ -287,7 +285,11 @@ function makeKadiPdfFlow(deps) {
         usedGeminiParse: !!draft?.meta?.usedGeminiParse,
         businessSector: draft?.meta?.businessSector || null,
         requestId: draft.requestId,
-        stampMode: usePaidStamp ? "unlimited" : useOneTimeStamp ? "one_time" : "none",
+        stampMode: usePaidStamp
+          ? "unlimited"
+          : useOneTimeStamp
+          ? "one_time"
+          : "none",
       });
 
       draft.status = "generated";
@@ -358,7 +360,9 @@ function makeKadiPdfFlow(deps) {
       if (debited && !successAfterDebit) {
         try {
           const stampExtraCost =
-            s.addStampForNextDoc === true && s.stampMode === "one_time" ? 1 : 0;
+            s.addStampForNextDoc === true && s.stampMode === "one_time"
+              ? 1
+              : 0;
           const totalCost = baseCost + stampExtraCost;
 
           await addCredits(
