@@ -49,6 +49,8 @@ function makeKadiOcrFlow(deps) {
       /net\s*a\s*payer\s*[:\-]?\s*([0-9\s.,]+)/i,
       /montant\s+total\s*[:\-]?\s*([0-9\s.,]+)/i,
       /a\s+payer\s*[:\-]?\s*([0-9\s.,]+)/i,
+      /grandTotal\s*[:\-]?\s*([0-9\s.,]+)/i,
+      /TOTAL:\s*([0-9\s.,]+)/i,
     ];
 
     for (const p of patterns) {
@@ -60,6 +62,95 @@ function makeKadiOcrFlow(deps) {
     }
 
     return null;
+  }
+
+  function isNoiseLine(line) {
+    const t = String(line || "").toLowerCase().trim();
+    if (!t) return true;
+
+    return (
+      t.startsWith("type:") ||
+      t.startsWith("client:") ||
+      t.startsWith("doc_number:") ||
+      t.startsWith("items:") ||
+      t.startsWith("material_total:") ||
+      t.startsWith("labor_total:") ||
+      t.startsWith("total:") ||
+      t.includes("facture n") ||
+      t.includes("facture no") ||
+      t.includes("facture n°") ||
+      t.includes("doc_number")
+    );
+  }
+
+  function parseNormalizedItemLine(line) {
+    // Format attendu venant de kadiOcrEngine :
+    // - Tom cim | qty:2 | pu:12500 | total:25000
+    const m = String(line || "").match(
+      /^\-\s*(.+?)\s*\|\s*qty:(\d+)\s*(?:\|\s*pu:(\d+))?\s*(?:\|\s*total:(\d+))?\s*$/i
+    );
+
+    if (!m) return null;
+
+    const label = sanitizeOcrLabel(m[1] || "");
+    if (!looksLikeRealItemLabel(label)) return null;
+
+    const qty = Number(m[2] || 1);
+    let pu = m[3] ? Number(m[3]) : null;
+    const total = m[4] ? Number(m[4]) : null;
+
+    if ((!pu || pu <= 0) && qty > 0 && total > 0) {
+      pu = Math.round(total / qty);
+    }
+
+    if (!Number.isFinite(qty) || qty <= 0) return null;
+    if (!Number.isFinite(pu) || pu <= 0) return null;
+
+    return makeItem(label, qty, pu);
+  }
+
+  function parseLooseItemLine(line) {
+    // Essaie de lire une ligne de type :
+    // "ciment 1 sac 6000f 6000f"
+    const raw = String(line || "").trim();
+    if (!raw) return null;
+    if (isNoiseLine(raw)) return null;
+    if (!/\d/.test(raw)) return null;
+
+    const nums = raw.match(/\d[\d\s.,]*/g) || [];
+    const values = nums
+      .map((x) => parseNumberSmart(x))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    if (!values.length) return null;
+
+    let qty = 1;
+    let pu = null;
+
+    if (values.length >= 3) {
+      qty = values[0];
+      pu = values[1];
+    } else if (values.length === 2) {
+      qty = values[0] <= 20 ? values[0] : 1;
+      pu = values[1];
+    } else if (values.length === 1) {
+      pu = values[0];
+    }
+
+    let label = raw
+      .replace(/\d[\d\s.,]*/g, " ")
+      .replace(/\bfcfa\b|\bf\b/gi, " ")
+      .replace(/\bboite\b|\bboute\b|\bbouteille\b|\bsac\b|\bl\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    label = sanitizeOcrLabel(label);
+
+    if (!looksLikeRealItemLabel(label)) return null;
+    if (!Number.isFinite(pu) || pu <= 0) return null;
+    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+
+    return makeItem(label, qty, pu);
   }
 
   function parseOcrToDraft(ocrText) {
@@ -84,29 +175,18 @@ function makeKadiOcrFlow(deps) {
     const items = [];
 
     for (const line of lines) {
-      if (!/\d/.test(line)) continue;
-      if (/date/i.test(line)) continue;
-      if (/total/i.test(line)) continue;
-      if (/montant/i.test(line)) continue;
-      if (/client/i.test(line)) continue;
-      if (/nom/i.test(line)) continue;
+      if (isNoiseLine(line)) continue;
 
-      const label = sanitizeOcrLabel(line);
-      if (!looksLikeRealItemLabel(label)) continue;
+      let item = parseNormalizedItemLine(line);
 
-      const nums = line.match(/\d+(?:[.,]\d+)?/g) || [];
-      if (!nums.length) continue;
+      if (!item) {
+        item = parseLooseItemLine(line);
+      }
 
-      const candidates = nums
-        .map((x) => parseNumberSmart(x))
-        .filter((n) => Number.isFinite(n) && n > 0);
+      if (item) {
+        items.push(item);
+      }
 
-      if (!candidates.length) continue;
-
-      const pu = candidates[candidates.length - 1] || 0;
-      if (!Number.isFinite(pu) || pu <= 0) continue;
-
-      items.push(makeItem(label, 1, pu));
       if (items.length >= LIMITS.maxItems) break;
     }
 
@@ -132,75 +212,26 @@ function makeKadiOcrFlow(deps) {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        let baseText = "";
+        const baseText = await ocrImageToText(buffer);
 
-        try {
-          baseText = await ocrImageToText(buffer);
-
-          logger?.info?.("ocr", "Base OCR result", {
-            attempt,
-            length: String(baseText || "").trim().length,
-            preview: String(baseText || "").slice(0, 200),
-          });
-        } catch (e) {
-          lastErr = e;
-          baseText = "";
-
-          logger?.warn?.("ocr", "Base OCR failed", {
-            attempt,
-            message: e?.message,
-          });
-        }
+        logger?.info?.("ocr", "Base OCR result", {
+          attempt,
+          length: String(baseText || "").trim().length,
+          preview: String(baseText || "").slice(0, 300),
+        });
 
         if (baseText && String(baseText).trim().length >= 3) {
-          if (geminiIsEnabled() && !ocrLooksGood(baseText)) {
-            try {
-              const gText = await geminiOcrImageBuffer(buffer, mimeType);
-
-              if (gText && String(gText).trim().length >= 3) {
-                logger?.info?.("ocr", "Gemini OCR improved result", {
-                  attempt,
-                  length: String(gText || "").trim().length,
-                  preview: String(gText || "").slice(0, 200),
-                });
-
-                return gText;
-              }
-            } catch (ge) {
-              logger?.warn?.("ocr", "Gemini OCR fallback failed", {
-                attempt,
-                message: ge?.message,
-              });
-            }
-          }
-
           return baseText;
         }
 
-        if (geminiIsEnabled()) {
-          try {
-            const gText = await geminiOcrImageBuffer(buffer, mimeType);
-
-            if (gText && String(gText).trim().length >= 3) {
-              logger?.info?.("ocr", "Gemini OCR accepted", {
-                attempt,
-                length: String(gText || "").trim().length,
-                preview: String(gText || "").slice(0, 200),
-              });
-
-              return gText;
-            }
-          } catch (ge) {
-            logger?.warn?.("ocr", "Gemini OCR direct failed", {
-              attempt,
-              message: ge?.message,
-            });
-          }
-        }
-
-        throw lastErr || new Error("OCR_EMPTY");
+        throw new Error("OCR_EMPTY");
       } catch (e) {
         lastErr = e;
+
+        logger?.warn?.("ocr", "Base OCR failed", {
+          attempt,
+          message: e?.message,
+        });
 
         if (attempt === maxRetries) break;
         await sleep(Math.pow(2, attempt) * 800);
@@ -232,7 +263,7 @@ function makeKadiOcrFlow(deps) {
       logger?.info?.("ocr", "OCR text extracted", {
         from,
         length: String(ocrText || "").trim().length,
-        preview: String(ocrText || "").slice(0, 300),
+        preview: String(ocrText || "").slice(0, 500),
       });
     } catch (e) {
       logger?.error?.("ocr", e, { from, step: "robustOcr" });
@@ -274,59 +305,65 @@ function makeKadiOcrFlow(deps) {
 
     let parsed = null;
 
-    try {
-      const gemParsed = await parseInvoiceTextWithGemini(ocrText);
+    // Si un parseur avancé existe encore, on peut l’essayer.
+    if (typeof parseInvoiceTextWithGemini === "function") {
+      try {
+        const gemParsed = await parseInvoiceTextWithGemini(ocrText);
 
-      parsed = {
-        client: gemParsed?.client || null,
-        items: Array.isArray(gemParsed?.items)
-          ? gemParsed.items.map((it) =>
-              makeItem(
-                it?.label || "Produit",
-                Number(it?.qty || 1),
-                Number(it?.unitPrice ?? it?.amount ?? 0)
+        parsed = {
+          client: gemParsed?.client || null,
+          items: Array.isArray(gemParsed?.items)
+            ? gemParsed.items.map((it) =>
+                makeItem(
+                  it?.label || "Produit",
+                  Number(it?.qty || 1),
+                  Number(it?.unitPrice ?? it?.amount ?? 0)
+                )
               )
-            )
-          : [],
-        finance: {
-          subtotal: Number(gemParsed?.total || 0),
-          gross: Number(gemParsed?.total || 0),
-        },
-      };
+            : [],
+          finance: {
+            subtotal: Number(gemParsed?.total || 0),
+            gross: Number(gemParsed?.total || 0),
+          },
+        };
 
-      if (!parsed.items.length) {
-        throw new Error("Gemini returned no items");
+        if (!parsed.items.length) {
+          throw new Error("Advanced parser returned no items");
+        }
+
+        const noisyItems = parsed.items.filter(
+          (it) => !looksLikeRealItemLabel(it?.label || "")
+        );
+
+        if (noisyItems.length > 0) {
+          throw new Error("Advanced parser returned noisy items");
+        }
+
+        s.lastDocDraft.meta = makeDraftMeta({
+          ...(s.lastDocDraft.meta || {}),
+          usedGeminiParse: true,
+        });
+
+        logger?.info?.("ocr", "Advanced parsing ok", {
+          from,
+          client: parsed.client,
+          itemsCount: parsed.items.length,
+          total: parsed.finance?.gross || 0,
+        });
+      } catch (e) {
+        logger?.warn?.("ocr", "Advanced parsing failed, fallback local parser", {
+          from,
+          message: e?.message,
+        });
+
+        s.lastDocDraft.meta = makeDraftMeta({
+          ...(s.lastDocDraft.meta || {}),
+          usedGeminiParse: false,
+        });
+
+        parsed = parseOcrToDraft(ocrText);
       }
-
-      const noisyItems = parsed.items.filter(
-        (it) => !looksLikeRealItemLabel(it?.label || "")
-      );
-
-      if (noisyItems.length > 0) {
-        throw new Error("Gemini returned noisy items");
-      }
-
-      if (parsed.items.length > 10) {
-        throw new Error("Gemini returned too many items");
-      }
-
-      s.lastDocDraft.meta = makeDraftMeta({
-        ...(s.lastDocDraft.meta || {}),
-        usedGeminiParse: true,
-      });
-
-      logger?.info?.("ocr", "Gemini parsing ok", {
-        from,
-        client: parsed.client,
-        itemsCount: parsed.items.length,
-        total: parsed.finance?.gross || 0,
-      });
-    } catch (e) {
-      logger?.warn?.("ocr", "Gemini parsing failed, fallback local parser", {
-        from,
-        message: e?.message,
-      });
-
+    } else {
       s.lastDocDraft.meta = makeDraftMeta({
         ...(s.lastDocDraft.meta || {}),
         usedGeminiParse: false,
