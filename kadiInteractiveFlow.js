@@ -79,9 +79,13 @@ function makeKadiInteractiveFlow(deps) {
     replyRechargeInfo,
   } = deps;
 
+  function noDraftMessage() {
+    return "📄 Je ne vois pas encore de document en cours.\nTapez MENU pour commencer.";
+  }
+
   async function sendCurrentDraftPreview(from, draft) {
     if (!draft) {
-      await sendText(from, "❌ Aucun document en cours.");
+      await sendText(from, noDraftMessage());
       return;
     }
 
@@ -125,6 +129,22 @@ function makeKadiInteractiveFlow(deps) {
   async function handleInteractiveReply(from, replyId) {
     const s = getSession(from);
 
+    if (!replyId) {
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
+      );
+      return;
+    }
+
+    if (!s) {
+      await sendText(
+        from,
+        "⚠️ Une petite erreur s’est produite.\nTapez MENU pour reprendre."
+      );
+      return;
+    }
+
     // ===============================
     // INTENT REVIEW (VOICE / IA)
     // ===============================
@@ -132,7 +152,10 @@ function makeKadiInteractiveFlow(deps) {
       const intent = s.intent || null;
 
       if (!intent) {
-        await sendText(from, "❌ Analyse introuvable. Renvoyez votre message.");
+        await sendText(
+          from,
+          "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
+        );
         return;
       }
 
@@ -162,7 +185,7 @@ function makeKadiInteractiveFlow(deps) {
           s.step = "intent_fix_items";
           await sendText(
             from,
-            "📦 Je n’ai pas bien compris les éléments.\n\nÉcrivez-les clairement."
+            "📦 Je n’ai pas bien compris les éléments.\nÉcrivez-les clairement pour continuer."
           );
           return;
         }
@@ -180,7 +203,10 @@ function makeKadiInteractiveFlow(deps) {
       const intent = s.intent || null;
 
       if (!intent) {
-        await sendText(from, "❌ Analyse introuvable. Renvoyez votre message.");
+        await sendText(
+          from,
+          "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
+        );
         return;
       }
 
@@ -200,7 +226,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "SMARTBLOCK_FIX") {
       await sendText(
         from,
-        "✍️ D’accord. Ajoutez ou corrigez les lignes, puis renvoyez le texte."
+        "✍️ D’accord. Corrigez ou ajoutez les lignes, puis renvoyez le texte."
       );
       return;
     }
@@ -209,7 +235,7 @@ function makeKadiInteractiveFlow(deps) {
       const draft = s.lastDocDraft;
 
       if (!draft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -269,7 +295,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "HOME_HISTORY") {
       await sendText(
         from,
-        "📚 Historique en cours de préparation.\n\nTapez MENU pour continuer."
+        "📚 L’historique arrive bientôt.\nTapez MENU pour continuer."
       );
       return;
     }
@@ -287,7 +313,7 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     if (replyId === "RECEIPT_FORMAT_COMPACT") {
       if (!s.lastDocDraft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -295,13 +321,13 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_client";
 
       await sendText(from, "🧾 Format ticket sélectionné.");
-      await sendText(from, "👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)");
+      await sendText(from, "👤 Nom du client ?\n(Ex: Awa / Ben / Société X)");
       return;
     }
 
     if (replyId === "RECEIPT_FORMAT_A4") {
       if (!s.lastDocDraft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -309,7 +335,7 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_client";
 
       await sendText(from, "📄 Format A4 sélectionné.");
-      await sendText(from, "👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)");
+      await sendText(from, "👤 Nom du client ?\n(Ex: Awa / Ben / Société X)");
       return;
     }
 
@@ -322,7 +348,10 @@ function makeKadiInteractiveFlow(deps) {
       const row = await getDevisFollowupById(followupId);
 
       if (!row || !row.source_doc) {
-        await sendText(from, "❌ Devis introuvable.");
+        await sendText(
+          from,
+          "📄 Je n’ai pas retrouvé ce devis.\nRevenez au MENU pour recommencer."
+        );
         return;
       }
 
@@ -355,7 +384,10 @@ function makeKadiInteractiveFlow(deps) {
       const row = await getDevisFollowupById(followupId);
 
       if (!row || !row.source_doc) {
-        await sendText(from, "❌ Devis introuvable.");
+        await sendText(
+          from,
+          "📄 Je n’ai pas retrouvé ce devis.\nRevenez au MENU pour recommencer."
+        );
         return;
       }
 
@@ -401,7 +433,10 @@ function makeKadiInteractiveFlow(deps) {
       const raw = String(s.pendingSmartBlockText || "").trim();
 
       if (!raw) {
-        await sendText(from, "❌ Texte introuvable. Renvoyez votre message.");
+        await sendText(
+          from,
+          "⚠️ Je n’ai pas retrouvé ce contenu.\nRenvoyez votre message pour continuer."
+        );
         return;
       }
 
@@ -473,7 +508,10 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingOcrMediaId = null;
 
       if (!mediaId) {
-        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        await sendText(
+          from,
+          "📷 Je n’ai pas retrouvé la photo.\nRenvoyez-la pour continuer."
+        );
         return;
       }
 
@@ -498,7 +536,10 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingOcrMediaId = null;
 
       if (!mediaId) {
-        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        await sendText(
+          from,
+          "📷 Je n’ai pas retrouvé la photo.\nRenvoyez-la pour continuer."
+        );
         return;
       }
 
@@ -546,7 +587,7 @@ function makeKadiInteractiveFlow(deps) {
         if (!res?.ok) {
           await sendText(
             from,
-            `❌ Solde insuffisant.\nLe tampon coûte *${STAMP_ONE_TIME_COST} crédits* (paiement unique).\n👉 Tapez RECHARGE.`
+            `⚠️ Solde insuffisant.\nLe tampon coûte *${STAMP_ONE_TIME_COST} crédits* (paiement unique).\nTapez RECHARGE pour continuer.`
           );
           return sendStampMenu(from);
         }
@@ -559,7 +600,7 @@ function makeKadiInteractiveFlow(deps) {
 
         await sendText(
           from,
-          `🟦 *Tampon activé !*\n✅ Paiement unique effectué: *${STAMP_ONE_TIME_COST} crédits*\n📄 Le tampon sera ajouté gratuitement à vos PDF.`
+          `🟦 *Tampon activé !*\n✅ Paiement unique effectué : *${STAMP_ONE_TIME_COST} crédits*\n📄 Le tampon sera ajouté gratuitement à vos PDF.`
         );
 
         return sendStampMenu(from);
@@ -574,7 +615,7 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "stamp_title";
       await sendText(
         from,
-        "✍️ Fonction (tampon) ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer."
+        "✍️ Fonction du tampon ?\nEx: GERANT / DIRECTEUR / COMMERCIAL\n\nTapez 0 pour effacer."
       );
       return;
     }
@@ -649,7 +690,7 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       if (!offer) {
-        await sendText(from, "❌ Pack introuvable.");
+        await sendText(from, "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE.");
         return sendRechargePacksMenu(from);
       }
 
@@ -679,7 +720,7 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       if (!offer) {
-        await sendText(from, "❌ Pack introuvable.");
+        await sendText(from, "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE.");
         return sendRechargePacksMenu(from);
       }
 
@@ -728,7 +769,7 @@ function makeKadiInteractiveFlow(deps) {
       const topup = await readTopup(topupId);
 
       if (!topup) {
-        await sendText(from, "❌ Recharge introuvable.");
+        await sendText(from, "⚠️ Je n’ai pas retrouvé cette recharge.");
         return;
       }
 
@@ -784,7 +825,7 @@ function makeKadiInteractiveFlow(deps) {
       const topup = await readTopup(topupId);
 
       if (!topup) {
-        await sendText(from, "❌ Recharge introuvable.");
+        await sendText(from, "⚠️ Je n’ai pas retrouvé cette recharge.");
         return;
       }
 
@@ -827,13 +868,19 @@ function makeKadiInteractiveFlow(deps) {
       const draft = s.lastDocDraft;
 
       if (!draft || draft.type !== "decharge") {
-        await sendText(from, "❌ Aucune décharge en cours.");
+        await sendText(
+          from,
+          "📝 Je ne vois pas encore de décharge en cours.\nTapez MENU pour commencer."
+        );
         return;
       }
 
       const targetWaId = draft?.confirmation?.targetWaId;
       if (!targetWaId) {
-        await sendText(from, "❌ Numéro de confirmation manquant.");
+        await sendText(
+          from,
+          "📱 Je n’ai pas retrouvé le numéro de confirmation.\nVérifiez puis recommencez."
+        );
         return;
       }
 
@@ -863,7 +910,7 @@ function makeKadiInteractiveFlow(deps) {
       const draft = s.lastDocDraft;
 
       if (!draft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -901,7 +948,7 @@ function makeKadiInteractiveFlow(deps) {
 
       const draft = s.lastDocDraft;
       if (!draft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -930,7 +977,7 @@ function makeKadiInteractiveFlow(deps) {
 
       const draft = s.lastDocDraft;
       if (!draft) {
-        await sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, noDraftMessage());
         return;
       }
 
@@ -959,7 +1006,10 @@ function makeKadiInteractiveFlow(deps) {
       const draft = s.lastDocDraft;
 
       if (!draft?.savedPdfMediaId) {
-        await sendText(from, "❌ Aucun PDF déjà généré à renvoyer.");
+        await sendText(
+          from,
+          "📄 Je n’ai pas retrouvé le dernier PDF.\nTapez MENU pour continuer."
+        );
         return;
       }
 
@@ -982,7 +1032,10 @@ function makeKadiInteractiveFlow(deps) {
       const draft = s.lastDocDraft;
 
       if (!draft) {
-        await sendText(from, "❌ Aucun document à modifier.");
+        await sendText(
+          from,
+          "📄 Je n’ai pas retrouvé de document à modifier.\nTapez MENU pour recommencer."
+        );
         return;
       }
 
@@ -1010,7 +1063,10 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
-    await sendText(from, "⚠️ Action non reconnue. Tapez MENU.");
+    await sendText(
+      from,
+      "🤔 Je n’ai pas compris cette action.\nTapez MENU pour continuer."
+    );
   }
 
   return {
