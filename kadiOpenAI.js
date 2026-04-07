@@ -219,7 +219,6 @@ async function parseNaturalWithOpenAI(text, options = {}) {
 
   const completion = await openai.chat.completions.create({
     model: options.model || OPENAI_NLU_MODEL,
-    temperature: 0.1,
     response_format: {
       type: "json_schema",
       json_schema: KADI_NLU_SCHEMA,
