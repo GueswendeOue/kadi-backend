@@ -3,49 +3,175 @@
 function makeKadiMenus(deps) {
   const {
     sendButtons,
+    sendList,
     getOrCreateProfile,
+    STAMP_ONE_TIME_COST,
   } = deps;
 
-  // ===============================
-  // HOME MENU (ENTRY POINT)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // HOME MENU — visible, structuré, comme le concurrent mais plus complet
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendHomeMenu(to) {
-    return sendButtons(
+    return sendList(
       to,
-      `👋 *KADI*\n\n` +
-        `Devis · Facture · Reçu · Décharge\n` +
-        `PDF en 30 secondes ⚡\n\n` +
-        `👉 Écrivez directement :\n` +
-        `"Devis Moussa 15000"\n\n` +
-        `Ou choisissez 👇`,
+      "👋 *KADI*",
+      `Choisissez une action.\n\n` +
+        `💬 Vous pouvez aussi écrire directement :\n` +
+        `_"Devis pour Moussa, 2 portes à 25 000F"_`,
+      "Ouvrir le menu",
       [
-        { id: "HOME_DOCS", title: "📄 Créer document" },
-        { id: "HOME_OCR", title: "📷 Transformer photo" },
-        { id: "HOME_CREDITS", title: "💳 Crédits" },
+        {
+          title: "Documents",
+          rows: [
+            {
+              id: "DOC_DEVIS",
+              title: "📋 Devis",
+              description: "Créer un nouveau devis",
+            },
+            {
+              id: "DOC_FACTURE_MENU",
+              title: "🧾 Facture",
+              description: "Définitive ou proforma",
+            },
+            {
+              id: "DOC_RECU",
+              title: "✅ Reçu",
+              description: "Créer un nouveau reçu",
+            },
+            {
+              id: "DOC_DECHARGE",
+              title: "📝 Décharge",
+              description: "Créer une décharge officielle",
+            },
+            {
+              id: "HOME_OCR",
+              title: "📷 Photo → PDF",
+              description: "Transformer une photo en document",
+            },
+          ],
+        },
+        {
+          title: "Compte",
+          rows: [
+            {
+              id: "HOME_CREDITS",
+              title: "💳 Crédits",
+              description: "Voir mes crédits et recharger",
+            },
+            {
+              id: "HOME_HISTORY",
+              title: "📚 Historique",
+              description: "Voir mes derniers documents",
+            },
+            {
+              id: "HOME_PROFILE",
+              title: "👤 Profil",
+              description: "Voir ou modifier mon profil",
+            },
+          ],
+        },
+        {
+          title: "Assistance",
+          rows: [
+            {
+              id: "HOME_TUTORIAL",
+              title: "📖 Tutoriel",
+              description: "Guide pas à pas pour débutants",
+            },
+            {
+              id: "HOME_HELP",
+              title: "❓ Aide rapide",
+              description: "Exemples et commandes",
+            },
+          ],
+        },
       ]
     );
   }
 
-  // ===============================
-  // DOCUMENTS MENU (CORE PRODUCT)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // DOCS MENU — si tu veux ouvrir directement le catalogue documents
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendDocsMenu(to) {
-    return sendButtons(
+    return sendList(
       to,
-      `📄 *Créer un document*\n\n` +
-        `Choisissez le type 👇`,
+      "📄 *Créer un document*",
+      `Choisissez le type de document à générer.\n\n` +
+        `💡 Astuce : vous pouvez aussi écrire directement :\n` +
+        `_"Devis pour Kaboré, 3 sacs de ciment à 7 500F"_`,
+      "Choisir le document",
       [
-        { id: "DOC_DEVIS", title: "📋 Devis" },
-        { id: "DOC_FACTURE", title: "🧾 Facture" },
-        { id: "DOC_RECU", title: "✅ Reçu" },
-        { id: "DOC_DECHARGE", title: "📝 Décharge" },
+        {
+          title: "Documents disponibles",
+          rows: [
+            {
+              id: "DOC_DEVIS",
+              title: "📋 Devis",
+              description: "Avant de commencer un travail",
+            },
+            {
+              id: "DOC_FACTURE_MENU",
+              title: "🧾 Facture",
+              description: "Définitive ou proforma",
+            },
+            {
+              id: "DOC_RECU",
+              title: "✅ Reçu",
+              description: "À chaque paiement reçu",
+            },
+            {
+              id: "DOC_DECHARGE",
+              title: "📝 Décharge",
+              description: "Pour se protéger légalement",
+            },
+            {
+              id: "HOME_OCR",
+              title: "📷 Photo → PDF",
+              description: "Transformer une photo en document",
+            },
+          ],
+        },
       ]
     );
   }
 
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // FACTURE SUBMENU — propre, simple
+  // ═══════════════════════════════════════════════════════════════════════
+  async function sendFactureCatalogMenu(to) {
+    return sendList(
+      to,
+      "🧾 *Facture*",
+      `Choisissez le type de facture à créer.`,
+      "Choisir",
+      [
+        {
+          title: "Types de facture",
+          rows: [
+            {
+              id: "FAC_DEFINITIVE",
+              title: "✅ Facture définitive",
+              description: "Après livraison ou prestation",
+            },
+            {
+              id: "FAC_PROFORMA",
+              title: "📄 Facture proforma",
+              description: "Avant validation du client",
+            },
+            {
+              id: "BACK_DOCS",
+              title: "⬅️ Retour",
+              description: "Revenir au menu documents",
+            },
+          ],
+        },
+      ]
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // CREDITS MENU
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendCreditsMenu(to) {
     return sendButtons(
       to,
@@ -53,19 +179,36 @@ function makeKadiMenus(deps) {
         `Consultez votre solde ou rechargez 👇`,
       [
         { id: "CREDITS_SOLDE", title: "💰 Mon solde" },
-        { id: "CREDITS_RECHARGE", title: "➕ Recharger" },
+        { id: "CREDITS_RECHARGE", title: "🔄 Recharger" },
         { id: "BACK_HOME", title: "🏠 Menu" },
       ]
     );
   }
 
-  // ===============================
-  // PROFILE MENU (SECONDARY)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // PROFILE MENU
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendProfileMenu(to) {
+    const p = await getOrCreateProfile(to);
+
+    const hasBusinessName = !!p?.business_name;
+    const hasPhone = !!p?.phone;
+    const hasLogo = !!(p?.logo_media_id || p?.logo_generated || p?.no_logo);
+
+    const score = [hasBusinessName, hasPhone, hasLogo].filter(Boolean).length;
+
+    const stampStatus =
+      p?.stamp_enabled === true
+        ? "✅ Tampon activé"
+        : p?.stamp_paid === true
+        ? "🟨 Tampon disponible"
+        : `🟦 Tampon — ${STAMP_ONE_TIME_COST ?? 5} crédits`;
+
     return sendButtons(
       to,
       `👤 *Profil entreprise*\n\n` +
+        `Profil complété : ${score}/3\n` +
+        `${stampStatus}\n\n` +
         `Gérez vos informations 👇`,
       [
         { id: "PROFILE_EDIT", title: "✏️ Modifier" },
@@ -75,14 +218,13 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ===============================
-  // FACTURE TYPE
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // FACTURE KIND — fallback si utilisé ailleurs
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendFactureKindMenu(to) {
     return sendButtons(
       to,
-      `🧾 *Type de facture*\n\n` +
-        `Choisissez 👇`,
+      `🧾 *Type de facture*\n\nChoisissez 👇`,
       [
         { id: "FAC_DEFINITIVE", title: "✅ Définitive" },
         { id: "FAC_PROFORMA", title: "📄 Proforma" },
@@ -91,14 +233,13 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ===============================
-  // PREVIEW MENU (IMPORTANT UX)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // PREVIEW MENU
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendPreviewMenu(to) {
     return sendButtons(
       to,
-      `📄 *Vérifiez votre document*\n\n` +
-        `Tout est correct ? 👇`,
+      `📄 *Vérifiez votre document*\n\nTout est correct ? 👇`,
       [
         { id: "DOC_CONFIRM", title: "📤 Envoyer le PDF" },
         { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
@@ -107,9 +248,9 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ===============================
-  // AFTER ITEMS MENU
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // AFTER ITEMS
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendAfterProductMenu(to) {
     return sendButtons(
       to,
@@ -122,30 +263,30 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
   // RECEIPT FORMAT
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendReceiptFormatMenu(to) {
     return sendButtons(
       to,
-      `🧾 *Format du reçu*\n\n` +
-        `Choisissez 👇`,
+      `🧾 *Format du reçu*\n\nChoisissez 👇`,
       [
-        { id: "RECEIPT_FORMAT_COMPACT", title: "🎫 Ticket" },
-        { id: "RECEIPT_FORMAT_A4", title: "📄 A4" },
+        { id: "RECEIPT_FORMAT_COMPACT", title: "🎫 Ticket compact" },
+        { id: "RECEIPT_FORMAT_A4", title: "📄 A4 standard" },
         { id: "BACK_DOCS", title: "⬅️ Retour" },
       ]
     );
   }
 
-  // ===============================
-  // STAMP MENU (TEMPORARY VERSION)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // STAMP MENUS
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendStampMenu(to) {
     return sendButtons(
       to,
       `🟦 *Tampon*\n\n` +
-        `Configurez votre tampon 👇`,
+        `Le tampon peut être ajouté sur vos documents PDF.\n` +
+        `Configurez-le ici 👇`,
       [
         { id: "STAMP_TOGGLE", title: "✅ Activer / Désactiver" },
         { id: "STAMP_MORE", title: "⚙️ Options" },
@@ -157,7 +298,7 @@ function makeKadiMenus(deps) {
   async function sendStampMoreMenu(to) {
     return sendButtons(
       to,
-      `⚙️ *Options du tampon*`,
+      `⚙️ *Options du tampon*\n\nPersonnalisez votre tampon 👇`,
       [
         { id: "STAMP_EDIT_TITLE", title: "✏️ Fonction" },
         { id: "STAMP_POS", title: "📍 Position" },
@@ -169,7 +310,7 @@ function makeKadiMenus(deps) {
   async function sendStampPositionMenu(to) {
     return sendButtons(
       to,
-      `📍 *Position du tampon*`,
+      `📍 *Position du tampon*\n\nChoisissez 👇`,
       [
         { id: "STAMP_POS_BR", title: "↘️ Bas droite" },
         { id: "STAMP_POS_BL", title: "↙️ Bas gauche" },
@@ -184,7 +325,7 @@ function makeKadiMenus(deps) {
       `📍 *Autre position*`,
       [
         { id: "STAMP_POS_TL", title: "↖️ Haut gauche" },
-        { id: "PROFILE_STAMP", title: "🟦 Tampon" },
+        { id: "PROFILE_STAMP", title: "🟦 Retour tampon" },
         { id: "BACK_HOME", title: "🏠 Menu" },
       ]
     );
@@ -193,37 +334,38 @@ function makeKadiMenus(deps) {
   async function sendStampSizeMenu(to) {
     return sendButtons(
       to,
-      `📏 *Taille du tampon*`,
+      `📏 *Taille du tampon*\n\nChoisissez 👇`,
       [
-        { id: "STAMP_SIZE_S", title: "S" },
-        { id: "STAMP_SIZE_M", title: "M" },
-        { id: "STAMP_SIZE_L", title: "L" },
+        { id: "STAMP_SIZE_S", title: "S — Petit" },
+        { id: "STAMP_SIZE_M", title: "M — Moyen" },
+        { id: "STAMP_SIZE_L", title: "L — Grand" },
       ]
     );
   }
 
-  // ===============================
-  // PRE-GENERATE STAMP (TEMP)
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
+  // PRE-GENERATE STAMP
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendPreGenerateStampMenu(to) {
     return sendButtons(
       to,
-      `🟦 Voulez-vous ajouter le tampon ?`,
+      `🟦 *Ajouter le tampon ?*\n\n` +
+        `Le tampon rend votre document plus professionnel.`,
       [
-        { id: "PRESTAMP_ADD_ONCE", title: "🟦 Ajouter" },
+        { id: "PRESTAMP_ADD_ONCE", title: "🟦 Oui, ajouter" },
         { id: "PRESTAMP_SKIP", title: "⏭️ Ignorer" },
         { id: "DOC_CANCEL", title: "🏠 Menu" },
       ]
     );
   }
 
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
   // ALREADY GENERATED
-  // ===============================
+  // ═══════════════════════════════════════════════════════════════════════
   async function sendAlreadyGeneratedMenu(to) {
     return sendButtons(
       to,
-      `📄 Ce document existe déjà.\n\nQue faire ?`,
+      `📄 *Ce document existe déjà.*\n\nQue souhaitez-vous faire ?`,
       [
         { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
         { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
@@ -232,9 +374,40 @@ function makeKadiMenus(deps) {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ZERO CRÉDITS
+  // ═══════════════════════════════════════════════════════════════════════
+  async function sendZeroCreditsBlock(to) {
+    return sendButtons(
+      to,
+      `🔴 *Crédits épuisés.*\n\nRechargez pour continuer 👇`,
+      [
+        { id: "RECHARGE_1000", title: "1 000 F" },
+        { id: "RECHARGE_2000", title: "2 000 F" },
+        { id: "HOME_CREDITS", title: "💳 Voir packs" },
+      ]
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // LOW CRÉDITS ALERT
+  // ═══════════════════════════════════════════════════════════════════════
+  async function sendLowCreditsAlert(to, balance = 0) {
+    return sendButtons(
+      to,
+      `⚠️ *Il vous reste ${balance} crédit${balance > 1 ? "s" : ""}.*\n\nRechargez maintenant 👇`,
+      [
+        { id: "RECHARGE_1000", title: "1 000 F" },
+        { id: "RECHARGE_2000", title: "2 000 F" },
+        { id: "HOME_CREDITS", title: "💳 Voir packs" },
+      ]
+    );
+  }
+
   return {
     sendHomeMenu,
     sendDocsMenu,
+    sendFactureCatalogMenu,
     sendCreditsMenu,
     sendProfileMenu,
     sendFactureKindMenu,
@@ -248,6 +421,8 @@ function makeKadiMenus(deps) {
     sendStampSizeMenu,
     sendPreGenerateStampMenu,
     sendAlreadyGeneratedMenu,
+    sendZeroCreditsBlock,
+    sendLowCreditsAlert,
   };
 }
 
