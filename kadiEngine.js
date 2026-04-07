@@ -39,7 +39,6 @@ const {
   isValidEmail,
   formatDateISO,
   sleep,
-  parseDaysArg,
   guessExtFromMime,
   resetAdminBroadcastState,
 } = require("./kadiUtils");
@@ -86,7 +85,6 @@ const {
 
 const {
   createManualOrangeMoneyTopup,
-  markTopupProofTextReceived,
   markTopupProofImageReceived,
   approveTopup,
   rejectTopup,
@@ -102,7 +100,6 @@ const { notifyAdminTopupReview } = require("./kadiAdminNotifications");
 const {
   getOrCreateProfile,
   updateProfile,
-  updateProfileByIdentity,
   uploadLogoBuffer,
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
@@ -113,16 +110,13 @@ const {
   addCredits,
   consumeCredit,
   consumeFeature,
-  createRechargeCodes,
-  redeemCode,
 } = require("./kadiCreditsRepo");
 
-const { getStats, getTopClients, getDocsForExport } = require("./kadiStatsRepo");
+const { getStats } = require("./kadiStatsRepo");
 
 const { saveDocument } = require("./kadiRepo");
 const { nextDocNumber } = require("./kadiCounterRepo");
 const { buildPdfBuffer } = require("./kadiPdf");
-const { parseInvoiceTextWithGemini } = require("./kadiGemini");
 
 const kadiStamp = require("./kadiStamp");
 const kadiSignature = require("./kadiSignature");
@@ -161,8 +155,6 @@ const logger = {
       ...meta,
       stack: error?.stack,
     }),
-  metric: (name, duration, success = true, meta = {}) =>
-    console.log(`[KADI/METRIC/${name}] ${duration}ms`, { success, ...meta }),
 };
 
 // ===============================
@@ -229,7 +221,7 @@ async function logLearningEvent(payload = {}) {
   } catch (_) {}
 }
 
-async function uploadCampaignImageBuffer({ userId, buffer, mimeType, filename }) {
+async function uploadCampaignImageBuffer({ buffer, mimeType, filename }) {
   const finalName = `${filename || `campaign-${Date.now()}`}.jpg`;
   const up = await uploadMediaBuffer({
     buffer,
@@ -338,18 +330,15 @@ const { replyBalance, replyRechargeInfo } = makeKadiCreditsUi({
 // ===============================
 const {
   startProfileFlow,
-  handleProfileAnswer,
-  handleLogoImage,
+  handleProfileText,
+  handleProfileReply,
+  isProfileComplete,
 } = makeKadiProfileFlow({
   getSession,
   sendText,
-  getOrCreateProfile,
+  sendButtons,
   updateProfile,
-  getMediaInfo,
-  downloadMediaToBuffer,
-  uploadLogoBuffer,
-  LIMITS,
-  isValidEmail,
+  sendHomeMenu,
 });
 
 // ===============================
@@ -408,10 +397,10 @@ const { processOcrImageToDraft } = makeKadiOcrFlow({
   formatBaseCostLine,
   logger,
   ocrImageToText: kadiOcrEngine,
-geminiIsEnabled: () => false,
-ocrLooksGood: () => true,
-geminiOcrImageBuffer: null,
-parseInvoiceTextWithGemini: null,
+  geminiIsEnabled: () => false,
+  ocrLooksGood: () => true,
+  geminiOcrImageBuffer: null,
+  parseInvoiceTextWithGemini: null,
   parseNumberSmart,
   sanitizeOcrLabel,
   looksLikeRealItemLabel,
@@ -423,10 +412,6 @@ parseInvoiceTextWithGemini: null,
 const {
   startDocFlow,
   askItemLabel,
-  askItemQty,
-  askItemPu,
-  sendItemConfirmMenu,
-  normalizeReceiptFormat,
   handleProductFlowText,
 } = makeKadiProductFlow({
   getSession,
@@ -463,7 +448,6 @@ const {
   tryHandleNaturalMessage,
   tryHandleDechargeConfirmation,
   handleSmartItemsBlockText,
-  askDocTypeForSmartBlock,
 } = makeKadiNaturalFlow({
   getSession,
   sendText,
@@ -541,7 +525,28 @@ const { handleIncomingImage } = makeKadiImageFlow({
   downloadMediaToBuffer,
   LIMITS,
   guessExtFromMime,
-  handleLogoImage,
+  handleLogoImage: async (from, msg) => {
+    // version minimale compatible avec le nouveau profile flow
+    const s = getSession(from);
+    if (s.step !== "profile_logo_upload") return false;
+
+    const mediaId = msg?.image?.id;
+    if (!mediaId) return false;
+
+    await updateProfile(from, {
+      logo_media_id: mediaId,
+      no_logo: false,
+    });
+
+    s.step = null;
+
+    await sendText(
+      from,
+      "✅ Logo enregistré.\n📄 Vos documents seront maintenant plus professionnels."
+    );
+
+    return true;
+  },
   readTopup,
   getPendingTopupByWaId,
   markTopupProofImageReceived,
@@ -628,7 +633,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 // ===============================
 // Command flow
 // ===============================
-const { handleCommand, handleAdmin } = makeKadiCommandFlow({
+const { handleCommand } = makeKadiCommandFlow({
   getSession,
   sendText,
   sendButtons,
@@ -646,44 +651,6 @@ const { handleCommand, handleAdmin } = makeKadiCommandFlow({
 // ===============================
 // Main routing
 // ===============================
-async function tryHandleGodMode(from, text) {
-  try {
-    if (!text || text.length < 3) return false;
-
-    const draft = await kadiNLUEngine(text);
-
-    if (!draft || !draft.items || draft.items.length === 0) {
-      return false;
-    }
-
-    const s = getSession(from);
-
-    s.lastDocDraft = {
-      type: draft.docType || "devis",
-      client: draft.client || "Client",
-      items: draft.items,
-      meta: makeDraftMeta(),
-    };
-
-    const lines = draft.items
-      .map(
-        (i) =>
-          `• ${i.label} x${i.qty} = ${money(i.unitPrice || 0)}`
-      )
-      .join("\n");
-
-    await sendText(
-      from,
-      `🔥 ${draft.docType.toUpperCase()} prêt (${draft.client})\n\n${lines}\n\n💰 Total: ${money(draft.total)} FCFA`
-    );
-
-    return true;
-  } catch (e) {
-    console.warn("[KADI GOD MODE ERROR]", e?.message);
-    return false;
-  }
-}
-
 async function handleIncomingMessage(value) {
   const messages = value?.messages || [];
   if (!messages.length) return;
@@ -719,6 +686,9 @@ async function handleIncomingMessage(value) {
             msg?.interactive?.list_reply?.id;
 
           if (replyId) {
+            const handledProfileReply = await handleProfileReply(from, replyId);
+            if (handledProfileReply) return;
+
             return handleInteractiveReply(from, replyId);
           }
         }
@@ -728,13 +698,9 @@ async function handleIncomingMessage(value) {
 
           if (await handleCommand(from, text, { wa_id: from })) return;
           if (await tryHandleDechargeConfirmation(from, text)) return;
-          if (await handleProfileAnswer(from, text)) return;
+          if (await handleProfileText(from, text, msg)) return;
           if (await handleStampFlow(from, text)) return;
-          // 🔥 GOD MODE FIRST
-if (await tryHandleGodMode(from, text)) return;
-
-// 🔁 fallback existant
-if (await tryHandleNaturalMessage(from, text)) return;
+          if (await tryHandleNaturalMessage(from, text)) return;
           if (await handleSmartItemsBlockText(from, text)) return;
           if (await handleProductFlowText(from, text)) return;
 
