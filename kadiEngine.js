@@ -52,6 +52,8 @@ const { makeKadiCreditsUi } = require("./kadiCreditsUi");
 const { handleIncomingAudioMessage } = require("./kadiAudio");
 const { parseNaturalWithOpenAI } = require("./kadiOpenAI");
 const { parseNaturalWhatsAppMessage } = require("./kadiNaturalParser");
+const { buildIntent } = require("./kadiIntentEngine");
+const { buildIntentMessage, getNextQuestion } = require("./kadiIntentUx");
 
 // ===============================
 // Product modules
@@ -66,6 +68,10 @@ const { makeKadiNaturalFlow } = require("./kadiNaturalFlow");
 const { makeKadiImageFlow } = require("./kadiImageFlow");
 const { makeKadiInteractiveFlow } = require("./kadiInteractiveFlow");
 const { makeKadiCommandFlow } = require("./kadiCommandFlow");
+const { makeKadiSmallTalk } = require("./kadiSmallTalk");
+const { makeKadiIntentTextFix } = require("./kadiIntentTextFix");
+const { makeKadiPriorityRouter } = require("./kadiPriorityRouter");
+const { makeKadiStatsService } = require("./kadiStatsService");
 
 // ===============================
 // Existing business modules
@@ -252,27 +258,6 @@ async function broadcastToAllKnownUsers(from, text) {
   }
 
   await sendText(from, "⚠️ Module broadcast non disponible.");
-}
-
-async function handleStatsCommand(from) {
-  try {
-    const stats = await getStats({
-      packCredits: PACK_CREDITS,
-      packPriceFcfa: PACK_PRICE_FCFA,
-    });
-
-    const msg =
-      `📊 *KADI STATS*\n\n` +
-      `👥 Utilisateurs: ${stats?.users?.totalUsers || 0}\n` +
-      `🔥 Actifs 7j: ${stats?.users?.active7 || 0}\n` +
-      `📄 Docs total: ${stats?.docs?.total || 0}\n` +
-      `📅 Docs 30j: ${stats?.docs?.last30 || 0}\n` +
-      `💰 Volume total: ${money(stats?.docs?.sumAll || 0)} FCFA`;
-
-    await sendText(from, msg);
-  } catch (e) {
-    await sendText(from, "⚠️ Je n’ai pas pu charger les statistiques pour le moment.");
-  }
 }
 
 // ===============================
@@ -643,6 +628,17 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 });
 
 // ===============================
+// Stats service
+// ===============================
+const { handleStatsCommand } = makeKadiStatsService({
+  sendText,
+  getStats,
+  packCredits: PACK_CREDITS,
+  packPriceFcfa: PACK_PRICE_FCFA,
+  money,
+});
+
+// ===============================
 // Command flow
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
@@ -661,70 +657,39 @@ const { handleCommand } = makeKadiCommandFlow({
 });
 
 // ===============================
-// Hard-priority command router
+// Small talk
 // ===============================
-async function handleUltraPriorityText(from, rawText) {
-  const t = norm(rawText).toLowerCase();
+const { handleSmallTalk } = makeKadiSmallTalk({
+  sendButtons,
+  norm,
+});
 
-  if (!t) return false;
+// ===============================
+// Intent fix text flow
+// ===============================
+const { handleIntentFixText } = makeKadiIntentTextFix({
+  getSession,
+  sendText,
+  sendButtons,
+  buildIntent,
+  buildIntentMessage,
+  getNextQuestion,
+  parseNumberSmart,
+});
 
-  try {
-    if (t === "menu" || t === "home" || t === "accueil") {
-      await sendHomeMenu(from);
-      return true;
-    }
-
-    if (t === "doc" || t === "docs" || t === "document" || t === "documents") {
-      await sendDocsMenu(from);
-      return true;
-    }
-
-    if (t === "profil" || t === "profile") {
-      await startProfileFlow(from);
-      return true;
-    }
-
-    if (
-      t === "solde" ||
-      t === "credit" ||
-      t === "credits" ||
-      t === "crédit" ||
-      t === "crédits"
-    ) {
-      await replyBalance(from);
-      return true;
-    }
-
-    if (t === "recharge" || t === "recharger") {
-      await sendRechargePacksMenu(from);
-      return true;
-    }
-
-    if (t === "aide" || t === "help") {
-      await sendText(
-        from,
-        `❓ *Aide rapide*\n\n` +
-          `Vous pouvez écrire simplement :\n` +
-          `• Devis pour Moussa, 2 portes à 25000\n` +
-          `• Facture pour Awa, 5 pagnes à 3000\n` +
-          `• Reçu loyer avril 100000 pour Adama\n` +
-          `• Décharge pour prêt de 50000 à Issa\n\n` +
-          `Tapez aussi : MENU, PROFIL, SOLDE ou RECHARGE`
-      );
-      return true;
-    }
-
-    return false;
-  } catch (e) {
-    logger.error("ultra_priority_text", e, { from, rawText });
-
-    await sendText(
-      from,
-      "⚠️ Je n’ai pas pu ouvrir cette option pour le moment.\nTapez MENU pour continuer."
-    );
-    return true;
-  }
-}
+// ===============================
+// Priority router
+// ===============================
+const { handleUltraPriorityText } = makeKadiPriorityRouter({
+  norm,
+  logger,
+  sendText,
+  sendHomeMenu,
+  sendDocsMenu,
+  startProfileFlow,
+  replyBalance,
+  sendRechargePacksMenu,
+});
 
 // ===============================
 // Main routing
@@ -785,13 +750,13 @@ async function handleIncomingMessage(value) {
 
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
-          if (await handleUltraPriorityText(from, text)) {
-            return;
-          }
+          if (await handleUltraPriorityText(from, text)) return;
+          if (await handleSmallTalk(from, text)) return;
 
           await maybeSendOnboarding(from);
 
           if (await handleCommand(from, text, { wa_id: from })) return;
+          if (await handleIntentFixText(from, text)) return;
 
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
@@ -815,7 +780,10 @@ async function handleIncomingMessage(value) {
           "⚠️ Je ne peux pas traiter ce type de message pour le moment.\nTapez MENU pour continuer."
         );
       } catch (err) {
-        logger.error("handle_incoming_message", err, { from, msgType: msg?.type });
+        logger.error("handle_incoming_message", err, {
+          from,
+          msgType: msg?.type,
+        });
 
         await sendText(
           from,
