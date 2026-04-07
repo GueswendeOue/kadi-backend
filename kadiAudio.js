@@ -3,7 +3,7 @@
 const OpenAI = require("openai");
 const { buildIntent } = require("./kadiIntentEngine");
 const { buildIntentMessage, getNextQuestion } = require("./kadiIntentUx");
-const { normalizeMooreBusinessText } = require("./kadiMooreNormalizer");
+const { normalizeBusinessInput } = require("./kadiLanguageNormalizer");
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v21.0";
@@ -35,15 +35,21 @@ function normalizeTranscript(text = "") {
     .trim();
 }
 
-function prepareTranscriptVariants(text = "") {
+function prepareTranscriptVariants(text = "", options = {}) {
   const rawTranscriptText = String(text || "").trim();
   const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
-  const businessText = normalizeMooreBusinessText(normalizedTranscriptText);
+
+  const normalized = normalizeBusinessInput(normalizedTranscriptText, {
+    localeHint: options.localeHint || "fr-BF",
+    languages: options.languages || ["fr", "moore"],
+  });
 
   return {
     rawTranscriptText,
-    normalizedTranscriptText,
-    businessText,
+    displayText: normalized.displayText,
+    parseText: normalized.parseText,
+    localeHint: normalized.localeHint,
+    detectedLanguages: normalized.detectedLanguages,
   };
 }
 
@@ -160,18 +166,23 @@ async function transcribeAudioBuffer(buffer, options = {}) {
       [
         "Transcrire le message vocal WhatsApp le plus fidèlement possible.",
         "Conserver les mots exacts, les noms, les montants, les produits et les quantités.",
-        "Ne pas reformuler. Ne pas corriger inutilement. Ne pas inventer.",
-        "Le message peut contenir du français avec quelques mots en mooré."
+        "Ne pas reformuler. Ne pas inventer. Ne pas résumer.",
+        "Le message peut contenir du français avec quelques mots en mooré.",
       ].join(" "),
     temperature: 0,
   });
 
-  const variants = prepareTranscriptVariants(result?.text || "");
+  const variants = prepareTranscriptVariants(result?.text || "", {
+    localeHint: options.localeHint || "fr-BF",
+    languages: options.languages || ["fr", "moore"],
+  });
 
   return {
     text: variants.rawTranscriptText,
-    normalizedText: variants.normalizedTranscriptText,
-    businessText: variants.businessText,
+    displayText: variants.displayText,
+    parseText: variants.parseText,
+    localeHint: variants.localeHint,
+    detectedLanguages: variants.detectedLanguages,
     raw: result,
   };
 }
@@ -218,17 +229,20 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     const transcript = await transcribeAudioBuffer(media.buffer, {
       mimeType: media.mimeType || mediaMeta.mimeType || "audio/ogg",
       language: "fr",
+      localeHint: "fr-BF",
+      languages: ["fr", "moore"],
     });
 
     const rawTranscriptText = transcript.text;
-    const normalizedTranscriptText = transcript.normalizedText;
-    const businessText = transcript.businessText;
+    const displayText = transcript.displayText;
+    const parseText = transcript.parseText;
 
     console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
-    console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
-    console.log("[KADI/AUDIO] business transcript:", businessText);
+    console.log("[KADI/AUDIO] display transcript:", displayText);
+    console.log("[KADI/AUDIO] parse transcript:", parseText);
+    console.log("[KADI/AUDIO] detected languages:", transcript.detectedLanguages);
 
-    if (!rawTranscriptText) {
+    if (!displayText) {
       await sendText(
         from,
         "🎤 Je n’ai pas bien compris le vocal.\n\nExemple :\n“Fais un devis pour 2 sacs de ciment à 5000 pour Adama.”"
@@ -236,25 +250,24 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    // On parse avec la version business-friendly,
-    // mais on garde la transcription brute dans la session.
-    const intent = buildIntent(businessText);
+    const intent = buildIntent(parseText);
 
     console.log("[KADI/AUDIO] built intent:", intent);
 
     const s = getSession(from);
     s.audioTranscriptRaw = rawTranscriptText;
-    s.audioTranscriptNormalized = normalizedTranscriptText;
-    s.audioTranscriptBusiness = businessText;
+    s.audioTranscriptDisplay = displayText;
+    s.audioTranscriptParse = parseText;
+    s.audioTranscriptLanguages = transcript.detectedLanguages || [];
 
     if (!looksUsableIntent(intent)) {
       s.intent = null;
-      s.intentRawText = businessText;
+      s.intentRawText = parseText;
       s.step = null;
 
       await sendText(
         from,
-        `🎤 J’ai transcrit :\n"${rawTranscriptText}"\n\n` +
+        `🎤 J’ai transcrit :\n"${displayText}"\n\n` +
           `Je n’ai pas encore assez d’informations pour préparer le document.\n\n` +
           `Exemple :\n"Devis pour Moussa, 2 portes à 25000"`
       );
@@ -262,7 +275,7 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     }
 
     s.intent = intent;
-    s.intentRawText = businessText;
+    s.intentRawText = parseText;
     s.step = "intent_review";
 
     const msgText = buildIntentMessage(intent);
