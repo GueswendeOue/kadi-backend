@@ -1,33 +1,114 @@
 "use strict";
 
-const { getOrCreateProfile, markOnboardingDone } = require("./store");
+const {
+  getOrCreateProfile,
+  markOnboardingDone,
+  updateProfile,
+} = require("./store");
 const { getBalance, addCredits } = require("./kadiCreditsRepo");
 const { sendText, sendButtons } = require("./kadiMessaging");
+const { norm } = require("./kadiUtils");
 
 const WELCOME_CREDITS = Number(process.env.WELCOME_CREDITS || 5);
 const PDF_SIMPLE_CREDITS = Number(process.env.PDF_SIMPLE_CREDITS || 1);
+const REONBOARDING_BONUS_CREDITS = Number(
+  process.env.REONBOARDING_BONUS_CREDITS || 0
+);
+
+// Mets ici ton lien TikTok / vidéo démo
+const KADI_DEMO_VIDEO_URL =
+  process.env.KADI_DEMO_VIDEO_URL || "https://www.tiktok.com/@kadi/video/DEMO";
 
 const _WELCOME_CACHE = new Map();
 
-const EXAMPLES = [
-  `_"Devis pour Kaboré, 3 sacs de ciment à 7 500F"_`,
-  `_"Facture pour Traoré, réparation moto 15 000F"_`,
-  `_"Reçu loyer pour Aminata, 50 000F"_`,
-  `_"Devis chantier pour Moussa, 10 fers à béton à 3 000F"_`,
-  `_"Facture pour Adama, coiffure tresses 8 000F"_`,
-  `_"Reçu pour Boureima, livraison ciment 25 000F"_`,
-];
+const PROFESSION_EXAMPLES = {
+  btp: `_"Devis pour Moussa, 2 portes à 25 000F"_`,
+  commerce: `_"Facture pour Aminata, 5 pagnes à 3 000F"_`,
+  restauration: `_"Reçu pour Adama, plat du jour 5 000F"_`,
+  services: `_"Facture pour Traoré, réparation moto 15 000F"_`,
+  default: `_"Devis pour Kaboré, 3 sacs de ciment à 7 500F"_`,
+};
 
 function isValidWhatsAppId(id) {
   return /^\d+$/.test(String(id || "")) && String(id || "").length >= 8;
 }
 
 function pickExample(waId = "") {
-  const idx = String(waId)
-    .split("")
-    .reduce((acc, c) => acc + c.charCodeAt(0), 0) % EXAMPLES.length;
+  const examples = Object.values(PROFESSION_EXAMPLES);
+  const idx =
+    String(waId)
+      .split("")
+      .reduce((acc, c) => acc + c.charCodeAt(0), 0) % examples.length;
 
-  return EXAMPLES[idx];
+  return examples[idx];
+}
+
+function detectProfessionCategory(text = "") {
+  const t = norm(text);
+
+  if (
+    t.includes("soudeur") ||
+    t.includes("macon") ||
+    t.includes("maçon") ||
+    t.includes("btp") ||
+    t.includes("chantier") ||
+    t.includes("plombier") ||
+    t.includes("electricien") ||
+    t.includes("électricien") ||
+    t.includes("menuisier")
+  ) {
+    return "btp";
+  }
+
+  if (
+    t.includes("boutique") ||
+    t.includes("commerce") ||
+    t.includes("vendeur") ||
+    t.includes("vente") ||
+    t.includes("epicerie") ||
+    t.includes("épicerie")
+  ) {
+    return "commerce";
+  }
+
+  if (
+    t.includes("restaurant") ||
+    t.includes("restauration") ||
+    t.includes("maquis") ||
+    t.includes("cuisine") ||
+    t.includes("fast food")
+  ) {
+    return "restauration";
+  }
+
+  if (
+    t.includes("mecanicien") ||
+    t.includes("mécanicien") ||
+    t.includes("coiffeur") ||
+    t.includes("coiffeuse") ||
+    t.includes("couturier") ||
+    t.includes("couturiere") ||
+    t.includes("couturière") ||
+    t.includes("reparation") ||
+    t.includes("réparation") ||
+    t.includes("services")
+  ) {
+    return "services";
+  }
+
+  return null;
+}
+
+function buildProfessionExample(category) {
+  return PROFESSION_EXAMPLES[category] || PROFESSION_EXAMPLES.default;
+}
+
+function getZeroDocSegment(daysSinceSignup = 0) {
+  const d = Number(daysSinceSignup || 0);
+
+  if (d < 7) return "A";
+  if (d <= 30) return "B";
+  return "C";
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -70,7 +151,7 @@ async function ensureWelcomeCredits(waId) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🚀 ONBOARDING PRINCIPAL (YC VERSION)
+// 🚀 ONBOARDING PRINCIPAL
 // ─────────────────────────────────────────────────────────────
 async function maybeSendOnboarding(from) {
   try {
@@ -79,29 +160,34 @@ async function maybeSendOnboarding(from) {
 
     const example = pickExample(from);
 
-    // Message 1 — Valeur claire
     await sendText(
       from,
       `👋 Bienvenue sur *KADI*\n\n` +
-        `Je crée vos *devis, factures, reçus et décharges* directement sur WhatsApp.\n\n` +
-        `📄 PDF propre avec tampon\n` +
-        `⚡ En quelques secondes\n\n` +
-        `Vous pouvez écrire, envoyer un vocal ou une photo.`
+        `Je crée vos *devis, factures, reçus et décharges* sur WhatsApp.\n\n` +
+        `✍️ Écrivez simplement comme vous parlez.\n` +
+        `Exemple :\n${example}`
     );
 
-    // Message 2 — Activation immédiate
     await sendText(
       from,
-      `⚡ *Essayez maintenant en écrivant simplement :*\n\n` +
-        `${example}\n\n` +
-        `Ou choisissez une action ci-dessous 👇`
+      `🎤 Vous pouvez aussi envoyer un *message vocal*.\n` +
+        `KADI comprend le français correctement et commence aussi à comprendre certaines formulations locales en mooré.\n\n` +
+        `📹 Démo rapide : ${KADI_DEMO_VIDEO_URL}`
     );
 
-    // Boutons — focus action
-    await sendButtons(from, "Choisissez une action :", [
-      { id: "HOME_DOCS", title: "📄 Créer doc" },
-      { id: "HOME_OCR", title: "📷 Transformer photo" },
-      { id: "HOME_TUTORIAL", title: "📚 Exemples" },
+    await sendText(
+      from,
+      `Vous pouvez aussi m’écrire votre métier pour voir un exemple adapté.\n\n` +
+        `Exemples :\n` +
+        `• "Je suis soudeur"\n` +
+        `• "Je suis mécanicien"\n` +
+        `• "Je fais commerce"`
+    );
+
+    await sendButtons(from, "Choisissez une option 👇", [
+      { id: "ONBOARDING_PRO_BTP", title: "🔧 Chantier / BTP" },
+      { id: "ONBOARDING_PRO_COMMERCE", title: "🛒 Commerce" },
+      { id: "ONBOARDING_PRO_RESTO", title: "🍽️ Restauration" },
     ]);
 
     try {
@@ -113,44 +199,180 @@ async function maybeSendOnboarding(from) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔁 ACTIVATION J+1
+// 🧠 DÉTECTION TEXTE MÉTIER
+// ─────────────────────────────────────────────────────────────
+async function tryHandleProfessionIntro(from, text) {
+  try {
+    const category = detectProfessionCategory(text);
+    if (!category) return false;
+
+    await updateProfile(from, {
+      profession_text: String(text || "").trim().slice(0, 80),
+      profession_category: category,
+    });
+
+    const example = buildProfessionExample(category);
+
+    await sendText(
+      from,
+      `Parfait 👌\n\n` +
+        `Essayez maintenant en écrivant :\n\n${example}\n\n` +
+        `Ou envoyez le même besoin en vocal 🎤`
+    );
+
+    return true;
+  } catch (e) {
+    console.warn("⚠️ tryHandleProfessionIntro:", e?.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔘 RÉPONSES BOUTONS ONBOARDING
+// ─────────────────────────────────────────────────────────────
+async function handleOnboardingReply(from, replyId) {
+  try {
+    let category = null;
+
+    if (replyId === "ONBOARDING_PRO_BTP") category = "btp";
+    if (replyId === "ONBOARDING_PRO_COMMERCE") category = "commerce";
+    if (replyId === "ONBOARDING_PRO_RESTO") category = "restauration";
+    if (replyId === "ONBOARDING_PRO_SERVICES") category = "services";
+
+    if (!category) return false;
+
+    await updateProfile(from, {
+      profession_category: category,
+    });
+
+    const example = buildProfessionExample(category);
+
+    await sendText(
+      from,
+      `Parfait 👌\n\n` +
+        `Essayez maintenant en écrivant :\n\n${example}\n\n` +
+        `Ou envoyez ce besoin en vocal 🎤`
+    );
+
+    return true;
+  } catch (e) {
+    console.warn("⚠️ handleOnboardingReply:", e?.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔁 RE-ONBOARDING USERS SANS DOCUMENT
+// daysSinceSignup = nombre de jours depuis inscription
+// ─────────────────────────────────────────────────────────────
+async function sendZeroDocReOnboarding(from, options = {}) {
+  try {
+    const daysSinceSignup = Number(options.daysSinceSignup || 0);
+    const professionCategory = options.professionCategory || null;
+    const segment = getZeroDocSegment(daysSinceSignup);
+    const example = buildProfessionExample(professionCategory) || pickExample(from);
+
+    if (segment === "A") {
+      await sendText(
+        from,
+        `👋 Vous avez rejoint *KADI* il y a quelques jours mais vous n’avez pas encore créé de document.\n\n` +
+          `Essayez simplement ceci :\n\n${example}\n\n` +
+          `Ou envoyez le même besoin en vocal 🎤`
+      );
+      return true;
+    }
+
+    if (segment === "B") {
+      let bonusLine = "";
+      if (REONBOARDING_BONUS_CREDITS > 0) {
+        bonusLine =
+          `\n🎁 Bonus retour : *${REONBOARDING_BONUS_CREDITS} crédit(s)* quand vous créez votre premier document.`;
+      }
+
+      await sendText(
+        from,
+        `👋 Beaucoup d’utilisateurs envoient déjà leurs devis et factures sur WhatsApp avec *KADI*.\n\n` +
+          `Vous aussi vous pouvez commencer en quelques secondes :\n\n${example}${bonusLine}`
+      );
+      return true;
+    }
+
+    await sendText(
+      from,
+      `👋 *KADI* s’est amélioré depuis votre inscription.\n\n` +
+        `Nouveau : décharges, vocal, et lecture de photo.\n\n` +
+        `Essayez gratuitement maintenant :\n\n${example}\n\n` +
+        `📹 Démo rapide : ${KADI_DEMO_VIDEO_URL}`
+    );
+    return true;
+  } catch (e) {
+    console.warn("⚠️ sendZeroDocReOnboarding:", e?.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔁 RELANCES EXISTANTS
 // ─────────────────────────────────────────────────────────────
 async function sendActivationJ1(from) {
   try {
-    const example = pickExample(from);
+    const p = await getOrCreateProfile(from);
+    const example = buildProfessionExample(p?.profession_category) || pickExample(from);
 
     await sendText(
       from,
       `👋 Vous n’avez pas encore créé votre premier document sur *KADI*.\n\n` +
-        `Essayez simplement ceci :\n\n` +
-        `${example}\n\n` +
-        `Je m’occupe du reste en quelques secondes ⚡`
+        `Essayez simplement ceci :\n\n${example}\n\n` +
+        `Ou envoyez votre demande en vocal 🎤`
     );
   } catch (e) {
     console.warn("⚠️ activationJ1:", e?.message);
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// 🔁 ACTIVATION J+7
-// ─────────────────────────────────────────────────────────────
 async function sendActivationJ7(from) {
   try {
     await sendButtons(
       from,
       `👋 Vous pouvez aussi utiliser *KADI* pour :\n\n` +
         `📷 Transformer une photo en document\n` +
-        `🧾 Créer un reçu rapidement\n` +
-        `📄 Retrouver vos anciens documents\n\n` +
+        `🎤 Envoyer un vocal\n` +
+        `👤 Compléter votre profil pour des documents plus pros\n\n` +
         `Choisissez une action 👇`,
       [
         { id: "HOME_OCR", title: "📷 Transformer photo" },
         { id: "HOME_DOCS", title: "📄 Créer doc" },
-        { id: "HOME_HISTORY", title: "📚 Historique" },
+        { id: "HOME_PROFILE", title: "👤 Profil" },
       ]
     );
   } catch (e) {
     console.warn("⚠️ activationJ7:", e?.message);
+  }
+}
+
+async function sendReactivationNudge(from, options = {}) {
+  try {
+    const daysInactive = Number(options.daysInactive || 0);
+    const professionCategory = options.professionCategory || null;
+    const example = buildProfessionExample(professionCategory) || pickExample(from);
+
+    let intro = `👋 Cela fait un moment.\n\n`;
+    if (daysInactive >= 30) {
+      intro = `👋 Cela fait quelque temps que vous n’avez pas utilisé *KADI*.\n\n`;
+    }
+
+    await sendText(
+      from,
+      intro +
+        `Essayez simplement :\n\n${example}\n\n` +
+        `Ou envoyez votre demande en vocal 🎤\n` +
+        `📹 Démo : ${KADI_DEMO_VIDEO_URL}`
+    );
+
+    return true;
+  } catch (e) {
+    console.warn("⚠️ sendReactivationNudge:", e?.message);
+    return false;
   }
 }
 
@@ -197,8 +419,12 @@ async function sendZeroCreditsBlock(from) {
 module.exports = {
   ensureWelcomeCredits,
   maybeSendOnboarding,
+  tryHandleProfessionIntro,
+  handleOnboardingReply,
+  sendZeroDocReOnboarding,
   sendActivationJ1,
   sendActivationJ7,
+  sendReactivationNudge,
   sendLowCreditsAlert,
   sendZeroCreditsBlock,
 };
