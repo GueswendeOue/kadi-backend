@@ -16,6 +16,8 @@ const {
   maybeSendOnboarding,
   tryHandleProfessionIntro,
   handleOnboardingReply,
+  sendZeroDocReOnboarding,
+  sendReactivationNudge,
 } = require("./kadiOnboarding");
 
 // ===============================
@@ -68,6 +70,14 @@ const { makeKadiNaturalFlow } = require("./kadiNaturalFlow");
 const { makeKadiImageFlow } = require("./kadiImageFlow");
 const { makeKadiInteractiveFlow } = require("./kadiInteractiveFlow");
 const { makeKadiCommandFlow } = require("./kadiCommandFlow");
+
+// ===============================
+// Business / growth repos
+// ===============================
+const {
+  getZeroDocUsersBySegment,
+  getInactiveUsers,
+} = require("./kadiGrowthRepo");
 
 // ===============================
 // Existing business modules
@@ -581,7 +591,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   sendFactureKindMenu,
   sendPreviewMenu,
   sendStampMenu: _sendStampMenuFromStampFlow,
-  sendStampMoreMenu: _sendStampMenuFromStampFlow,
+  sendStampMoreMenu: _sendStampMoreMenuFromStampFlow,
   sendStampPositionMenu: _sendStampPositionMenuFromStampFlow,
   sendStampPositionMenu2: _sendStampPositionMenu2FromStampFlow,
   sendStampSizeMenu: _sendStampSizeMenuFromStampFlow,
@@ -640,9 +650,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 // Command flow
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
-  getSession,
   sendText,
-  sendButtons,
   startProfileFlow,
   sendHomeMenu,
   sendCreditsMenu,
@@ -651,6 +659,10 @@ const { handleCommand } = makeKadiCommandFlow({
   ensureAdmin,
   broadcastToAllKnownUsers,
   handleStatsCommand,
+  sendZeroDocReOnboarding,
+  sendReactivationNudge,
+  getZeroDocUsersBySegment,
+  getInactiveUsers,
   norm,
 });
 
@@ -711,9 +723,6 @@ async function handleIncomingMessage(value) {
 
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
-          // ===============================
-          // COMMANDES ULTRA PRIORITAIRES
-          // ===============================
           if (t === "menu" || t === "home" || t === "accueil") {
             return sendHomeMenu(from);
           }
@@ -736,9 +745,6 @@ async function handleIncomingMessage(value) {
             return sendRechargePacksMenu(from);
           }
 
-          // ===============================
-          // ROUTING NORMAL
-          // ===============================
           if (await handleCommand(from, text, { wa_id: from })) return;
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
