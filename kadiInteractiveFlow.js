@@ -13,6 +13,7 @@ function makeKadiInteractiveFlow(deps) {
     sendCreditsMenu,
     sendProfileMenu,
     sendFactureKindMenu,
+    sendFactureCatalogMenu,
     sendPreviewMenu,
     sendStampMenu,
     sendStampMoreMenu,
@@ -79,6 +80,11 @@ function makeKadiInteractiveFlow(deps) {
   } = deps;
 
   async function sendCurrentDraftPreview(from, draft) {
+    if (!draft) {
+      await sendText(from, "❌ Aucun document en cours.");
+      return;
+    }
+
     const preview = buildPreviewMessage({ doc: draft });
     await sendText(from, preview);
 
@@ -147,9 +153,7 @@ function makeKadiInteractiveFlow(deps) {
 
           await sendText(
             from,
-            `💰 Quel est le prix pour : *${
-              item?.label || "cet article"
-            }* ?`
+            `💰 Quel est le prix pour : *${item?.label || "cet article"}* ?`
           );
           return;
         }
@@ -181,7 +185,6 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       s.step = "intent_fix";
-
       await sendText(
         from,
         "✏️ Corrigez les informations en une phrase.\n\n" +
@@ -195,28 +198,33 @@ function makeKadiInteractiveFlow(deps) {
     // SMART BLOCK
     // ===============================
     if (replyId === "SMARTBLOCK_FIX") {
-      return sendText(
+      await sendText(
         from,
         "✍️ D’accord. Ajoutez ou corrigez les lignes, puis renvoyez le texte."
       );
+      return;
     }
 
     if (replyId === "SMARTBLOCK_CONTINUE") {
       const draft = s.lastDocDraft;
 
       if (!draft) {
-        return sendText(from, "❌ Aucun document en cours.");
+        await sendText(from, "❌ Aucun document en cours.");
+        return;
       }
 
       s.step = "doc_review";
       return sendCurrentDraftPreview(from, draft);
     }
 
+    // ===============================
+    // NAVIGATION
+    // ===============================
     if (replyId === "BACK_HOME") return sendHomeMenu(from);
     if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
     // ===============================
-    // HOME / ONBOARDING
+    // HOME / ONBOARDING / HELP
     // ===============================
     if (replyId === "HOME_DOCS") return sendDocsMenu(from);
     if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
@@ -224,14 +232,15 @@ function makeKadiInteractiveFlow(deps) {
 
     if (replyId === "HOME_OCR") {
       s.step = "awaiting_ocr_image";
-      return sendText(
+      await sendText(
         from,
         "📷 Envoyez la photo de votre facture, devis ou reçu.\n\nJe vais la transformer en document propre."
       );
+      return;
     }
 
     if (replyId === "HOME_TUTORIAL") {
-      return sendText(
+      await sendText(
         from,
         `📚 *Exemples KADI*\n\n` +
           `• Devis pour Moussa, 2 portes à 25000\n` +
@@ -240,16 +249,36 @@ function makeKadiInteractiveFlow(deps) {
           `• Décharge pour prêt de 50000 à Issa\n\n` +
           `Vous pouvez aussi envoyer un vocal ou une photo.`
       );
+      return;
+    }
+
+    if (replyId === "HOME_HELP") {
+      await sendText(
+        from,
+        `❓ *Aide rapide*\n\n` +
+          `Vous pouvez écrire naturellement :\n\n` +
+          `• Devis pour Moussa, 2 portes à 25000\n` +
+          `• Facture pour Awa, 5 pagnes à 3000\n` +
+          `• Reçu loyer 100000 pour Adama\n` +
+          `• Décharge pour prêt de 50000 à Issa\n\n` +
+          `Commandes utiles : MENU, PROFIL, SOLDE, RECHARGE`
+      );
+      return;
     }
 
     if (replyId === "HOME_HISTORY") {
-      return sendText(
+      await sendText(
         from,
         "📚 Historique en cours de préparation.\n\nTapez MENU pour continuer."
       );
+      return;
     }
 
-    if (replyId === "RECHARGE_1000" || replyId === "RECHARGE_2000") {
+    if (
+      replyId === "RECHARGE_1000" ||
+      replyId === "RECHARGE_2000" ||
+      replyId === "RECHARGE_3500"
+    ) {
       return sendRechargePacksMenu(from);
     }
 
@@ -266,7 +295,7 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_client";
 
       await sendText(from, "🧾 Format ticket sélectionné.");
-      await sendText(from, `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`);
+      await sendText(from, "👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)");
       return;
     }
 
@@ -280,7 +309,7 @@ function makeKadiInteractiveFlow(deps) {
       s.step = "doc_client";
 
       await sendText(from, "📄 Format A4 sélectionné.");
-      await sendText(from, `👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)`);
+      await sendText(from, "👤 *Nom du client ?*\n(Ex: Awa / Ben / Société X)");
       return;
     }
 
@@ -372,7 +401,8 @@ function makeKadiInteractiveFlow(deps) {
       const raw = String(s.pendingSmartBlockText || "").trim();
 
       if (!raw) {
-        return sendText(from, "❌ Texte introuvable. Renvoyez votre message.");
+        await sendText(from, "❌ Texte introuvable. Renvoyez votre message.");
+        return;
       }
 
       const mode =
@@ -419,6 +449,12 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
     if (replyId === "DOC_DECHARGE") return startDocFlow(from, "decharge");
 
+    if (replyId === "DOC_FACTURE_MENU") {
+      return sendFactureCatalogMenu
+        ? sendFactureCatalogMenu(from)
+        : sendFactureKindMenu(from);
+    }
+
     if (replyId === "DOC_FACTURE") {
       s.step = "facture_kind";
       return sendFactureKindMenu(from);
@@ -437,7 +473,8 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingOcrMediaId = null;
 
       if (!mediaId) {
-        return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        return;
       }
 
       const mode = replyId === "OCR_RECU" ? "recu" : "devis";
@@ -461,7 +498,8 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingOcrMediaId = null;
 
       if (!mediaId) {
-        return sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        await sendText(from, "❌ Photo introuvable. Renvoyez-la.");
+        return;
       }
 
       s.lastDocDraft = {
