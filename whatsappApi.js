@@ -13,20 +13,40 @@ if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
   throw new Error("WHATSAPP_TOKEN / PHONE_NUMBER_ID manquants dans .env");
 }
 
-/**
- * Vérifie la signature Meta (x-hub-signature-256)
- * Utilisé dans index.js (express.json verify callback)
- */
+// ======================================================
+// Constantes Meta / WhatsApp
+// ======================================================
+const LIMITS = {
+  buttonTitle: 20,
+  listButton: 20,
+  headerText: 60,
+  footerText: 60,
+  sectionTitle: 24,
+  rowTitle: 24,
+  rowDescription: 72,
+  rowId: 200,
+  maxButtons: 3,
+  maxSections: 10,
+  maxRowsPerSection: 10,
+  maxRowsTotal: 10,
+};
+
+// ======================================================
+// Signature webhook
+// ======================================================
 function verifyRequestSignature(req, res, buf) {
   const signature = req.headers["x-hub-signature-256"];
+
   if (!signature) {
     throw new Error('Missing "x-hub-signature-256" header.');
   }
+
   if (!APP_SECRET) {
     throw new Error("APP_SECRET manquant: impossible de vérifier la signature.");
   }
 
-  const [algo, hash] = signature.split("=");
+  const [algo, hash] = String(signature).split("=");
+
   if (algo !== "sha256" || !hash) {
     throw new Error("Invalid signature header format.");
   }
@@ -41,6 +61,9 @@ function verifyRequestSignature(req, res, buf) {
   }
 }
 
+// ======================================================
+// Helpers généraux
+// ======================================================
 function graphUrl(path) {
   return `https://graph.facebook.com/${VERSION}/${path}`;
 }
@@ -56,93 +79,203 @@ function extractMessageId(respData) {
   return respData?.messages?.[0]?.id || null;
 }
 
+function clip(value, max) {
+  return String(value || "").trim().slice(0, max);
+}
+
+function safeText(value, fallback = "") {
+  return String(value || fallback).trim();
+}
+
+function buildMetaApiError(error) {
+  const status = error?.response?.status || 500;
+  const data = error?.response?.data || null;
+  const metaError = data?.error || null;
+
+  const code = metaError?.code || null;
+  const subcode = metaError?.error_subcode || null;
+  const message =
+    metaError?.message ||
+    error?.message ||
+    "WhatsApp API request failed";
+
+  const details = {
+    status,
+    code,
+    subcode,
+    type: metaError?.type || null,
+    fbtrace_id: metaError?.fbtrace_id || null,
+    error_data: metaError?.error_data || null,
+  };
+
+  const finalError = new Error(
+    `[WhatsApp API] ${message}${code ? ` (code ${code})` : ""}${
+      subcode ? ` / subcode ${subcode}` : ""
+    }`
+  );
+
+  finalError.status = status;
+  finalError.meta = details;
+  finalError.raw = data;
+
+  return finalError;
+}
+
 async function postJsonMessage(payload, timeout = 15000) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
 
-  const resp = await axios.post(url, payload, {
-    headers: waHeadersJson(),
-    timeout,
-  });
+  try {
+    const resp = await axios.post(url, payload, {
+      headers: waHeadersJson(),
+      timeout,
+    });
 
-  return {
-    raw: resp.data,
-    messageId: extractMessageId(resp.data),
-  };
+    return {
+      raw: resp.data,
+      messageId: extractMessageId(resp.data),
+    };
+  } catch (error) {
+    throw buildMetaApiError(error);
+  }
 }
 
-/**
- * Envoi d’un message texte
- */
+// ======================================================
+// Validation list message
+// ======================================================
+function normalizeListSections(sections = []) {
+  const normalizedSections = [];
+
+  for (const sec of Array.isArray(sections)
+    ? sections.slice(0, LIMITS.maxSections)
+    : []) {
+    const rawRows = Array.isArray(sec?.rows) ? sec.rows : [];
+
+    const safeRows = rawRows
+      .slice(0, LIMITS.maxRowsPerSection)
+      .map((row) => ({
+        id: clip(row?.id, LIMITS.rowId),
+        title: clip(row?.title, LIMITS.rowTitle),
+        description: clip(row?.description, LIMITS.rowDescription),
+      }))
+      .filter((row) => row.id && row.title);
+
+    if (!safeRows.length) continue;
+
+    normalizedSections.push({
+      title: clip(sec?.title || "Options", LIMITS.sectionTitle),
+      rows: safeRows,
+    });
+  }
+
+  return normalizedSections;
+}
+
+function validateListSections(sections) {
+  if (!Array.isArray(sections) || !sections.length) {
+    throw new Error("sendList: sections vides");
+  }
+
+  let totalRows = 0;
+
+  for (const sec of sections) {
+    if (!Array.isArray(sec.rows) || !sec.rows.length) {
+      throw new Error(`sendList: section "${sec.title || "?"}" sans rows`);
+    }
+
+    totalRows += sec.rows.length;
+
+    if (sec.rows.length > LIMITS.maxRowsPerSection) {
+      throw new Error(
+        `sendList: section "${sec.title}" dépasse ${LIMITS.maxRowsPerSection} rows`
+      );
+    }
+
+    for (const row of sec.rows) {
+      if (!row.id || !row.title) {
+        throw new Error("sendList: row invalide (id/title requis)");
+      }
+    }
+  }
+
+  if (totalRows > LIMITS.maxRowsTotal) {
+    throw new Error(
+      `sendList: too many rows (${totalRows}/${LIMITS.maxRowsTotal} max)`
+    );
+  }
+
+  return totalRows;
+}
+
+// ======================================================
+// Messages simples
+// ======================================================
 async function sendText(to, text) {
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "text",
-    text: { body: String(text || "") },
+    text: {
+      body: safeText(text),
+    },
   };
 
   return postJsonMessage(payload);
 }
 
-/**
- * Envoi d’un template WhatsApp validé Meta
- * components exemple :
- * [
- *   {
- *     type: "header",
- *     parameters: [
- *       {
- *         type: "image",
- *         image: { link: "https://..." }
- *       }
- *     ]
- *   }
- * ]
- */
 async function sendTemplate({ to, name, language = "fr", components = [] }) {
-  return axios.post(
-    `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name,
-        language: {
-          code: language, // ✅ IMPORTANT
+  try {
+    const resp = await axios.post(
+      graphUrl(`${PHONE_NUMBER_ID}/messages`),
+      {
+        messaging_product: "whatsapp",
+        to: String(to),
+        type: "template",
+        template: {
+          name,
+          language: {
+            code: language,
+          },
+          components,
         },
-        components,
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+      {
+        headers: waHeadersJson(),
+        timeout: 15000,
+      }
+    );
+
+    return {
+      raw: resp.data,
+      messageId: extractMessageId(resp.data),
+    };
+  } catch (error) {
+    throw buildMetaApiError(error);
+  }
 }
 
-/**
- * Envoi de boutons (max 3)
- * buttons: [{id, title}]
- */
 async function sendButtons(to, bodyText, buttons) {
-  const safeButtons = (buttons || []).slice(0, 3).map((b) => ({
-    type: "reply",
-    reply: {
-      id: String(b.id),
-      title: String(b.title || "").slice(0, 20),
-    },
-  }));
+  const safeButtons = (Array.isArray(buttons) ? buttons : [])
+    .slice(0, LIMITS.maxButtons)
+    .map((b) => ({
+      type: "reply",
+      reply: {
+        id: clip(b?.id, LIMITS.rowId),
+        title: clip(b?.title, LIMITS.buttonTitle),
+      },
+    }))
+    .filter((b) => b.reply.id && b.reply.title);
+
+  if (!safeButtons.length) {
+    throw new Error("sendButtons: aucun bouton valide");
+  }
 
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: String(bodyText || "") },
+      body: { text: safeText(bodyText, "Choisissez une option") },
       action: { buttons: safeButtons },
     },
   };
@@ -150,35 +283,21 @@ async function sendButtons(to, bodyText, buttons) {
   return postJsonMessage(payload);
 }
 
-/**
- * Envoi d’une LIST (menu long)
- */
+// ======================================================
+// List message
+// ======================================================
 async function sendList(to, opts = {}) {
-  const headerText = String(opts.header || "").slice(0, 60);
-  const bodyText = String(opts.body || "Choisissez une option");
-  const footerText = String(opts.footer || "").slice(0, 60);
-  const buttonText = String(opts.buttonText || "Choisir").slice(0, 20);
+  const headerText = clip(opts?.header, LIMITS.headerText);
+  const bodyText = safeText(opts?.body, "Choisissez une option");
+  const footerText = clip(opts?.footer, LIMITS.footerText);
+  const buttonText = clip(opts?.buttonText || "Choisir", LIMITS.listButton);
 
-  const sections = Array.isArray(opts.sections) ? opts.sections : [];
-  const safeSections = sections.slice(0, 10).map((sec) => {
-    const rows = Array.isArray(sec.rows) ? sec.rows : [];
-    return {
-      title: String(sec.title || "Options").slice(0, 24),
-      rows: rows.slice(0, 10).map((r) => ({
-        id: String(r.id || "").slice(0, 200),
-        title: String(r.title || "").slice(0, 24),
-        description: String(r.description || "").slice(0, 72),
-      })),
-    };
-  });
-
-  if (!safeSections.length || !safeSections[0].rows.length) {
-    throw new Error("sendList: sections/rows vides");
-  }
+  const safeSections = normalizeListSections(opts?.sections || []);
+  validateListSections(safeSections);
 
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "interactive",
     interactive: {
       type: "list",
@@ -190,43 +309,56 @@ async function sendList(to, opts = {}) {
     },
   };
 
-  if (headerText) payload.interactive.header = { type: "text", text: headerText };
-  if (footerText) payload.interactive.footer = { text: footerText };
+  if (headerText) {
+    payload.interactive.header = {
+      type: "text",
+      text: headerText,
+    };
+  }
+
+  if (footerText) {
+    payload.interactive.footer = {
+      text: footerText,
+    };
+  }
 
   return postJsonMessage(payload);
 }
 
-/**
- * Récupère info media (url, mime_type, file_size, ...)
- */
+// ======================================================
+// Media
+// ======================================================
 async function getMediaInfo(mediaId) {
-  const url = graphUrl(`${mediaId}`);
+  try {
+    const resp = await axios.get(graphUrl(`${mediaId}`), {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      },
+      timeout: 15000,
+    });
 
-  const resp = await axios.get(url, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 15000,
-  });
-
-  return resp.data;
+    return resp.data;
+  } catch (error) {
+    throw buildMetaApiError(error);
+  }
 }
 
-/**
- * Télécharge le media (url retournée par getMediaInfo)
- */
 async function downloadMediaToBuffer(mediaUrl) {
-  const resp = await axios.get(mediaUrl, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    responseType: "arraybuffer",
-    timeout: 30000,
-  });
+  try {
+    const resp = await axios.get(mediaUrl, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      },
+      responseType: "arraybuffer",
+      timeout: 30000,
+    });
 
-  return Buffer.from(resp.data);
+    return Buffer.from(resp.data);
+  } catch (error) {
+    throw buildMetaApiError(error);
+  }
 }
 
-/**
- * Upload buffer as WhatsApp media (PDF / image / csv)
- * returns: { id: "MEDIA_ID" }
- */
 async function uploadMediaBuffer({ buffer, filename, mimeType }) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/media`);
 
@@ -238,28 +370,29 @@ async function uploadMediaBuffer({ buffer, filename, mimeType }) {
     contentType: mimeType || "application/pdf",
   });
 
-  const resp = await axios.post(url, form, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      ...form.getHeaders(),
-    },
-    maxBodyLength: Infinity,
-    timeout: 60000,
-  });
+  try {
+    const resp = await axios.post(url, form, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        ...form.getHeaders(),
+      },
+      maxBodyLength: Infinity,
+      timeout: 60000,
+    });
 
-  return resp.data; // { id }
+    return resp.data;
+  } catch (error) {
+    throw buildMetaApiError(error);
+  }
 }
 
-/**
- * Envoi d’un document déjà uploadé (mediaId)
- */
 async function sendDocument({ to, mediaId, filename, caption }) {
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "document",
     document: {
-      id: mediaId,
+      id: String(mediaId),
       filename: filename || "document.pdf",
       caption: caption || "",
     },
@@ -268,16 +401,13 @@ async function sendDocument({ to, mediaId, filename, caption }) {
   return postJsonMessage(payload);
 }
 
-/**
- * Envoi d’une image déjà uploadée (mediaId)
- */
 async function sendImage({ to, mediaId, caption }) {
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "image",
     image: {
-      id: mediaId,
+      id: String(mediaId),
       caption: caption || "",
     },
   };
@@ -285,13 +415,10 @@ async function sendImage({ to, mediaId, caption }) {
   return postJsonMessage(payload);
 }
 
-/**
- * Envoi direct d’une image par lien public
- */
 async function sendImageByLink({ to, imageLink, caption }) {
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: String(to),
     type: "image",
     image: {
       link: String(imageLink || ""),
@@ -302,17 +429,16 @@ async function sendImageByLink({ to, imageLink, caption }) {
   return postJsonMessage(payload);
 }
 
-/**
- * Extrait les statuts reçus via webhook Meta
- * utile dans index.js / kadiEngine.js
- */
+// ======================================================
+// Webhook statuses
+// ======================================================
 function extractStatusesFromWebhookValue(value) {
   if (!value?.statuses?.length) return [];
 
   return value.statuses.map((s) => ({
     messageId: s.id || null,
     recipientId: s.recipient_id || null,
-    status: s.status || null, // sent | delivered | read | failed
+    status: s.status || null,
     timestamp: s.timestamp || null,
     conversationId: s.conversation?.id || null,
     pricingCategory: s.pricing?.category || null,
