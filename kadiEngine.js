@@ -36,7 +36,6 @@ const {
   safe,
   norm,
   isValidWhatsAppId,
-  isValidEmail,
   formatDateISO,
   sleep,
   guessExtFromMime,
@@ -100,7 +99,6 @@ const { notifyAdminTopupReview } = require("./kadiAdminNotifications");
 const {
   getOrCreateProfile,
   updateProfile,
-  uploadLogoBuffer,
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
 } = require("./store");
@@ -332,7 +330,6 @@ const {
   startProfileFlow,
   handleProfileText,
   handleProfileReply,
-  isProfileComplete,
 } = makeKadiProfileFlow({
   getSession,
   sendText,
@@ -483,7 +480,6 @@ const {
 // ===============================
 const {
   createAndSendPdf,
-  sendGeneratedSuccessMenu,
   sendAlreadyGeneratedMenu,
 } = makeKadiPdfFlow({
   getSession,
@@ -526,7 +522,6 @@ const { handleIncomingImage } = makeKadiImageFlow({
   LIMITS,
   guessExtFromMime,
   handleLogoImage: async (from, msg) => {
-    // version minimale compatible avec le nouveau profile flow
     const s = getSession(from);
     if (s.step !== "profile_logo_upload") return false;
 
@@ -545,6 +540,15 @@ const { handleIncomingImage } = makeKadiImageFlow({
       "✅ Logo enregistré.\n📄 Vos documents seront maintenant plus professionnels."
     );
 
+    if (s.lastDocDraft) {
+      await sendButtons(from, "📄 On reprend votre document 👇", [
+        { id: "DOC_CONFIRM", title: "📤 Envoyer le PDF" },
+        { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+      ]);
+      return true;
+    }
+
+    await sendHomeMenu(from);
     return true;
   },
   readTopup,
@@ -695,26 +699,38 @@ async function handleIncomingMessage(value) {
 
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
-
           const t = norm(text);
 
-// commandes ultra-prioritaires
-if (t === "menu" || t === "home" || t === "accueil") {
-  return sendHomeMenu(from);
-}
+          console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
-if (t === "profil" || t === "profile") {
-  return startProfileFlow(from);
-}
+          // ===============================
+          // COMMANDES ULTRA PRIORITAIRES
+          // ===============================
+          if (t === "menu" || t === "home" || t === "accueil") {
+            return sendHomeMenu(from);
+          }
 
-if (t === "solde" || t === "credits" || t === "crédits") {
-  return replyBalance(from);
-}
+          if (t === "profil" || t === "profile") {
+            return startProfileFlow(from);
+          }
 
-if (t === "recharger" || t === "recharge") {
-  return sendRechargePacksMenu(from);
-}
+          if (
+            t === "solde" ||
+            t === "credit" ||
+            t === "credits" ||
+            t === "crédit" ||
+            t === "crédits"
+          ) {
+            return replyBalance(from);
+          }
 
+          if (t === "recharger" || t === "recharge") {
+            return sendRechargePacksMenu(from);
+          }
+
+          // ===============================
+          // ROUTING NORMAL
+          // ===============================
           if (await handleCommand(from, text, { wa_id: from })) return;
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
