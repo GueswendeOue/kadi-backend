@@ -14,6 +14,7 @@ const OPENAI_TRANSCRIPTION_MODEL =
 if (!WHATSAPP_TOKEN) {
   throw new Error("WHATSAPP_TOKEN manquant");
 }
+
 if (!OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY manquant");
 }
@@ -22,6 +23,9 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
+// ======================================================
+// TEXT HELPERS
+// ======================================================
 function normalizeTranscript(text = "") {
   return String(text || "")
     .replace(/\s+/g, " ")
@@ -31,6 +35,51 @@ function normalizeTranscript(text = "") {
     .trim();
 }
 
+function prepareTranscriptVariants(text = "") {
+  const rawTranscriptText = String(text || "").trim();
+  const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
+  const businessText = normalizeMooreBusinessText(normalizedTranscriptText);
+
+  return {
+    rawTranscriptText,
+    normalizedTranscriptText,
+    businessText,
+  };
+}
+
+function looksUsableIntent(intent) {
+  if (!intent || typeof intent !== "object") return false;
+
+  const hasClient = !!intent.client;
+  const hasItems =
+    Array.isArray(intent.items) && intent.items.some((i) => i?.label);
+
+  return hasClient || hasItems;
+}
+
+function guessAudioFilename(mimeType = "") {
+  const t = String(mimeType || "").toLowerCase();
+
+  if (t.includes("ogg")) return "audio.ogg";
+  if (t.includes("mpeg") || t.includes("mp3")) return "audio.mp3";
+  if (t.includes("wav")) return "audio.wav";
+  if (t.includes("webm")) return "audio.webm";
+  if (t.includes("mp4") || t.includes("m4a")) return "audio.m4a";
+
+  return "audio.ogg";
+}
+
+async function safeReadText(res) {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+// ======================================================
+// WHATSAPP MEDIA
+// ======================================================
 async function getWhatsAppMediaUrl(mediaId) {
   if (!mediaId) throw new Error("mediaId manquant");
 
@@ -90,6 +139,9 @@ async function downloadWhatsAppMedia(url) {
   };
 }
 
+// ======================================================
+// TRANSCRIPTION
+// ======================================================
 async function transcribeAudioBuffer(buffer, options = {}) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error("buffer audio invalide");
@@ -97,7 +149,6 @@ async function transcribeAudioBuffer(buffer, options = {}) {
 
   const mimeType = options.mimeType || "audio/ogg";
   const filename = options.filename || guessAudioFilename(mimeType);
-
   const file = new File([buffer], filename, { type: mimeType });
 
   const result = await openai.audio.transcriptions.create({
@@ -106,25 +157,28 @@ async function transcribeAudioBuffer(buffer, options = {}) {
     language: options.language || "fr",
     prompt:
       options.prompt ||
-      "Transcrire clairement un message vocal WhatsApp en français pour création de devis, facture, reçu ou décharge. Conserver noms, montants, produits et quantités. Ne pas inventer.",
+      [
+        "Transcrire le message vocal WhatsApp le plus fidèlement possible.",
+        "Conserver les mots exacts, les noms, les montants, les produits et les quantités.",
+        "Ne pas reformuler. Ne pas corriger inutilement. Ne pas inventer.",
+        "Le message peut contenir du français avec quelques mots en mooré."
+      ].join(" "),
+    temperature: 0,
   });
 
+  const variants = prepareTranscriptVariants(result?.text || "");
+
   return {
-    text: normalizeTranscript(result?.text || ""),
+    text: variants.rawTranscriptText,
+    normalizedText: variants.normalizedTranscriptText,
+    businessText: variants.businessText,
     raw: result,
   };
 }
 
-function looksUsableIntent(intent) {
-  if (!intent || typeof intent !== "object") return false;
-
-  const hasClient = !!intent.client;
-  const hasItems =
-    Array.isArray(intent.items) && intent.items.some((i) => i?.label);
-
-  return hasClient || hasItems;
-}
-
+// ======================================================
+// MAIN AUDIO HANDLER
+// ======================================================
 async function handleIncomingAudioMessage(msg, value, deps) {
   const { sendText, sendButtons, getSession } = deps || {};
 
@@ -149,7 +203,7 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     if (from) {
       await sendText(
         from,
-        "❌ Message vocal invalide. Essayez de renvoyer le vocal ou d’écrire votre demande."
+        "⚠️ Je n’ai pas pu lire ce vocal.\nRenvoyez-le ou écrivez votre demande."
       );
     }
     return true;
@@ -166,14 +220,15 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       language: "fr",
     });
 
-    const text = normalizeMooreBusinessText(
-      normalizeTranscript(transcript.text)
-    );
+    const rawTranscriptText = transcript.text;
+    const normalizedTranscriptText = transcript.normalizedText;
+    const businessText = transcript.businessText;
 
-    console.log("[KADI/AUDIO] raw transcript:", transcript.text);
-    console.log("[KADI/AUDIO] normalized transcript:", text);
+    console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
+    console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
+    console.log("[KADI/AUDIO] business transcript:", businessText);
 
-    if (!text) {
+    if (!rawTranscriptText) {
       await sendText(
         from,
         "🎤 Je n’ai pas bien compris le vocal.\n\nExemple :\n“Fais un devis pour 2 sacs de ciment à 5000 pour Adama.”"
@@ -181,21 +236,33 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const intent = buildIntent(text);
+    // On parse avec la version business-friendly,
+    // mais on garde la transcription brute dans la session.
+    const intent = buildIntent(businessText);
 
     console.log("[KADI/AUDIO] built intent:", intent);
 
+    const s = getSession(from);
+    s.audioTranscriptRaw = rawTranscriptText;
+    s.audioTranscriptNormalized = normalizedTranscriptText;
+    s.audioTranscriptBusiness = businessText;
+
     if (!looksUsableIntent(intent)) {
+      s.intent = null;
+      s.intentRawText = businessText;
+      s.step = null;
+
       await sendText(
         from,
-        `🎤 J’ai transcrit :\n"${text}"\n\nJe n’ai pas encore assez d’informations pour préparer le document.\n\nExemple :\n“Devis pour Moussa, 2 portes à 25000”`
+        `🎤 J’ai transcrit :\n"${rawTranscriptText}"\n\n` +
+          `Je n’ai pas encore assez d’informations pour préparer le document.\n\n` +
+          `Exemple :\n"Devis pour Moussa, 2 portes à 25000"`
       );
       return true;
     }
 
-    const s = getSession(from);
     s.intent = intent;
-    s.intentRawText = text;
+    s.intentRawText = businessText;
     s.step = "intent_review";
 
     const msgText = buildIntentMessage(intent);
@@ -215,34 +282,18 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     return true;
   } catch (error) {
     console.error("[KADI/AUDIO] error:", error);
+
     await sendText(
       from,
-      "❌ Je n’ai pas pu traiter votre vocal.\n\nVous pouvez envoyer le même message en texte."
+      "⚠️ Je n’ai pas pu traiter votre vocal.\nVous pouvez renvoyer le vocal ou écrire le message directement."
     );
     return true;
   }
 }
 
-function guessAudioFilename(mimeType = "") {
-  const t = String(mimeType || "").toLowerCase();
-  if (t.includes("ogg")) return "audio.ogg";
-  if (t.includes("mpeg") || t.includes("mp3")) return "audio.mp3";
-  if (t.includes("wav")) return "audio.wav";
-  if (t.includes("webm")) return "audio.webm";
-  if (t.includes("mp4") || t.includes("m4a")) return "audio.m4a";
-  return "audio.ogg";
-}
-
-async function safeReadText(res) {
-  try {
-    return await res.text();
-  } catch {
-    return "";
-  }
-}
-
 module.exports = {
   normalizeTranscript,
+  prepareTranscriptVariants,
   getWhatsAppMediaUrl,
   downloadWhatsAppMedia,
   transcribeAudioBuffer,
