@@ -696,6 +696,25 @@ async function handleIncomingMessage(value) {
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
 
+          const t = norm(text);
+
+// commandes ultra-prioritaires
+if (t === "menu" || t === "home" || t === "accueil") {
+  return sendHomeMenu(from);
+}
+
+if (t === "profil" || t === "profile") {
+  return startProfileFlow(from);
+}
+
+if (t === "solde" || t === "credits" || t === "crédits") {
+  return replyBalance(from);
+}
+
+if (t === "recharger" || t === "recharge") {
+  return sendRechargePacksMenu(from);
+}
+
           if (await handleCommand(from, text, { wa_id: from })) return;
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
