@@ -14,10 +14,6 @@ const {
 const {
   ensureWelcomeCredits,
   maybeSendOnboarding,
-  tryHandleProfessionIntro,
-  handleOnboardingReply,
-  sendZeroDocReOnboarding,
-  sendReactivationNudge,
 } = require("./kadiOnboarding");
 
 // ===============================
@@ -70,14 +66,6 @@ const { makeKadiNaturalFlow } = require("./kadiNaturalFlow");
 const { makeKadiImageFlow } = require("./kadiImageFlow");
 const { makeKadiInteractiveFlow } = require("./kadiInteractiveFlow");
 const { makeKadiCommandFlow } = require("./kadiCommandFlow");
-
-// ===============================
-// Business / growth repos
-// ===============================
-const {
-  getZeroDocUsersBySegment,
-  getInactiveUsers,
-} = require("./kadiGrowthRepo");
 
 // ===============================
 // Existing business modules
@@ -155,6 +143,9 @@ const {
   buildDechargeText,
 } = require("./kadiDecharge");
 
+// ===============================
+// Logger
+// ===============================
 const logger = {
   info: (context, message, meta = {}) =>
     console.log(`[KADI/INFO/${context}]`, message, meta),
@@ -185,6 +176,9 @@ const DECHARGE_CREDITS = Number(process.env.DECHARGE_CREDITS || 2);
 const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
+// ===============================
+// Small helpers
+// ===============================
 function money(v) {
   const n = Number(v || 0);
   return new Intl.NumberFormat("fr-FR").format(n);
@@ -311,6 +305,7 @@ const {
 const {
   sendHomeMenu,
   sendDocsMenu,
+  sendFactureCatalogMenu,
   sendFactureKindMenu,
   sendCreditsMenu,
   sendProfileMenu,
@@ -589,6 +584,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   sendCreditsMenu,
   sendProfileMenu,
   sendFactureKindMenu,
+  sendFactureCatalogMenu,
   sendPreviewMenu,
   sendStampMenu: _sendStampMenuFromStampFlow,
   sendStampMoreMenu: _sendStampMoreMenuFromStampFlow,
@@ -650,7 +646,9 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 // Command flow
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
+  getSession,
   sendText,
+  sendButtons,
   startProfileFlow,
   sendHomeMenu,
   sendCreditsMenu,
@@ -659,12 +657,64 @@ const { handleCommand } = makeKadiCommandFlow({
   ensureAdmin,
   broadcastToAllKnownUsers,
   handleStatsCommand,
-  sendZeroDocReOnboarding,
-  sendReactivationNudge,
-  getZeroDocUsersBySegment,
-  getInactiveUsers,
   norm,
 });
+
+// ===============================
+// Hard-priority command router
+// ===============================
+async function handleUltraPriorityText(from, rawText) {
+  const t = norm(rawText).toLowerCase();
+
+  if (!t) return false;
+
+  if (t === "menu" || t === "home" || t === "accueil") {
+    await sendHomeMenu(from);
+    return true;
+  }
+
+  if (t === "doc" || t === "docs" || t === "document" || t === "documents") {
+    await sendDocsMenu(from);
+    return true;
+  }
+
+  if (t === "profil" || t === "profile") {
+    await startProfileFlow(from);
+    return true;
+  }
+
+  if (
+    t === "solde" ||
+    t === "credit" ||
+    t === "credits" ||
+    t === "crédit" ||
+    t === "crédits"
+  ) {
+    await replyBalance(from);
+    return true;
+  }
+
+  if (t === "recharge" || t === "recharger") {
+    await sendRechargePacksMenu(from);
+    return true;
+  }
+
+  if (t === "aide" || t === "help") {
+    await sendText(
+      from,
+      `❓ *Aide rapide*\n\n` +
+        `Exemples :\n` +
+        `• Devis pour Moussa, 2 portes à 25000\n` +
+        `• Facture pour Awa, 5 pagnes à 3000\n` +
+        `• Reçu loyer avril 100000 pour Adama\n` +
+        `• Décharge pour prêt de 50000 à Issa\n\n` +
+        `Commandes : MENU, PROFIL, SOLDE, RECHARGE`
+    );
+    return true;
+  }
+
+  return false;
+}
 
 // ===============================
 // Main routing
@@ -684,7 +734,11 @@ async function handleIncomingMessage(value) {
         resolveOwnerKey(identity);
 
         await ensureWelcomeCredits(from);
-        await maybeSendOnboarding(from);
+
+        // onboarding soft: seulement si pas en train d'envoyer une commande texte claire
+        if (msg.type !== "text") {
+          await maybeSendOnboarding(from);
+        }
 
         if (msg.type === "audio") {
           return handleIncomingAudioMessage(msg, value, {
@@ -704,12 +758,6 @@ async function handleIncomingMessage(value) {
             msg?.interactive?.list_reply?.id;
 
           if (replyId) {
-            const handledOnboardingReply = await handleOnboardingReply(
-              from,
-              replyId
-            );
-            if (handledOnboardingReply) return;
-
             const handledProfileReply = await handleProfileReply(from, replyId);
             if (handledProfileReply) return;
 
@@ -719,37 +767,27 @@ async function handleIncomingMessage(value) {
 
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
-          const t = norm(text);
+          const t = norm(text).toLowerCase();
 
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
-          if (t === "menu" || t === "home" || t === "accueil") {
-            return sendHomeMenu(from);
+          // 1) ultra-prioritaire : bloque définitivement le parse naturel sur MENU
+          if (await handleUltraPriorityText(from, text)) {
+            return;
           }
 
-          if (t === "profil" || t === "profile") {
-            return startProfileFlow(from);
-          }
+          // 2) onboarding si texte vide ou premier vrai contact non-command
+          await maybeSendOnboarding(from);
 
-          if (
-            t === "solde" ||
-            t === "credit" ||
-            t === "credits" ||
-            t === "crédit" ||
-            t === "crédits"
-          ) {
-            return replyBalance(from);
-          }
-
-          if (t === "recharger" || t === "recharge") {
-            return sendRechargePacksMenu(from);
-          }
-
+          // 3) commandes
           if (await handleCommand(from, text, { wa_id: from })) return;
+
+          // 4) confirmations / profil / flows guidés
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
           if (await handleStampFlow(from, text)) return;
-          if (await tryHandleProfessionIntro(from, text)) return;
+
+          // 5) flows de compréhension
           if (await tryHandleNaturalMessage(from, text)) return;
           if (await handleSmartItemsBlockText(from, text)) return;
           if (await handleProductFlowText(from, text)) return;
@@ -760,10 +798,7 @@ async function handleIncomingMessage(value) {
           );
         }
 
-        return sendText(
-          from,
-          "❌ Type de message non supporté pour le moment."
-        );
+        return sendText(from, "❌ Type de message non supporté pour le moment.");
       } catch (err) {
         console.error("[KADI] handleIncomingMessage error:", err);
         await sendText(from, "❌ Une erreur est survenue. Réessayez.");
