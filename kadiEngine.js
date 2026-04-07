@@ -701,6 +701,12 @@ async function handleIncomingMessage(value) {
           const text = msg?.text?.body || "";
           const t = norm(text);
 
+if (t === "menu" || t === "home" || t === "accueil") {
+  console.log("[KADI/MENU] hard menu triggered", { from, raw: text, norm: t });
+  await sendText(from, "✅ DEBUG MENU HARD HIT");
+  return sendHomeMenu(from);
+}
+
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
           // ===============================
