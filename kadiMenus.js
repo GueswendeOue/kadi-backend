@@ -13,7 +13,7 @@ function makeKadiMenus(deps) {
   // ======================================================
   async function sendHomeMenu(to) {
     return sendList(to, {
-      body: "Choisissez une action",
+      body: "👋 Bienvenue dans le menu KADI",
       buttonText: "Ouvrir le menu",
       footer: "Appuyez sur un élément pour le sélectionner",
       sections: [
