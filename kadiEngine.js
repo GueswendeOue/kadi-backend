@@ -14,6 +14,8 @@ const {
 const {
   ensureWelcomeCredits,
   maybeSendOnboarding,
+  tryHandleProfessionIntro,
+  handleOnboardingReply,
 } = require("./kadiOnboarding");
 
 // ===============================
@@ -579,7 +581,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   sendFactureKindMenu,
   sendPreviewMenu,
   sendStampMenu: _sendStampMenuFromStampFlow,
-  sendStampMoreMenu: _sendStampMoreMenuFromStampFlow,
+  sendStampMoreMenu: _sendStampMenuFromStampFlow,
   sendStampPositionMenu: _sendStampPositionMenuFromStampFlow,
   sendStampPositionMenu2: _sendStampPositionMenu2FromStampFlow,
   sendStampSizeMenu: _sendStampSizeMenuFromStampFlow,
@@ -690,6 +692,12 @@ async function handleIncomingMessage(value) {
             msg?.interactive?.list_reply?.id;
 
           if (replyId) {
+            const handledOnboardingReply = await handleOnboardingReply(
+              from,
+              replyId
+            );
+            if (handledOnboardingReply) return;
+
             const handledProfileReply = await handleProfileReply(from, replyId);
             if (handledProfileReply) return;
 
@@ -700,12 +708,6 @@ async function handleIncomingMessage(value) {
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
           const t = norm(text);
-
-if (t === "menu" || t === "home" || t === "accueil") {
-  console.log("[KADI/MENU] hard menu triggered", { from, raw: text, norm: t });
-  await sendText(from, "✅ DEBUG MENU HARD HIT");
-  return sendHomeMenu(from);
-}
 
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
@@ -741,6 +743,7 @@ if (t === "menu" || t === "home" || t === "accueil") {
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
           if (await handleStampFlow(from, text)) return;
+          if (await tryHandleProfessionIntro(from, text)) return;
           if (await tryHandleNaturalMessage(from, text)) return;
           if (await handleSmartItemsBlockText(from, text)) return;
           if (await handleProductFlowText(from, text)) return;
