@@ -769,6 +769,21 @@ async function handleIncomingMessage(value) {
           const text = msg?.text?.body || "";
           const t = norm(text).toLowerCase();
 
+          if (t === "menu" || t === "home" || t === "accueil") {
+  console.log("[KADI/MENU] menu command received", { from, text });
+
+  try {
+    await sendText(from, "🧪 DEBUG: menu détecté");
+    await sendHomeMenu(from);
+    console.log("[KADI/MENU] sendHomeMenu success");
+    return;
+  } catch (e) {
+    console.error("[KADI/MENU] sendHomeMenu failed:", e);
+    await sendText(from, `❌ DEBUG MENU: ${e.message || "unknown error"}`);
+    return;
+  }
+}
+
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
           // 1) ultra-prioritaire : bloque définitivement le parse naturel sur MENU
