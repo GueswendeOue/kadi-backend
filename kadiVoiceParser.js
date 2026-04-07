@@ -1,8 +1,8 @@
 "use strict";
 
-// ===============================
-// NORMALISATION TEXTE
-// ===============================
+// ======================================================
+// TEXT NORMALIZATION
+// ======================================================
 function normalize(text = "") {
   return String(text || "")
     .toLowerCase()
@@ -11,9 +11,13 @@ function normalize(text = "") {
     .trim();
 }
 
-// ===============================
-// NOMBRES EN LETTRES
-// ===============================
+function safeText(v = "") {
+  return String(v || "").trim();
+}
+
+// ======================================================
+// NUMBER WORDS
+// ======================================================
 const NUMBER_WORDS = {
   zero: 0,
   un: 1,
@@ -41,9 +45,9 @@ function parseQty(word) {
   return 1;
 }
 
-// ===============================
-// PRIX / MONTANTS BUSINESS
-// ===============================
+// ======================================================
+// MONEY / BUSINESS AMOUNTS
+// ======================================================
 function parseBusinessAmount(input) {
   const raw = String(input || "").trim().toLowerCase();
   if (!raw) return null;
@@ -66,12 +70,12 @@ function parseBusinessAmount(input) {
     return Math.round(Number(s.slice(0, -1).replace(",", ".")) * 1000000);
   }
 
-  // 25.000 => 25000
+  // 25.000
   if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
     return Number(s.replace(/\./g, ""));
   }
 
-  // 25,000 => 25000
+  // 25,000
   if (/^\d{1,3}(,\d{3})+$/.test(s)) {
     return Number(s.replace(/,/g, ""));
   }
@@ -81,7 +85,7 @@ function parseBusinessAmount(input) {
     return Number(s);
   }
 
-  // 25,5 ou 25.5 (vrai décimal)
+  // 25,5 / 25.5
   if (/^\d+[.,]\d+$/.test(s)) {
     return Math.round(Number(s.replace(",", ".")));
   }
@@ -93,76 +97,120 @@ function parsePrice(text) {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return null;
 
-  // "50 mille"
+  // 50 mille
   const milleMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*mille\b/);
   if (milleMatch) {
     const base = Number(milleMatch[1].replace(",", "."));
     if (Number.isFinite(base)) return Math.round(base * 1000);
   }
 
-  // fallback général
   return parseBusinessAmount(raw);
 }
 
-// ===============================
-// EXTRACTION CLIENT
-// ===============================
+function extractAllPrices(text = "") {
+  const s = String(text || "");
+  const patterns = [
+    /\b\d{1,3}(?:\.\d{3})+\b/g,      // 25.000
+    /\b\d{1,3}(?:,\d{3})+\b/g,       // 25,000
+    /\b\d+(?:[.,]\d+)?k\b/gi,        // 25k
+    /\b\d+(?:[.,]\d+)?m\b/gi,        // 2m
+    /\b\d+(?:[.,]\d+)?\s*mille\b/gi, // 25 mille
+    /\b\d+\b/g,                      // 25000
+  ];
+
+  const seen = new Set();
+  const out = [];
+
+  for (const pattern of patterns) {
+    const matches = s.match(pattern) || [];
+    for (const match of matches) {
+      const key = String(match);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const value = parsePrice(match);
+      if (value != null) {
+        out.push({
+          raw: match,
+          value,
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+// ======================================================
+// CLIENT EXTRACTION
+// ======================================================
+function cleanClientName(name) {
+  return (
+    String(name || "")
+      .replace(/\b(de|du|la|le|les)\b\s*$/i, "")
+      .replace(/[^\p{L}\s\-]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim() || null
+  );
+}
+
 function extractClient(text) {
   const t = String(text || "").trim();
 
   const patterns = [
-    /\bpour\s+([a-zàâäéèêëïîôöùûüç\-]{2,})/i,
-    /\bclient\s+([a-zàâäéèêëïîôöùûüç\-]{2,})/i,
+    /\bpour\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
+    /\bclient\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
     /\bau nom de\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
   ];
 
   for (const p of patterns) {
     const m = t.match(p);
-    if (m && m[1]) {
-      return cleanClientName(m[1]);
-    }
+    if (!m || !m[1]) continue;
+
+    let candidate = m[1]
+      .split(/\b(?:avec|à|a|de|du|pour|montant|prix)\b/i)[0]
+      .trim();
+
+    candidate = cleanClientName(candidate);
+    if (candidate) return candidate;
   }
 
   return null;
 }
 
-function cleanClientName(name) {
-  return String(name || "")
-    .replace(/\b(de|du|la|le|les)\b\s*$/i, "")
-    .replace(/[^\p{L}\s\-]/gu, "")
-    .trim() || null;
-}
-
-// ===============================
-// LABELS PRODUITS
-// ===============================
+// ======================================================
+// PRODUCT / SERVICE LABELS
+// ======================================================
 const PRODUCT_LABEL_PATTERNS = [
-  /fen[eê]tre?s?/i,
-  /porte?s?/i,
-  /table?s?/i,
-  /chaise?s?/i,
-  /moto/i,
-  /moteur/i,
-  /ciment/i,
+  /r[eé]paration\s+moto/i,
+  /main d[’']oeuvre/i,
+  /main d oeuvre/i,
+  /livraison/i,
+  /installation/i,
+  /soudure/i,
+  /coiffure/i,
+  /tresse?s?/i,
   /fer(?:s)?(?:\s+[àa]\s+b[ée]ton)?/i,
+  /sacs?\s+de?\s*ciment/i,
+  /ciment/i,
   /brique?s?/i,
   /peinture/i,
-  /pagne?s?/i,
-  /tresse?s?/i,
-  /coiffure/i,
-  /livraison/i,
-  /r[eé]paration\s+moto/i,
-  /r[eé]paration/i,
-  /soudure/i,
   /grillage/i,
   /carreau[x]?/i,
   /bois/i,
   /placard/i,
   /plafond/i,
+  /moto/i,
+  /moteur/i,
+  /fen[eê]tre?s?/i,
+  /porte?s?/i,
+  /table?s?/i,
+  /chaise?s?/i,
+  /pagne?s?/i,
 ];
 
 function singularizeLabel(label = "") {
-  const t = String(label || "").trim();
+  const t = safeText(label);
   if (!t) return "Produit";
 
   return t
@@ -172,8 +220,14 @@ function singularizeLabel(label = "") {
     .replace(/^tables?$/i, "Table")
     .replace(/^chaises?$/i, "Chaise")
     .replace(/^pagnes?$/i, "Pagne")
+    .replace(/^tresses?$/i, "Tresses")
+    .replace(/^sacs?\s+de?\s*ciment$/i, "Sac de ciment")
     .replace(/\bfer(?:s)? à béton\b/i, "Fer à béton")
     .replace(/^fers?$/i, "Fer")
+    .replace(/^main d[’']oeuvre$/i, "Main d’œuvre")
+    .replace(/^main d oeuvre$/i, "Main d’œuvre")
+    .replace(/^reparation moto$/i, "Réparation moto")
+    .replace(/^reparation$/i, "Réparation")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -191,9 +245,15 @@ function extractLabel(segment) {
   return "Produit";
 }
 
-// ===============================
-// DÉCOUPAGE DES ITEMS
-// ===============================
+// ======================================================
+// SEGMENTATION
+// ======================================================
+function looksLikeDocumentIntro(segment) {
+  return /\b(fais-moi|fais moi|cr[eé]e|cree|devis|facture|re[çc]u|décharge|decharge)\b/i.test(
+    String(segment || "")
+  );
+}
+
 function splitItemSegments(text) {
   const t = String(text || "").trim();
   if (!t) return [];
@@ -204,38 +264,42 @@ function splitItemSegments(text) {
     .filter(Boolean);
 }
 
-function looksLikeDocumentIntro(segment) {
-  return /\b(fais-moi|fais moi|cr[eé]e|cree|devis|facture|re[çc]u)\b/i.test(
-    String(segment || "")
-  );
-}
-
+// ======================================================
+// FIELD EXTRACTION
+// ======================================================
 function extractQty(segment) {
   const s = String(segment || "").trim();
 
-  const m =
-    s.match(/\b(\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\b/i);
+  const m = s.match(
+    /\b(\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\b/i
+  );
 
   return m ? parseQty(m[1]) : 1;
 }
 
-function extractPrice(segment) {
+function extractUnitPrice(segment) {
   const s = String(segment || "").trim();
   if (!s) return null;
 
   const patterns = [
-    /\b\d{1,3}(?:\.\d{3})+\b/,          // 25.000
-    /\b\d{1,3}(?:,\d{3})+\b/,           // 25,000
-    /\b\d+(?:[.,]\d+)?k\b/i,            // 25k / 2.5k
-    /\b\d+(?:[.,]\d+)?m\b/i,            // 2m
-    /\b\d+(?:[.,]\d+)?\s*mille\b/i,     // 25 mille
-    /\b\d+\b/,                          // 25000
+    /\b[aà]\s*(\d{1,3}(?:\.\d{3})+)\b/i,
+    /\b[aà]\s*(\d{1,3}(?:,\d{3})+)\b/i,
+    /\b[aà]\s*(\d+(?:[.,]\d+)?k)\b/i,
+    /\b[aà]\s*(\d+(?:[.,]\d+)?m)\b/i,
+    /\b[aà]\s*(\d+(?:[.,]\d+)?\s*mille)\b/i,
+    /\b[aà]\s*(\d+)\b/i,
+    /\bprix\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+)\b/i,
+    /\bprix\s*(?:de)?\s*(\d{1,3}(?:,\d{3})+)\b/i,
+    /\bprix\s*(?:de)?\s*(\d+(?:[.,]\d+)?k)\b/i,
+    /\bprix\s*(?:de)?\s*(\d+(?:[.,]\d+)?m)\b/i,
+    /\bprix\s*(?:de)?\s*(\d+(?:[.,]\d+)?\s*mille)\b/i,
+    /\bprix\s*(?:de)?\s*(\d+)\b/i,
   ];
 
   for (const pattern of patterns) {
     const m = s.match(pattern);
-    if (m && m[0]) {
-      const price = parsePrice(m[0]);
+    if (m && m[1]) {
+      const price = parsePrice(m[1]);
       if (price != null) return price;
     }
   }
@@ -243,9 +307,15 @@ function extractPrice(segment) {
   return null;
 }
 
-// ===============================
-// EXTRACTION ITEMS
-// ===============================
+function extractFallbackPrice(segment) {
+  const prices = extractAllPrices(segment);
+  if (prices.length === 1) return prices[0].value;
+  return null;
+}
+
+// ======================================================
+// ITEMS EXTRACTION
+// ======================================================
 function extractItems(text) {
   const segments = splitItemSegments(text);
   const items = [];
@@ -255,20 +325,19 @@ function extractItems(text) {
 
     const label = extractLabel(segment);
     const qty = extractQty(segment);
-    const unitPrice = extractPrice(segment);
+    let unitPrice = extractUnitPrice(segment);
 
-    // Évite de créer un faux item si le segment ne contient rien d’exploitable
+    if (unitPrice == null) {
+      unitPrice = extractFallbackPrice(segment);
+    }
+
     const hasRealLabel = label !== "Produit";
     const hasPrice = unitPrice != null;
 
-    // Cas vocal minimal:
-    // "devis pour Moussa de 25.000"
-    // => pas de vrai produit nommé, mais on garde 1 item générique avec prix
     if (!hasRealLabel && !hasPrice) {
       continue;
     }
 
-    // Évite que l’intro crée un faux produit si aucun prix
     if (looksLikeDocumentIntro(segment) && !hasPrice && !hasRealLabel) {
       continue;
     }
@@ -283,9 +352,9 @@ function extractItems(text) {
   return items;
 }
 
-// ===============================
-// CONFIANCE
-// ===============================
+// ======================================================
+// CONFIDENCE
+// ======================================================
 function computeConfidence(data) {
   let score = 0;
 
@@ -298,9 +367,9 @@ function computeConfidence(data) {
   return Math.min(1, score);
 }
 
-// ===============================
+// ======================================================
 // MAIN
-// ===============================
+// ======================================================
 function parseVoiceText(text) {
   const t = normalize(text);
 
@@ -317,4 +386,6 @@ module.exports = {
   parseVoiceText,
   parseBusinessAmount,
   parsePrice,
+  extractClient,
+  extractItems,
 };
