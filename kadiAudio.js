@@ -4,8 +4,6 @@ const OpenAI = require("openai");
 const { buildIntent } = require("./kadiIntentEngine");
 const { buildIntentMessage, getNextQuestion } = require("./kadiIntentUx");
 const { normalizeMooreBusinessText } = require("./kadiMooreNormalizer");
-console.log("[KADI/AUDIO] raw transcript:", transcript.text);
-console.log("[KADI/AUDIO] normalized transcript:", text);
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v21.0";
@@ -117,6 +115,16 @@ async function transcribeAudioBuffer(buffer, options = {}) {
   };
 }
 
+function looksUsableIntent(intent) {
+  if (!intent || typeof intent !== "object") return false;
+
+  const hasClient = !!intent.client;
+  const hasItems =
+    Array.isArray(intent.items) && intent.items.some((i) => i?.label);
+
+  return hasClient || hasItems;
+}
+
 async function handleIncomingAudioMessage(msg, value, deps) {
   const { sendText, sendButtons, getSession } = deps || {};
 
@@ -159,8 +167,11 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     });
 
     const text = normalizeMooreBusinessText(
-  normalizeTranscript(transcript.text)
-);
+      normalizeTranscript(transcript.text)
+    );
+
+    console.log("[KADI/AUDIO] raw transcript:", transcript.text);
+    console.log("[KADI/AUDIO] normalized transcript:", text);
 
     if (!text) {
       await sendText(
@@ -170,15 +181,24 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const s = getSession(from);
     const intent = buildIntent(text);
 
+    console.log("[KADI/AUDIO] built intent:", intent);
+
+    if (!looksUsableIntent(intent)) {
+      await sendText(
+        from,
+        `🎤 J’ai transcrit :\n"${text}"\n\nJe n’ai pas encore assez d’informations pour préparer le document.\n\nExemple :\n“Devis pour Moussa, 2 portes à 25000”`
+      );
+      return true;
+    }
+
+    const s = getSession(from);
     s.intent = intent;
     s.intentRawText = text;
     s.step = "intent_review";
 
     const msgText = buildIntentMessage(intent);
-
     const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
 
     if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
