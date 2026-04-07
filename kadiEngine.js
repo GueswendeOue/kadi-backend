@@ -271,7 +271,7 @@ async function handleStatsCommand(from) {
 
     await sendText(from, msg);
   } catch (e) {
-    await sendText(from, "❌ Impossible de charger les stats.");
+    await sendText(from, "⚠️ Je n’ai pas pu charger les statistiques pour le moment.");
   }
 }
 
@@ -668,52 +668,62 @@ async function handleUltraPriorityText(from, rawText) {
 
   if (!t) return false;
 
-  if (t === "menu" || t === "home" || t === "accueil") {
-    await sendHomeMenu(from);
-    return true;
-  }
+  try {
+    if (t === "menu" || t === "home" || t === "accueil") {
+      await sendHomeMenu(from);
+      return true;
+    }
 
-  if (t === "doc" || t === "docs" || t === "document" || t === "documents") {
-    await sendDocsMenu(from);
-    return true;
-  }
+    if (t === "doc" || t === "docs" || t === "document" || t === "documents") {
+      await sendDocsMenu(from);
+      return true;
+    }
 
-  if (t === "profil" || t === "profile") {
-    await startProfileFlow(from);
-    return true;
-  }
+    if (t === "profil" || t === "profile") {
+      await startProfileFlow(from);
+      return true;
+    }
 
-  if (
-    t === "solde" ||
-    t === "credit" ||
-    t === "credits" ||
-    t === "crédit" ||
-    t === "crédits"
-  ) {
-    await replyBalance(from);
-    return true;
-  }
+    if (
+      t === "solde" ||
+      t === "credit" ||
+      t === "credits" ||
+      t === "crédit" ||
+      t === "crédits"
+    ) {
+      await replyBalance(from);
+      return true;
+    }
 
-  if (t === "recharge" || t === "recharger") {
-    await sendRechargePacksMenu(from);
-    return true;
-  }
+    if (t === "recharge" || t === "recharger") {
+      await sendRechargePacksMenu(from);
+      return true;
+    }
 
-  if (t === "aide" || t === "help") {
+    if (t === "aide" || t === "help") {
+      await sendText(
+        from,
+        `❓ *Aide rapide*\n\n` +
+          `Vous pouvez écrire simplement :\n` +
+          `• Devis pour Moussa, 2 portes à 25000\n` +
+          `• Facture pour Awa, 5 pagnes à 3000\n` +
+          `• Reçu loyer avril 100000 pour Adama\n` +
+          `• Décharge pour prêt de 50000 à Issa\n\n` +
+          `Tapez aussi : MENU, PROFIL, SOLDE ou RECHARGE`
+      );
+      return true;
+    }
+
+    return false;
+  } catch (e) {
+    logger.error("ultra_priority_text", e, { from, rawText });
+
     await sendText(
       from,
-      `❓ *Aide rapide*\n\n` +
-        `Exemples :\n` +
-        `• Devis pour Moussa, 2 portes à 25000\n` +
-        `• Facture pour Awa, 5 pagnes à 3000\n` +
-        `• Reçu loyer avril 100000 pour Adama\n` +
-        `• Décharge pour prêt de 50000 à Issa\n\n` +
-        `Commandes : MENU, PROFIL, SOLDE, RECHARGE`
+      "⚠️ Je n’ai pas pu ouvrir cette option pour le moment.\nTapez MENU pour continuer."
     );
     return true;
   }
-
-  return false;
 }
 
 // ===============================
@@ -735,7 +745,6 @@ async function handleIncomingMessage(value) {
 
         await ensureWelcomeCredits(from);
 
-        // onboarding soft: seulement si pas en train d'envoyer une commande texte claire
         if (msg.type !== "text") {
           await maybeSendOnboarding(from);
         }
@@ -763,58 +772,55 @@ async function handleIncomingMessage(value) {
 
             return handleInteractiveReply(from, replyId);
           }
+
+          return sendText(
+            from,
+            "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
+          );
         }
 
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
           const t = norm(text).toLowerCase();
 
-          if (t === "menu" || t === "home" || t === "accueil") {
-  console.log("[KADI/MENU] menu command received", { from, text });
-
-  try {
-    await sendHomeMenu(from);
-    console.log("[KADI/MENU] sendHomeMenu success");
-    return;
-  } catch (e) {
-    console.error("[KADI/MENU] sendHomeMenu failed:", e);
-    return;
-  }
-}
-
           console.log("[KADI/TEXT] raw:", text, "| norm:", t);
 
-          // 1) ultra-prioritaire : bloque définitivement le parse naturel sur MENU
           if (await handleUltraPriorityText(from, text)) {
             return;
           }
 
-          // 2) onboarding si texte vide ou premier vrai contact non-command
           await maybeSendOnboarding(from);
 
-          // 3) commandes
           if (await handleCommand(from, text, { wa_id: from })) return;
 
-          // 4) confirmations / profil / flows guidés
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
           if (await handleStampFlow(from, text)) return;
 
-          // 5) flows de compréhension
           if (await tryHandleNaturalMessage(from, text)) return;
           if (await handleSmartItemsBlockText(from, text)) return;
           if (await handleProductFlowText(from, text)) return;
 
           return sendText(
             from,
-            "❓ Je n’ai pas compris.\n\nExemple :\n“Reçu loyer février 100000 pour Adama”"
+            "🤔 Je n’ai pas bien compris.\n\n" +
+              "💡 Exemple :\n" +
+              "Devis pour Moussa, 2 portes à 25000\n\n" +
+              "Ou tapez MENU"
           );
         }
 
-        return sendText(from, "❌ Type de message non supporté pour le moment.");
+        return sendText(
+          from,
+          "⚠️ Je ne peux pas traiter ce type de message pour le moment.\nTapez MENU pour continuer."
+        );
       } catch (err) {
-        console.error("[KADI] handleIncomingMessage error:", err);
-        await sendText(from, "❌ Une erreur est survenue. Réessayez.");
+        logger.error("handle_incoming_message", err, { from, msgType: msg?.type });
+
+        await sendText(
+          from,
+          "⚠️ Une petite erreur s’est produite.\nTapez MENU pour reprendre."
+        );
       }
     });
   }
