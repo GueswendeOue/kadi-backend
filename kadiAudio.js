@@ -275,22 +275,48 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     }
 
     s.intent = intent;
-    s.intentRawText = parseText;
-    s.step = "intent_review";
+s.intentRawText = businessText;
+s.intentPendingItemLabel = null;
 
-    const msgText = buildIntentMessage(intent);
-    const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
+// étape par défaut
+s.step = "intent_review";
 
-    if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
-      buttons.unshift({ id: "INTENT_OK", title: "✅ Valider" });
-    }
+if (Array.isArray(intent?.missing) && intent.missing.length > 0) {
+  if (intent.missing.includes("client")) {
+    s.step = "intent_fix_client";
+  } else if (intent.missing.includes("price")) {
+    s.step = "intent_fix_price";
 
-    await sendButtons(from, msgText, buttons);
+    const missingItem = Array.isArray(intent.items)
+      ? intent.items.find((i) => i?.unitPrice == null)
+      : null;
 
-    const nextQuestion = getNextQuestion(intent);
-    if (nextQuestion) {
-      await sendText(from, nextQuestion);
-    }
+    s.intentPendingItemLabel = missingItem?.label || null;
+  } else if (intent.missing.includes("items")) {
+    s.step = "intent_fix_items";
+  }
+}
+
+const msgText = buildIntentMessage(intent);
+const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
+
+if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
+  buttons.unshift({ id: "INTENT_OK", title: "✅ Valider" });
+}
+
+await sendButtons(from, msgText, buttons);
+
+const nextQuestion = getNextQuestion(intent);
+if (nextQuestion) {
+  await sendText(from, nextQuestion);
+}
+
+console.log("[KADI/AUDIO] session step after intent build:", {
+  from,
+  step: s.step,
+  intentPendingItemLabel: s.intentPendingItemLabel || null,
+  missing: intent?.missing || [],
+});
 
     return true;
   } catch (error) {
