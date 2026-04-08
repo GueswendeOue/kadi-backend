@@ -41,6 +41,11 @@ const {
   guessExtFromMime,
   resetAdminBroadcastState,
 } = require("./kadiUtils");
+const {
+  money,
+  ensureAdmin,
+  parseNumberSmart,
+} = require("./kadiCoreHelpers");
 
 const { makeDraftHelpers } = require("./kadiDraftHelpers");
 const { makeKadiMenus } = require("./kadiMenus");
@@ -72,6 +77,12 @@ const { makeKadiSmallTalk } = require("./kadiSmallTalk");
 const { makeKadiIntentTextFix } = require("./kadiIntentTextFix");
 const { makeKadiPriorityRouter } = require("./kadiPriorityRouter");
 const { makeKadiStatsService } = require("./kadiStatsService");
+const {
+  makeKadiAdminBroadcastService,
+} = require("./kadiAdminBroadcastService");
+const {
+  makeKadiReengagementService,
+} = require("./kadiReengagementService");
 
 // ===============================
 // Existing business modules
@@ -183,48 +194,24 @@ const PACK_CREDITS = Number(process.env.PACK_CREDITS || 25);
 const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 
 // ===============================
-// Small helpers
+// Optional re-engagement deps
 // ===============================
-function money(v) {
-  const n = Number(v || 0);
-  return new Intl.NumberFormat("fr-FR").format(n);
-}
+let getZeroDocUsersBySegment = null;
+let getInactiveUsers = null;
+let sendZeroDocReOnboarding = null;
+let sendReactivationNudge = null;
 
-function ensureAdmin(identityInput) {
-  const raw =
-    typeof identityInput === "string"
-      ? identityInput
-      : identityInput?.wa_id ||
-        identityInput?.waId ||
-        identityInput?.from ||
-        "";
-  const from = String(raw || "").trim();
-  const adminWaId = String(process.env.ADMIN_WA_ID || "").trim();
-  return !!from && !!adminWaId && from === adminWaId;
-}
+try {
+  ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
+} catch (_) {}
 
-function parseNumberSmart(input) {
-  const raw = String(input || "").trim().toLowerCase();
-  if (!raw) return null;
+try {
+  ({ sendZeroDocReOnboarding, sendReactivationNudge } = require("./kadiReengagementMessaging"));
+} catch (_) {}
 
-  let s = raw.replace(/\s/g, "").replace(/fcfa/g, "").replace(/f$/g, "");
-  let multiplier = 1;
-
-  if (s.endsWith("k")) {
-    multiplier = 1000;
-    s = s.slice(0, -1);
-  } else if (s.endsWith("m")) {
-    multiplier = 1000000;
-    s = s.slice(0, -1);
-  }
-
-  s = s.replace(/,/g, ".");
-  const n = Number(s);
-  if (!Number.isFinite(n)) return null;
-
-  return Math.round(n * multiplier);
-}
-
+// ===============================
+// Local helpers
+// ===============================
 async function logLearningEvent(payload = {}) {
   try {
     logger.info("learning", "event", payload);
@@ -639,20 +626,42 @@ const { handleStatsCommand } = makeKadiStatsService({
 });
 
 // ===============================
+// Admin services
+// ===============================
+const { handleBroadcastCommand } = makeKadiAdminBroadcastService({
+  sendText,
+  broadcastToAllKnownUsers,
+});
+
+const {
+  handleReengageZeroDocsCommand,
+  handleReengageInactiveCommand,
+} = makeKadiReengagementService({
+  sendText,
+  getZeroDocUsersBySegment,
+  getInactiveUsers,
+  sendZeroDocReOnboarding,
+  sendReactivationNudge,
+});
+
+// ===============================
 // Command flow
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
-  getSession,
   sendText,
-  sendButtons,
+
   startProfileFlow,
   sendHomeMenu,
   sendCreditsMenu,
   sendRechargePacksMenu,
   sendDocsMenu,
+
   ensureAdmin,
-  broadcastToAllKnownUsers,
   handleStatsCommand,
+  handleBroadcastCommand,
+  handleReengageZeroDocsCommand,
+  handleReengageInactiveCommand,
+
   norm,
 });
 
