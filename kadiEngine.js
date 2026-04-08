@@ -765,7 +765,23 @@ async function handleIncomingMessage(value) {
           await maybeSendOnboarding(from);
 
           if (await handleCommand(from, text, { wa_id: from })) return;
-          if (await handleIntentFixText(from, text)) return;
+
+const s = getSession(from);
+if (
+  s?.step === "intent_fix_price" ||
+  s?.step === "intent_fix_client" ||
+  s?.step === "intent_fix_items" ||
+  s?.step === "intent_fix"
+) {
+  const handledIntentFix = await handleIntentFixText(from, text);
+  if (handledIntentFix) return;
+
+  await sendText(
+    from,
+    "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
+  );
+  return;
+}
 
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;

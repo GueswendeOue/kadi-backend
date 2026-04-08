@@ -53,23 +53,77 @@ function makeKadiIntentTextFix(deps) {
     }
   }
 
+  function findTargetItemByHint(items, labelHint) {
+    if (!Array.isArray(items) || items.length === 0) return null;
+    if (!labelHint) return null;
+
+    const normalizedHint = String(labelHint).trim().toLowerCase();
+
+    return (
+      items.find(
+        (i) =>
+          String(i?.label || "")
+            .trim()
+            .toLowerCase() === normalizedHint
+      ) ||
+      items.find((i) =>
+        String(i?.label || "")
+          .trim()
+          .toLowerCase()
+          .includes(normalizedHint)
+      ) ||
+      null
+    );
+  }
+
+  function computeNextStep(intent) {
+    if (!intent || !Array.isArray(intent.missing) || intent.missing.length === 0) {
+      return "intent_review";
+    }
+
+    if (intent.missing.includes("client")) return "intent_fix_client";
+    if (intent.missing.includes("price")) return "intent_fix_price";
+    if (intent.missing.includes("items")) return "intent_fix_items";
+
+    return "intent_review";
+  }
+
   async function handleIntentFixText(from, text) {
     const s = getSession(from);
+
+    console.log("[KADI/INTENT_FIX] incoming", {
+      from,
+      text,
+      step: s?.step || null,
+      hasIntent: !!s?.intent,
+      intentPendingItemLabel: s?.intentPendingItemLabel || null,
+      intent: s?.intent || null,
+    });
+
     if (!s) return false;
 
     const raw = String(text || "").trim();
     if (!raw) return false;
 
     const intent = s.intent;
-    if (!intent || typeof intent !== "object") return false;
+    if (!intent || typeof intent !== "object") {
+      console.log("[KADI/INTENT_FIX] no_intent", { from, text, step: s?.step });
+      return false;
+    }
 
     // ===============================
     // FIX PRICE
     // ===============================
     if (s.step === "intent_fix_price") {
-      const price = parseNumberSmart(raw);
+      const parsedPrice = parseNumberSmart(raw);
 
-      if (price == null || price <= 0) {
+      console.log("[KADI/INTENT_FIX] branch=intent_fix_price", {
+        raw,
+        parsedPrice,
+        labelHint: s.intentPendingItemLabel || null,
+      });
+
+      if (parsedPrice == null || parsedPrice <= 0) {
         await sendText(
           from,
           "💰 Je n’ai pas compris le prix.\n\nExemple : 5000"
@@ -80,45 +134,31 @@ function makeKadiIntentTextFix(deps) {
       const items = Array.isArray(intent.items) ? intent.items : [];
       const labelHint = s.intentPendingItemLabel || null;
 
-      let targetItem = null;
-
-      if (labelHint) {
-        targetItem = items.find(
-          (i) =>
-            String(i?.label || "").toLowerCase() ===
-            String(labelHint).toLowerCase()
-        );
-      }
+      let targetItem = findTargetItemByHint(items, labelHint);
 
       if (!targetItem) {
-        targetItem = items.find((i) => i?.unitPrice == null);
+        targetItem = items.find((i) => i?.unitPrice == null) || null;
       }
 
       if (!targetItem) {
         await sendText(
           from,
-          "⚠️ Je n’ai pas trouvé l’élément à mettre à jour.\nRenvoyez votre demande."
+          "⚠️ Je n’ai pas retrouvé l’élément à compléter.\nTapez CORRIGER ou renvoyez la phrase complète."
         );
         return true;
       }
 
-      targetItem.unitPrice = price;
+      targetItem.unitPrice = parsedPrice;
 
       intent.missing = recomputeMissing(intent);
       s.intent = intent;
       s.intentPendingItemLabel = null;
+      s.step = computeNextStep(intent);
 
-      if (intent.missing.length === 0) {
-        s.step = "intent_review";
-      } else if (intent.missing.includes("price")) {
-        s.step = "intent_fix_price";
-      } else if (intent.missing.includes("client")) {
-        s.step = "intent_fix_client";
-      } else if (intent.missing.includes("items")) {
-        s.step = "intent_fix_items";
-      } else {
-        s.step = "intent_review";
-      }
+      console.log("[KADI/INTENT_FIX] price_applied", {
+        updatedIntent: intent,
+        nextStep: s.step,
+      });
 
       await sendIntentReview(from, intent);
       return true;
@@ -128,19 +168,19 @@ function makeKadiIntentTextFix(deps) {
     // FIX CLIENT
     // ===============================
     if (s.step === "intent_fix_client") {
+      console.log("[KADI/INTENT_FIX] branch=intent_fix_client", {
+        raw,
+      });
+
       intent.client = raw;
       intent.missing = recomputeMissing(intent);
       s.intent = intent;
+      s.step = computeNextStep(intent);
 
-      if (intent.missing.length === 0) {
-        s.step = "intent_review";
-      } else if (intent.missing.includes("price")) {
-        s.step = "intent_fix_price";
-      } else if (intent.missing.includes("items")) {
-        s.step = "intent_fix_items";
-      } else {
-        s.step = "intent_review";
-      }
+      console.log("[KADI/INTENT_FIX] client_applied", {
+        updatedIntent: intent,
+        nextStep: s.step,
+      });
 
       await sendIntentReview(from, intent);
       return true;
@@ -150,6 +190,10 @@ function makeKadiIntentTextFix(deps) {
     // FIX ITEMS
     // ===============================
     if (s.step === "intent_fix_items") {
+      console.log("[KADI/INTENT_FIX] branch=intent_fix_items", {
+        raw,
+      });
+
       const rebuilt = buildIntent(raw);
 
       if (
@@ -165,22 +209,19 @@ function makeKadiIntentTextFix(deps) {
       }
 
       intent.items = rebuilt.items;
+
       if (!intent.client && rebuilt.client) {
         intent.client = rebuilt.client;
       }
 
       intent.missing = recomputeMissing(intent);
       s.intent = intent;
+      s.step = computeNextStep(intent);
 
-      if (intent.missing.length === 0) {
-        s.step = "intent_review";
-      } else if (intent.missing.includes("price")) {
-        s.step = "intent_fix_price";
-      } else if (intent.missing.includes("client")) {
-        s.step = "intent_fix_client";
-      } else {
-        s.step = "intent_review";
-      }
+      console.log("[KADI/INTENT_FIX] items_applied", {
+        updatedIntent: intent,
+        nextStep: s.step,
+      });
 
       await sendIntentReview(from, intent);
       return true;
@@ -190,6 +231,10 @@ function makeKadiIntentTextFix(deps) {
     // FREE CORRECTION IN ONE SENTENCE
     // ===============================
     if (s.step === "intent_fix") {
+      console.log("[KADI/INTENT_FIX] branch=intent_fix", {
+        raw,
+      });
+
       const rebuilt = buildIntent(raw);
 
       if (!rebuilt || typeof rebuilt !== "object") {
@@ -204,22 +249,22 @@ function makeKadiIntentTextFix(deps) {
 
       s.intent = rebuilt;
       s.intentPendingItemLabel = null;
+      s.step = computeNextStep(rebuilt);
 
-      if (rebuilt.missing.length === 0) {
-        s.step = "intent_review";
-      } else if (rebuilt.missing.includes("client")) {
-        s.step = "intent_fix_client";
-      } else if (rebuilt.missing.includes("price")) {
-        s.step = "intent_fix_price";
-      } else if (rebuilt.missing.includes("items")) {
-        s.step = "intent_fix_items";
-      } else {
-        s.step = "intent_review";
-      }
+      console.log("[KADI/INTENT_FIX] rebuilt_intent_applied", {
+        updatedIntent: rebuilt,
+        nextStep: s.step,
+      });
 
       await sendIntentReview(from, rebuilt);
       return true;
     }
+
+    console.log("[KADI/INTENT_FIX] no_match", {
+      from,
+      text,
+      step: s?.step || null,
+    });
 
     return false;
   }
