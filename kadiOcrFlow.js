@@ -13,6 +13,7 @@ function makeKadiOcrFlow(deps) {
     makeDraftMeta,
     makeItem,
     computeFinance,
+    normalizeAndValidateDraft,
     buildPreviewMessage,
     computeBasePdfCost,
     formatBaseCostLine,
@@ -36,7 +37,13 @@ function makeKadiOcrFlow(deps) {
 
     if (t.includes("facture")) return "facture";
     if (t.includes("reçu") || t.includes("recu")) return "recu";
-    if (t.includes("devis") || t.includes("proforma") || t.includes("pro forma")) return "devis";
+    if (
+      t.includes("devis") ||
+      t.includes("proforma") ||
+      t.includes("pro forma")
+    ) {
+      return "devis";
+    }
     if (t.includes("décharge") || t.includes("decharge")) return "decharge";
 
     return null;
@@ -44,13 +51,12 @@ function makeKadiOcrFlow(deps) {
 
   function extractTotalFromOcr(text) {
     const patterns = [
-      /total\s*[:\-]?\s*([0-9\s.,]+)/i,
       /total\s*ttc\s*[:\-]?\s*([0-9\s.,]+)/i,
       /net\s*a\s*payer\s*[:\-]?\s*([0-9\s.,]+)/i,
       /montant\s+total\s*[:\-]?\s*([0-9\s.,]+)/i,
       /a\s+payer\s*[:\-]?\s*([0-9\s.,]+)/i,
-      /grandTotal\s*[:\-]?\s*([0-9\s.,]+)/i,
-      /TOTAL:\s*([0-9\s.,]+)/i,
+      /grand\s*total\s*[:\-]?\s*([0-9\s.,]+)/i,
+      /total\s*[:\-]?\s*([0-9\s.,]+)/i,
     ];
 
     for (const p of patterns) {
@@ -84,8 +90,6 @@ function makeKadiOcrFlow(deps) {
   }
 
   function parseNormalizedItemLine(line) {
-    // Format attendu venant de kadiOcrEngine :
-    // - Tom cim | qty:2 | pu:12500 | total:25000
     const m = String(line || "").match(
       /^\-\s*(.+?)\s*\|\s*qty:(\d+)\s*(?:\|\s*pu:(\d+))?\s*(?:\|\s*total:(\d+))?\s*$/i
     );
@@ -110,8 +114,6 @@ function makeKadiOcrFlow(deps) {
   }
 
   function parseLooseItemLine(line) {
-    // Essaie de lire une ligne de type :
-    // "ciment 1 sac 6000f 6000f"
     const raw = String(line || "").trim();
     if (!raw) return null;
     if (isNoiseLine(raw)) return null;
@@ -140,7 +142,10 @@ function makeKadiOcrFlow(deps) {
     let label = raw
       .replace(/\d[\d\s.,]*/g, " ")
       .replace(/\bfcfa\b|\bf\b/gi, " ")
-      .replace(/\bboite\b|\bboute\b|\bbouteille\b|\bsac\b|\bl\b/gi, " ")
+      .replace(
+        /\bboite\b|\bboute\b|\bbouteille\b|\bsac\b|\bl\b|\bkg\b/gi,
+        " "
+      )
       .replace(/\s+/g, " ")
       .trim();
 
@@ -190,16 +195,82 @@ function makeKadiOcrFlow(deps) {
       if (items.length >= LIMITS.maxItems) break;
     }
 
-    const detected = extractTotalFromOcr(ocrText);
-    const calc = computeFinance({ items }).gross;
+    const detectedTotal = extractTotalFromOcr(ocrText);
 
     return {
       client,
       items,
-      finance: {
-        subtotal: calc,
-        gross: detected ?? calc,
-      },
+      detectedTotal,
+    };
+  }
+
+  function buildDraftFromParsed(baseDraft, parsed) {
+    const draft = {
+      ...baseDraft,
+      client: parsed?.client || baseDraft?.client || null,
+      items: Array.isArray(parsed?.items)
+        ? parsed.items.slice(0, LIMITS.maxItems)
+        : [],
+    };
+
+    draft.finance = computeFinance(draft);
+
+    return draft;
+  }
+
+  function needsManualReview(draft, parsed = {}) {
+    const checked = normalizeAndValidateDraft({
+      ...draft,
+      items: Array.isArray(draft?.items) ? draft.items.map((it) => ({ ...it })) : [],
+    });
+
+    const issues = Array.isArray(checked?.issues) ? checked.issues : [];
+    const detectedTotal = Number(parsed?.detectedTotal || 0);
+    const computedTotal = Number(
+      checked?.draft?.finance?.gross ??
+        checked?.draft?.finance?.total ??
+        0
+    );
+
+    if (!checked.ok) {
+      return {
+        needsReview: true,
+        reason: `validation_failed:${issues.join(",")}`,
+        checked,
+      };
+    }
+
+    if (
+      detectedTotal > 0 &&
+      computedTotal > 0 &&
+      Math.abs(detectedTotal - computedTotal) > 0
+    ) {
+      const ratio = Math.abs(detectedTotal - computedTotal) / computedTotal;
+      if (ratio >= 0.15) {
+        return {
+          needsReview: true,
+          reason: "ocr_total_gap_high",
+          checked,
+        };
+      }
+    }
+
+    if (
+      Array.isArray(checked?.draft?.items) &&
+      checked.draft.items.length > 0 &&
+      computedTotal <= 0
+    ) {
+      return {
+        needsReview: true,
+        reason: "computed_total_zero",
+        checked,
+      };
+    }
+
+    return {
+      needsReview: false,
+      reason: null,
+      checked,
     };
   }
 
@@ -287,13 +358,14 @@ function makeKadiOcrFlow(deps) {
 
       s.lastDocDraft = {
         type: guessed,
-        factureKind: null,
+        factureKind: guessed === "facture" ? "definitive" : null,
         docNumber: null,
         date: formatDateISO(),
         client: null,
         items: [],
         finance: null,
         source: "ocr",
+        meta: makeDraftMeta(),
       };
     }
 
@@ -305,7 +377,6 @@ function makeKadiOcrFlow(deps) {
 
     let parsed = null;
 
-    // Si un parseur avancé existe encore, on peut l’essayer.
     if (typeof parseInvoiceTextWithGemini === "function") {
       try {
         const gemParsed = await parseInvoiceTextWithGemini(ocrText);
@@ -321,10 +392,7 @@ function makeKadiOcrFlow(deps) {
                 )
               )
             : [],
-          finance: {
-            subtotal: Number(gemParsed?.total || 0),
-            gross: Number(gemParsed?.total || 0),
-          },
+          detectedTotal: Number(gemParsed?.total || 0) || null,
         };
 
         if (!parsed.items.length) {
@@ -348,7 +416,7 @@ function makeKadiOcrFlow(deps) {
           from,
           client: parsed.client,
           itemsCount: parsed.items.length,
-          total: parsed.finance?.gross || 0,
+          total: parsed.detectedTotal || 0,
         });
       } catch (e) {
         logger?.warn?.("ocr", "Advanced parsing failed, fallback local parser", {
@@ -372,22 +440,57 @@ function makeKadiOcrFlow(deps) {
       parsed = parseOcrToDraft(ocrText);
     }
 
-    if (parsed.client) {
-      s.lastDocDraft.client = parsed.client;
+    const candidateDraft = buildDraftFromParsed(s.lastDocDraft, parsed);
+    const review = needsManualReview(candidateDraft, parsed);
+
+    if (review?.checked?.draft) {
+      s.lastDocDraft = review.checked.draft;
+    } else {
+      s.lastDocDraft = candidateDraft;
     }
 
-    if (parsed.items?.length) {
-      s.lastDocDraft.items = parsed.items.slice(0, LIMITS.maxItems);
-    }
-
-    s.lastDocDraft.finance = parsed.finance || computeFinance(s.lastDocDraft);
-
-    logger?.info?.("ocr", "Draft ready for preview", {
+    logger?.info?.("ocr", "Draft ready after normalization", {
       from,
       client: s.lastDocDraft.client,
       itemsCount: s.lastDocDraft.items.length,
       total: s.lastDocDraft.finance?.gross || 0,
+      needsReview: review.needsReview,
+      reason: review.reason,
     });
+
+    if (!Array.isArray(s.lastDocDraft.items) || s.lastDocDraft.items.length === 0) {
+      await sendText(
+        from,
+        "⚠️ J’ai lu la photo, mais je n’ai pas extrait de lignes fiables.\n\nEnvoyez une image plus nette ou saisissez le document en texte."
+      );
+      return;
+    }
+
+    if (!safe(s.lastDocDraft.client)) {
+      s.step = "missing_client_pdf";
+      await sendText(
+        from,
+        `✅ ${s.lastDocDraft.items.length} ligne(s) détectée(s).\n👤 Maintenant, tapez le nom du client :`
+      );
+      return;
+    }
+
+    if (review.needsReview) {
+      await sendText(
+        from,
+        "⚠️ J’ai lu la photo, mais je préfère une vérification avant de générer un aperçu final."
+      );
+
+      const preview = buildPreviewMessage({ doc: s.lastDocDraft });
+      await sendText(from, preview);
+
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+        { id: "DOC_RESTART", title: "🔁 Recommencer" },
+        { id: "BACK_HOME", title: "Menu" },
+      ]);
+      return;
+    }
 
     const preview = buildPreviewMessage({ doc: s.lastDocDraft });
     await sendText(from, preview);
