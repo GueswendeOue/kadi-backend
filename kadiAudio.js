@@ -233,7 +233,7 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
     const rawTranscriptText = String(transcript?.text || "").trim();
     const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
-    const businessText = normalizeMooreBusinessText(normalizedTranscriptText);
+    const businessText = normalizedTranscriptText;
 
     console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
     console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
