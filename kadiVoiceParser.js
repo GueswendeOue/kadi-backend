@@ -15,6 +15,12 @@ function safeText(v = "") {
   return String(v || "").trim();
 }
 
+function normalizeCompare(text = "") {
+  return safeText(text)
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 // ======================================================
 // NUMBER WORDS
 // ======================================================
@@ -60,32 +66,26 @@ function parseBusinessAmount(input) {
 
   if (!s) return null;
 
-  // 25k / 2.5k / 2,5k
   if (/^\d+([.,]\d+)?k$/.test(s)) {
     return Math.round(Number(s.slice(0, -1).replace(",", ".")) * 1000);
   }
 
-  // 3m / 2.5m
   if (/^\d+([.,]\d+)?m$/.test(s)) {
     return Math.round(Number(s.slice(0, -1).replace(",", ".")) * 1000000);
   }
 
-  // 25.000
   if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
     return Number(s.replace(/\./g, ""));
   }
 
-  // 25,000
   if (/^\d{1,3}(,\d{3})+$/.test(s)) {
     return Number(s.replace(/,/g, ""));
   }
 
-  // 25000
   if (/^\d+$/.test(s)) {
     return Number(s);
   }
 
-  // 25,5 / 25.5
   if (/^\d+[.,]\d+$/.test(s)) {
     return Math.round(Number(s.replace(",", ".")));
   }
@@ -97,7 +97,6 @@ function parsePrice(text) {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return null;
 
-  // 50 mille
   const milleMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*mille\b/);
   if (milleMatch) {
     const base = Number(milleMatch[1].replace(",", "."));
@@ -110,31 +109,31 @@ function parsePrice(text) {
 function extractAllPrices(text = "") {
   const s = String(text || "");
   const patterns = [
-    /\b\d{1,3}(?:\.\d{3})+\b/g,      // 25.000
-    /\b\d{1,3}(?:,\d{3})+\b/g,       // 25,000
-    /\b\d+(?:[.,]\d+)?k\b/gi,        // 25k
-    /\b\d+(?:[.,]\d+)?m\b/gi,        // 2m
-    /\b\d+(?:[.,]\d+)?\s*mille\b/gi, // 25 mille
-    /\b\d+\b/g,                      // 25000
+    /\b\d{1,3}(?:\.\d{3})+\b/g,
+    /\b\d{1,3}(?:,\d{3})+\b/g,
+    /\b\d+(?:[.,]\d+)?k\b/gi,
+    /\b\d+(?:[.,]\d+)?m\b/gi,
+    /\b\d+(?:[.,]\d+)?\s*mille\b/gi,
+    /\b\d+\b/g,
   ];
 
-  const seen = new Set();
   const out = [];
+  const seen = new Set();
 
   for (const pattern of patterns) {
     const matches = s.match(pattern) || [];
     for (const match of matches) {
-      const key = String(match);
-      if (seen.has(key)) continue;
-      seen.add(key);
-
       const value = parsePrice(match);
-      if (value != null) {
-        out.push({
-          raw: match,
-          value,
-        });
-      }
+      const key = `${match}:${value}`;
+
+      if (value == null) continue;
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      out.push({
+        raw: match,
+        value,
+      });
     }
   }
 
@@ -148,6 +147,7 @@ function cleanClientName(name) {
   return (
     String(name || "")
       .replace(/\b(de|du|la|le|les)\b\s*$/i, "")
+      .replace(/[.,;:!?]+$/g, "")
       .replace(/[^\p{L}\s\-]/gu, "")
       .replace(/\s+/g, " ")
       .trim() || null
@@ -168,7 +168,7 @@ function extractClient(text) {
     if (!m || !m[1]) continue;
 
     let candidate = m[1]
-      .split(/\b(?:avec|à|a|de|du|pour|montant|prix)\b/i)[0]
+      .split(/\b(?:avec|a|à|de|du|pour|montant|prix|qt[eé]|quantite|quantité)\b/i)[0]
       .trim();
 
     candidate = cleanClientName(candidate);
@@ -309,8 +309,13 @@ function extractUnitPrice(segment) {
 
 function extractFallbackPrice(segment) {
   const prices = extractAllPrices(segment);
-  if (prices.length === 1) return prices[0].value;
-  return null;
+
+  if (prices.length !== 1) return null;
+
+  const only = prices[0]?.value;
+  if (!Number.isFinite(only) || only <= 0) return null;
+
+  return only;
 }
 
 // ======================================================
@@ -320,7 +325,7 @@ function extractItems(text) {
   const segments = splitItemSegments(text);
   const items = [];
 
-  for (let segment of segments) {
+  for (const segment of segments) {
     if (!segment) continue;
 
     const label = extractLabel(segment);
