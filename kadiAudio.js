@@ -229,20 +229,17 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     const transcript = await transcribeAudioBuffer(media.buffer, {
       mimeType: media.mimeType || mediaMeta.mimeType || "audio/ogg",
       language: "fr",
-      localeHint: "fr-BF",
-      languages: ["fr", "moore"],
     });
 
-    const rawTranscriptText = transcript.text;
-    const displayText = transcript.displayText;
-    const parseText = transcript.parseText;
+    const rawTranscriptText = String(transcript?.text || "").trim();
+    const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
+    const businessText = normalizeMooreBusinessText(normalizedTranscriptText);
 
     console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
-    console.log("[KADI/AUDIO] display transcript:", displayText);
-    console.log("[KADI/AUDIO] parse transcript:", parseText);
-    console.log("[KADI/AUDIO] detected languages:", transcript.detectedLanguages);
+    console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
+    console.log("[KADI/AUDIO] business transcript:", businessText);
 
-    if (!displayText) {
+    if (!rawTranscriptText) {
       await sendText(
         from,
         "🎤 Je n’ai pas bien compris le vocal.\n\nExemple :\n“Fais un devis pour 2 sacs de ciment à 5000 pour Adama.”"
@@ -250,73 +247,70 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const intent = buildIntent(parseText);
+    const intent = buildIntent(businessText);
 
     console.log("[KADI/AUDIO] built intent:", intent);
 
     const s = getSession(from);
     s.audioTranscriptRaw = rawTranscriptText;
-    s.audioTranscriptDisplay = displayText;
-    s.audioTranscriptParse = parseText;
-    s.audioTranscriptLanguages = transcript.detectedLanguages || [];
+    s.audioTranscriptNormalized = normalizedTranscriptText;
+    s.audioTranscriptBusiness = businessText;
+    s.intent = intent;
+    s.intentRawText = businessText;
+    s.intentPendingItemLabel = null;
+    s.step = "intent_review";
+
+    if (Array.isArray(intent?.missing) && intent.missing.length > 0) {
+      if (intent.missing.includes("client")) {
+        s.step = "intent_fix_client";
+      } else if (intent.missing.includes("price")) {
+        s.step = "intent_fix_price";
+
+        const missingItem = Array.isArray(intent.items)
+          ? intent.items.find((i) => i?.unitPrice == null)
+          : null;
+
+        s.intentPendingItemLabel = missingItem?.label || null;
+      } else if (intent.missing.includes("items")) {
+        s.step = "intent_fix_items";
+      }
+    }
+
+    console.log("[KADI/AUDIO] session step after intent build:", {
+      from,
+      step: s.step,
+      intentPendingItemLabel: s.intentPendingItemLabel || null,
+      missing: intent?.missing || [],
+    });
 
     if (!looksUsableIntent(intent)) {
       s.intent = null;
-      s.intentRawText = parseText;
+      s.intentRawText = null;
+      s.intentPendingItemLabel = null;
       s.step = null;
 
       await sendText(
         from,
-        `🎤 J’ai transcrit :\n"${displayText}"\n\n` +
+        `🎤 J’ai transcrit :\n"${rawTranscriptText}"\n\n` +
           `Je n’ai pas encore assez d’informations pour préparer le document.\n\n` +
           `Exemple :\n"Devis pour Moussa, 2 portes à 25000"`
       );
       return true;
     }
 
-    s.intent = intent;
-s.intentRawText = businessText;
-s.intentPendingItemLabel = null;
+    const msgText = buildIntentMessage(intent);
+    const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
 
-// étape par défaut
-s.step = "intent_review";
+    if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
+      buttons.unshift({ id: "INTENT_OK", title: "✅ Valider" });
+    }
 
-if (Array.isArray(intent?.missing) && intent.missing.length > 0) {
-  if (intent.missing.includes("client")) {
-    s.step = "intent_fix_client";
-  } else if (intent.missing.includes("price")) {
-    s.step = "intent_fix_price";
+    await sendButtons(from, msgText, buttons);
 
-    const missingItem = Array.isArray(intent.items)
-      ? intent.items.find((i) => i?.unitPrice == null)
-      : null;
-
-    s.intentPendingItemLabel = missingItem?.label || null;
-  } else if (intent.missing.includes("items")) {
-    s.step = "intent_fix_items";
-  }
-}
-
-const msgText = buildIntentMessage(intent);
-const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
-
-if (!Array.isArray(intent?.missing) || intent.missing.length === 0) {
-  buttons.unshift({ id: "INTENT_OK", title: "✅ Valider" });
-}
-
-await sendButtons(from, msgText, buttons);
-
-const nextQuestion = getNextQuestion(intent);
-if (nextQuestion) {
-  await sendText(from, nextQuestion);
-}
-
-console.log("[KADI/AUDIO] session step after intent build:", {
-  from,
-  step: s.step,
-  intentPendingItemLabel: s.intentPendingItemLabel || null,
-  missing: intent?.missing || [],
-});
+    const nextQuestion = getNextQuestion(intent);
+    if (nextQuestion) {
+      await sendText(from, nextQuestion);
+    }
 
     return true;
   } catch (error) {
