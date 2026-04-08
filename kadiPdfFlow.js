@@ -36,11 +36,16 @@ function makeKadiPdfFlow(deps) {
     computeBasePdfCost,
     getDocTitle,
     validateDraft,
+    normalizeAndValidateDraft,
     resetStampChoice,
     buildDechargeText,
   } = deps;
 
-  async function applyStampAndSignatureIfAny(pdfBuffer, profile, logoBuffer = null) {
+  async function applyStampAndSignatureIfAny(
+    pdfBuffer,
+    profile,
+    logoBuffer = null
+  ) {
     let buf = pdfBuffer;
 
     const canStamp =
@@ -135,27 +140,45 @@ function makeKadiPdfFlow(deps) {
       return;
     }
 
+    let finalDraft = null;
+    let baseCost = 0;
+    let failedRollbackOperationKey = null;
+
+    const checkedDraft = normalizeAndValidateDraft(draft);
+
+    if (!checkedDraft.ok) {
+      await sendText(
+        from,
+        "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
+          `Détail: ${checkedDraft.issues.join(", ")}`
+      );
+      return;
+    }
+
+    s.lastDocDraft = checkedDraft.draft;
+    finalDraft = s.lastDocDraft;
+
     try {
-      validateDraft(draft);
+      validateDraft(finalDraft);
     } catch (err) {
       await sendText(from, `❌ Erreur dans le document: ${err.message}`);
       return;
     }
 
-    const baseCost = computeBasePdfCost(draft);
+    baseCost = computeBasePdfCost(finalDraft);
     const baseReason =
-      draft.source === "ocr"
+      finalDraft.source === "ocr"
         ? "ocr_pdf"
-        : draft.type === "decharge"
+        : finalDraft.type === "decharge"
         ? "decharge_pdf"
         : "pdf";
 
-    draft.requestId =
-      draft.requestId ||
+    finalDraft.requestId =
+      finalDraft.requestId ||
       `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    const consumeOperationKey = `pdf:consume:${draft.requestId}`;
-    const failedRollbackOperationKey = `pdf:rollback:${draft.requestId}`;
+    const consumeOperationKey = `pdf:consume:${finalDraft.requestId}`;
+    failedRollbackOperationKey = `pdf:rollback:${finalDraft.requestId}`;
 
     s.isGeneratingPdf = true;
 
@@ -186,11 +209,11 @@ function makeKadiPdfFlow(deps) {
         finalReason,
         consumeOperationKey,
         {
-          requestId: draft.requestId,
-          docType: draft.type || null,
-          docNumber: draft.docNumber || null,
-          factureKind: draft.factureKind || null,
-          source: draft.source || null,
+          requestId: finalDraft.requestId,
+          docType: finalDraft.type || null,
+          docNumber: finalDraft.docNumber || null,
+          factureKind: finalDraft.factureKind || null,
+          source: finalDraft.source || null,
           baseCost,
           stampExtraCost,
           usePaidStamp,
@@ -209,18 +232,14 @@ function makeKadiPdfFlow(deps) {
       debited = true;
       finalBalance = cons.balance || 0;
 
-      const computedFinance = computeFinance(draft);
-      draft.finance = {
-        subtotal: computedFinance.subtotal,
-        gross: draft.finance?.gross ?? computedFinance.gross,
-      };
+      finalDraft.finance = computeFinance(finalDraft);
 
-      if (!draft.docNumber) {
-        draft.docNumber = await nextDocNumber({
+      if (!finalDraft.docNumber) {
+        finalDraft.docNumber = await nextDocNumber({
           waId: from,
-          mode: draft.type,
-          factureKind: draft.factureKind,
-          dateISO: draft.date,
+          mode: finalDraft.type,
+          factureKind: finalDraft.factureKind,
+          dateISO: finalDraft.date,
         });
       }
 
@@ -234,30 +253,38 @@ function makeKadiPdfFlow(deps) {
         }
       }
 
-      const title = getDocTitle(draft);
-      const total = draft.finance?.gross ?? computeFinance(draft).gross;
+      const title = getDocTitle(finalDraft);
+      const total = Number(finalDraft.finance?.gross || 0);
+
+      if (
+        total <= 0 &&
+        Array.isArray(finalDraft.items) &&
+        finalDraft.items.length > 0
+      ) {
+        throw new Error("TOTAL_INVALIDE_AVANT_PDF");
+      }
 
       let pdfBuf = await buildPdfBuffer({
         docData: {
           type: title,
-          docNumber: draft.docNumber,
-          date: draft.date,
-          client: draft.client,
-          motif: draft.motif || null,
-          dechargeType: draft.dechargeType || null,
+          docNumber: finalDraft.docNumber,
+          date: finalDraft.date,
+          client: finalDraft.client,
+          motif: finalDraft.motif || null,
+          dechargeType: finalDraft.dechargeType || null,
           dechargeText:
-            draft.type === "decharge"
+            finalDraft.type === "decharge"
               ? buildDechargeText({
-                  client: draft.client,
+                  client: finalDraft.client,
                   businessName: safe(profile?.business_name),
-                  motif: draft.motif,
+                  motif: finalDraft.motif,
                   total,
-                  dechargeType: draft.dechargeType,
+                  dechargeType: finalDraft.dechargeType,
                 })
               : null,
-          items: draft.items || [],
+          items: finalDraft.items || [],
           total,
-          receiptFormat: draft.receiptFormat || "a4",
+          receiptFormat: finalDraft.receiptFormat || "a4",
         },
         businessProfile: profile,
         logoBuffer: logoBuf,
@@ -278,13 +305,13 @@ function makeKadiPdfFlow(deps) {
         logoBuf
       );
 
-      draft.meta = makeDraftMeta({
-        ...(draft.meta || {}),
+      finalDraft.meta = makeDraftMeta({
+        ...(finalDraft.meta || {}),
         creditsConsumed: totalCost,
         usedStamp: !!(usePaidStamp || useOneTimeStamp),
-        usedGeminiParse: !!draft?.meta?.usedGeminiParse,
-        businessSector: draft?.meta?.businessSector || null,
-        requestId: draft.requestId,
+        usedGeminiParse: !!finalDraft?.meta?.usedGeminiParse,
+        businessSector: finalDraft?.meta?.businessSector || null,
+        requestId: finalDraft.requestId,
         stampMode: usePaidStamp
           ? "unlimited"
           : useOneTimeStamp
@@ -292,9 +319,9 @@ function makeKadiPdfFlow(deps) {
           : "none",
       });
 
-      draft.status = "generated";
+      finalDraft.status = "generated";
 
-      const fileName = `${draft.docNumber}-${formatDateISO()}.pdf`;
+      const fileName = `${finalDraft.docNumber}-${formatDateISO()}.pdf`;
 
       const up = await uploadMediaBuffer({
         buffer: pdfBuf,
@@ -308,40 +335,40 @@ function makeKadiPdfFlow(deps) {
 
       const saved = await saveDocumentWithRetry({
         waId: from,
-        draft,
+        draft: finalDraft,
         maxAttempts: 3,
       });
 
-      draft.savedDocumentId = saved?.id || "generated";
+      finalDraft.savedDocumentId = saved?.id || "generated";
       successAfterDebit = true;
 
-      draft.savedPdfMediaId = up.id;
-      draft.savedPdfFilename = fileName;
-      draft.savedPdfCaption =
-        `✅ ${title} ${draft.docNumber}\n` +
+      finalDraft.savedPdfMediaId = up.id;
+      finalDraft.savedPdfFilename = fileName;
+      finalDraft.savedPdfCaption =
+        `✅ ${title} ${finalDraft.docNumber}\n` +
         `Total: ${money(total)} FCFA\n` +
         `Coût: ${totalCost} crédit(s)\n` +
         `Solde: ${finalBalance} crédit(s)`;
 
       await sendDocument({
         to: from,
-        mediaId: draft.savedPdfMediaId,
-        filename: draft.savedPdfFilename,
-        caption: draft.savedPdfCaption,
+        mediaId: finalDraft.savedPdfMediaId,
+        filename: finalDraft.savedPdfFilename,
+        caption: finalDraft.savedPdfCaption,
       });
 
-      if (draft.type === "devis") {
+      if (finalDraft.type === "devis") {
         try {
           await createDevisFollowup({
             waId: from,
-            documentId: draft.savedDocumentId,
-            docNumber: draft.docNumber,
+            documentId: finalDraft.savedDocumentId,
+            docNumber: finalDraft.docNumber,
             sourceDoc: {
-              client: draft.client || null,
-              items: draft.items || [],
-              finance: draft.finance || null,
-              date: draft.date || null,
-              source: draft.source || null,
+              client: finalDraft.client || null,
+              items: finalDraft.items || [],
+              finance: finalDraft.finance || null,
+              date: finalDraft.date || null,
+              source: finalDraft.source || null,
             },
             dueAt: Date.now() + 24 * 60 * 60 * 1000,
           });
@@ -371,10 +398,10 @@ function makeKadiPdfFlow(deps) {
             "rollback_pdf_failed",
             failedRollbackOperationKey,
             {
-              requestId: draft.requestId,
-              docType: draft.type || null,
-              docNumber: draft.docNumber || null,
-              factureKind: draft.factureKind || null,
+              requestId: finalDraft?.requestId || null,
+              docType: finalDraft?.type || null,
+              docNumber: finalDraft?.docNumber || null,
+              factureKind: finalDraft?.factureKind || null,
             }
           );
         } catch (rb) {
@@ -385,7 +412,7 @@ function makeKadiPdfFlow(deps) {
       await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
     } finally {
       s.isGeneratingPdf = false;
-      if (draft) draft._saving = false;
+      if (finalDraft) finalDraft._saving = false;
     }
   }
 

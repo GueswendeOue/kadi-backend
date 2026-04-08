@@ -21,25 +21,174 @@ function makeDraftHelpers(deps) {
     };
   }
 
-  function computeFinance(doc) {
-    let sum = 0;
-    for (const it of doc.items || []) {
-      sum += Number(it?.amount || 0) || 0;
-    }
-    return { subtotal: sum, gross: sum };
+  function toFiniteNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function cleanLabel(label) {
+    return safe(label).slice(0, LIMITS.maxItemLabelLength) || "—";
+  }
+
+  function normalizeQty(qty) {
+    const q = toFiniteNumber(qty, 1);
+    return q > 0 ? q : 1;
+  }
+
+  function normalizeUnitPrice(unitPrice) {
+    const pu = toFiniteNumber(unitPrice, 0);
+    return pu >= 0 ? pu : 0;
+  }
+
+  function computeItemAmount(qty, unitPrice) {
+    return Math.round(normalizeQty(qty) * normalizeUnitPrice(unitPrice));
   }
 
   function makeItem(label, qty, unitPrice) {
-    const q = Number(qty || 0);
-    const pu = Number(unitPrice || 0);
-    const amt = (Number.isFinite(q) ? q : 0) * (Number.isFinite(pu) ? pu : 0);
+    const safeQty = normalizeQty(qty);
+    const safeUnitPrice = normalizeUnitPrice(unitPrice);
 
     return {
-      label: safe(label).slice(0, LIMITS.maxItemLabelLength) || "—",
-      qty: Number.isFinite(q) && q > 0 ? q : 1,
-      unitPrice: Number.isFinite(pu) && pu >= 0 ? pu : 0,
-      amount: Number.isFinite(amt) ? amt : 0,
+      label: cleanLabel(label),
+      qty: safeQty,
+      unitPrice: safeUnitPrice,
+      amount: computeItemAmount(safeQty, safeUnitPrice),
       raw: "",
+    };
+  }
+
+  function normalizeItem(it = {}) {
+    const normalized = makeItem(it.label, it.qty, it.unitPrice);
+
+    return {
+      ...it,
+      ...normalized,
+    };
+  }
+
+  function normalizeDraftItems(doc) {
+    const items = Array.isArray(doc?.items) ? doc.items : [];
+    const normalizedItems = items.map(normalizeItem);
+
+    if (doc && Array.isArray(doc.items)) {
+      doc.items = normalizedItems;
+    }
+
+    return normalizedItems;
+  }
+
+  function computeFinance(doc) {
+    const items = normalizeDraftItems(doc);
+
+    const subtotal = items.reduce((sum, it) => {
+      return sum + toFiniteNumber(it.amount, 0);
+    }, 0);
+
+    const roundedSubtotal = Math.round(subtotal);
+
+    const finance = {
+      subtotal: roundedSubtotal,
+      gross: roundedSubtotal,
+      total: roundedSubtotal,
+    };
+
+    if (doc && typeof doc === "object") {
+      doc.finance = finance;
+    }
+
+    return finance;
+  }
+
+  function getDraftValidationIssues(draft) {
+    const issues = [];
+
+    if (!draft || typeof draft !== "object") {
+      return ["draft_missing"];
+    }
+
+    const items = Array.isArray(draft.items) ? draft.items : [];
+
+    for (let i = 0; i < items.length; i++) {
+      const it = normalizeItem(items[i] || {});
+      const expectedAmount = computeItemAmount(it.qty, it.unitPrice);
+
+      if (!safe(it.label) || it.label === "—") {
+        issues.push(`invalid_label_line_${i + 1}`);
+      }
+
+      if (!Number.isFinite(Number(it.qty)) || Number(it.qty) <= 0) {
+        issues.push(`invalid_qty_line_${i + 1}`);
+      }
+
+      if (!Number.isFinite(Number(it.unitPrice)) || Number(it.unitPrice) < 0) {
+        issues.push(`invalid_unit_price_line_${i + 1}`);
+      }
+
+      if (!Number.isFinite(Number(it.amount)) || Number(it.amount) < 0) {
+        issues.push(`invalid_amount_line_${i + 1}`);
+      }
+
+      if (Number(it.amount) !== expectedAmount) {
+        issues.push(`amount_mismatch_line_${i + 1}`);
+      }
+    }
+
+    const finance = computeFinance({
+      items: items.map((it) => ({ ...it })),
+    });
+
+    const total = toFiniteNumber(
+      draft?.finance?.gross ?? draft?.finance?.total ?? finance.gross,
+      0
+    );
+
+    if (items.length > 0 && finance.gross <= 0) {
+      issues.push("invalid_total");
+    }
+
+    if (items.length > 0 && total !== finance.gross) {
+      issues.push("finance_mismatch");
+    }
+
+    if (
+      typeof draft.client === "string" &&
+      /\d/.test(draft.client) &&
+      /\b(porte|portes|fenetre|fenetres|fenêtres|pagne|pagnes|ciment|prix|montant)\b/i.test(
+        draft.client
+      )
+    ) {
+      issues.push("client_suspicious");
+    }
+
+    return [...new Set(issues)];
+  }
+
+  function normalizeAndValidateDraft(draft) {
+    if (!draft || typeof draft !== "object") {
+      return {
+        ok: false,
+        draft,
+        issues: ["draft_missing"],
+      };
+    }
+
+    if (!Array.isArray(draft.items)) {
+      draft.items = [];
+    }
+
+    if (!draft.date) {
+      draft.date = formatDateISO();
+    }
+
+    draft.items = draft.items.map(normalizeItem);
+    draft.finance = computeFinance(draft);
+
+    const issues = getDraftValidationIssues(draft);
+
+    return {
+      ok: issues.length === 0,
+      draft,
+      issues,
     };
   }
 
@@ -64,28 +213,22 @@ function makeDraftHelpers(deps) {
   }
 
   function validateDraft(draft) {
-    if (!draft) throw new Error("Draft manquant");
-    if (!Array.isArray(draft.items)) draft.items = [];
-    if (!draft.date) draft.date = formatDateISO();
+    const checked = normalizeAndValidateDraft(draft);
 
-    for (let i = 0; i < draft.items.length; i++) {
-      const it = draft.items[i] || {};
-      if (Number(it.amount) < 0) {
-        throw new Error(`Montant négatif ligne ${i + 1}`);
-      }
-      if (Number(it.qty) <= 0) {
-        throw new Error(`Quantité invalide ligne ${i + 1}`);
-      }
+    if (!checked.ok) {
+      throw new Error(`Draft invalide: ${checked.issues.join(", ")}`);
     }
 
     return true;
   }
 
   function buildPreviewMessage({ doc }) {
-    const title = getDocTitle(doc);
-    const f = computeFinance(doc);
+    const checked = normalizeAndValidateDraft(doc);
+    const draft = checked.draft;
+    const title = getDocTitle(draft);
+    const f = draft.finance || computeFinance(draft);
 
-    const lines = (doc.items || [])
+    const lines = (draft.items || [])
       .slice(0, 50)
       .map(
         (it, idx) =>
@@ -98,10 +241,10 @@ function makeDraftHelpers(deps) {
     return [
       `📄 *APERÇU*`,
       `Type: ${title}`,
-      `Date: ${doc.date || "-"}`,
-      `Client: ${doc.client || "—"}`,
+      `Date: ${draft.date || "-"}`,
+      `Client: ${draft.client || "—"}`,
       ``,
-      `Lignes (${(doc.items || []).length})`,
+      `Lignes (${(draft.items || []).length})`,
       lines || "—",
       ``,
       `TOTAL: *${money(f.gross)} FCFA*`,
@@ -112,7 +255,7 @@ function makeDraftHelpers(deps) {
     if (!draft) return null;
 
     const clonedItems = Array.isArray(draft.items)
-      ? draft.items.map((it) => ({ ...it }))
+      ? draft.items.map((it) => normalizeItem({ ...it }))
       : [];
 
     const next = {
@@ -164,6 +307,9 @@ function makeDraftHelpers(deps) {
     makeDraftMeta,
     computeFinance,
     makeItem,
+    normalizeItem,
+    normalizeAndValidateDraft,
+    getDraftValidationIssues,
     getDocTitle,
     computeBasePdfCost,
     formatBaseCostLine,
