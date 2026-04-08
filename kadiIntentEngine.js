@@ -71,6 +71,16 @@ function cleanLabel(label = "") {
   return ucfirst(out);
 }
 
+function isMeaningfulLabel(label = "") {
+  const t = normalizeLoose(label);
+
+  if (!t) return false;
+  if (t === "produit") return false;
+  if (t.length < 2) return false;
+
+  return true;
+}
+
 // ===============================
 // ITEM SANITIZATION
 // ===============================
@@ -91,12 +101,18 @@ function sanitizeUnitPrice(unitPrice) {
 
 function sanitizeItems(items = []) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => ({
-      label: cleanLabel(item?.label),
-      qty: sanitizeQty(item?.qty),
-      unitPrice: sanitizeUnitPrice(item?.unitPrice),
-    }))
-    .filter((item) => !!item.label);
+    .map((item) => {
+      const label = cleanLabel(item?.label);
+      const qty = sanitizeQty(item?.qty);
+      const unitPrice = sanitizeUnitPrice(item?.unitPrice);
+
+      return {
+        label,
+        qty,
+        unitPrice,
+      };
+    })
+    .filter((item) => isMeaningfulLabel(item.label));
 }
 
 // ===============================
@@ -118,8 +134,13 @@ function detectMissing(intent) {
   const missing = [];
   const items = Array.isArray(intent?.items) ? intent.items : [];
 
-  if (!intent?.client) missing.push("client");
-  if (!items.length) missing.push("items");
+  if (!intent?.client) {
+    missing.push("client");
+  }
+
+  if (!items.length) {
+    missing.push("items");
+  }
 
   const itemsMissingPrice = items.filter((i) => i?.unitPrice == null);
   if (items.length > 0 && itemsMissingPrice.length > 0) {
@@ -132,28 +153,47 @@ function detectMissing(intent) {
 // ===============================
 // CONFIDENCE TUNING
 // ===============================
+function clamp01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
 function computeAdjustedConfidence(parsed, intent) {
-  let score = Number(parsed?.confidence || 0);
+  let score = clamp01(parsed?.confidence || 0);
 
-  if (intent.client) score += 0.1;
-  if (intent.items?.length) score += 0.1;
-
-  const pricedItems = (intent.items || []).filter((i) => i.unitPrice != null);
-  if (intent.items?.length > 0 && pricedItems.length === intent.items.length) {
+  if (intent?.client) {
     score += 0.1;
   }
 
-  if (intent.docType === "facture" || intent.docType === "devis" || intent.docType === "recu" || intent.docType === "decharge") {
+  if (Array.isArray(intent?.items) && intent.items.length > 0) {
+    score += 0.1;
+  }
+
+  const pricedItems = (intent?.items || []).filter((i) => i?.unitPrice != null);
+  if (
+    Array.isArray(intent?.items) &&
+    intent.items.length > 0 &&
+    pricedItems.length === intent.items.length
+  ) {
+    score += 0.1;
+  }
+
+  if (
+    ["facture", "devis", "recu", "decharge"].includes(intent?.docType || "")
+  ) {
     score += 0.05;
   }
 
-  return Math.max(0, Math.min(1, Number(score.toFixed(2))));
+  return clamp01(Number(score.toFixed(2)));
 }
 
 // ===============================
 // BUILD INTENT
 // ===============================
-function buildIntent(rawText = "") {
+function buildIntent(rawText = "", options = {}) {
   const inputText = safeText(rawText);
   const parsed = parseVoiceText(inputText);
 
@@ -168,7 +208,7 @@ function buildIntent(rawText = "") {
     items: sanitizeItems(parsed?.items || []),
     confidence: 0,
     rawText: inputText,
-    source: "voice",
+    source: options.source || "voice",
   };
 
   intent.missing = detectMissing(intent);
