@@ -46,10 +46,13 @@ function prepareTranscriptVariants(text = "", options = {}) {
 
   return {
     rawTranscriptText,
-    displayText: normalized.displayText,
-    parseText: normalized.parseText,
-    localeHint: normalized.localeHint,
-    detectedLanguages: normalized.detectedLanguages,
+    normalizedTranscriptText,
+    displayText: normalized.displayText || normalizedTranscriptText,
+    parseText: normalized.parseText || normalizedTranscriptText,
+    localeHint: normalized.localeHint || options.localeHint || "fr-BF",
+    detectedLanguages: Array.isArray(normalized.detectedLanguages)
+      ? normalized.detectedLanguages
+      : [],
   };
 }
 
@@ -81,6 +84,49 @@ async function safeReadText(res) {
   } catch {
     return "";
   }
+}
+
+function buildTranscriptionPrompt() {
+  return [
+    "Transcrire le message vocal WhatsApp le plus fidèlement possible.",
+    "Conserver les mots exacts, les noms, les montants, les produits et les quantités.",
+    "Ne pas reformuler. Ne pas inventer. Ne pas résumer.",
+    "Le message peut contenir du français avec quelques mots en mooré.",
+  ].join(" ");
+}
+
+function computeIntentStepAndHint(intent) {
+  const missing = Array.isArray(intent?.missing) ? intent.missing : [];
+
+  if (missing.includes("client")) {
+    return {
+      step: "intent_fix_client",
+      intentPendingItemLabel: null,
+    };
+  }
+
+  if (missing.includes("price")) {
+    const missingItem = Array.isArray(intent?.items)
+      ? intent.items.find((i) => i?.unitPrice == null)
+      : null;
+
+    return {
+      step: "intent_fix_price",
+      intentPendingItemLabel: missingItem?.label || null,
+    };
+  }
+
+  if (missing.includes("items")) {
+    return {
+      step: "intent_fix_items",
+      intentPendingItemLabel: null,
+    };
+  }
+
+  return {
+    step: "intent_review",
+    intentPendingItemLabel: null,
+  };
 }
 
 // ======================================================
@@ -161,14 +207,7 @@ async function transcribeAudioBuffer(buffer, options = {}) {
     file,
     model: OPENAI_TRANSCRIPTION_MODEL,
     language: options.language || "fr",
-    prompt:
-      options.prompt ||
-      [
-        "Transcrire le message vocal WhatsApp le plus fidèlement possible.",
-        "Conserver les mots exacts, les noms, les montants, les produits et les quantités.",
-        "Ne pas reformuler. Ne pas inventer. Ne pas résumer.",
-        "Le message peut contenir du français avec quelques mots en mooré.",
-      ].join(" "),
+    prompt: options.prompt || buildTranscriptionPrompt(),
     temperature: 0,
   });
 
@@ -179,6 +218,7 @@ async function transcribeAudioBuffer(buffer, options = {}) {
 
   return {
     text: variants.rawTranscriptText,
+    normalizedText: variants.normalizedTranscriptText,
     displayText: variants.displayText,
     parseText: variants.parseText,
     localeHint: variants.localeHint,
@@ -229,15 +269,21 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     const transcript = await transcribeAudioBuffer(media.buffer, {
       mimeType: media.mimeType || mediaMeta.mimeType || "audio/ogg",
       language: "fr",
+      localeHint: "fr-BF",
+      languages: ["fr", "moore"],
     });
 
     const rawTranscriptText = String(transcript?.text || "").trim();
-    const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
-    const businessText = normalizedTranscriptText;
+    const normalizedTranscriptText = String(
+      transcript?.normalizedText || ""
+    ).trim();
+    const displayText = String(transcript?.displayText || "").trim();
+    const businessText = String(transcript?.parseText || "").trim();
 
     console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
     console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
-    console.log("[KADI/AUDIO] business transcript:", businessText);
+    console.log("[KADI/AUDIO] display transcript:", displayText);
+    console.log("[KADI/AUDIO] parse transcript:", businessText);
 
     if (!rawTranscriptText) {
       await sendText(
@@ -251,39 +297,13 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
     console.log("[KADI/AUDIO] built intent:", intent);
 
-    const s = getSession(from);
-    s.audioTranscriptRaw = rawTranscriptText;
-    s.audioTranscriptNormalized = normalizedTranscriptText;
-    s.audioTranscriptBusiness = businessText;
-    s.intent = intent;
-    s.intentRawText = businessText;
-    s.intentPendingItemLabel = null;
-    s.step = "intent_review";
-
-    if (Array.isArray(intent?.missing) && intent.missing.length > 0) {
-      if (intent.missing.includes("client")) {
-        s.step = "intent_fix_client";
-      } else if (intent.missing.includes("price")) {
-        s.step = "intent_fix_price";
-
-        const missingItem = Array.isArray(intent.items)
-          ? intent.items.find((i) => i?.unitPrice == null)
-          : null;
-
-        s.intentPendingItemLabel = missingItem?.label || null;
-      } else if (intent.missing.includes("items")) {
-        s.step = "intent_fix_items";
-      }
-    }
-
-    console.log("[KADI/AUDIO] session step after intent build:", {
-      from,
-      step: s.step,
-      intentPendingItemLabel: s.intentPendingItemLabel || null,
-      missing: intent?.missing || [],
-    });
-
     if (!looksUsableIntent(intent)) {
+      const s = getSession(from);
+      s.audioTranscriptRaw = rawTranscriptText;
+      s.audioTranscriptNormalized = normalizedTranscriptText;
+      s.audioTranscriptDisplay = displayText;
+      s.audioTranscriptBusiness = businessText;
+      s.audioDetectedLanguages = transcript?.detectedLanguages || [];
       s.intent = null;
       s.intentRawText = null;
       s.intentPendingItemLabel = null;
@@ -291,12 +311,32 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
       await sendText(
         from,
-        `🎤 J’ai transcrit :\n"${rawTranscriptText}"\n\n` +
+        `🎤 J’ai transcrit :\n"${displayText || rawTranscriptText}"\n\n` +
           `Je n’ai pas encore assez d’informations pour préparer le document.\n\n` +
           `Exemple :\n"Devis pour Moussa, 2 portes à 25000"`
       );
       return true;
     }
+
+    const s = getSession(from);
+    const intentRouting = computeIntentStepAndHint(intent);
+
+    s.audioTranscriptRaw = rawTranscriptText;
+    s.audioTranscriptNormalized = normalizedTranscriptText;
+    s.audioTranscriptDisplay = displayText;
+    s.audioTranscriptBusiness = businessText;
+    s.audioDetectedLanguages = transcript?.detectedLanguages || [];
+    s.intent = intent;
+    s.intentRawText = businessText;
+    s.intentPendingItemLabel = intentRouting.intentPendingItemLabel;
+    s.step = intentRouting.step;
+
+    console.log("[KADI/AUDIO] session step after intent build:", {
+      from,
+      step: s.step,
+      intentPendingItemLabel: s.intentPendingItemLabel || null,
+      missing: intent?.missing || [],
+    });
 
     const msgText = buildIntentMessage(intent);
     const buttons = [{ id: "INTENT_FIX", title: "✏️ Corriger" }];
