@@ -488,6 +488,7 @@ const {
   computeBasePdfCost,
   getDocTitle,
   validateDraft,
+  normalizeAndValidateDraft,
   resetStampChoice,
   buildDechargeText,
 });
@@ -578,6 +579,8 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   buildPreviewMessage,
   computeBasePdfCost,
   formatBaseCostLine,
+  validateDraft,
+  normalizeAndValidateDraft,
   resetDraftSession,
 
   startDocFlow,
