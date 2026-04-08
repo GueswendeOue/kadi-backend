@@ -766,22 +766,29 @@ async function handleIncomingMessage(value) {
 
           if (await handleCommand(from, text, { wa_id: from })) return;
 
-const s = getSession(from);
-if (
-  s?.step === "intent_fix_price" ||
-  s?.step === "intent_fix_client" ||
-  s?.step === "intent_fix_items" ||
-  s?.step === "intent_fix"
-) {
-  const handledIntentFix = await handleIntentFixText(from, text);
-  if (handledIntentFix) return;
+          const s = getSession(from);
 
-  await sendText(
-    from,
-    "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
-  );
-  return;
-}
+          console.log("[KADI/ENGINE] checking intent-fix gate", {
+            from,
+            step: s?.step || null,
+            hasIntent: !!s?.intent,
+          });
+
+          if (
+            s?.step === "intent_fix_price" ||
+            s?.step === "intent_fix_client" ||
+            s?.step === "intent_fix_items" ||
+            s?.step === "intent_fix"
+          ) {
+            const handledIntentFix = await handleIntentFixText(from, text);
+            if (handledIntentFix) return;
+
+            await sendText(
+              from,
+              "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
+            );
+            return;
+          }
 
           if (await tryHandleDechargeConfirmation(from, text)) return;
           if (await handleProfileText(from, text, msg)) return;
