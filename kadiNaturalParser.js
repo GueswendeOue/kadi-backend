@@ -1,4 +1,3 @@
-// kadiNaturalParser.js
 "use strict";
 
 // ===============================
@@ -59,7 +58,9 @@ function countNumberTokens(text = "") {
 
 function hasExplicitPriceMarker(text = "") {
   const t = cleanText(text);
-  return /\bpu\b|\bprix\b|\bmontant\b|\btotal\b|\bmt\b|\bfcfa\b|\bfc\b|\bf\b/.test(t);
+  return /\bpu\b|\bprix\b|\bmontant\b|\btotal\b|\bmt\b|\bfcfa\b|\bfc\b|\bf\b/.test(
+    t
+  );
 }
 
 function hasExplicitQtyMarker(text = "") {
@@ -91,8 +92,6 @@ function findMoneyMatches(text = "") {
     .map((m) => {
       const value = parseMoneyToken(m);
       if (!Number.isFinite(value) || value <= 0) return null;
-
-      // 🔥 année = pas un montant
       if (isLikelyYear(value)) return null;
 
       return {
@@ -107,6 +106,21 @@ function findLastMoneyAmount(text = "") {
   const matches = findMoneyMatches(text);
   if (!matches.length) return null;
   return matches[matches.length - 1].value;
+}
+
+function normalizeLabel(label = "") {
+  const t = String(label || "").trim();
+  if (!t) return "Produit";
+
+  return t
+    .replace(/^portes?$/i, "Porte")
+    .replace(/^fenetres?$/i, "Fenêtre")
+    .replace(/^fenêtres?$/i, "Fenêtre")
+    .replace(/^tables?$/i, "Table")
+    .replace(/^chaises?$/i, "Chaise")
+    .replace(/^pagnes?$/i, "Pagne")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function isLikelyHumanOrCompanySegment(segment = "") {
@@ -187,6 +201,27 @@ function removeOneOccurrenceInsensitive(text = "", chunk = "") {
   return String(text || "").replace(re, " ");
 }
 
+function stripClientClauseFromText(text = "", client = null) {
+  let out = String(text || "");
+
+  if (client) {
+    out = out.replace(
+      new RegExp(`\\bpour\\s+${escapeRegExp(client)}\\b`, "i"),
+      " "
+    );
+    out = out.replace(
+      new RegExp(`\\bchez\\s+${escapeRegExp(client)}\\b`, "i"),
+      " "
+    );
+    out = out.replace(
+      new RegExp(`\\bclient\\s*:?\\s*${escapeRegExp(client)}\\b`, "i"),
+      " "
+    );
+  }
+
+  return out.replace(/\s+/g, " ").trim();
+}
+
 // ===============================
 // DOC TYPE
 // ===============================
@@ -233,7 +268,9 @@ function looksLikeSimplePaymentMessage(text = "") {
   const hasPaymentDoc = /\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/.test(t);
   const hasMoney = Number.isFinite(findLastMoneyAmount(text));
   const hasPaymentWord =
-    /\bloyer\b|\bacompte\b|\bavance\b|\bpaiement\b|\bversement\b|\breglement\b|\brèglement\b/.test(t);
+    /\bloyer\b|\bacompte\b|\bavance\b|\bpaiement\b|\bversement\b|\breglement\b|\brèglement\b/.test(
+      t
+    );
 
   return (hasPaymentDoc || hasPaymentWord) && hasMoney;
 }
@@ -252,7 +289,10 @@ function extractSimplePaymentMotif(text = "") {
   motif = motif
     .replace(/\bfais(?:\s+moi)?\b/gi, " ")
     .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcreer\b|\bcréer\b/gi, " ")
-    .replace(/\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi, " ");
+    .replace(
+      /\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi,
+      " "
+    );
 
   if (client) {
     motif = removeOneOccurrenceInsensitive(motif, client)
@@ -307,15 +347,35 @@ function parseStructuredItemSegment(segment = "") {
   const numberCount = countNumberTokens(raw);
   const strongSignal = hasStrongStructuredLineSignal(raw);
 
-  // 🔥 Si aucun montant fiable, on ne parse pas
   if (!Number.isFinite(amount) || amount <= 0) return null;
-
-  // 🔥 Un seul nombre sans signal fort = probablement année/référence/diamètre
   if (numberCount <= 1 && !strongSignal) return null;
+
+  const t = cleanText(raw);
 
   let qty = 1;
 
-  const t = cleanText(raw);
+  const directQtyLabelPrice =
+    t.match(
+      /\b(\d+(?:[.,]\d+)?)\s+([a-z][a-z\s-]{1,60}?)\s+[aà]\s+(\d{1,3}(?:[., ]\d{3})+|\d+(?:[.,]\d+)?(?:\s*(?:mil|mille|k|million|millions))?)\b/i
+    ) ||
+    t.match(
+      /\b(\d+(?:[.,]\d+)?)\s+([a-z][a-z\s-]{1,60}?)\s+(?:pu|prix|montant|mt)\s*[:=]?\s*(\d{1,3}(?:[., ]\d{3})+|\d+(?:[.,]\d+)?(?:\s*(?:mil|mille|k|million|millions))?)\b/i
+    );
+
+  if (directQtyLabelPrice) {
+    const q = Number(String(directQtyLabelPrice[1]).replace(",", "."));
+    const lbl = normalizeLabel(directQtyLabelPrice[2]);
+    const price = parseMoneyToken(directQtyLabelPrice[3]);
+
+    if (Number.isFinite(q) && q > 0 && Number.isFinite(price) && price > 0) {
+      return {
+        label: lbl,
+        qty: q,
+        unitPrice: price,
+      };
+    }
+  }
+
   const qtyMatch =
     t.match(/\bqte\s*[:=]?\s*(\d+(?:[.,]\d+)?)\b/i) ||
     t.match(/\bqt[eé]\s*[:=]?\s*(\d+(?:[.,]\d+)?)\b/i) ||
@@ -335,14 +395,23 @@ function parseStructuredItemSegment(segment = "") {
       /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
       " "
     )
-    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdécharge\b|\bdecharge\b/gi, " ")
-    .replace(/\bqte\b|\bqt[eé]\b|\bquantit[eé]\b|\bpu\b|\bprix\b|\bmontant\b|\bmt\b/gi, " ")
+    .replace(
+      /\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdécharge\b|\bdecharge\b/gi,
+      " "
+    )
+    .replace(
+      /\bqte\b|\bqt[eé]\b|\bquantit[eé]\b|\bpu\b|\bprix\b|\bmontant\b|\bmt\b/gi,
+      " "
+    )
     .replace(/\bpour\b|\bchez\b|\bclient\b/gi, " ")
+    .replace(/\ba\b|\bà\b/gi, " ")
     .replace(/[=:]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
   if (!label || label.length < 2) return null;
+
+  label = normalizeLabel(label);
 
   const unitPrice = qty > 0 ? Math.round(amount / qty) : amount;
 
@@ -356,7 +425,8 @@ function parseStructuredItemSegment(segment = "") {
 function parseNaturalItemsMessage(text = "") {
   const docType = detectDocTypeFromText(text);
   const client = extractClientFromText(text);
-  const segments = splitNaturalSegments(text);
+  const itemsText = stripClientClauseFromText(text, client);
+  const segments = splitNaturalSegments(itemsText);
 
   const items = [];
   for (const seg of segments) {
@@ -385,7 +455,10 @@ function extractIntentMotif(text = "", client = null) {
     .replace(/\bje veux\b/gi, " ")
     .replace(/\bcree\b|\bcrée\b|\bcreer\b|\bcréer\b/gi, " ")
     .replace(/\bun\b|\bune\b/gi, " ")
-    .replace(/\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/gi, " ");
+    .replace(
+      /\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdecharge\b|\bdécharge\b/gi,
+      " "
+    );
 
   if (client) {
     motif = removeOneOccurrenceInsensitive(motif, client)
@@ -433,7 +506,6 @@ function parseNaturalWhatsAppMessage(text = "") {
   return null;
 }
 
-// ===============================
 module.exports = {
   detectDocTypeFromText,
   extractClientFromText,
