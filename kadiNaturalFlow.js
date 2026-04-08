@@ -31,42 +31,204 @@ function makeKadiNaturalFlow(deps) {
     getOrCreateProfile,
   } = deps;
 
-  async function tryHandleNaturalMessage(from, text) {
-    const s = getSession(from);
-    const rawText = String(text || "").trim();
-    if (!rawText) return false;
+  function getNluSource(parsed) {
+    if (!parsed || typeof parsed !== "object") return "unknown";
+    if (
+      parsed.reasoningShort ||
+      parsed.correctedText ||
+      parsed.confidence != null
+    ) {
+      return "openai";
+    }
+    return "local";
+  }
 
-    // 1) Parser local d'abord
-    let parsed = null;
-    try {
-      parsed = parseNaturalWhatsAppMessage(rawText);
-    } catch (e) {
-      console.warn("[KADI/NATURAL] local parser failed:", e?.message);
+  function isParsedResultUsable(parsed) {
+    if (!parsed || typeof parsed !== "object") return false;
+    if (parsed.kind === "unknown") return false;
+    if (parsed.shouldFallbackToManual === true) return false;
+
+    if (parsed.kind === "simple_payment") {
+      return Number.isFinite(Number(parsed.total)) && Number(parsed.total) > 0;
     }
 
-    // 2) Fallback OpenAI si parser local insuffisant
-    if (!parsed && typeof parseNaturalWithOpenAI === "function") {
-      try {
-        const aiParsed = await parseNaturalWithOpenAI(rawText);
+    if (parsed.kind === "items") {
+      return Array.isArray(parsed.items) && parsed.items.length > 0;
+    }
 
-        if (
-          aiParsed &&
-          aiParsed.kind &&
-          aiParsed.kind !== "unknown" &&
-          aiParsed.shouldFallbackToManual !== true
-        ) {
-          parsed = aiParsed;
+    if (parsed.kind === "intent_only") {
+      return true;
+    }
+
+    return false;
+  }
+
+  function computeDraftFinance(draft) {
+    const finance = computeFinance(draft);
+
+    if (!draft || typeof draft !== "object") return finance;
+
+    draft.finance = finance;
+    return finance;
+  }
+
+  function getDraftTotal(draft) {
+    return Number(
+      draft?.finance?.gross ??
+        draft?.finance?.total ??
+        draft?.finance?.subtotal ??
+        0
+    );
+  }
+
+  function validateDraftForPreview(draft) {
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+    const total = getDraftTotal(draft);
+    const issues = [];
+
+    if (items.length > 0) {
+      let computed = 0;
+
+      for (const item of items) {
+        const qty = Number(item?.qty || 0);
+        const unitPrice = Number(item?.unitPrice || 0);
+        const lineTotal = Number(
+          item?.lineTotal ?? item?.total ?? qty * unitPrice ?? 0
+        );
+
+        if (qty <= 0) issues.push("invalid_qty");
+        if (unitPrice < 0) issues.push("invalid_unit_price");
+
+        if (qty > 0 && unitPrice > 0) {
+          const expected = Math.round(qty * unitPrice);
+          computed += expected;
+
+          if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
+            issues.push("line_total_zero");
+          }
+        }
+      }
+
+      if (computed > 0 && total <= 0) {
+        issues.push("draft_total_zero");
+      }
+    }
+
+    if (
+      typeof draft?.client === "string" &&
+      /\d/.test(draft.client) &&
+      /\b(porte|portes|fenetre|fenetres|fenêtres|pagne|pagnes|ciment|prix|montant)\b/i.test(
+        draft.client
+      )
+    ) {
+      issues.push("client_looks_like_payload");
+    }
+
+    return {
+      ok: issues.length === 0,
+      issues: [...new Set(issues)],
+    };
+  }
+
+  async function parseNaturalSmart(rawText) {
+    let aiParsed = null;
+    let localParsed = null;
+
+    if (typeof parseNaturalWithOpenAI === "function") {
+      try {
+        aiParsed = await parseNaturalWithOpenAI(rawText);
+
+        if (isParsedResultUsable(aiParsed)) {
+          console.log("[KADI/NATURAL] using OpenAI parse", {
+            kind: aiParsed?.kind || null,
+            docType: aiParsed?.docType || null,
+            confidence: aiParsed?.confidence ?? null,
+          });
+          return aiParsed;
         }
       } catch (e) {
         console.warn("[KADI/NLU] OpenAI parse failed:", e?.message);
       }
     }
 
-    // 3) Cas spécial : si user est en train de saisir un item simple
+    try {
+      localParsed = parseNaturalWhatsAppMessage(rawText);
+
+      if (isParsedResultUsable(localParsed)) {
+        console.log("[KADI/NATURAL] using local parse", {
+          kind: localParsed?.kind || null,
+          docType: localParsed?.docType || null,
+        });
+        return localParsed;
+      }
+    } catch (e) {
+      console.warn("[KADI/NATURAL] local parser failed:", e?.message);
+    }
+
+    return aiParsed || localParsed || null;
+  }
+
+  async function sendDraftPreviewOrRecover(from, draft, rawText) {
+    const validation = validateDraftForPreview(draft);
+
+    if (!validation.ok) {
+      await logLearningEvent({
+        waId: from,
+        rawText,
+        parseSuccess: false,
+        failureReason: `preview_validation_failed:${validation.issues.join(",")}`,
+        itemsCount: Array.isArray(draft?.items) ? draft.items.length : 0,
+      });
+
+      await sendText(
+        from,
+        "⚠️ Je préfère revérifier ce document pour éviter une erreur de montant."
+      );
+
+      if (!safe(draft.client)) {
+        const s = getSession(from);
+        s.step = "missing_client_pdf";
+        await sendText(from, "👤 Quel est le nom du client ?");
+        return true;
+      }
+
+      if (!Array.isArray(draft.items) || draft.items.length === 0) {
+        await askItemLabel(from);
+        return true;
+      }
+
+      await sendText(
+        from,
+        "✏️ Reformulez clairement en une phrase.\n\nExemple : Devis pour Moussa, 2 portes à 25000"
+      );
+      return true;
+    }
+
+    const preview =
+      draft.type === "decharge"
+        ? buildDechargePreviewMessage({ doc: draft, money })
+        : buildPreviewMessage({ doc: draft });
+
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from);
+    return true;
+  }
+
+  async function tryHandleNaturalMessage(from, text) {
+    const s = getSession(from);
+    const rawText = String(text || "").trim();
+    if (!rawText) return false;
+
     if (s.lastDocDraft && s.step === "item_label") {
+      const parsedInline = await parseNaturalSmart(rawText);
       const parsedAsStructured =
-        parsed &&
-        (parsed.kind === "items" || parsed.kind === "simple_payment");
+        parsedInline &&
+        (parsedInline.kind === "items" ||
+          parsedInline.kind === "simple_payment");
 
       if (!parsedAsStructured) {
         if (rawText.length < 2) return true;
@@ -83,8 +245,9 @@ function makeKadiNaturalFlow(deps) {
       }
     }
 
-    // 4) Rien compris
-    if (!parsed) {
+    const parsed = await parseNaturalSmart(rawText);
+
+    if (!parsed || parsed.kind === "unknown") {
       if (!s.lastDocDraft && rawText.length >= 3) {
         s.pendingSmartBlockText = rawText;
 
@@ -120,7 +283,38 @@ function makeKadiNaturalFlow(deps) {
       return false;
     }
 
-    // 5) Créer draft si aucun actif
+    if (parsed.shouldFallbackToManual === true) {
+      await logLearningEvent({
+        waId: from,
+        rawText,
+        parseSuccess: false,
+        failureReason: parsed.ambiguityReason || "manual_fallback_requested",
+        itemsCount: Array.isArray(parsed.items) ? parsed.items.length : 0,
+      });
+
+      if (!s.lastDocDraft) {
+        s.pendingSmartBlockText = rawText;
+
+        await sendButtons(
+          from,
+          "🧠 J’ai compris une partie du message, mais je veux éviter une erreur.\n\nQuel document voulez-vous créer ?",
+          [
+            { id: "SMARTBLOCK_DEVIS", title: "Devis" },
+            { id: "SMARTBLOCK_FACTURE", title: "Facture" },
+            { id: "SMARTBLOCK_RECU", title: "Reçu" },
+          ]
+        );
+
+        return true;
+      }
+
+      await sendText(
+        from,
+        "⚠️ Je veux éviter une erreur sur ce document.\nPouvez-vous reformuler clairement ?\n\nExemple : Devis pour Moussa, 2 portes à 25000"
+      );
+      return true;
+    }
+
     if (!s.lastDocDraft) {
       const detectedType = parsed.docType;
 
@@ -129,7 +323,7 @@ function makeKadiNaturalFlow(deps) {
 
         await sendButtons(
           from,
-          "🧠 J’ai reconnu un message naturel.\n\nQuel document voulez-vous créer ?",
+          "🧠 J’ai reconnu le message.\n\nQuel document voulez-vous créer ?",
           [
             { id: "SMARTBLOCK_DEVIS", title: "Devis" },
             { id: "SMARTBLOCK_FACTURE", title: "Facture" },
@@ -147,6 +341,9 @@ function makeKadiNaturalFlow(deps) {
         });
         s.lastDocDraft.type = "decharge";
         s.lastDocDraft.source = "natural_text";
+        s.lastDocDraft.meta = makeDraftMeta({
+          nluSource: getNluSource(parsed),
+        });
       } else {
         s.lastDocDraft = {
           type: detectedType,
@@ -159,7 +356,7 @@ function makeKadiNaturalFlow(deps) {
           finance: null,
           source: "natural_text",
           meta: makeDraftMeta({
-            nluSource: parsed.reasoningShort ? "openai" : "local",
+            nluSource: getNluSource(parsed),
           }),
         };
       }
@@ -167,28 +364,25 @@ function makeKadiNaturalFlow(deps) {
 
     const draft = s.lastDocDraft;
 
-    // ===============================
-    // SIMPLE PAYMENT
-    // ===============================
     if (parsed.kind === "simple_payment") {
       draft.type = parsed.docType || draft.type || "recu";
 
-      if (parsed.client && !draft.client) {
+      if (parsed.client) {
         draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
       }
 
-      if (parsed.motif && !draft.motif) {
+      if (parsed.motif) {
         draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
       }
 
       if (draft.type === "decharge") {
-        draft.dechargeType = detectDechargeType(draft.motif || parsed.motif || "");
+        draft.dechargeType = detectDechargeType(
+          draft.motif || parsed.motif || ""
+        );
       }
 
-      draft.items = [
-        makeItem(parsed.motif || "Paiement", 1, parsed.total || 0),
-      ];
-      draft.finance = computeFinance(draft);
+      draft.items = [makeItem(parsed.motif || "Paiement", 1, parsed.total || 0)];
+      computeDraftFinance(draft);
 
       if (!safe(draft.client)) {
         await logLearningEvent({
@@ -205,24 +399,9 @@ function makeKadiNaturalFlow(deps) {
       }
 
       s.step = "doc_review";
-
-      const preview =
-        draft.type === "decharge"
-          ? buildDechargePreviewMessage({ doc: draft, money })
-          : buildPreviewMessage({ doc: draft });
-
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(draft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      await sendPreviewMenu(from);
-      return true;
+      return sendDraftPreviewOrRecover(from, draft, rawText);
     }
 
-    // ===============================
-    // INTENT ONLY
-    // ===============================
     if (parsed.kind === "intent_only") {
       if (draft.type === "decharge") {
         if (parsed.client && !draft.client) {
@@ -247,7 +426,10 @@ function makeKadiNaturalFlow(deps) {
         }
 
         s.step = "decharge_amount";
-        await sendText(from, "💰 Quel est le montant ?\nSi pas de montant, tapez *0*.");
+        await sendText(
+          from,
+          "💰 Quel est le montant ?\nSi pas de montant, tapez *0*."
+        );
         return true;
       }
 
@@ -277,22 +459,20 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
-    // ===============================
-    // ITEMS
-    // ===============================
     if (parsed.kind === "items") {
-      if (parsed.client && !draft.client) {
+      if (parsed.client) {
         draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
       }
 
       draft.items = (parsed.items || []).map((it) =>
         makeItem(it.label, it.qty, it.unitPrice)
       );
-      draft.finance = computeFinance(draft);
+
+      computeDraftFinance(draft);
 
       const analysis = analyzeSmartBlock({
         items: draft.items,
-        computedTotal: draft.finance?.gross || 0,
+        computedTotal: getDraftTotal(draft),
       });
 
       draft.meta = makeDraftMeta({
@@ -301,6 +481,7 @@ function makeKadiNaturalFlow(deps) {
         totalsGap: analysis.gapInfo.gap,
         totalsGapSeverity: analysis.gapInfo.severity,
         missingHint: analysis.hint,
+        nluSource: getNluSource(parsed),
       });
 
       if (!safe(draft.client)) {
@@ -335,15 +516,7 @@ function makeKadiNaturalFlow(deps) {
       }
 
       s.step = "doc_review";
-
-      const preview = buildPreviewMessage({ doc: draft });
-      await sendText(from, preview);
-
-      const cost = computeBasePdfCost(draft);
-      await sendText(from, formatBaseCostLine(cost));
-
-      await sendPreviewMenu(from);
-      return true;
+      return sendDraftPreviewOrRecover(from, draft, rawText);
     }
 
     await logLearningEvent({
@@ -407,10 +580,10 @@ function makeKadiNaturalFlow(deps) {
       makeItem(it.label, it.qty, it.unitPrice)
     );
     draft.items = parsedItems;
-    draft.finance = computeFinance(draft);
+    computeDraftFinance(draft);
 
     const totalsDetected = extractBlockTotals(raw);
-    const computedTotal = Number(draft.finance?.gross || 0);
+    const computedTotal = getDraftTotal(draft);
 
     const analysis = analyzeSmartBlock({
       items: draft.items,
@@ -454,6 +627,15 @@ function makeKadiNaturalFlow(deps) {
       ]);
 
       s.step = "smartblock_warning";
+      return true;
+    }
+
+    const validation = validateDraftForPreview(draft);
+    if (!validation.ok) {
+      await sendText(
+        from,
+        "⚠️ Je préfère revérifier ce document avant de continuer."
+      );
       return true;
     }
 
