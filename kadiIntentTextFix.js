@@ -11,6 +11,18 @@ function makeKadiIntentTextFix(deps) {
     parseNumberSmart,
   } = deps;
 
+  function normalizeText(value = "") {
+    return String(value || "").trim();
+  }
+
+  function normalizeCompare(value = "") {
+    return normalizeText(value).toLowerCase();
+  }
+
+  function sanitizeClientName(value = "") {
+    return normalizeText(value).slice(0, 120);
+  }
+
   function recomputeMissing(intent) {
     const missing = [];
 
@@ -29,6 +41,32 @@ function makeKadiIntentTextFix(deps) {
     }
 
     return missing;
+  }
+
+  function sanitizeIntent(intent) {
+    const items = Array.isArray(intent?.items) ? intent.items : [];
+
+    return {
+      ...intent,
+      client: intent?.client ? sanitizeClientName(intent.client) : null,
+      items: items
+        .map((item) => {
+          const label = normalizeText(item?.label || "Produit").slice(0, 200);
+          const qty = Number(item?.qty || 1);
+          const unitPrice =
+            item?.unitPrice == null ? null : Number(item.unitPrice);
+
+          return {
+            label: label || "Produit",
+            qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
+            unitPrice:
+              unitPrice == null || !Number.isFinite(unitPrice) || unitPrice < 0
+                ? null
+                : unitPrice,
+          };
+        })
+        .filter((item) => !!item.label),
+    };
   }
 
   function buildReviewButtons(intent) {
@@ -57,27 +95,24 @@ function makeKadiIntentTextFix(deps) {
     if (!Array.isArray(items) || items.length === 0) return null;
     if (!labelHint) return null;
 
-    const normalizedHint = String(labelHint).trim().toLowerCase();
+    const normalizedHint = normalizeCompare(labelHint);
+    if (!normalizedHint) return null;
 
     return (
-      items.find(
-        (i) =>
-          String(i?.label || "")
-            .trim()
-            .toLowerCase() === normalizedHint
-      ) ||
+      items.find((i) => normalizeCompare(i?.label || "") === normalizedHint) ||
       items.find((i) =>
-        String(i?.label || "")
-          .trim()
-          .toLowerCase()
-          .includes(normalizedHint)
+        normalizeCompare(i?.label || "").includes(normalizedHint)
       ) ||
       null
     );
   }
 
   function computeNextStep(intent) {
-    if (!intent || !Array.isArray(intent.missing) || intent.missing.length === 0) {
+    if (
+      !intent ||
+      !Array.isArray(intent.missing) ||
+      intent.missing.length === 0
+    ) {
       return "intent_review";
     }
 
@@ -88,26 +123,25 @@ function makeKadiIntentTextFix(deps) {
     return "intent_review";
   }
 
+  function updateIntentAndStep(session, intent) {
+    const cleaned = sanitizeIntent(intent);
+    cleaned.missing = recomputeMissing(cleaned);
+
+    session.intent = cleaned;
+    session.step = computeNextStep(cleaned);
+
+    return cleaned;
+  }
+
   async function handleIntentFixText(from, text) {
     const s = getSession(from);
-
-    console.log("[KADI/INTENT_FIX] incoming", {
-      from,
-      text,
-      step: s?.step || null,
-      hasIntent: !!s?.intent,
-      intentPendingItemLabel: s?.intentPendingItemLabel || null,
-      intent: s?.intent || null,
-    });
-
     if (!s) return false;
 
-    const raw = String(text || "").trim();
+    const raw = normalizeText(text);
     if (!raw) return false;
 
     const intent = s.intent;
     if (!intent || typeof intent !== "object") {
-      console.log("[KADI/INTENT_FIX] no_intent", { from, text, step: s?.step });
       return false;
     }
 
@@ -118,6 +152,7 @@ function makeKadiIntentTextFix(deps) {
       const parsedPrice = parseNumberSmart(raw);
 
       console.log("[KADI/INTENT_FIX] branch=intent_fix_price", {
+        from,
         raw,
         parsedPrice,
         labelHint: s.intentPendingItemLabel || null,
@@ -143,24 +178,23 @@ function makeKadiIntentTextFix(deps) {
       if (!targetItem) {
         await sendText(
           from,
-          "⚠️ Je n’ai pas retrouvé l’élément à compléter.\nTapez CORRIGER ou renvoyez la phrase complète."
+          "⚠️ Je n’ai pas retrouvé l’élément à compléter.\nRenvoyez la phrase complète."
         );
         return true;
       }
 
       targetItem.unitPrice = parsedPrice;
-
-      intent.missing = recomputeMissing(intent);
-      s.intent = intent;
       s.intentPendingItemLabel = null;
-      s.step = computeNextStep(intent);
+
+      const cleaned = updateIntentAndStep(s, intent);
 
       console.log("[KADI/INTENT_FIX] price_applied", {
-        updatedIntent: intent,
+        from,
         nextStep: s.step,
+        intent: cleaned,
       });
 
-      await sendIntentReview(from, intent);
+      await sendIntentReview(from, cleaned);
       return true;
     }
 
@@ -169,20 +203,21 @@ function makeKadiIntentTextFix(deps) {
     // ===============================
     if (s.step === "intent_fix_client") {
       console.log("[KADI/INTENT_FIX] branch=intent_fix_client", {
+        from,
         raw,
       });
 
-      intent.client = raw;
-      intent.missing = recomputeMissing(intent);
-      s.intent = intent;
-      s.step = computeNextStep(intent);
+      intent.client = sanitizeClientName(raw);
+
+      const cleaned = updateIntentAndStep(s, intent);
 
       console.log("[KADI/INTENT_FIX] client_applied", {
-        updatedIntent: intent,
+        from,
         nextStep: s.step,
+        intent: cleaned,
       });
 
-      await sendIntentReview(from, intent);
+      await sendIntentReview(from, cleaned);
       return true;
     }
 
@@ -191,6 +226,7 @@ function makeKadiIntentTextFix(deps) {
     // ===============================
     if (s.step === "intent_fix_items") {
       console.log("[KADI/INTENT_FIX] branch=intent_fix_items", {
+        from,
         raw,
       });
 
@@ -214,16 +250,15 @@ function makeKadiIntentTextFix(deps) {
         intent.client = rebuilt.client;
       }
 
-      intent.missing = recomputeMissing(intent);
-      s.intent = intent;
-      s.step = computeNextStep(intent);
+      const cleaned = updateIntentAndStep(s, intent);
 
       console.log("[KADI/INTENT_FIX] items_applied", {
-        updatedIntent: intent,
+        from,
         nextStep: s.step,
+        intent: cleaned,
       });
 
-      await sendIntentReview(from, intent);
+      await sendIntentReview(from, cleaned);
       return true;
     }
 
@@ -232,6 +267,7 @@ function makeKadiIntentTextFix(deps) {
     // ===============================
     if (s.step === "intent_fix") {
       console.log("[KADI/INTENT_FIX] branch=intent_fix", {
+        from,
         raw,
       });
 
@@ -245,25 +281,24 @@ function makeKadiIntentTextFix(deps) {
         return true;
       }
 
-      rebuilt.missing = recomputeMissing(rebuilt);
-
-      s.intent = rebuilt;
       s.intentPendingItemLabel = null;
-      s.step = computeNextStep(rebuilt);
+
+      const cleaned = updateIntentAndStep(s, rebuilt);
 
       console.log("[KADI/INTENT_FIX] rebuilt_intent_applied", {
-        updatedIntent: rebuilt,
+        from,
         nextStep: s.step,
+        intent: cleaned,
       });
 
-      await sendIntentReview(from, rebuilt);
+      await sendIntentReview(from, cleaned);
       return true;
     }
 
     console.log("[KADI/INTENT_FIX] no_match", {
       from,
-      text,
       step: s?.step || null,
+      raw,
     });
 
     return false;
