@@ -14,6 +14,16 @@ const {
   processDevisFollowups,
 } = require("./kadiEngine");
 
+const { sendText } = require("./kadiMessaging");
+const { runReengagementCycle } = require("./kadiReengagementWorker");
+
+let getZeroDocUsersBySegment = null;
+let getInactiveUsers = null;
+
+try {
+  ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
+} catch (_) {}
+
 console.log("🟢 KADI booting...");
 console.log("ENV CHECK:", {
   PORT: process.env.PORT,
@@ -35,6 +45,23 @@ const FOLLOWUP_INTERVAL_MS = Number(
 const FOLLOWUP_BATCH_SIZE = Number(
   process.env.KADI_DEVIS_FOLLOWUP_BATCH_SIZE || 20
 );
+
+const REENGAGEMENT_ENABLED =
+  String(process.env.KADI_REENGAGEMENT_ENABLED || "false").toLowerCase() ===
+  "true";
+const REENGAGEMENT_INTERVAL_MS = Number(
+  process.env.KADI_REENGAGEMENT_INTERVAL_MS || 6 * 60 * 60 * 1000
+);
+const REENGAGEMENT_ZERO_DOCS_LIMIT = Number(
+  process.env.KADI_REENGAGEMENT_ZERO_DOCS_LIMIT || 20
+);
+const REENGAGEMENT_INACTIVE_DAYS = Number(
+  process.env.KADI_REENGAGEMENT_INACTIVE_DAYS || 30
+);
+const REENGAGEMENT_INACTIVE_LIMIT = Number(
+  process.env.KADI_REENGAGEMENT_INACTIVE_LIMIT || 20
+);
+const KADI_ADMIN_WA = process.env.KADI_ADMIN_WA || "";
 
 // Standard parsing
 app.use(express.urlencoded({ extended: true }));
@@ -133,5 +160,53 @@ app.listen(PORT, () => {
     }, FOLLOWUP_INTERVAL_MS);
   } else {
     console.warn("⚠️ processDevisFollowups is not available from kadiEngine");
+  }
+
+  if (
+    REENGAGEMENT_ENABLED &&
+    typeof getZeroDocUsersBySegment === "function" &&
+    typeof getInactiveUsers === "function"
+  ) {
+    console.log(
+      `🤖 Re-engagement worker started (every ${REENGAGEMENT_INTERVAL_MS} ms)`
+    );
+
+    setTimeout(async () => {
+      try {
+        const result = await runReengagementCycle({
+          sendText,
+          getZeroDocUsersBySegment,
+          getInactiveUsers,
+          adminWaId: KADI_ADMIN_WA,
+          zeroDocsLimit: REENGAGEMENT_ZERO_DOCS_LIMIT,
+          inactiveDays: REENGAGEMENT_INACTIVE_DAYS,
+          inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
+        });
+
+        console.log("✅ reengagement startup ok:", result);
+      } catch (e) {
+        console.error("💥 reengagement startup error FULL:", e);
+      }
+    }, 30000);
+
+    setInterval(async () => {
+      try {
+        const result = await runReengagementCycle({
+          sendText,
+          getZeroDocUsersBySegment,
+          getInactiveUsers,
+          adminWaId: KADI_ADMIN_WA,
+          zeroDocsLimit: REENGAGEMENT_ZERO_DOCS_LIMIT,
+          inactiveDays: REENGAGEMENT_INACTIVE_DAYS,
+          inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
+        });
+
+        console.log("✅ reengagement interval ok:", result);
+      } catch (e) {
+        console.error("💥 reengagement interval error FULL:", e);
+      }
+    }, REENGAGEMENT_INTERVAL_MS);
+  } else {
+    console.warn("⚠️ Re-engagement worker disabled or repo unavailable");
   }
 });
