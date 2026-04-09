@@ -9,17 +9,13 @@ function makeKadiReengagementService(deps) {
     sendReactivationNudge,
   } = deps;
 
-  function parsePositiveInt(value, fallback = 0, max = 500) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
-    return Math.min(Math.floor(n), max);
-  }
+  async function handleReengageZeroDocsCommand(from, text) {
+    const m = String(text || "")
+      .trim()
+      .match(/^\/reengage_zero_docs\s+(\d+)\s+([AB])$/i);
 
-  function splitArgs(text = "") {
-    return String(text || "").trim().split(/\s+/).filter(Boolean);
-  }
+    if (!m) return false;
 
-  async function handleReengageZeroDocsCommand(from, rawText) {
     if (
       typeof getZeroDocUsersBySegment !== "function" ||
       typeof sendZeroDocReOnboarding !== "function"
@@ -31,24 +27,16 @@ function makeKadiReengagementService(deps) {
       return true;
     }
 
-    const parts = splitArgs(rawText);
-    const limit = parsePositiveInt(parts[1], 20, 200);
-    const segment = String(parts[2] || "A").toUpperCase();
+    const limit = Number(m[1] || 50);
+    const variant = String(m[2] || "A").toUpperCase();
 
-    if (!["A", "B", "C"].includes(segment)) {
-      await sendText(from, "❌ Segment invalide. Utilisez A, B ou C.");
-      return true;
-    }
+    const users = await getZeroDocUsersBySegment(limit, variant);
 
-    await sendText(
-      from,
-      `🚀 Lancement re-engagement zero-docs\nSegment: ${segment}\nBatch: ${limit}`
-    );
-
-    const users = await getZeroDocUsersBySegment(segment, limit);
-
-    if (!Array.isArray(users) || users.length === 0) {
-      await sendText(from, "ℹ️ Aucun utilisateur trouvé pour ce segment.");
+    if (!users.length) {
+      await sendText(
+        from,
+        `ℹ️ Aucun utilisateur zéro document trouvé pour le segment ${variant}.`
+      );
       return true;
     }
 
@@ -57,52 +45,56 @@ function makeKadiReengagementService(deps) {
 
     for (const user of users) {
       try {
-        await sendZeroDocReOnboarding(user.wa_id, {
-          daysSinceSignup: user.days_since_signup || 0,
-          professionCategory: user.profession_category || null,
-        });
+        await sendZeroDocReOnboarding(user, variant);
         sent += 1;
       } catch (e) {
         failed += 1;
-        console.warn("[KADI/REENGAGE/ZERO_DOCS]", e?.message, {
-          waId: user?.wa_id,
-          segment,
-        });
+        console.warn("[KADI/REENGAGE/ZERO_DOCS]", e?.message);
       }
     }
 
     await sendText(
       from,
-      `✅ Re-engagement terminé.\nEnvoyés: ${sent}\nÉchecs: ${failed}\nSegment: ${segment}`
+      [
+        "✅ Re-engagement zéro docs terminé.",
+        `Segment : ${variant}`,
+        `Ciblés : ${users.length}`,
+        `Envoyés : ${sent}`,
+        `Échecs : ${failed}`,
+      ].join("\n")
     );
+
     return true;
   }
 
-  async function handleReengageInactiveCommand(from, rawText) {
+  async function handleReengageInactiveCommand(from, text) {
+    const m = String(text || "")
+      .trim()
+      .match(/^\/reengage_inactive\s+(\d+)\s+(\d+)$/i);
+
+    if (!m) return false;
+
     if (
       typeof getInactiveUsers !== "function" ||
       typeof sendReactivationNudge !== "function"
     ) {
       await sendText(
         from,
-        "❌ Re-engagement inactifs non branché. Il manque le repo ou la fonction d’envoi."
+        "❌ Re-engagement non branché. Il manque le repo ou la fonction d’envoi."
       );
       return true;
     }
 
-    const parts = splitArgs(rawText);
-    const minDaysInactive = parsePositiveInt(parts[1], 30, 365);
-    const limit = parsePositiveInt(parts[2], 20, 200);
+    const days = Number(m[1] || 7);
+    const limit = Number(m[2] || 50);
 
-    await sendText(
-      from,
-      `🚀 Lancement re-engagement inactifs\nInactivité min: ${minDaysInactive} jours\nBatch: ${limit}`
-    );
+    const users = await getInactiveUsers(days, limit);
 
-    const users = await getInactiveUsers(minDaysInactive, limit);
-
-    if (!Array.isArray(users) || users.length === 0) {
-      await sendText(from, "ℹ️ Aucun utilisateur inactif trouvé.");
+    if (!users.length) {
+      await sendText(
+        from,
+        `ℹ️ Aucun utilisateur inactif trouvé pour ${days} jour(s).`
+      );
       return true;
     }
 
@@ -111,23 +103,25 @@ function makeKadiReengagementService(deps) {
 
     for (const user of users) {
       try {
-        await sendReactivationNudge(user.wa_id, {
-          daysInactive: user.days_inactive || minDaysInactive,
-          professionCategory: user.profession_category || null,
-        });
+        await sendReactivationNudge(user, days);
         sent += 1;
       } catch (e) {
         failed += 1;
-        console.warn("[KADI/REENGAGE/INACTIVE]", e?.message, {
-          waId: user?.wa_id,
-        });
+        console.warn("[KADI/REENGAGE/INACTIVE]", e?.message);
       }
     }
 
     await sendText(
       from,
-      `✅ Re-engagement inactifs terminé.\nEnvoyés: ${sent}\nÉchecs: ${failed}`
+      [
+        "✅ Re-engagement inactifs terminé.",
+        `Jours : ${days}`,
+        `Ciblés : ${users.length}`,
+        `Envoyés : ${sent}`,
+        `Échecs : ${failed}`,
+      ].join("\n")
     );
+
     return true;
   }
 
