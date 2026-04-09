@@ -221,6 +221,7 @@ async function logLearningEvent(payload = {}) {
 
 async function uploadCampaignImageBuffer({ buffer, mimeType, filename }) {
   const finalName = `${filename || `campaign-${Date.now()}`}.jpg`;
+
   const up = await uploadMediaBuffer({
     buffer,
     filename: finalName,
@@ -424,7 +425,6 @@ const {
   buildDechargeConfirmationMessage,
   computeFinance,
   makeItem,
-  parseNaturalWhatsAppMessage,
   parseNumberSmart,
   buildPreviewMessage,
   computeBasePdfCost,
@@ -436,8 +436,6 @@ const {
   safe,
   isValidWhatsAppId,
   normalizeAndValidateDraft,
-  updateProfile,
-  sendStampMenu: _sendStampMenuFromStampFlow,
 });
 
 // ===============================
@@ -524,58 +522,58 @@ const { handleIncomingImage } = makeKadiImageFlow({
   downloadMediaToBuffer,
   LIMITS,
   guessExtFromMime,
- handleLogoImage: async (from, msg) => {
-  const s = getSession(from);
+  handleLogoImage: async (from, msg) => {
+    const s = getSession(from);
 
-  const isLegacyLogoStep = s.step === "profile" && s.profileStep === "logo";
-  const isNewLogoStep = s.step === "profile_logo_upload";
+    const isLegacyLogoStep = s.step === "profile" && s.profileStep === "logo";
+    const isNewLogoStep = s.step === "profile_logo_upload";
 
-  if (!isLegacyLogoStep && !isNewLogoStep) return false;
+    if (!isLegacyLogoStep && !isNewLogoStep) return false;
 
-  const mediaId = msg?.image?.id;
-  if (!mediaId) return false;
+    const mediaId = msg?.image?.id;
+    if (!mediaId) return false;
 
-  try {
-    const info = await getMediaInfo(mediaId);
-    const mimeType = info?.mime_type || "image/jpeg";
-    const ext = guessExtFromMime(mimeType) || "jpg";
-    const buffer = await downloadMediaToBuffer(info.url);
+    try {
+      const info = await getMediaInfo(mediaId);
+      const mimeType = info?.mime_type || "image/jpeg";
+      const ext = guessExtFromMime(mimeType) || "jpg";
+      const buffer = await downloadMediaToBuffer(info.url);
 
-    await saveProfileLogoFromBuffer({
-      waId: from,
-      buffer,
-      mimeType,
-      fileName: `logo-${Date.now()}.${ext}`,
-    });
+      await saveProfileLogoFromBuffer({
+        waId: from,
+        buffer,
+        mimeType,
+        fileName: `logo-${Date.now()}.${ext}`,
+      });
 
-    s.step = null;
-    s.profileStep = null;
+      s.step = null;
+      s.profileStep = null;
 
-    await sendText(
-      from,
-      "✅ Logo enregistré.\n📄 Vos documents afficheront maintenant votre logo."
-    );
+      await sendText(
+        from,
+        "✅ Logo enregistré.\n📄 Vos documents afficheront maintenant votre logo."
+      );
 
-    if (s.lastDocDraft) {
-      await sendButtons(from, "📄 On reprend votre document 👇", [
-        { id: "DOC_CONFIRM", title: "📤 Envoyer le PDF" },
-        { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
-      ]);
+      if (s.lastDocDraft) {
+        await sendButtons(from, "📄 On reprend votre document 👇", [
+          { id: "DOC_CONFIRM", title: "📤 Envoyer le PDF" },
+          { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+        ]);
+        return true;
+      }
+
+      await sendHomeMenu(from);
+      return true;
+    } catch (err) {
+      logger.error("logo_upload", err, { from });
+
+      await sendText(
+        from,
+        "❌ Je n’ai pas pu enregistrer le logo.\nRéessayez avec une image plus nette."
+      );
       return true;
     }
-
-    await sendHomeMenu(from);
-    return true;
-  } catch (err) {
-    logger.error("logo_upload", err, { from });
-
-    await sendText(
-      from,
-      "❌ Je n’ai pas pu enregistrer le logo.\nRéessayez avec une image plus nette."
-    );
-    return true;
-  }
-},
+  },
   readTopup,
   getPendingTopupByWaId,
   markTopupProofImageReceived,
@@ -621,9 +619,8 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   buildPreviewMessage,
   computeBasePdfCost,
   formatBaseCostLine,
-  validateDraft,
-  normalizeAndValidateDraft,
   resetDraftSession,
+  normalizeAndValidateDraft,
 
   startDocFlow,
   askItemLabel,
@@ -749,9 +746,7 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 // Message handlers
 // ===============================
 async function handleTextMessage(from, text, msg) {
-  const t = norm(text).toLowerCase();
-
-  console.log("[KADI/TEXT] raw:", text, "| norm:", t);
+  console.log("[KADI/TEXT] raw:", text, "| norm:", norm(text).toLowerCase());
 
   if (await handleUltraPriorityText(from, text)) return true;
   if (await handleSmallTalk(from, text)) return true;
