@@ -116,7 +116,7 @@ function makeKadiPdfFlow(deps) {
 
   async function createAndSendPdf(from) {
     const s = getSession(from);
-    const draft = s.lastDocDraft;
+    const draft = s?.lastDocDraft;
 
     if (!draft) {
       await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
@@ -140,17 +140,25 @@ function makeKadiPdfFlow(deps) {
       return;
     }
 
+    if (typeof normalizeAndValidateDraft !== "function") {
+      await sendText(
+        from,
+        "❌ Vérification interne indisponible.\nMerci de réessayer après mise à jour."
+      );
+      return;
+    }
+
     let finalDraft = null;
     let baseCost = 0;
     let failedRollbackOperationKey = null;
 
     const checkedDraft = normalizeAndValidateDraft(draft);
 
-    if (!checkedDraft.ok) {
+    if (!checkedDraft?.ok) {
       await sendText(
         from,
         "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
-          `Détail: ${checkedDraft.issues.join(", ")}`
+          `Détail: ${Array.isArray(checkedDraft?.issues) ? checkedDraft.issues.join(", ") : "données incohérentes"}`
       );
       return;
     }
@@ -249,7 +257,7 @@ function makeKadiPdfFlow(deps) {
           const signed = await getSignedLogoUrl(profile.logo_path);
           logoBuf = await downloadSignedUrlToBuffer(signed);
         } catch (e) {
-          console.warn("logo download error:", e?.message);
+          console.warn("[LOGO DOWNLOAD ERROR]", e?.message);
         }
       }
 
@@ -330,7 +338,7 @@ function makeKadiPdfFlow(deps) {
       });
 
       if (!up?.id) {
-        throw new Error("Upload PDF échoué");
+        throw new Error("UPLOAD_PDF_ECHOUE");
       }
 
       const saved = await saveDocumentWithRetry({
@@ -373,7 +381,7 @@ function makeKadiPdfFlow(deps) {
             dueAt: Date.now() + 24 * 60 * 60 * 1000,
           });
         } catch (e) {
-          console.warn("followup create error:", e?.message);
+          console.warn("[FOLLOWUP CREATE ERROR]", e?.message);
         }
       }
 
@@ -407,6 +415,14 @@ function makeKadiPdfFlow(deps) {
         } catch (rb) {
           console.error("rollback credits failed:", rb?.message);
         }
+      }
+
+      if (String(e?.message || "") === "TOTAL_INVALIDE_AVANT_PDF") {
+        await sendText(
+          from,
+          "⚠️ Le total de votre document est invalide.\nMerci de corriger les lignes avant de générer le PDF."
+        );
+        return;
       }
 
       await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");

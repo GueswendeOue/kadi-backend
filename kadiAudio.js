@@ -129,6 +129,20 @@ function computeIntentStepAndHint(intent) {
   };
 }
 
+function clearAudioIntentState(session) {
+  if (!session || typeof session !== "object") return;
+
+  session.audioTranscriptRaw = null;
+  session.audioTranscriptNormalized = null;
+  session.audioTranscriptDisplay = null;
+  session.audioTranscriptBusiness = null;
+  session.audioDetectedLanguages = [];
+  session.intent = null;
+  session.intentRawText = null;
+  session.intentPendingItemLabel = null;
+  session.step = null;
+}
+
 // ======================================================
 // WHATSAPP MEDIA
 // ======================================================
@@ -277,8 +291,15 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     const normalizedTranscriptText = String(
       transcript?.normalizedText || ""
     ).trim();
-    const displayText = String(transcript?.displayText || "").trim();
-    const businessText = String(transcript?.parseText || "").trim();
+    const displayText = String(
+      transcript?.displayText || rawTranscriptText || ""
+    ).trim();
+    const businessText = String(
+      transcript?.parseText ||
+        normalizedTranscriptText ||
+        rawTranscriptText ||
+        ""
+    ).trim();
 
     console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
     console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
@@ -293,12 +314,13 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const intent = buildIntent(businessText);
+    const intent = buildIntent(businessText) || null;
 
     console.log("[KADI/AUDIO] built intent:", intent);
 
+    const s = getSession(from);
+
     if (!looksUsableIntent(intent)) {
-      const s = getSession(from);
       s.audioTranscriptRaw = rawTranscriptText;
       s.audioTranscriptNormalized = normalizedTranscriptText;
       s.audioTranscriptDisplay = displayText;
@@ -318,7 +340,6 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const s = getSession(from);
     const intentRouting = computeIntentStepAndHint(intent);
 
     s.audioTranscriptRaw = rawTranscriptText;
@@ -355,6 +376,11 @@ async function handleIncomingAudioMessage(msg, value, deps) {
     return true;
   } catch (error) {
     console.error("[KADI/AUDIO] error:", error);
+
+    try {
+      const s = getSession(from);
+      clearAudioIntentState(s);
+    } catch (_) {}
 
     await sendText(
       from,

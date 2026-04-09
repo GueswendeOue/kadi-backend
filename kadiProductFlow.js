@@ -22,7 +22,6 @@ function makeKadiProductFlow(deps) {
     initDechargeDraft,
     money,
     safe,
-    isValidWhatsAppId,
     normalizeAndValidateDraft,
   } = deps;
 
@@ -39,6 +38,14 @@ function makeKadiProductFlow(deps) {
   }
 
   function validateDraftForUi(draft) {
+    if (typeof normalizeAndValidateDraft !== "function") {
+      return {
+        ok: true,
+        draft: clonePlainDraft(draft),
+        issues: [],
+      };
+    }
+
     return normalizeAndValidateDraft(clonePlainDraft(draft));
   }
 
@@ -95,9 +102,6 @@ function makeKadiProductFlow(deps) {
     return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
   }
 
-  // ===============================
-  // START FLOW
-  // ===============================
   async function startDocFlow(from, mode, factureKind = null) {
     const s = getSession(from);
     const type = String(mode || "").toLowerCase();
@@ -109,7 +113,6 @@ function makeKadiProductFlow(deps) {
       });
 
       s.step = "decharge_client";
-
       await sendText(from, "📄 Décharge\n\n👤 Nom de la personne ?");
       return;
     }
@@ -133,9 +136,6 @@ function makeKadiProductFlow(deps) {
     await sendText(from, "👤 Nom du client ?");
   }
 
-  // ===============================
-  // PRODUIT FLOW
-  // ===============================
   async function askItemLabel(from) {
     const s = getSession(from);
 
@@ -162,13 +162,11 @@ function makeKadiProductFlow(deps) {
     const t = String(text || "").trim();
     if (!t) return false;
 
-    // CLIENT
     if (s.step === "doc_client") {
       s.lastDocDraft.client = sanitizeClientName(t);
       return askItemLabel(from);
     }
 
-    // PRODUIT NOM
     if (s.step === "item_label") {
       const label = sanitizeItemLabel(t);
 
@@ -183,12 +181,10 @@ function makeKadiProductFlow(deps) {
       };
 
       s.step = "item_price";
-
       await sendText(from, `💰 Prix pour *${label}* ?`);
       return true;
     }
 
-    // PRODUIT PRIX
     if (s.step === "item_price") {
       const n = parseNumberSmart(t);
 
@@ -219,9 +215,6 @@ function makeKadiProductFlow(deps) {
       return true;
     }
 
-    // ===============================
-    // DECHARGE FLOW
-    // ===============================
     if (s.step === "decharge_client") {
       s.lastDocDraft.client = sanitizeClientName(t);
       s.step = "decharge_motif";
@@ -255,9 +248,6 @@ function makeKadiProductFlow(deps) {
       return sendSafePreview(from, s.lastDocDraft);
     }
 
-    // ===============================
-    // FINAL REVIEW
-    // ===============================
     if (s.step === "missing_client_pdf") {
       s.lastDocDraft.client = sanitizeClientName(t);
       s.step = "doc_review";

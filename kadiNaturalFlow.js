@@ -93,7 +93,7 @@ function makeKadiNaturalFlow(deps) {
         const qty = Number(item?.qty || 0);
         const unitPrice = Number(item?.unitPrice || 0);
         const lineTotal = Number(
-          item?.lineTotal ?? item?.total ?? qty * unitPrice ?? 0
+          item?.lineTotal ?? item?.total ?? (qty * unitPrice) ?? 0
         );
 
         if (qty <= 0) issues.push("invalid_qty");
@@ -197,10 +197,10 @@ function makeKadiNaturalFlow(deps) {
         return true;
       }
 
-      await sendText(
-        from,
-        "✏️ Reformulez clairement en une phrase.\n\nExemple : Devis pour Moussa, 2 portes à 25000"
-      );
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "SMARTBLOCK_FIX", title: "Corriger" },
+        { id: "DOC_RESTART", title: "Recommencer" },
+      ]);
       return true;
     }
 
@@ -239,7 +239,7 @@ function makeKadiNaturalFlow(deps) {
           unitPrice: null,
         };
 
-        s.step = "item_pu";
+        s.step = "item_price";
         await sendText(from, `💰 Quel est le prix pour : *${rawText}* ?`);
         return true;
       }
@@ -632,10 +632,23 @@ function makeKadiNaturalFlow(deps) {
 
     const validation = validateDraftForPreview(draft);
     if (!validation.ok) {
+      await logLearningEvent({
+        waId: from,
+        rawText: raw,
+        parseSuccess: false,
+        failureReason: `smartblock_preview_validation_failed:${validation.issues.join(",")}`,
+        itemsCount: Array.isArray(draft?.items) ? draft.items.length : 0,
+      });
+
       await sendText(
         from,
         "⚠️ Je préfère revérifier ce document avant de continuer."
       );
+
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "SMARTBLOCK_FIX", title: "Corriger" },
+        { id: "DOC_RESTART", title: "Recommencer" },
+      ]);
       return true;
     }
 

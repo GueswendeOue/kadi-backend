@@ -118,6 +118,7 @@ const {
   updateProfile,
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
+  saveProfileLogoFromBuffer,
 } = require("./store");
 
 const {
@@ -247,6 +248,23 @@ async function broadcastToAllKnownUsers(from, text) {
   await sendText(from, "⚠️ Module broadcast non disponible.");
 }
 
+function isIntentFixStep(step) {
+  return (
+    step === "intent_fix_price" ||
+    step === "intent_fix_client" ||
+    step === "intent_fix_items" ||
+    step === "intent_fix"
+  );
+}
+
+function getInteractiveReplyId(msg) {
+  return (
+    msg?.interactive?.button_reply?.id ||
+    msg?.interactive?.list_reply?.id ||
+    null
+  );
+}
+
 // ===============================
 // Draft helpers
 // ===============================
@@ -371,6 +389,7 @@ const { processOcrImageToDraft } = makeKadiOcrFlow({
   makeDraftMeta,
   makeItem,
   computeFinance,
+  normalizeAndValidateDraft,
   buildPreviewMessage,
   computeBasePdfCost,
   formatBaseCostLine,
@@ -416,6 +435,7 @@ const {
   money,
   safe,
   isValidWhatsAppId,
+  normalizeAndValidateDraft,
   updateProfile,
   sendStampMenu: _sendStampMenuFromStampFlow,
 });
@@ -504,23 +524,36 @@ const { handleIncomingImage } = makeKadiImageFlow({
   downloadMediaToBuffer,
   LIMITS,
   guessExtFromMime,
-  handleLogoImage: async (from, msg) => {
-    const s = getSession(from);
-    if (s.step !== "profile_logo_upload") return false;
+ handleLogoImage: async (from, msg) => {
+  const s = getSession(from);
 
-    const mediaId = msg?.image?.id;
-    if (!mediaId) return false;
+  const isLegacyLogoStep = s.step === "profile" && s.profileStep === "logo";
+  const isNewLogoStep = s.step === "profile_logo_upload";
 
-    await updateProfile(from, {
-      logo_media_id: mediaId,
-      no_logo: false,
+  if (!isLegacyLogoStep && !isNewLogoStep) return false;
+
+  const mediaId = msg?.image?.id;
+  if (!mediaId) return false;
+
+  try {
+    const info = await getMediaInfo(mediaId);
+    const mimeType = info?.mime_type || "image/jpeg";
+    const ext = guessExtFromMime(mimeType) || "jpg";
+    const buffer = await downloadMediaToBuffer(info.url);
+
+    await saveProfileLogoFromBuffer({
+      waId: from,
+      buffer,
+      mimeType,
+      fileName: `logo-${Date.now()}.${ext}`,
     });
 
     s.step = null;
+    s.profileStep = null;
 
     await sendText(
       from,
-      "✅ Logo enregistré.\n📄 Vos documents seront maintenant plus professionnels."
+      "✅ Logo enregistré.\n📄 Vos documents afficheront maintenant votre logo."
     );
 
     if (s.lastDocDraft) {
@@ -533,7 +566,16 @@ const { handleIncomingImage } = makeKadiImageFlow({
 
     await sendHomeMenu(from);
     return true;
-  },
+  } catch (err) {
+    logger.error("logo_upload", err, { from });
+
+    await sendText(
+      from,
+      "❌ Je n’ai pas pu enregistrer le logo.\nRéessayez avec une image plus nette."
+    );
+    return true;
+  }
+},
   readTopup,
   getPendingTopupByWaId,
   markTopupProofImageReceived,
@@ -655,19 +697,16 @@ const {
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
   sendText,
-
   startProfileFlow,
   sendHomeMenu,
   sendCreditsMenu,
   sendRechargePacksMenu,
   sendDocsMenu,
-
   ensureAdmin,
   handleStatsCommand,
   handleBroadcastCommand,
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
-
   norm,
 });
 
@@ -707,6 +746,76 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 });
 
 // ===============================
+// Message handlers
+// ===============================
+async function handleTextMessage(from, text, msg) {
+  const t = norm(text).toLowerCase();
+
+  console.log("[KADI/TEXT] raw:", text, "| norm:", t);
+
+  if (await handleUltraPriorityText(from, text)) return true;
+  if (await handleSmallTalk(from, text)) return true;
+
+  await maybeSendOnboarding(from);
+
+  if (await handleCommand(from, text, { wa_id: from })) return true;
+
+  const s = getSession(from);
+
+  logger.info("engine", "checking intent-fix gate", {
+    from,
+    step: s?.step || null,
+    hasIntent: !!s?.intent,
+  });
+
+  if (isIntentFixStep(s?.step)) {
+    const handledIntentFix = await handleIntentFixText(from, text);
+    if (handledIntentFix) return true;
+
+    await sendText(
+      from,
+      "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
+    );
+    return true;
+  }
+
+  if (await tryHandleDechargeConfirmation(from, text)) return true;
+  if (await handleProfileText(from, text, msg)) return true;
+  if (await handleStampFlow(from, text)) return true;
+
+  if (await tryHandleNaturalMessage(from, text)) return true;
+  if (await handleSmartItemsBlockText(from, text)) return true;
+  if (await handleProductFlowText(from, text)) return true;
+
+  await sendText(
+    from,
+    "🤔 Je n’ai pas bien compris.\n\n" +
+      "💡 Exemple :\n" +
+      "Devis pour Moussa, 2 portes à 25000\n\n" +
+      "Ou tapez MENU"
+  );
+  return true;
+}
+
+async function handleInteractiveMessage(from, msg) {
+  const replyId = getInteractiveReplyId(msg);
+
+  if (replyId) {
+    const handledProfileReply = await handleProfileReply(from, replyId);
+    if (handledProfileReply) return true;
+
+    await handleInteractiveReply(from, replyId);
+    return true;
+  }
+
+  await sendText(
+    from,
+    "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
+  );
+  return true;
+}
+
+// ===============================
 // Main routing
 // ===============================
 async function handleIncomingMessage(value) {
@@ -730,90 +839,31 @@ async function handleIncomingMessage(value) {
         }
 
         if (msg.type === "audio") {
-          return handleIncomingAudioMessage(msg, value, {
+          await handleIncomingAudioMessage(msg, value, {
             sendText,
             sendButtons,
             getSession,
           });
+          return;
         }
 
         if (msg.type === "image") {
-          return handleIncomingImage(from, msg);
+          await handleIncomingImage(from, msg);
+          return;
         }
 
         if (msg.type === "interactive") {
-          const replyId =
-            msg?.interactive?.button_reply?.id ||
-            msg?.interactive?.list_reply?.id;
-
-          if (replyId) {
-            const handledProfileReply = await handleProfileReply(from, replyId);
-            if (handledProfileReply) return;
-
-            return handleInteractiveReply(from, replyId);
-          }
-
-          return sendText(
-            from,
-            "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
-          );
+          await handleInteractiveMessage(from, msg);
+          return;
         }
 
         if (msg.type === "text") {
           const text = msg?.text?.body || "";
-          const t = norm(text).toLowerCase();
-
-          console.log("[KADI/TEXT] raw:", text, "| norm:", t);
-
-          if (await handleUltraPriorityText(from, text)) return;
-          if (await handleSmallTalk(from, text)) return;
-
-          await maybeSendOnboarding(from);
-
-          if (await handleCommand(from, text, { wa_id: from })) return;
-
-          const s = getSession(from);
-
-          console.log("[KADI/ENGINE] checking intent-fix gate", {
-            from,
-            step: s?.step || null,
-            hasIntent: !!s?.intent,
-          });
-
-          if (
-            s?.step === "intent_fix_price" ||
-            s?.step === "intent_fix_client" ||
-            s?.step === "intent_fix_items" ||
-            s?.step === "intent_fix"
-          ) {
-            const handledIntentFix = await handleIntentFixText(from, text);
-            if (handledIntentFix) return;
-
-            await sendText(
-              from,
-              "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
-            );
-            return;
-          }
-
-          if (await tryHandleDechargeConfirmation(from, text)) return;
-          if (await handleProfileText(from, text, msg)) return;
-          if (await handleStampFlow(from, text)) return;
-
-          if (await tryHandleNaturalMessage(from, text)) return;
-          if (await handleSmartItemsBlockText(from, text)) return;
-          if (await handleProductFlowText(from, text)) return;
-
-          return sendText(
-            from,
-            "🤔 Je n’ai pas bien compris.\n\n" +
-              "💡 Exemple :\n" +
-              "Devis pour Moussa, 2 portes à 25000\n\n" +
-              "Ou tapez MENU"
-          );
+          await handleTextMessage(from, text, msg);
+          return;
         }
 
-        return sendText(
+        await sendText(
           from,
           "⚠️ Je ne peux pas traiter ce type de message pour le moment.\nTapez MENU pour continuer."
         );

@@ -32,33 +32,69 @@ function makeKadiImageFlow(deps) {
     kadiBroadcast,
   } = deps;
 
+  function isProfileLogoStep(session) {
+    if (!session) return false;
+
+    return (
+      session.step === "profile_logo_upload" ||
+      (session.step === "profile" && session.profileStep === "logo")
+    );
+  }
+
+  async function getImagePayload(msg) {
+    const mediaId = msg?.image?.id;
+    if (!mediaId) {
+      return {
+        ok: false,
+        error: "❌ Image reçue mais sans media_id. Réessayez.",
+      };
+    }
+
+    const info = await getMediaInfo(mediaId);
+
+    if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+      return {
+        ok: false,
+        error: "❌ Image trop grande. Envoyez une image plus légère.",
+      };
+    }
+
+    const mimeType = info?.mime_type || "image/jpeg";
+    const ext = guessExtFromMime(mimeType) || "jpg";
+    const buffer = await downloadMediaToBuffer(info.url);
+
+    return {
+      ok: true,
+      mediaId,
+      info,
+      mimeType,
+      ext,
+      buffer,
+    };
+  }
+
   async function handleAdminBroadcastImage(from, msg) {
     const s = getSession(from);
 
     if (!ensureAdmin(from)) return false;
 
-    const mediaId = msg?.image?.id;
-    if (!mediaId) {
-      await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
-      return true;
+    const wantsBroadcastImage = s?.adminPendingAction === "broadcast_image";
+    const wantsTemplateImage =
+      s?.adminPendingAction === "broadcast_template_image";
+
+    if (!wantsBroadcastImage && !wantsTemplateImage) {
+      return false;
     }
 
     try {
-      const info = await getMediaInfo(mediaId);
+      const image = await getImagePayload(msg);
 
-      if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
-        await sendText(from, "❌ Image trop grande. Envoyez une image plus légère.");
+      if (!image.ok) {
+        await sendText(from, image.error);
         return true;
       }
 
-      const mime = info?.mime_type || "image/jpeg";
-      const ext = guessExtFromMime(mime);
-      const buf = await downloadMediaToBuffer(info.url);
-
-      // ===============================
-      // 1) Broadcast image classique
-      // ===============================
-      if (s.adminPendingAction === "broadcast_image") {
+      if (wantsBroadcastImage) {
         await sendText(from, "📢 Image reçue. Broadcast en cours...");
 
         if (!kadiBroadcast?.broadcastImageToAll) {
@@ -72,9 +108,9 @@ function makeKadiImageFlow(deps) {
 
         await kadiBroadcast.broadcastImageToAll({
           adminWaId: from,
-          imageBuffer: buf,
-          mimeType: mime,
-          filename: `broadcast-${Date.now()}.${ext}`,
+          imageBuffer: image.buffer,
+          mimeType: image.mimeType,
+          filename: `broadcast-${Date.now()}.${image.ext}`,
           caption,
           audience: "all_known",
         });
@@ -82,10 +118,7 @@ function makeKadiImageFlow(deps) {
         return true;
       }
 
-      // ===============================
-      // 2) Broadcast template avec image header
-      // ===============================
-      if (s.adminPendingAction === "broadcast_template_image") {
+      if (wantsTemplateImage) {
         await sendText(from, "🧩 Image reçue. Préparation du template en cours...");
 
         if (!kadiBroadcast?.broadcastTemplateToAll) {
@@ -95,9 +128,8 @@ function makeKadiImageFlow(deps) {
         }
 
         const { filePath } = await uploadCampaignImageBuffer({
-          userId: "admin",
-          buffer: buf,
-          mimeType: mime,
+          buffer: image.buffer,
+          mimeType: image.mimeType,
           filename: `template-${Date.now()}`,
         });
 
@@ -125,20 +157,11 @@ function makeKadiImageFlow(deps) {
     }
   }
 
-  async function handleIncomingImage(from, msg) {
+  async function handleRechargeProofImage(from, msg) {
     const s = getSession(from);
 
-    // ===============================
-    // 1) Admin broadcast image
-    // ===============================
-    if (await handleAdminBroadcastImage(from, msg)) return true;
-
-    // ===============================
-    // 2) Logo profil
-    // ===============================
-    if (s.step === "profile" && s.profileStep === "logo") {
-      await handleLogoImage(from, msg);
-      return true;
+    if (s?.step !== "recharge_proof") {
+      return false;
     }
 
     const mediaId = msg?.image?.id;
@@ -147,43 +170,55 @@ function makeKadiImageFlow(deps) {
       return true;
     }
 
-    // ===============================
-    // 3) Preuve recharge Orange Money
-    // ===============================
-    if (s.step === "recharge_proof") {
-      let topup = null;
+    let topup = null;
 
-      if (s.pendingTopupId) {
-        topup = await readTopup(s.pendingTopupId);
-      }
+    if (s.pendingTopupId) {
+      topup = await readTopup(s.pendingTopupId);
+    }
 
-      if (!topup) {
-        topup = await getPendingTopupByWaId(from);
-      }
+    if (!topup) {
+      topup = await getPendingTopupByWaId(from);
+    }
 
-      if (!topup) {
-        await sendText(from, "❌ Aucune recharge en attente trouvée.");
-        return true;
-      }
-
-      // Pour l’instant on garde une référence WhatsApp media.
-      // Plus tard on pourra uploader vers Supabase Storage.
-      const proofImageUrl = `whatsapp://media/${mediaId}`;
-
-      const updated = await markTopupProofImageReceived(topup.id, proofImageUrl);
-
-      await sendText(
-        from,
-        "⏳ Capture reçue.\n\nVotre recharge est en attente de validation.\nVous recevrez un message dès que ce sera validé."
-      );
-
-      await notifyAdminTopupReview(from, updated, "image");
+    if (!topup) {
+      await sendText(from, "❌ Aucune recharge en attente trouvée.");
       return true;
     }
 
-    // ===============================
+    const proofImageUrl = `whatsapp://media/${mediaId}`;
+    const updated = await markTopupProofImageReceived(topup.id, proofImageUrl);
+
+    await sendText(
+      from,
+      "⏳ Capture reçue.\n\nVotre recharge est en attente de validation.\nVous recevrez un message dès que ce sera validé."
+    );
+
+    await notifyAdminTopupReview(from, updated, "image");
+    return true;
+  }
+
+  async function handleIncomingImage(from, msg) {
+    const s = getSession(from);
+
+    // 1) Admin broadcast image
+    if (await handleAdminBroadcastImage(from, msg)) return true;
+
+    // 2) Logo profil
+    if (isProfileLogoStep(s)) {
+      const handled = await handleLogoImage(from, msg);
+      if (handled) return true;
+    }
+
+    // 3) Preuve recharge Orange Money
+    if (await handleRechargeProofImage(from, msg)) return true;
+
     // 4) OCR document
-    // ===============================
+    const mediaId = msg?.image?.id;
+    if (!mediaId) {
+      await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");
+      return true;
+    }
+
     s.pendingOcrMediaId = mediaId;
 
     await sendButtons(from, "📷 Photo reçue. Générer quel document ?", [

@@ -12,13 +12,23 @@ function safeText(v = "") {
 function normalizeLoose(text = "") {
   return safeText(text)
     .toLowerCase()
-    .replace(/\s+/g, " ");
+    .replace(/[’']/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function ucfirst(text = "") {
   const t = safeText(text);
   if (!t) return "";
   return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function clamp01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
 }
 
 // ===============================
@@ -39,8 +49,8 @@ function detectFactureKind(rawText = "", docType = "devis") {
   if (docType !== "facture") return null;
 
   const t = normalizeLoose(rawText);
-
   if (/\b(proforma|pro forma)\b/.test(t)) return "proforma";
+
   return "definitive";
 }
 
@@ -64,6 +74,7 @@ function cleanLabel(label = "") {
     .replace(/\bpagne?s?\b/gi, "Pagne")
     .replace(/\btresses?\b/gi, "Tresses")
     .replace(/\breparation\b/gi, "Réparation")
+    .replace(/\br[eé]paration\b/gi, "Réparation")
     .replace(/\bmoto\b/gi, "Moto")
     .replace(/\s+/g, " ")
     .trim();
@@ -75,8 +86,21 @@ function isMeaningfulLabel(label = "") {
   const t = normalizeLoose(label);
 
   if (!t) return false;
-  if (t === "produit") return false;
   if (t.length < 2) return false;
+
+  const banned = new Set([
+    "produit",
+    "service",
+    "article",
+    "element",
+    "élément",
+    "truc",
+    "chose",
+    "-",
+    "—",
+  ]);
+
+  if (banned.has(t)) return false;
 
   return true;
 }
@@ -99,20 +123,24 @@ function sanitizeUnitPrice(unitPrice) {
   return Math.round(n);
 }
 
+function sanitizeItem(item = {}) {
+  const label = cleanLabel(item?.label);
+  const qty = sanitizeQty(item?.qty);
+  const unitPrice = sanitizeUnitPrice(item?.unitPrice);
+
+  if (!isMeaningfulLabel(label)) return null;
+
+  return {
+    label,
+    qty,
+    unitPrice,
+  };
+}
+
 function sanitizeItems(items = []) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => {
-      const label = cleanLabel(item?.label);
-      const qty = sanitizeQty(item?.qty);
-      const unitPrice = sanitizeUnitPrice(item?.unitPrice);
-
-      return {
-        label,
-        qty,
-        unitPrice,
-      };
-    })
-    .filter((item) => isMeaningfulLabel(item.label));
+    .map(sanitizeItem)
+    .filter(Boolean);
 }
 
 // ===============================
@@ -124,7 +152,22 @@ function sanitizeClient(client = "") {
     .replace(/\s+/g, " ")
     .trim();
 
-  return out || null;
+  if (!out) return null;
+  if (out.length < 2) return null;
+
+  const normalized = normalizeLoose(out);
+
+  if (
+    normalized === "client" ||
+    normalized === "nom" ||
+    normalized === "personne" ||
+    normalized === "monsieur" ||
+    normalized === "madame"
+  ) {
+    return null;
+  }
+
+  return out;
 }
 
 // ===============================
@@ -151,16 +194,8 @@ function detectMissing(intent) {
 }
 
 // ===============================
-// CONFIDENCE TUNING
+// CONFIDENCE
 // ===============================
-function clamp01(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
-}
-
 function computeAdjustedConfidence(parsed, intent) {
   let score = clamp01(parsed?.confidence || 0);
 
@@ -172,7 +207,10 @@ function computeAdjustedConfidence(parsed, intent) {
     score += 0.1;
   }
 
-  const pricedItems = (intent?.items || []).filter((i) => i?.unitPrice != null);
+  const pricedItems = (intent?.items || []).filter(
+    (i) => i?.unitPrice != null && Number(i.unitPrice) >= 0
+  );
+
   if (
     Array.isArray(intent?.items) &&
     intent.items.length > 0 &&
@@ -187,7 +225,40 @@ function computeAdjustedConfidence(parsed, intent) {
     score += 0.05;
   }
 
+  if (Array.isArray(intent?.missing) && intent.missing.length === 0) {
+    score += 0.05;
+  }
+
   return clamp01(Number(score.toFixed(2)));
+}
+
+// ===============================
+// PARSER WRAPPER
+// ===============================
+function safeParseVoiceText(inputText = "") {
+  try {
+    const parsed = parseVoiceText(inputText);
+    if (!parsed || typeof parsed !== "object") {
+      return {
+        client: null,
+        items: [],
+        confidence: 0,
+      };
+    }
+
+    return {
+      client: parsed.client || null,
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      confidence: clamp01(parsed.confidence || 0),
+    };
+  } catch (err) {
+    console.warn("[KADI/INTENT] parseVoiceText failed:", err?.message);
+    return {
+      client: null,
+      items: [],
+      confidence: 0,
+    };
+  }
 }
 
 // ===============================
@@ -195,7 +266,7 @@ function computeAdjustedConfidence(parsed, intent) {
 // ===============================
 function buildIntent(rawText = "", options = {}) {
   const inputText = safeText(rawText);
-  const parsed = parseVoiceText(inputText);
+  const parsed = safeParseVoiceText(inputText);
 
   const docType = detectDocType(inputText);
   const factureKind = detectFactureKind(inputText, docType);
@@ -204,8 +275,8 @@ function buildIntent(rawText = "", options = {}) {
     type: "create_document",
     docType,
     factureKind,
-    client: sanitizeClient(parsed?.client),
-    items: sanitizeItems(parsed?.items || []),
+    client: sanitizeClient(parsed.client),
+    items: sanitizeItems(parsed.items),
     confidence: 0,
     rawText: inputText,
     source: options.source || "voice",
@@ -222,6 +293,8 @@ module.exports = {
   detectDocType,
   detectFactureKind,
   cleanLabel,
+  isMeaningfulLabel,
+  sanitizeItem,
   sanitizeItems,
   sanitizeClient,
   detectMissing,

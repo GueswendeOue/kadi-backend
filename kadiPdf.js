@@ -20,66 +20,122 @@ function numberToFrench(n) {
   n = Math.floor(Number(n) || 0);
   if (n === 0) return "zéro";
 
-  const units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"];
-  const teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
-  const tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
+  const units = [
+    "",
+    "un",
+    "deux",
+    "trois",
+    "quatre",
+    "cinq",
+    "six",
+    "sept",
+    "huit",
+    "neuf",
+  ];
 
   function under100(x) {
     if (x < 10) return units[x];
-    if (x < 20) return teens[x - 10];
 
-    const t = Math.floor(x / 10);
-    const u = x % 10;
-
-    if (t === 7 || t === 9) {
-      const base = tens[t];
-      const rest = x - t * 10;
-      return `${base}-${teens[rest - 10]}`;
+    if (x < 17) {
+      return [
+        "dix",
+        "onze",
+        "douze",
+        "treize",
+        "quatorze",
+        "quinze",
+        "seize",
+      ][x - 10];
     }
-    if (t === 8 && u === 0) return "quatre-vingts";
-    if (u === 0) return tens[t];
-    if (t === 8) return `quatre-vingt-${units[u]}`;
-    if (u === 1 && (t === 2 || t === 3 || t === 4 || t === 5 || t === 6)) return `${tens[t]} et un`;
-    return `${tens[t]}-${units[u]}`;
+
+    if (x < 20) {
+      return `dix-${units[x - 10]}`;
+    }
+
+    if (x < 70) {
+      const tensMap = {
+        20: "vingt",
+        30: "trente",
+        40: "quarante",
+        50: "cinquante",
+        60: "soixante",
+      };
+
+      const ten = Math.floor(x / 10) * 10;
+      const unit = x % 10;
+
+      if (unit === 0) return tensMap[ten];
+      if (unit === 1) return `${tensMap[ten]} et un`;
+      return `${tensMap[ten]}-${units[unit]}`;
+    }
+
+    if (x < 80) {
+      // 70..79 = soixante + 10..19
+      if (x === 71) return "soixante et onze";
+      return `soixante-${under100(x - 60)}`;
+    }
+
+    if (x === 80) return "quatre-vingts";
+
+    if (x < 100) {
+      // 81..99 = quatre-vingt + 1..19
+      return `quatre-vingt-${under100(x - 80)}`;
+    }
+
+    return "";
   }
 
   function under1000(x) {
     const h = Math.floor(x / 100);
     const r = x % 100;
+
     let s = "";
+
     if (h > 0) {
-      s = h === 1 ? "cent" : `${units[h]} cent`;
-      if (r === 0 && h > 1) s += "s";
+      if (h === 1) {
+        s = "cent";
+      } else {
+        s = `${units[h]} cent`;
+      }
+
+      if (r === 0 && h > 1) {
+        s += "s";
+      }
     }
-    if (r > 0) s = s ? `${s} ${under100(r)}` : under100(r);
+
+    if (r > 0) {
+      s = s ? `${s} ${under100(r)}` : under100(r);
+    }
+
     return s;
   }
 
-  function chunk(x, value, name) {
-    const q = Math.floor(x / value);
-    const r = x % value;
-    if (q === 0) return { text: "", rest: r };
-
-    if (name === "mille") {
-      if (q === 1) return { text: "mille", rest: r };
-      return { text: `${under1000(q)} mille`, rest: r };
-    }
-    const t = q === 1 ? `${name}` : `${under1000(q)} ${name}s`;
-    return { text: t, rest: r };
-  }
-
-  let x = n;
   const parts = [];
 
-  const m = chunk(x, 1_000_000, "million");
-  if (m.text) parts.push(m.text);
-  x = m.rest;
+  const millions = Math.floor(n / 1_000_000);
+  const thousands = Math.floor((n % 1_000_000) / 1_000);
+  const rest = n % 1_000;
 
-  const k = chunk(x, 1_000, "mille");
-  if (k.text) parts.push(k.text);
-  x = k.rest;
+  if (millions > 0) {
+    if (millions === 1) {
+      parts.push("un million");
+    } else {
+      parts.push(`${under1000(millions)} millions`);
+    }
+  }
 
-  if (x > 0) parts.push(under1000(x));
+  if (thousands > 0) {
+    if (thousands === 1) {
+      parts.push("mille");
+    } else {
+      parts.push(`${under1000(thousands)} mille`);
+    }
+  }
+
+  if (rest > 0) {
+    parts.push(under1000(rest));
+  }
+
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 

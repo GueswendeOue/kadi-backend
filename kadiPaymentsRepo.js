@@ -2,9 +2,11 @@
 
 const { supabase } = require("./supabaseClient");
 
+const TOPUPS_TABLE = "kadi_topups";
+
 async function createTopup(payload) {
   const { data, error } = await supabase
-    .from("kadi_topups")
+    .from(TOPUPS_TABLE)
     .insert(payload)
     .select("*")
     .single();
@@ -15,7 +17,7 @@ async function createTopup(payload) {
 
 async function getTopupById(id) {
   const { data, error } = await supabase
-    .from("kadi_topups")
+    .from(TOPUPS_TABLE)
     .select("*")
     .eq("id", id)
     .maybeSingle();
@@ -26,7 +28,7 @@ async function getTopupById(id) {
 
 async function updateTopup(id, patch) {
   const { data, error } = await supabase
-    .from("kadi_topups")
+    .from(TOPUPS_TABLE)
     .update(patch)
     .eq("id", id)
     .select("*")
@@ -38,7 +40,7 @@ async function updateTopup(id, patch) {
 
 async function getPendingTopupByWaId(waId) {
   const { data, error } = await supabase
-    .from("kadi_topups")
+    .from(TOPUPS_TABLE)
     .select("*")
     .eq("wa_id", waId)
     .in("status", ["pending", "pending_review"])

@@ -3,22 +3,24 @@
 // ======================================================
 // TEXT NORMALIZATION
 // ======================================================
+function safeText(v = "") {
+  return String(v || "").trim();
+}
+
 function normalize(text = "") {
-  return String(text || "")
+  return safeText(text)
     .toLowerCase()
     .replace(/[’']/g, "'")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function safeText(v = "") {
-  return String(v || "").trim();
+function normalizeCompare(text = "") {
+  return normalize(text);
 }
 
-function normalizeCompare(text = "") {
-  return safeText(text)
-    .toLowerCase()
-    .replace(/\s+/g, " ");
+function escapeRegExp(str = "") {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ======================================================
@@ -42,7 +44,7 @@ const NUMBER_WORDS = {
 };
 
 function parseQty(word) {
-  const w = String(word || "").trim().toLowerCase();
+  const w = normalize(word);
   if (!w) return 1;
 
   if (/^\d+$/.test(w)) return Number(w);
@@ -55,7 +57,7 @@ function parseQty(word) {
 // MONEY / BUSINESS AMOUNTS
 // ======================================================
 function parseBusinessAmount(input) {
-  const raw = String(input || "").trim().toLowerCase();
+  const raw = normalize(input);
   if (!raw) return null;
 
   let s = raw
@@ -94,7 +96,7 @@ function parseBusinessAmount(input) {
 }
 
 function parsePrice(text) {
-  const raw = String(text || "").trim().toLowerCase();
+  const raw = normalize(text);
   if (!raw) return null;
 
   const milleMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*mille\b/);
@@ -143,24 +145,39 @@ function extractAllPrices(text = "") {
 // ======================================================
 // CLIENT EXTRACTION
 // ======================================================
-function cleanClientName(name) {
-  return (
-    String(name || "")
-      .replace(/\b(de|du|la|le|les)\b\s*$/i, "")
-      .replace(/[.,;:!?]+$/g, "")
-      .replace(/[^\p{L}\s\-]/gu, "")
-      .replace(/\s+/g, " ")
-      .trim() || null
-  );
+function cleanClientName(name = "") {
+  const out = String(name || "")
+    .replace(/\b(de|du|la|le|les)\b\s*$/i, "")
+    .replace(/[.,;:!?]+$/g, "")
+    .replace(/[^\p{L}\s\-]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return out || null;
 }
 
-function extractClient(text) {
+function isLikelyClientName(name = "") {
+  const value = cleanClientName(name);
+  if (!value) return false;
+
+  const t = normalizeCompare(value);
+
+  if (t.length < 2) return false;
+  if (/\b(porte|fenetre|fenêtre|ciment|fer|prix|montant|quantite|quantité|qte|devis|facture|recu|reçu|decharge|décharge)\b/.test(t)) {
+    return false;
+  }
+
+  return true;
+}
+
+function extractClient(text = "") {
   const t = String(text || "").trim();
 
   const patterns = [
     /\bpour\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
     /\bclient\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
     /\bau nom de\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
+    /\bchez\s+([a-zàâäéèêëïîôöùûüç\- ]{2,})/i,
   ];
 
   for (const p of patterns) {
@@ -168,11 +185,11 @@ function extractClient(text) {
     if (!m || !m[1]) continue;
 
     let candidate = m[1]
-      .split(/\b(?:avec|a|à|de|du|pour|montant|prix|qt[eé]|quantite|quantité)\b/i)[0]
+      .split(/\b(?:avec|a|à|de|du|pour|montant|prix|qt[eé]|quantite|quantité|qte|à\s+\d|a\s+\d)\b/i)[0]
       .trim();
 
     candidate = cleanClientName(candidate);
-    if (candidate) return candidate;
+    if (isLikelyClientName(candidate)) return candidate;
   }
 
   return null;
@@ -231,7 +248,7 @@ function singularizeLabel(label = "") {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function extractLabel(segment) {
+function extractLabel(segment = "") {
   const s = String(segment || "").trim();
   if (!s) return "Produit";
 
@@ -248,13 +265,13 @@ function extractLabel(segment) {
 // ======================================================
 // SEGMENTATION
 // ======================================================
-function looksLikeDocumentIntro(segment) {
+function looksLikeDocumentIntro(segment = "") {
   return /\b(fais-moi|fais moi|cr[eé]e|cree|devis|facture|re[çc]u|décharge|decharge)\b/i.test(
     String(segment || "")
   );
 }
 
-function splitItemSegments(text) {
+function splitItemSegments(text = "") {
   const t = String(text || "").trim();
   if (!t) return [];
 
@@ -267,7 +284,7 @@ function splitItemSegments(text) {
 // ======================================================
 // FIELD EXTRACTION
 // ======================================================
-function extractQty(segment) {
+function extractQty(segment = "") {
   const s = String(segment || "").trim();
 
   const m = s.match(
@@ -277,7 +294,7 @@ function extractQty(segment) {
   return m ? parseQty(m[1]) : 1;
 }
 
-function extractUnitPrice(segment) {
+function extractUnitPrice(segment = "") {
   const s = String(segment || "").trim();
   if (!s) return null;
 
@@ -307,7 +324,7 @@ function extractUnitPrice(segment) {
   return null;
 }
 
-function extractFallbackPrice(segment) {
+function extractFallbackPrice(segment = "") {
   const prices = extractAllPrices(segment);
 
   if (prices.length !== 1) return null;
@@ -321,7 +338,13 @@ function extractFallbackPrice(segment) {
 // ======================================================
 // ITEMS EXTRACTION
 // ======================================================
-function extractItems(text) {
+function isRealItemCandidate(label = "", unitPrice = null) {
+  if (label !== "Produit") return true;
+  if (unitPrice != null) return true;
+  return false;
+}
+
+function extractItems(text = "") {
   const segments = splitItemSegments(text);
   const items = [];
 
@@ -344,6 +367,10 @@ function extractItems(text) {
     }
 
     if (looksLikeDocumentIntro(segment) && !hasPrice && !hasRealLabel) {
+      continue;
+    }
+
+    if (!isRealItemCandidate(label, unitPrice)) {
       continue;
     }
 
@@ -375,7 +402,7 @@ function computeConfidence(data) {
 // ======================================================
 // MAIN
 // ======================================================
-function parseVoiceText(text) {
+function parseVoiceText(text = "") {
   const t = normalize(text);
 
   const result = {

@@ -2,10 +2,35 @@
 
 const { supabase } = require("./supabaseClient");
 
+const LOGO_BUCKET = process.env.SUPABASE_LOGO_BUCKET || "logos";
+
 function cleanPatchObject(patch) {
   return Object.fromEntries(
     Object.entries(patch || {}).filter(([, v]) => v !== undefined)
   );
+}
+
+function safeText(value = "") {
+  return String(value || "").trim();
+}
+
+function guessLogoExtension(mimeType = "") {
+  const t = String(mimeType || "").toLowerCase();
+
+  if (t.includes("png")) return "png";
+  if (t.includes("webp")) return "webp";
+  if (t.includes("jpg") || t.includes("jpeg")) return "jpg";
+  if (t.includes("svg")) return "svg";
+
+  return "jpg";
+}
+
+async function safeReadArrayBuffer(response) {
+  try {
+    return await response.arrayBuffer();
+  } catch {
+    return null;
+  }
 }
 
 async function getProfileByWaId(waId) {
@@ -167,6 +192,122 @@ async function updateProfileByIdentity({ waId = null, bsuid = null }, patch) {
   throw new Error("updateProfileByIdentity requires waId or bsuid");
 }
 
+async function uploadLogoBuffer({
+  waId,
+  buffer,
+  mimeType = "image/jpeg",
+  fileName = null,
+  upsert = true,
+}) {
+  if (!waId) throw new Error("uploadLogoBuffer requires waId");
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error("uploadLogoBuffer requires a non-empty buffer");
+  }
+
+  const ext = guessLogoExtension(mimeType);
+  const finalName =
+    safeText(fileName) || `logo-${Date.now()}.${ext}`;
+  const filePath = `${waId}/${finalName}`;
+
+  const { error } = await supabase.storage
+    .from(LOGO_BUCKET)
+    .upload(filePath, buffer, {
+      contentType: mimeType,
+      upsert,
+    });
+
+  if (error) throw error;
+
+  return {
+    bucket: LOGO_BUCKET,
+    filePath,
+  };
+}
+
+async function getSignedLogoUrl(filePath, expiresInSeconds = 3600) {
+  if (!safeText(filePath)) {
+    throw new Error("getSignedLogoUrl requires filePath");
+  }
+
+  const { data, error } = await supabase.storage
+    .from(LOGO_BUCKET)
+    .createSignedUrl(filePath, expiresInSeconds);
+
+  if (error) throw error;
+
+  const signedUrl = data?.signedUrl;
+  if (!signedUrl) {
+    throw new Error("SIGNED_LOGO_URL_NOT_FOUND");
+  }
+
+  return signedUrl;
+}
+
+async function downloadSignedUrlToBuffer(url) {
+  if (!safeText(url)) {
+    throw new Error("downloadSignedUrlToBuffer requires url");
+  }
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `SIGNED_URL_DOWNLOAD_FAILED (${response.status}): ${body || response.statusText}`
+    );
+  }
+
+  const arrayBuffer = await safeReadArrayBuffer(response);
+  if (!arrayBuffer) {
+    throw new Error("SIGNED_URL_BUFFER_READ_FAILED");
+  }
+
+  return Buffer.from(arrayBuffer);
+}
+
+async function deleteLogo(filePath) {
+  if (!safeText(filePath)) return true;
+
+  const { error } = await supabase.storage
+    .from(LOGO_BUCKET)
+    .remove([filePath]);
+
+  if (error) throw error;
+  return true;
+}
+
+async function saveProfileLogoFromBuffer({
+  waId,
+  buffer,
+  mimeType = "image/jpeg",
+  fileName = null,
+}) {
+  if (!waId) throw new Error("saveProfileLogoFromBuffer requires waId");
+
+  const existing = await getProfileByWaId(waId);
+
+  const upload = await uploadLogoBuffer({
+    waId,
+    buffer,
+    mimeType,
+    fileName,
+    upsert: true,
+  });
+
+  const updated = await updateProfile(waId, {
+    logo_path: upload.filePath,
+    logo_media_id: null,
+    no_logo: false,
+  });
+
+  if (existing?.logo_path && existing.logo_path !== upload.filePath) {
+    try {
+      await deleteLogo(existing.logo_path);
+    } catch (_) {}
+  }
+
+  return updated;
+}
+
 async function markOnboardingDone(waId, version = 1) {
   try {
     return await updateProfile(waId, {
@@ -186,5 +327,10 @@ module.exports = {
   updateProfile,
   updateProfileById,
   updateProfileByIdentity,
+  uploadLogoBuffer,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+  deleteLogo,
+  saveProfileLogoFromBuffer,
   markOnboardingDone,
 };

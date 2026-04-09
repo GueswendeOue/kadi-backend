@@ -21,9 +21,6 @@ function makeKadiOcrFlow(deps) {
 
     // OCR low-level
     ocrImageToText,
-    geminiIsEnabled,
-    ocrLooksGood,
-    geminiOcrImageBuffer,
     parseInvoiceTextWithGemini,
 
     // local parsing helpers
@@ -183,15 +180,9 @@ function makeKadiOcrFlow(deps) {
       if (isNoiseLine(line)) continue;
 
       let item = parseNormalizedItemLine(line);
+      if (!item) item = parseLooseItemLine(line);
 
-      if (!item) {
-        item = parseLooseItemLine(line);
-      }
-
-      if (item) {
-        items.push(item);
-      }
-
+      if (item) items.push(item);
       if (items.length >= LIMITS.maxItems) break;
     }
 
@@ -214,15 +205,33 @@ function makeKadiOcrFlow(deps) {
     };
 
     draft.finance = computeFinance(draft);
-
     return draft;
   }
 
-  function needsManualReview(draft, parsed = {}) {
-    const checked = normalizeAndValidateDraft({
+  function runDraftValidation(draft) {
+    if (typeof normalizeAndValidateDraft !== "function") {
+      return {
+        ok: true,
+        draft: {
+          ...draft,
+          items: Array.isArray(draft?.items)
+            ? draft.items.map((it) => ({ ...it }))
+            : [],
+        },
+        issues: [],
+      };
+    }
+
+    return normalizeAndValidateDraft({
       ...draft,
-      items: Array.isArray(draft?.items) ? draft.items.map((it) => ({ ...it })) : [],
+      items: Array.isArray(draft?.items)
+        ? draft.items.map((it) => ({ ...it }))
+        : [],
     });
+  }
+
+  function needsManualReview(draft, parsed = {}) {
+    const checked = runDraftValidation(draft);
 
     const issues = Array.isArray(checked?.issues) ? checked.issues : [];
     const detectedTotal = Number(parsed?.detectedTotal || 0);
@@ -476,6 +485,8 @@ function makeKadiOcrFlow(deps) {
     }
 
     if (review.needsReview) {
+      s.step = "ocr_review_needs_fix";
+
       await sendText(
         from,
         "⚠️ J’ai lu la photo, mais je préfère une vérification avant de générer un aperçu final."

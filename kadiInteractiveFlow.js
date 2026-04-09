@@ -86,6 +86,7 @@ function makeKadiInteractiveFlow(deps) {
 
   function clonePlainDraft(draft) {
     if (!draft || typeof draft !== "object") return null;
+
     return {
       ...draft,
       items: Array.isArray(draft.items)
@@ -93,20 +94,34 @@ function makeKadiInteractiveFlow(deps) {
         : [],
       finance: draft.finance ? { ...draft.finance } : null,
       meta: draft.meta ? { ...draft.meta } : null,
+      confirmation: draft.confirmation ? { ...draft.confirmation } : null,
     };
   }
 
   function validateDraftForUi(draft) {
-    const checked = normalizeAndValidateDraft(clonePlainDraft(draft));
-    return checked;
+    if (typeof normalizeAndValidateDraft !== "function") {
+      return {
+        ok: true,
+        draft: clonePlainDraft(draft),
+        issues: [],
+      };
+    }
+
+    return normalizeAndValidateDraft(clonePlainDraft(draft));
   }
 
   async function sendDraftBlockedMessage(from, checked) {
+    const s = getSession(from);
+    if (s) s.step = "doc_review";
+
     const issues = Array.isArray(checked?.issues) ? checked.issues : [];
+
     await sendText(
       from,
       "⚠️ Je préfère revérifier ce document avant de continuer.\n\n" +
-        (issues.length ? `Détail: ${issues.join(", ")}` : "Certaines données sont incohérentes.")
+        (issues.length
+          ? `Détail: ${issues.join(", ")}`
+          : "Certaines données sont incohérentes.")
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
@@ -125,6 +140,8 @@ function makeKadiInteractiveFlow(deps) {
     const checked = validateDraftForUi(draft);
 
     if (!checked.ok) {
+      const s = getSession(from);
+      if (s) s.lastDocDraft = checked.draft;
       return sendDraftBlockedMessage(from, checked);
     }
 
@@ -215,7 +232,7 @@ function makeKadiInteractiveFlow(deps) {
 
         if (intent.missing.includes("price")) {
           const item = Array.isArray(intent.items)
-            ? intent.items.find((i) => !i?.unitPrice)
+            ? intent.items.find((i) => i?.unitPrice == null)
             : null;
 
           s.step = "intent_fix_price";
@@ -297,7 +314,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
     // ===============================
-    // HOME / ONBOARDING / HELP
+    // HOME / HELP
     // ===============================
     if (replyId === "HOME_DOCS") return sendDocsMenu(from);
     if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
@@ -418,8 +435,9 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       const checked = validateDraftForUi(s.lastDocDraft);
+      s.lastDocDraft = checked.draft;
+
       if (!checked.ok) {
-        s.lastDocDraft = checked.draft;
         await sendText(
           from,
           "⚠️ J’ai repris le devis, mais il faut une petite vérification avant de continuer."
@@ -427,7 +445,6 @@ function makeKadiInteractiveFlow(deps) {
         return sendDraftBlockedMessage(from, checked);
       }
 
-      s.lastDocDraft = checked.draft;
       s.step = "doc_review";
 
       await markDevisFollowupConverted(followupId, "facture");
@@ -465,8 +482,9 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       const checked = validateDraftForUi(s.lastDocDraft);
+      s.lastDocDraft = checked.draft;
+
       if (!checked.ok) {
-        s.lastDocDraft = checked.draft;
         await sendText(
           from,
           "⚠️ J’ai repris le devis, mais il faut une petite vérification avant de continuer."
@@ -474,7 +492,6 @@ function makeKadiInteractiveFlow(deps) {
         return sendDraftBlockedMessage(from, checked);
       }
 
-      s.lastDocDraft = checked.draft;
       s.step = "doc_review";
 
       await markDevisFollowupConverted(followupId, "recu");
@@ -542,7 +559,7 @@ function makeKadiInteractiveFlow(deps) {
       };
 
       await sendText(from, `💰 Prix pour : *${raw}* ?`);
-      s.step = "item_pu";
+      s.step = "item_price";
       return;
     }
 
@@ -759,7 +776,10 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       if (!offer) {
-        await sendText(from, "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE.");
+        await sendText(
+          from,
+          "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE."
+        );
         return sendRechargePacksMenu(from);
       }
 
@@ -789,7 +809,10 @@ function makeKadiInteractiveFlow(deps) {
       );
 
       if (!offer) {
-        await sendText(from, "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE.");
+        await sendText(
+          from,
+          "⚠️ Je n’ai pas retrouvé ce pack.\nRevenez au menu RECHARGE."
+        );
         return sendRechargePacksMenu(from);
       }
 
@@ -962,6 +985,10 @@ function makeKadiInteractiveFlow(deps) {
       const checked = validateDraftForUi(draft);
       s.lastDocDraft = checked.draft;
 
+      if (!checked.ok) {
+        return sendDraftBlockedMessage(from, checked);
+      }
+
       const confirmationMessage = buildDechargeConfirmationMessage({
         doc: s.lastDocDraft,
         money,
@@ -999,12 +1026,14 @@ function makeKadiInteractiveFlow(deps) {
       }
       s.lastDocDraft = checked.draft;
 
-      if (draft._saving === true || s.isGeneratingPdf === true) {
+      const finalDraft = s.lastDocDraft;
+
+      if (finalDraft._saving === true || s.isGeneratingPdf === true) {
         await sendText(from, "⏳ Génération en cours...");
         return;
       }
 
-      if (s.lastDocDraft.savedDocumentId || s.lastDocDraft.savedPdfMediaId) {
+      if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
         s.step = "doc_already_generated";
         await sendAlreadyGeneratedMenu(from);
         return;
@@ -1015,12 +1044,12 @@ function makeKadiInteractiveFlow(deps) {
       if (p?.stamp_paid === true && p?.stamp_enabled === true) {
         resetStampChoice(s);
 
-        s.lastDocDraft._saving = true;
+        finalDraft._saving = true;
         try {
           await createAndSendPdf(from);
           return;
         } finally {
-          s.lastDocDraft._saving = false;
+          finalDraft._saving = false;
         }
       }
 
@@ -1044,12 +1073,13 @@ function makeKadiInteractiveFlow(deps) {
       }
       s.lastDocDraft = checked.draft;
 
-      s.lastDocDraft._saving = true;
+      const finalDraft = s.lastDocDraft;
+      finalDraft._saving = true;
       try {
         await createAndSendPdf(from);
         return;
       } finally {
-        s.lastDocDraft._saving = false;
+        finalDraft._saving = false;
       }
     }
 
@@ -1080,12 +1110,13 @@ function makeKadiInteractiveFlow(deps) {
       }
       s.lastDocDraft = checked.draft;
 
-      s.lastDocDraft._saving = true;
+      const finalDraft = s.lastDocDraft;
+      finalDraft._saving = true;
       try {
         await createAndSendPdf(from);
         return;
       } finally {
-        s.lastDocDraft._saving = false;
+        finalDraft._saving = false;
       }
     }
 
@@ -1148,6 +1179,14 @@ function makeKadiInteractiveFlow(deps) {
       const checked = validateDraftForUi(draft);
       s.lastDocDraft = checked.draft;
       s.step = "doc_review";
+
+      if (!checked.ok) {
+        await sendText(
+          from,
+          "✏️ *Mode modification activé.*\n\nLe document a besoin d’une correction avant régénération."
+        );
+        return sendDraftBlockedMessage(from, checked);
+      }
 
       await sendText(
         from,
