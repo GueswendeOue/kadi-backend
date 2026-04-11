@@ -154,7 +154,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // -------------------------------
   // USERS
-  // business_profiles = source canonique prioritaire
+  // business_profiles = source prioritaire
   // -------------------------------
   const totalKnownUsers = await safeTableExistsFetch(
     () => countDistinct("kadi_all_known_users", "wa_id"),
@@ -169,7 +169,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const totalUsers =
     totalBusinessProfilesDistinct > 0
       ? totalBusinessProfilesDistinct
-      : totalKnownUsers;
+      : (totalKnownUsers || 0);
 
   const active7 = await safeTableExistsFetch(
     () =>
@@ -195,7 +195,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     0
   );
 
-  // fallback activité si kadi_activity n’est pas fiable / vide
   const active7Fallback = await safeTableExistsFetch(
     () =>
       countDistinct("kadi_documents", "wa_id", [
@@ -217,14 +216,13 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // -------------------------------
   // DOCS
-  // kadi_documents = source canonique prioritaire
+  // kadi_documents = source canonique
   // -------------------------------
   const docsGenerated = await safeTableExistsFetch(
     () => countRows("kadi_documents"),
     0
   );
 
-  // Pour éviter les incohérences actuelles, on aligne created sur generated
   const docsCreated = docsGenerated;
 
   const docs7 = await safeTableExistsFetch(
@@ -318,7 +316,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // -------------------------------
   // REVENUE / PAID USERS
-  // Revenu KADI = crédits/payments réels seulement
+  // revenu réel = crédits payés
   // -------------------------------
   const paidReasons = [
     "payment_om",
@@ -417,9 +415,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   }
 
   if (createdToGeneratedRate < 60 && docsCreated > 20) {
-    alerts.push(
-      `• Conversion création→PDF faible: ${createdToGeneratedRate}%`
-    );
+    alerts.push(`• Conversion création→PDF faible: ${createdToGeneratedRate}%`);
   }
 
   if (generatedToPaidRate < 5 && docsGenerated > 20) {
