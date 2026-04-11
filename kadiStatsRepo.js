@@ -80,7 +80,13 @@ async function countDistinct(tableName, column = "wa_id", filters = []) {
   return set.size;
 }
 
-async function fetchRows(tableName, columns = "*", filters = [], orderBy = null, ascending = true) {
+async function fetchRows(
+  tableName,
+  columns = "*",
+  filters = [],
+  orderBy = null,
+  ascending = true
+) {
   let q = supabase.from(tableName).select(columns);
 
   for (const f of filters) {
@@ -102,7 +108,9 @@ async function fetchRows(tableName, columns = "*", filters = [], orderBy = null,
 }
 
 async function countRows(tableName, filters = []) {
-  let q = supabase.from(tableName).select("id", { count: "exact", head: true });
+  let q = supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true });
 
   for (const f of filters) {
     if (f.op === "gte") q = q.gte(f.column, f.value);
@@ -128,13 +136,17 @@ async function safeTableExistsFetch(fn, fallback = null) {
 }
 
 function sumBy(rows, getter) {
-  return ensureArray(rows).reduce((acc, row) => acc + toNum(getter(row), 0), 0);
+  return ensureArray(rows).reduce(
+    (acc, row) => acc + toNum(getter(row), 0),
+    0
+  );
 }
 
 // ===============================
 // Main stats
 // ===============================
 async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
+  const from1 = isoDaysAgo(1);
   const from7 = isoDaysAgo(7);
   const from14 = isoDaysAgo(14);
   const from30 = isoDaysAgo(30);
@@ -142,10 +154,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // -------------------------------
   // USERS
+  // business_profiles = source canonique prioritaire
   // -------------------------------
   const totalKnownUsers = await safeTableExistsFetch(
     () => countDistinct("kadi_all_known_users", "wa_id"),
-    null
+    0
   );
 
   const totalBusinessProfilesDistinct = await safeTableExistsFetch(
@@ -154,43 +167,79 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   );
 
   const totalUsers =
-    totalKnownUsers != null ? totalKnownUsers : totalBusinessProfilesDistinct;
+    totalBusinessProfilesDistinct > 0
+      ? totalBusinessProfilesDistinct
+      : totalKnownUsers;
 
   const active7 = await safeTableExistsFetch(
-    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: from7 }]),
+    () =>
+      countDistinct("kadi_activity", "wa_id", [
+        { op: "gte", column: "created_at", value: from7 },
+      ]),
     0
   );
 
   const active30 = await safeTableExistsFetch(
-    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: from30 }]),
+    () =>
+      countDistinct("kadi_activity", "wa_id", [
+        { op: "gte", column: "created_at", value: from30 },
+      ]),
     0
   );
 
   const active1d = await safeTableExistsFetch(
-    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: isoDaysAgo(1) }]),
+    () =>
+      countDistinct("kadi_activity", "wa_id", [
+        { op: "gte", column: "created_at", value: from1 },
+      ]),
     0
   );
 
-  // -------------------------------
-  // DOCS CREATED / GENERATED
-  // -------------------------------
-  const docsCreated = await safeTableExistsFetch(
-    () => countRows("kadi_doc_counters"),
-    await safeTableExistsFetch(() => countRows("kadi_documents"), 0)
+  // fallback activité si kadi_activity n’est pas fiable / vide
+  const active7Fallback = await safeTableExistsFetch(
+    () =>
+      countDistinct("kadi_documents", "wa_id", [
+        { op: "gte", column: "created_at", value: from7 },
+      ]),
+    0
   );
 
+  const active30Fallback = await safeTableExistsFetch(
+    () =>
+      countDistinct("kadi_documents", "wa_id", [
+        { op: "gte", column: "created_at", value: from30 },
+      ]),
+    0
+  );
+
+  const finalActive7 = active7 > 0 ? active7 : active7Fallback;
+  const finalActive30 = active30 > 0 ? active30 : active30Fallback;
+
+  // -------------------------------
+  // DOCS
+  // kadi_documents = source canonique prioritaire
+  // -------------------------------
   const docsGenerated = await safeTableExistsFetch(
     () => countRows("kadi_documents"),
     0
   );
 
+  // Pour éviter les incohérences actuelles, on aligne created sur generated
+  const docsCreated = docsGenerated;
+
   const docs7 = await safeTableExistsFetch(
-    () => countRows("kadi_documents", [{ op: "gte", column: "created_at", value: from7 }]),
+    () =>
+      countRows("kadi_documents", [
+        { op: "gte", column: "created_at", value: from7 },
+      ]),
     0
   );
 
   const docs30 = await safeTableExistsFetch(
-    () => countRows("kadi_documents", [{ op: "gte", column: "created_at", value: from30 }]),
+    () =>
+      countRows("kadi_documents", [
+        { op: "gte", column: "created_at", value: from30 },
+      ]),
     0
   );
 
@@ -203,11 +252,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     0
   );
 
-  const docsGenerated30 = docs30;
-
-  // -------------------------------
-  // DOC VALUE / TOP CLIENTS / TOP USERS
-  // -------------------------------
   const docsRows30 = await safeTableExistsFetch(
     () =>
       fetchRows(
@@ -232,8 +276,9 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     []
   );
 
-  const revenueMonthDirect = Math.round(sumBy(docsRows30, (r) => r.total));
-
+  // -------------------------------
+  // TOP CLIENTS / TOP USERS
+  // -------------------------------
   const topClientsMap = new Map();
   for (const row of docsRows30) {
     const { key, display } = normalizeClientName(row?.client);
@@ -255,11 +300,13 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   for (const row of docsRows30) {
     const waId = safeStr(row?.wa_id, "");
     if (!waId) continue;
+
     const cur = topUsersMap.get(waId) || {
       wa_id: waId,
       docs: 0,
       total_fcfa: 0,
     };
+
     cur.docs += 1;
     cur.total_fcfa += toNum(row?.total, 0);
     topUsersMap.set(waId, cur);
@@ -271,6 +318,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   // -------------------------------
   // REVENUE / PAID USERS
+  // Revenu KADI = crédits/payments réels seulement
   // -------------------------------
   const paidReasons = [
     "payment_om",
@@ -301,8 +349,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     const waId = safeStr(row?.wa_id, "");
 
     const looksPaid =
-      delta > 0 &&
-      paidReasons.some((r) => reason.includes(r));
+      delta > 0 && paidReasons.some((r) => reason.includes(r));
 
     if (looksPaid) {
       creditsPaid30 += delta;
@@ -312,17 +359,15 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   const paidUsers = paidUsersSet.size;
 
-  const revenueFromCredits = Math.round(
+  const revenueMonth = Math.round(
     (creditsPaid30 / Math.max(1, packCredits)) * packPriceFcfa
   );
-
-  const revenueMonth = revenueFromCredits > 0 ? revenueFromCredits : revenueMonthDirect;
 
   const paidTxPrev30 = await safeTableExistsFetch(
     () =>
       fetchRows(
         "kadi_credit_tx",
-        "delta,reason,created_at",
+        "wa_id,delta,reason,created_at",
         [
           { op: "gte", column: "created_at", value: from60 },
           { op: "lt", column: "created_at", value: from30 },
@@ -333,26 +378,26 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     []
   );
 
-  let revenuePrev30 = 0;
+  let creditsPaidPrev30 = 0;
   for (const row of paidTxPrev30) {
     const reason = safeStr(row?.reason, "").toLowerCase();
     const delta = toNum(row?.delta, 0);
-    const looksPaid =
-      delta > 0 &&
-      paidReasons.some((r) => reason.includes(r));
 
-    if (looksPaid) revenuePrev30 += delta;
+    const looksPaid =
+      delta > 0 && paidReasons.some((r) => reason.includes(r));
+
+    if (looksPaid) creditsPaidPrev30 += delta;
   }
 
-  revenuePrev30 = Math.round(
-    (revenuePrev30 / Math.max(1, packCredits)) * packPriceFcfa
+  const revenuePrev30 = Math.round(
+    (creditsPaidPrev30 / Math.max(1, packCredits)) * packPriceFcfa
   );
 
   // -------------------------------
   // FUNNEL
   // -------------------------------
-  const signupToActive30Rate = pct(active30, totalUsers);
-  const activeToCreatedRate = pct(docsCreated, active30);
+  const signupToActive30Rate = pct(finalActive30, totalUsers);
+  const activeToCreatedRate = pct(docsCreated, finalActive30);
   const createdToGeneratedRate = pct(docsGenerated, docsCreated);
   const generatedToPaidRate = pct(paidUsers, docsGenerated);
 
@@ -372,34 +417,40 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   }
 
   if (createdToGeneratedRate < 60 && docsCreated > 20) {
-    alerts.push(`• Conversion création→PDF faible: ${createdToGeneratedRate}%`);
+    alerts.push(
+      `• Conversion création→PDF faible: ${createdToGeneratedRate}%`
+    );
   }
 
   if (generatedToPaidRate < 5 && docsGenerated > 20) {
     alerts.push(`• Conversion PDF→payé faible: ${generatedToPaidRate}%`);
   }
 
-  if (active30 > 0 && active7 < Math.round(active30 * 0.15)) {
+  if (finalActive30 > 0 && finalActive7 < Math.round(finalActive30 * 0.15)) {
     alerts.push(`• Faible activité récente sur 7 jours`);
   }
+
+  const usersWithDocs = await safeTableExistsFetch(
+    () => countDistinct("kadi_documents", "wa_id"),
+    0
+  );
+
+  const usersWithWallet = await safeTableExistsFetch(
+    () => countDistinct("kadi_credits", "wa_id"),
+    0
+  );
 
   return {
     users: {
       total: totalUsers,
       totalUsers,
       active1d,
-      active7,
-      active30,
+      active7: finalActive7,
+      active30: finalActive30,
       paid: paidUsers,
-      usersWithDocs: await safeTableExistsFetch(
-        () => countDistinct("kadi_documents", "wa_id"),
-        0
-      ),
+      usersWithDocs,
       onboardedUsers: 0,
-      usersWithWallet: await safeTableExistsFetch(
-        () => countDistinct("kadi_credits", "wa_id"),
-        0
-      ),
+      usersWithWallet,
       usersRecharged: paidUsers,
     },
 
@@ -412,6 +463,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       total: docsGenerated,
       sumAll: Math.round(sumBy(docsRowsAll, (r) => r.total)),
       sum30: Math.round(sumBy(docsRows30, (r) => r.total)),
+      volume30: Math.round(sumBy(docsRows30, (r) => r.total)),
+      volumeAll: Math.round(sumBy(docsRowsAll, (r) => r.total)),
     },
 
     comparisons: {
@@ -444,11 +497,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
     kpis: {
       onboardingRate: 0,
-      activationRate: pct(
-        await safeTableExistsFetch(() => countDistinct("kadi_documents", "wa_id"), 0),
-        totalUsers
-      ),
-      paymentConversion: pct(paidUsers, active30),
+      activationRate: pct(usersWithDocs, totalUsers),
+      paymentConversion: pct(paidUsers, finalActive30),
     },
   };
 }
