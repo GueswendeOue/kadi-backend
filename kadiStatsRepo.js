@@ -1,4 +1,3 @@
-// kadiStatsRepo.js — V2 analytics-grade
 "use strict";
 
 const { supabase } = require("./supabaseClient");
@@ -40,392 +39,418 @@ function normalizeClientName(raw) {
   };
 }
 
-async function fetchSingleView(tableName) {
-  const { data, error } = await supabase
-    .from(tableName)
-    .select("*")
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
+function pct(part, total) {
+  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.round((part / total) * 100);
 }
 
-async function fetchAll(tableName, orderBy = null, ascending = true) {
-  let q = supabase.from(tableName).select("*");
+function growthPct(current, previous) {
+  const c = toNum(current, 0);
+  const p = toNum(previous, 0);
+
+  if (p <= 0) {
+    if (c > 0) return 100;
+    return 0;
+  }
+
+  return Math.round(((c - p) / p) * 100);
+}
+
+async function countDistinct(tableName, column = "wa_id", filters = []) {
+  let q = supabase.from(tableName).select(column);
+
+  for (const f of filters) {
+    if (f.op === "gte") q = q.gte(f.column, f.value);
+    if (f.op === "gt") q = q.gt(f.column, f.value);
+    if (f.op === "lte") q = q.lte(f.column, f.value);
+    if (f.op === "lt") q = q.lt(f.column, f.value);
+    if (f.op === "eq") q = q.eq(f.column, f.value);
+    if (f.op === "in") q = q.in(f.column, f.value);
+    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
+  }
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  const set = new Set();
+  for (const row of ensureArray(data)) {
+    const value = String(row?.[column] || "").trim();
+    if (value) set.add(value);
+  }
+  return set.size;
+}
+
+async function fetchRows(tableName, columns = "*", filters = [], orderBy = null, ascending = true) {
+  let q = supabase.from(tableName).select(columns);
+
+  for (const f of filters) {
+    if (f.op === "gte") q = q.gte(f.column, f.value);
+    if (f.op === "gt") q = q.gt(f.column, f.value);
+    if (f.op === "lte") q = q.lte(f.column, f.value);
+    if (f.op === "lt") q = q.lt(f.column, f.value);
+    if (f.op === "eq") q = q.eq(f.column, f.value);
+    if (f.op === "in") q = q.in(f.column, f.value);
+    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
+  }
+
   if (orderBy) q = q.order(orderBy, { ascending });
 
   const { data, error } = await q;
   if (error) throw error;
-  return Array.isArray(data) ? data : [];
+
+  return ensureArray(data);
 }
 
-function aggregateBy(rows, keyGetter, valueGetter = null) {
-  const map = new Map();
+async function countRows(tableName, filters = []) {
+  let q = supabase.from(tableName).select("id", { count: "exact", head: true });
 
-  for (const row of ensureArray(rows)) {
-    const key = keyGetter(row);
-    const cur = map.get(key) || {
-      key,
-      count: 0,
-      total: 0,
-    };
-
-    cur.count += 1;
-    if (typeof valueGetter === "function") {
-      cur.total += toNum(valueGetter(row), 0);
-    }
-
-    map.set(key, cur);
+  for (const f of filters) {
+    if (f.op === "gte") q = q.gte(f.column, f.value);
+    if (f.op === "gt") q = q.gt(f.column, f.value);
+    if (f.op === "lte") q = q.lte(f.column, f.value);
+    if (f.op === "lt") q = q.lt(f.column, f.value);
+    if (f.op === "eq") q = q.eq(f.column, f.value);
+    if (f.op === "in") q = q.in(f.column, f.value);
+    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
   }
 
-  return Array.from(map.values()).sort((a, b) => b.count - a.count || b.total - a.total);
+  const { count, error } = await q;
+  if (error) throw error;
+  return toNum(count, 0);
+}
+
+async function safeTableExistsFetch(fn, fallback = null) {
+  try {
+    return await fn();
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function sumBy(rows, getter) {
+  return ensureArray(rows).reduce((acc, row) => acc + toNum(getter(row), 0), 0);
 }
 
 // ===============================
 // Main stats
 // ===============================
 async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
-  const result = {
+  const from7 = isoDaysAgo(7);
+  const from14 = isoDaysAgo(14);
+  const from30 = isoDaysAgo(30);
+  const from60 = isoDaysAgo(60);
+
+  // -------------------------------
+  // USERS
+  // -------------------------------
+  const totalKnownUsers = await safeTableExistsFetch(
+    () => countDistinct("kadi_all_known_users", "wa_id"),
+    null
+  );
+
+  const totalBusinessProfilesDistinct = await safeTableExistsFetch(
+    () => countDistinct("business_profiles", "wa_id"),
+    0
+  );
+
+  const totalUsers =
+    totalKnownUsers != null ? totalKnownUsers : totalBusinessProfilesDistinct;
+
+  const active7 = await safeTableExistsFetch(
+    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: from7 }]),
+    0
+  );
+
+  const active30 = await safeTableExistsFetch(
+    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: from30 }]),
+    0
+  );
+
+  const active1d = await safeTableExistsFetch(
+    () => countDistinct("kadi_activity", "wa_id", [{ op: "gte", column: "created_at", value: isoDaysAgo(1) }]),
+    0
+  );
+
+  // -------------------------------
+  // DOCS CREATED / GENERATED
+  // -------------------------------
+  const docsCreated = await safeTableExistsFetch(
+    () => countRows("kadi_doc_counters"),
+    await safeTableExistsFetch(() => countRows("kadi_documents"), 0)
+  );
+
+  const docsGenerated = await safeTableExistsFetch(
+    () => countRows("kadi_documents"),
+    0
+  );
+
+  const docs7 = await safeTableExistsFetch(
+    () => countRows("kadi_documents", [{ op: "gte", column: "created_at", value: from7 }]),
+    0
+  );
+
+  const docs30 = await safeTableExistsFetch(
+    () => countRows("kadi_documents", [{ op: "gte", column: "created_at", value: from30 }]),
+    0
+  );
+
+  const docsPrev7 = await safeTableExistsFetch(
+    () =>
+      countRows("kadi_documents", [
+        { op: "gte", column: "created_at", value: from14 },
+        { op: "lt", column: "created_at", value: from7 },
+      ]),
+    0
+  );
+
+  const docsGenerated30 = docs30;
+
+  // -------------------------------
+  // DOC VALUE / TOP CLIENTS / TOP USERS
+  // -------------------------------
+  const docsRows30 = await safeTableExistsFetch(
+    () =>
+      fetchRows(
+        "kadi_documents",
+        "wa_id,client,total,created_at,doc_type,source",
+        [{ op: "gte", column: "created_at", value: from30 }],
+        "created_at",
+        false
+      ),
+    []
+  );
+
+  const docsRowsAll = await safeTableExistsFetch(
+    () =>
+      fetchRows(
+        "kadi_documents",
+        "wa_id,client,total,created_at,doc_type,source",
+        [],
+        "created_at",
+        false
+      ),
+    []
+  );
+
+  const revenueMonthDirect = Math.round(sumBy(docsRows30, (r) => r.total));
+
+  const topClientsMap = new Map();
+  for (const row of docsRows30) {
+    const { key, display } = normalizeClientName(row?.client);
+    const cur = topClientsMap.get(key) || {
+      client: display,
+      docs: 0,
+      total_fcfa: 0,
+    };
+    cur.docs += 1;
+    cur.total_fcfa += toNum(row?.total, 0);
+    topClientsMap.set(key, cur);
+  }
+
+  const topClients = Array.from(topClientsMap.values())
+    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
+    .slice(0, 5);
+
+  const topUsersMap = new Map();
+  for (const row of docsRows30) {
+    const waId = safeStr(row?.wa_id, "");
+    if (!waId) continue;
+    const cur = topUsersMap.get(waId) || {
+      wa_id: waId,
+      docs: 0,
+      total_fcfa: 0,
+    };
+    cur.docs += 1;
+    cur.total_fcfa += toNum(row?.total, 0);
+    topUsersMap.set(waId, cur);
+  }
+
+  const topUsers = Array.from(topUsersMap.values())
+    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
+    .slice(0, 5);
+
+  // -------------------------------
+  // REVENUE / PAID USERS
+  // -------------------------------
+  const paidReasons = [
+    "payment_om",
+    "manual_om_topup",
+    "payment",
+    "recharge",
+    "topup",
+  ];
+
+  const paidTx30 = await safeTableExistsFetch(
+    () =>
+      fetchRows(
+        "kadi_credit_tx",
+        "wa_id,delta,reason,created_at",
+        [{ op: "gte", column: "created_at", value: from30 }],
+        "created_at",
+        false
+      ),
+    []
+  );
+
+  const paidUsersSet = new Set();
+  let creditsPaid30 = 0;
+
+  for (const row of paidTx30) {
+    const reason = safeStr(row?.reason, "").toLowerCase();
+    const delta = toNum(row?.delta, 0);
+    const waId = safeStr(row?.wa_id, "");
+
+    const looksPaid =
+      delta > 0 &&
+      paidReasons.some((r) => reason.includes(r));
+
+    if (looksPaid) {
+      creditsPaid30 += delta;
+      if (waId) paidUsersSet.add(waId);
+    }
+  }
+
+  const paidUsers = paidUsersSet.size;
+
+  const revenueFromCredits = Math.round(
+    (creditsPaid30 / Math.max(1, packCredits)) * packPriceFcfa
+  );
+
+  const revenueMonth = revenueFromCredits > 0 ? revenueFromCredits : revenueMonthDirect;
+
+  const paidTxPrev30 = await safeTableExistsFetch(
+    () =>
+      fetchRows(
+        "kadi_credit_tx",
+        "delta,reason,created_at",
+        [
+          { op: "gte", column: "created_at", value: from60 },
+          { op: "lt", column: "created_at", value: from30 },
+        ],
+        "created_at",
+        false
+      ),
+    []
+  );
+
+  let revenuePrev30 = 0;
+  for (const row of paidTxPrev30) {
+    const reason = safeStr(row?.reason, "").toLowerCase();
+    const delta = toNum(row?.delta, 0);
+    const looksPaid =
+      delta > 0 &&
+      paidReasons.some((r) => reason.includes(r));
+
+    if (looksPaid) revenuePrev30 += delta;
+  }
+
+  revenuePrev30 = Math.round(
+    (revenuePrev30 / Math.max(1, packCredits)) * packPriceFcfa
+  );
+
+  // -------------------------------
+  // FUNNEL
+  // -------------------------------
+  const signupToActive30Rate = pct(active30, totalUsers);
+  const activeToCreatedRate = pct(docsCreated, active30);
+  const createdToGeneratedRate = pct(docsGenerated, docsCreated);
+  const generatedToPaidRate = pct(paidUsers, docsGenerated);
+
+  // -------------------------------
+  // COMPARISONS
+  // -------------------------------
+  const docs7Growth = growthPct(docs7, docsPrev7);
+  const revenue30Growth = growthPct(revenueMonth, revenuePrev30);
+
+  // -------------------------------
+  // ALERTS
+  // -------------------------------
+  const alerts = [];
+
+  if (docs7Growth < 0) {
+    alerts.push(`• Baisse docs 7j: ${docs7Growth}%`);
+  }
+
+  if (createdToGeneratedRate < 60 && docsCreated > 20) {
+    alerts.push(`• Conversion création→PDF faible: ${createdToGeneratedRate}%`);
+  }
+
+  if (generatedToPaidRate < 5 && docsGenerated > 20) {
+    alerts.push(`• Conversion PDF→payé faible: ${generatedToPaidRate}%`);
+  }
+
+  if (active30 > 0 && active7 < Math.round(active30 * 0.15)) {
+    alerts.push(`• Faible activité récente sur 7 jours`);
+  }
+
+  return {
     users: {
-      totalUsers: 0,
-      active1d: 0,
-      active7: 0,
-      active30: 0,
-      usersWithDocs: 0,
+      total: totalUsers,
+      totalUsers,
+      active1d,
+      active7,
+      active30,
+      paid: paidUsers,
+      usersWithDocs: await safeTableExistsFetch(
+        () => countDistinct("kadi_documents", "wa_id"),
+        0
+      ),
       onboardedUsers: 0,
-      usersWithWallet: 0,
-      usersRecharged: 0,
+      usersWithWallet: await safeTableExistsFetch(
+        () => countDistinct("kadi_credits", "wa_id"),
+        0
+      ),
+      usersRecharged: paidUsers,
     },
 
     docs: {
-      total: 0,
-      last7: 0,
-      last30: 0,
-      sumAll: 0,
-      sum7: 0,
-      sum30: 0,
-      avgAll: 0,
-      avg30: 0,
-      byType: [],
-      byFactureKind: [],
-      bySource: [],
-      bySector: [],
-      byCountry: [],
-      daily30d: [],
-      ocrDocs: 0,
-      manualDocs: 0,
-      geminiParsedDocs: 0,
-      stampedDocs: 0,
+      created: docsCreated,
+      generated: docsGenerated,
+      creationToPdfRate: pct(docsGenerated, docsCreated),
+      last7: docs7,
+      last30: docs30,
+      total: docsGenerated,
+      sumAll: Math.round(sumBy(docsRowsAll, (r) => r.total)),
+      sum30: Math.round(sumBy(docsRows30, (r) => r.total)),
     },
 
-    credits: {
-      totalBalance: 0,
-      totalTx: 0,
-      creditsConsumed: 0,
-      creditsAdded: 0,
-      added7: 0,
-      consumed7: 0,
-      addedPaid30: 0,
-      daily30d: [],
-      byReason30: [],
+    comparisons: {
+      docs7Growth,
+      revenue30Growth,
     },
 
     revenue: {
-      est30: 0,
-      creditsPaid: 0,
+      month: revenueMonth,
+      est30: revenueMonth,
+      creditsPaid: creditsPaid30,
       packCredits,
       packPriceFcfa,
     },
 
-    retention: [],
-    codes: {
-      codesCreated: 0,
-      codesRedeemed: 0,
-      redeemRatePct: 0,
-      creditsRedeemed: 0,
+    funnel: {
+      signupToActive30Rate,
+      activeToCreatedRate,
+      createdToGeneratedRate,
+      generatedToPaidRate,
     },
 
-    topConsumers: [],
+    topClients,
+    topUsers,
+    alerts,
+
+    credits: {
+      addedPaid30: creditsPaid30,
+    },
+
     kpis: {
       onboardingRate: 0,
-      activationRate: 0,
-      paymentConversion: 0,
+      activationRate: pct(
+        await safeTableExistsFetch(() => countDistinct("kadi_documents", "wa_id"), 0),
+        totalUsers
+      ),
+      paymentConversion: pct(paidUsers, active30),
     },
   };
-
-  // ===============================
-  // 1) Views first
-  // ===============================
-  const [
-    adoptionKpis,
-    docsByType,
-    docsDaily30d,
-    factureKinds,
-    creditsKpis,
-    creditsDaily30d,
-    revenueEstimate,
-    retentionWeekly,
-    codesStats,
-    topConsumers,
-    docsBySector,
-  ] = await Promise.all([
-    fetchSingleView("kadi_stats_adoption_kpis").catch(() => null),
-    fetchAll("kadi_stats_docs_by_type").catch(() => []),
-    fetchAll("kadi_stats_docs_daily_30d", "day", true).catch(() => []),
-    fetchAll("kadi_stats_facture_kinds").catch(() => []),
-    fetchSingleView("kadi_stats_credits_kpis").catch(() => null),
-    fetchAll("kadi_stats_credits_daily_30d", "day", true).catch(() => []),
-    fetchSingleView("kadi_stats_revenue_estimate").catch(() => null),
-    fetchAll("kadi_stats_retention_weekly", "first_week", false).catch(() => []),
-    fetchSingleView("kadi_stats_codes").catch(() => null),
-    fetchAll("kadi_stats_top_consumers").catch(() => []),
-    fetchAll("kadi_stats_by_sector").catch(() => []),
-  ]);
-
-  if (adoptionKpis) {
-    result.docs.total = toNum(adoptionKpis.total_docs, 0);
-    result.users.totalUsers = toNum(adoptionKpis.total_users, 0);
-    result.users.active1d = toNum(adoptionKpis.active_users_1d, 0);
-    result.users.active7 = toNum(adoptionKpis.active_users_7d, 0);
-    result.users.active30 = toNum(adoptionKpis.active_users_30d, 0);
-    result.users.usersWithDocs = toNum(adoptionKpis.users_with_docs, 0);
-    result.users.onboardedUsers = toNum(adoptionKpis.onboarded_users, 0);
-  }
-
-  result.docs.byType = ensureArray(docsByType).map((r) => ({
-    doc_type: safeStr(r.doc_type),
-    docs: toNum(r.docs, 0),
-    users: toNum(r.users, 0),
-    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
-  }));
-
-  result.docs.daily30d = ensureArray(docsDaily30d).map((r) => ({
-    day: r.day,
-    docs: toNum(r.docs, 0),
-    users: toNum(r.users, 0),
-    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
-  }));
-
-  result.docs.byFactureKind = ensureArray(factureKinds).map((r) => ({
-    facture_kind: safeStr(r.facture_kind),
-    docs: toNum(r.docs, 0),
-    users: toNum(r.users, 0),
-    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
-  }));
-
-  if (creditsKpis) {
-    result.credits.totalBalance = toNum(creditsKpis.total_balance, 0);
-    result.users.usersWithWallet = toNum(creditsKpis.users_with_wallet, 0);
-    result.users.usersRecharged = toNum(creditsKpis.users_recharged, 0);
-    result.credits.totalTx = toNum(creditsKpis.total_tx, 0);
-    result.credits.creditsConsumed = toNum(creditsKpis.credits_consumed, 0);
-    result.credits.creditsAdded = toNum(creditsKpis.credits_added, 0);
-  }
-
-  result.credits.daily30d = ensureArray(creditsDaily30d).map((r) => ({
-    day: r.day,
-    consumed: toNum(r.consumed, 0),
-    added: toNum(r.added, 0),
-    users: toNum(r.users, 0),
-  }));
-
-  if (revenueEstimate) {
-    result.revenue.creditsPaid = toNum(revenueEstimate.credits_paid, 0);
-    result.revenue.est30 = Math.round(toNum(revenueEstimate.estimated_revenue_fcfa, 0));
-  }
-
-  result.retention = ensureArray(retentionWeekly).map((r) => ({
-    first_week: r.first_week,
-    new_users: toNum(r.new_users, 0),
-    retained_w1: toNum(r.retained_w1, 0),
-    retained_w2: toNum(r.retained_w2, 0),
-  }));
-
-  if (codesStats) {
-    result.codes.codesCreated = toNum(codesStats.codes_created, 0);
-    result.codes.codesRedeemed = toNum(codesStats.codes_redeemed, 0);
-    result.codes.redeemRatePct = toNum(codesStats.redeem_rate_pct, 0);
-    result.codes.creditsRedeemed = toNum(codesStats.credits_redeemed, 0);
-  }
-
-  result.topConsumers = ensureArray(topConsumers).map((r) => ({
-    wa_id: safeStr(r.wa_id, ""),
-    consumed: toNum(r.consumed, 0),
-    added: toNum(r.added, 0),
-    last_tx: r.last_tx || null,
-  }));
-
-  result.docs.bySector = ensureArray(docsBySector).map((r) => ({
-    business_sector: safeStr(r.business_sector, "unknown"),
-    docs: toNum(r.docs, 0),
-    users: toNum(r.users, 0),
-    total_fcfa: Math.round(toNum(r.total_fcfa, 0)),
-  }));
-
-  // ===============================
-  // 2) Direct metrics / advanced analytics
-  // ===============================
-  const from7 = isoDaysAgo(7);
-  const from30 = isoDaysAgo(30);
-
-  const [
-    docs7CountRes,
-    docs30CountRes,
-    docs7SumRes,
-    docs30SumRes,
-    docsAllSumRes,
-    docsAnalyticsRes,
-    tx7Res,
-    tx30PaidRes,
-    tx30AllRes,
-  ] = await Promise.all([
-    supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from7),
-    supabase.from("kadi_documents").select("id", { count: "exact", head: true }).gte("created_at", from30),
-    supabase.from("kadi_documents").select("total").gte("created_at", from7),
-    supabase.from("kadi_documents").select("total").gte("created_at", from30),
-    supabase.from("kadi_documents").select("total"),
-    supabase
-      .from("kadi_documents")
-      .select(
-        [
-          "total",
-          "doc_type",
-          "facture_kind",
-          "source",
-          "used_ocr",
-          "used_gemini_parse",
-          "used_stamp",
-          "business_sector",
-          "wa_country_code",
-          "wa_country_guess",
-          "created_at",
-        ].join(",")
-      ),
-    supabase.from("kadi_credit_tx").select("delta,reason").gte("created_at", from7),
-    supabase.from("kadi_credit_tx").select("delta,reason").gte("created_at", from30).eq("reason", "payment_om"),
-    supabase.from("kadi_credit_tx").select("delta,reason").gte("created_at", from30),
-  ]);
-
-  const docs30Count = docs30CountRes?.count ?? docs30CountRes?.data?.length ?? 0;
-
-  if (docs7CountRes.error) throw docs7CountRes.error;
-  if (docs30CountRes.error) throw docs30CountRes.error;
-  if (docs7SumRes.error) throw docs7SumRes.error;
-  if (docs30SumRes.error) throw docs30SumRes.error;
-  if (docsAllSumRes.error) throw docsAllSumRes.error;
-  if (docsAnalyticsRes.error) throw docsAnalyticsRes.error;
-  if (tx7Res.error) throw tx7Res.error;
-  if (tx30PaidRes.error) throw tx30PaidRes.error;
-  if (tx30AllRes.error) throw tx30AllRes.error;
-
-  result.docs.last7 = toNum(docs7CountRes.count, 0);
-  result.docs.last30 = toNum(docs30Count, 0);
-
-  result.docs.sum7 = Math.round(ensureArray(docs7SumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
-  result.docs.sum30 = Math.round(ensureArray(docs30SumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
-  result.docs.sumAll = Math.round(ensureArray(docsAllSumRes.data).reduce((a, r) => a + toNum(r.total, 0), 0));
-
-  result.docs.avgAll = result.docs.total > 0 ? Math.round(result.docs.sumAll / result.docs.total) : 0;
-  result.docs.avg30 = result.docs.last30 > 0 ? Math.round(result.docs.sum30 / result.docs.last30) : 0;
-
-  const docsAnalytics = ensureArray(docsAnalyticsRes.data);
-
-  // OCR / manual / Gemini / stamp
-  result.docs.ocrDocs = docsAnalytics.filter((r) => r.source === "ocr" || r.used_ocr === true).length;
-  result.docs.manualDocs = docsAnalytics.filter((r) => (r.source || "product") !== "ocr").length;
-  result.docs.geminiParsedDocs = docsAnalytics.filter((r) => r.used_gemini_parse === true).length;
-  result.docs.stampedDocs = docsAnalytics.filter((r) => r.used_stamp === true).length;
-
-  // By source
-  result.docs.bySource = aggregateBy(
-    docsAnalytics,
-    (r) => safeStr(r.source || (r.used_ocr ? "ocr" : "product")),
-    (r) => r.total
-  ).map((r) => ({
-    source: r.key,
-    docs: r.count,
-    total_fcfa: Math.round(r.total),
-  }));
-
-  // By country
-  result.docs.byCountry = aggregateBy(
-    docsAnalytics,
-    (r) => safeStr(r.wa_country_guess || r.wa_country_code, "unknown"),
-    (r) => r.total
-  ).map((r) => ({
-    country: r.key,
-    docs: r.count,
-    total_fcfa: Math.round(r.total),
-  }));
-
-  // Credits 7d
-  const tx7 = ensureArray(tx7Res.data);
-  result.credits.added7 = Math.round(
-    tx7.filter((r) => toNum(r.delta, 0) > 0).reduce((a, r) => a + toNum(r.delta, 0), 0)
-  );
-  result.credits.consumed7 = Math.round(
-    Math.abs(tx7.filter((r) => toNum(r.delta, 0) < 0).reduce((a, r) => a + toNum(r.delta, 0), 0))
-  );
-
-  // Paid 30d
-  result.credits.addedPaid30 = Math.round(
-    ensureArray(tx30PaidRes.data).reduce((a, r) => a + toNum(r.delta, 0), 0)
-  );
-
-  // By reason 30d
-  const reasonMap = new Map();
-  for (const row of ensureArray(tx30AllRes.data)) {
-    const reason = safeStr(row.reason, "unknown");
-    const delta = toNum(row.delta, 0);
-
-    const cur = reasonMap.get(reason) || {
-      reason,
-      added: 0,
-      consumed: 0,
-      tx_count: 0,
-    };
-
-    cur.tx_count += 1;
-    if (delta > 0) cur.added += delta;
-    if (delta < 0) cur.consumed += Math.abs(delta);
-
-    reasonMap.set(reason, cur);
-  }
-
-  result.credits.byReason30 = Array.from(reasonMap.values()).sort(
-    (a, b) => (b.added + b.consumed) - (a.added + a.consumed)
-  );
-
-  if (!result.revenue.est30 && result.credits.addedPaid30 > 0) {
-    result.revenue.creditsPaid = result.credits.addedPaid30;
-    result.revenue.est30 = Math.round(
-      (result.credits.addedPaid30 / Math.max(1, packCredits)) * packPriceFcfa
-    );
-  }
-
-  const onboardingRate =
-    result.users.totalUsers > 0
-      ? Math.round((result.users.onboardedUsers / result.users.totalUsers) * 100)
-      : 0;
-
-  const activationRate =
-    result.users.totalUsers > 0
-      ? Math.round((result.users.usersWithDocs / result.users.totalUsers) * 100)
-      : 0;
-
-  const paymentConversion =
-    result.users.active30 > 0
-      ? Math.round((result.users.usersRecharged / result.users.active30) * 100)
-      : 0;
-
-  result.kpis = {
-    onboardingRate,
-    activationRate,
-    paymentConversion,
-  };
-
-  return result;
 }
 
 // ===============================
