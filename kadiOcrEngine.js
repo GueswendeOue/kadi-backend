@@ -15,10 +15,45 @@ const openai = new OpenAI({
 
 function safeNumber(value) {
   if (value == null) return null;
-  const s = String(value).replace(/[^\d]/g, "");
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // garde les chiffres, virgules, points et signe éventuel
+  let cleaned = raw
+    .replace(/\s+/g, "")
+    .replace(/[^\d,.\-]/g, "");
+
+  if (!cleaned) return null;
+
+  // normalisation simple:
+  // 12.500 -> 12500
+  // 12,500 -> 12500
+  // 12500.00 -> 12500
+  // 12500,00 -> 12500
+  const commaCount = (cleaned.match(/,/g) || []).length;
+  const dotCount = (cleaned.match(/\./g) || []).length;
+
+  if (commaCount > 0 && dotCount === 0) {
+    if (/,\d{3}$/.test(cleaned)) {
+      cleaned = cleaned.replace(/,/g, "");
+    } else {
+      cleaned = cleaned.replace(/,/g, ".");
+    }
+  } else if (dotCount > 0 && commaCount === 0) {
+    if (/\.\d{3}$/.test(cleaned)) {
+      cleaned = cleaned.replace(/\./g, "");
+    }
+  } else if (dotCount > 0 && commaCount > 0) {
+    cleaned = cleaned.replace(/\./g, "").replace(/,/g, ".");
+  }
+
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? Math.round(n) : null;
 }
 
 function buildNormalizedText(data = {}) {
@@ -60,6 +95,82 @@ function buildNormalizedText(data = {}) {
   return lines.join("\n").trim();
 }
 
+function stripMarkdownFences(text = "") {
+  return String(text || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function tryExtractJsonBlock(text = "") {
+  const cleaned = stripMarkdownFences(text);
+
+  // tentative directe
+  try {
+    return JSON.parse(cleaned);
+  } catch (_) {}
+
+  // cherche le premier objet JSON plausible
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = cleaned.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {}
+  }
+
+  // fallback tableau JSON si jamais le modèle renvoie [...]
+  const firstBracket = cleaned.indexOf("[");
+  const lastBracket = cleaned.lastIndexOf("]");
+
+  if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+    const candidate = cleaned.slice(firstBracket, lastBracket + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {}
+  }
+
+  throw new Error(
+    `JSON OCR invalide: ${cleaned.slice(0, 220)}`
+  );
+}
+
+function normalizeParsedOcr(parsed) {
+  const data = parsed && typeof parsed === "object" ? parsed : {};
+
+  let items = [];
+  if (Array.isArray(data.items)) {
+    items = data.items
+      .map((item) => ({
+        label: String(item?.label || "").trim(),
+        qty: safeNumber(item?.qty) ?? 1,
+        unitPrice: safeNumber(item?.unitPrice),
+        lineTotal: safeNumber(item?.lineTotal),
+      }))
+      .filter((item) => item.label);
+  }
+
+  const docTypeRaw = String(data.docType || "").trim().toLowerCase();
+  let docType = null;
+
+  if (docTypeRaw.includes("fact")) docType = "facture";
+  else if (docTypeRaw.includes("devis")) docType = "devis";
+  else if (docTypeRaw.includes("recu") || docTypeRaw.includes("reçu")) docType = "recu";
+
+  return {
+    docType,
+    docNumber: String(data.docNumber || "").trim() || null,
+    client: String(data.client || "").trim() || null,
+    items,
+    materialTotal: safeNumber(data.materialTotal),
+    laborTotal: safeNumber(data.laborTotal),
+    grandTotal: safeNumber(data.grandTotal),
+  };
+}
+
 async function kadiOcrEngine(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error("buffer image invalide");
@@ -74,7 +185,8 @@ async function kadiOcrEngine(buffer) {
     "Tu es un moteur d'extraction de factures pour KADI.",
     "Analyse cette image et retourne UNIQUEMENT un JSON valide.",
     "Ne retourne aucun texte hors JSON.",
-    "Ignore les en-têtes non utiles comme 'Facture N°', téléphone, adresse, sauf docNumber si clair.",
+    "Pas de markdown. Pas de ```json. Pas d'explication.",
+    "Ignore les en-têtes non utiles comme téléphone, adresse, sauf docNumber si clair.",
     "Lis correctement les montants FCFA entiers: 12500 = douze mille cinq cents, 6000 = six mille.",
     "Ne jamais transformer 12500 en 25, ni 6000 en 6.",
     "Pour chaque ligne, extrais label, qty, unitPrice, lineTotal.",
@@ -82,6 +194,7 @@ async function kadiOcrEngine(buffer) {
     "Si 'Totale matérielle' existe, mets-la dans materialTotal.",
     "Si le montant total final existe, mets-le dans grandTotal.",
     "docType doit être 'facture', 'devis' ou 'recu'.",
+    "Les nombres doivent être renvoyés comme nombres JSON, pas comme texte.",
     "JSON attendu :",
     "{",
     '  "docType": "facture",',
@@ -123,13 +236,14 @@ async function kadiOcrEngine(buffer) {
 
     let parsed;
     try {
-      parsed = JSON.parse(rawText);
+      parsed = tryExtractJsonBlock(rawText);
     } catch (err) {
       console.error("[KADI OCR] JSON parse failed:", rawText);
-      throw new Error(`JSON OCR invalide: ${err.message}`);
+      throw new Error(err.message || "JSON OCR invalide");
     }
 
-    const normalized = buildNormalizedText(parsed);
+    const normalizedParsed = normalizeParsedOcr(parsed);
+    const normalized = buildNormalizedText(normalizedParsed);
 
     if (!normalized) {
       throw new Error("OCR normalisé vide");
