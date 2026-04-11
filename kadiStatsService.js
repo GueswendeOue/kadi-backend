@@ -9,12 +9,140 @@ function makeKadiStatsService(deps) {
     exportKadiExcel,
   } = deps;
 
+  function n(v, def = 0) {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : def;
+  }
+
+  function txt(v, def = "") {
+    const t = String(v ?? "").trim();
+    return t || def;
+  }
+
+  function arr(v) {
+    return Array.isArray(v) ? v : [];
+  }
+
+  function safeMoney(formatter, value) {
+    try {
+      if (typeof formatter === "function") return formatter(value || 0);
+    } catch (_) {}
+    return String(n(value, 0));
+  }
+
+  function normalizeStats(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+
+    const usersSrc =
+      src.users && typeof src.users === "object" ? src.users : {};
+    const docsSrc =
+      src.docs && typeof src.docs === "object" ? src.docs : {};
+    const comparisonsSrc =
+      src.comparisons && typeof src.comparisons === "object"
+        ? src.comparisons
+        : {};
+    const revenueSrc =
+      src.revenue && typeof src.revenue === "object" ? src.revenue : {};
+    const funnelSrc =
+      src.funnel && typeof src.funnel === "object" ? src.funnel : {};
+
+    return {
+      users: {
+        total:
+          n(usersSrc.total) ||
+          n(usersSrc.totalUsers) ||
+          0,
+        active7:
+          n(usersSrc.active7) ||
+          n(usersSrc.active_users_7d) ||
+          0,
+        active30:
+          n(usersSrc.active30) ||
+          n(usersSrc.active_users_30d) ||
+          0,
+        paid:
+          n(usersSrc.paid) ||
+          n(usersSrc.usersRecharged) ||
+          n(usersSrc.users_recharged) ||
+          0,
+      },
+
+      docs: {
+        created:
+          n(docsSrc.created) ||
+          n(docsSrc.totalCreated) ||
+          n(docsSrc.total) ||
+          0,
+        generated:
+          n(docsSrc.generated) ||
+          n(docsSrc.pdfGenerated) ||
+          n(docsSrc.pdf_total) ||
+          0,
+        creationToPdfRate:
+          n(docsSrc.creationToPdfRate) ||
+          n(docsSrc.pdfConversionRate) ||
+          0,
+        last7:
+          n(docsSrc.last7) ||
+          n(docsSrc.docs7) ||
+          0,
+        last30:
+          n(docsSrc.last30) ||
+          n(docsSrc.docs30) ||
+          0,
+      },
+
+      comparisons: {
+        docs7Growth:
+          n(comparisonsSrc.docs7Growth) ||
+          n(comparisonsSrc.docs_growth_7d) ||
+          0,
+        revenue30Growth:
+          n(comparisonsSrc.revenue30Growth) ||
+          n(comparisonsSrc.revenue_growth_30d) ||
+          0,
+      },
+
+      revenue: {
+        month:
+          n(revenueSrc.month) ||
+          n(revenueSrc.est30) ||
+          n(revenueSrc.estimated30) ||
+          0,
+      },
+
+      funnel: {
+        signupToActive30Rate:
+          n(funnelSrc.signupToActive30Rate) ||
+          n(funnelSrc.signup_to_active_30_rate) ||
+          0,
+        activeToCreatedRate:
+          n(funnelSrc.activeToCreatedRate) ||
+          n(funnelSrc.active_to_created_rate) ||
+          0,
+        createdToGeneratedRate:
+          n(funnelSrc.createdToGeneratedRate) ||
+          n(funnelSrc.created_to_generated_rate) ||
+          0,
+        generatedToPaidRate:
+          n(funnelSrc.generatedToPaidRate) ||
+          n(funnelSrc.generated_to_paid_rate) ||
+          0,
+      },
+
+      alerts: arr(src.alerts),
+      topClients: arr(src.topClients),
+      topUsers: arr(src.topUsers),
+    };
+  }
+
   async function handleStatsCommand(from) {
     try {
-      const s = await getStats();
+      const raw = await getStats();
+      const s = normalizeStats(raw);
 
       const alertsText =
-        Array.isArray(s.alerts) && s.alerts.length
+        s.alerts.length > 0
           ? `🚨 *ALERTES*\n${s.alerts.join("\n")}\n\n`
           : "";
 
@@ -40,7 +168,7 @@ function makeKadiStatsService(deps) {
         `Croissance docs ${s.comparisons.docs7Growth}%\n\n` +
 
         `💰 *BUSINESS*\n` +
-        `CA 30j          ${money(s.revenue.month)} FCFA\n` +
+        `CA 30j          ${safeMoney(money, s.revenue.month)} FCFA\n` +
         `Croissance CA   ${s.comparisons.revenue30Growth}%\n\n` +
 
         `🎯 *FUNNEL*\n` +
@@ -50,7 +178,6 @@ function makeKadiStatsService(deps) {
         `PDF→Payé        ${s.funnel.generatedToPaidRate}%\n\n` +
 
         alertsText +
-
         `━━━━━━━━━━━━━━━━━━━━`;
 
       await sendText(from, msg);
@@ -64,8 +191,9 @@ function makeKadiStatsService(deps) {
 
   async function handleTopClientsCommand(from) {
     try {
-      const s = await getStats();
-      const rows = Array.isArray(s.topClients) ? s.topClients : [];
+      const raw = await getStats();
+      const s = normalizeStats(raw);
+      const rows = s.topClients;
 
       if (!rows.length) {
         await sendText(from, "📭 Aucun client trouvé.");
@@ -73,10 +201,11 @@ function makeKadiStatsService(deps) {
       }
 
       let msg = "⭐ *TOP CLIENTS (30j)*\n\n";
+
       rows.forEach((r, i) => {
-        msg += `${i + 1}. ${r.client}\n`;
-        msg += `   Docs: ${r.docs}\n`;
-        msg += `   Total: ${money(r.total_fcfa)} FCFA\n\n`;
+        msg += `${i + 1}. ${txt(r.client, "-")}\n`;
+        msg += `   Docs: ${n(r.docs || r.doc_count, 0)}\n`;
+        msg += `   Total: ${safeMoney(money, r.total_fcfa || r.total_sum)} FCFA\n\n`;
       });
 
       await sendText(from, msg.trim());
@@ -90,8 +219,9 @@ function makeKadiStatsService(deps) {
 
   async function handleTopUsersCommand(from) {
     try {
-      const s = await getStats();
-      const rows = Array.isArray(s.topUsers) ? s.topUsers : [];
+      const raw = await getStats();
+      const s = normalizeStats(raw);
+      const rows = s.topUsers;
 
       if (!rows.length) {
         await sendText(from, "📭 Aucun utilisateur trouvé.");
@@ -99,10 +229,11 @@ function makeKadiStatsService(deps) {
       }
 
       let msg = "🔥 *TOP USERS*\n\n";
+
       rows.forEach((r, i) => {
-        msg += `${i + 1}. ${r.wa_id}\n`;
-        msg += `   Docs: ${r.docs}\n`;
-        msg += `   Total: ${money(r.total_fcfa)} FCFA\n\n`;
+        msg += `${i + 1}. ${txt(r.wa_id, "-")}\n`;
+        msg += `   Docs: ${n(r.docs || r.doc_count, 0)}\n`;
+        msg += `   Total: ${safeMoney(money, r.total_fcfa || r.total_sum)} FCFA\n\n`;
       });
 
       await sendText(from, msg.trim());
@@ -116,10 +247,20 @@ function makeKadiStatsService(deps) {
 
   async function handleWeeklyReportCommand(from) {
     try {
-      const s = await getStats();
-      const analysis = typeof buildInsights === "function"
-        ? buildInsights(s)
-        : { alerts: [], insights: [], priorityAction: "Continuer à observer les métriques." };
+      const raw = await getStats();
+      const s = normalizeStats(raw);
+
+      const analysis =
+        typeof buildInsights === "function"
+          ? buildInsights(raw || s)
+          : {
+              alerts: [],
+              insights: [],
+              priorityAction: "Continuer à observer les métriques.",
+            };
+
+      const alerts = arr(analysis.alerts);
+      const insights = arr(analysis.insights);
 
       const msg =
         `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -138,7 +279,7 @@ function makeKadiStatsService(deps) {
         `Docs 7j         ${s.docs.last7}\n\n` +
 
         `💰 *BUSINESS*\n` +
-        `CA 30j          ${money(s.revenue.month)} FCFA\n` +
+        `CA 30j          ${safeMoney(money, s.revenue.month)} FCFA\n` +
         `Payants         ${s.users.paid}\n\n` +
 
         `🎯 *FUNNEL*\n` +
@@ -147,15 +288,18 @@ function makeKadiStatsService(deps) {
         `Créé→PDF        ${s.funnel.createdToGeneratedRate}%\n` +
         `PDF→Payé        ${s.funnel.generatedToPaidRate}%\n\n` +
 
-        ((analysis.alerts || []).length
-          ? `🚨 *ALERTES*\n${analysis.alerts.join("\n")}\n\n`
+        (alerts.length
+          ? `🚨 *ALERTES*\n${alerts.join("\n")}\n\n`
           : "") +
 
         `🧠 *INSIGHT*\n` +
-        `${analysis.insights?.[0] || "Rien de critique cette semaine."}\n\n` +
+        `${insights[0] || "Rien de critique cette semaine."}\n\n` +
 
         `✅ *ACTION PRIORITAIRE*\n` +
-        `${analysis.priorityAction || "Continuer à observer les métriques cette semaine."}\n\n` +
+        `${txt(
+          analysis.priorityAction,
+          "Continuer à observer les métriques cette semaine."
+        )}\n\n` +
 
         `━━━━━━━━━━━━━━━━━━━━`;
 
@@ -176,10 +320,7 @@ function makeKadiStatsService(deps) {
       }
 
       const filePath = await exportKadiExcel();
-      await sendText(
-        from,
-        `✅ Export Excel généré.\nFichier: ${filePath}`
-      );
+      await sendText(from, `✅ Export Excel généré.\nFichier: ${filePath}`);
       return true;
     } catch (e) {
       console.error("[KADI/EXPORT_EXCEL] error:", e);
