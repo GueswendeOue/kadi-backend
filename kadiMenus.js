@@ -8,6 +8,14 @@ function makeKadiMenus(deps) {
     STAMP_ONE_TIME_COST,
   } = deps;
 
+  function hasClientPhone(draft) {
+    return !!String(draft?.clientPhone || "").trim();
+  }
+
+  function hasSubject(draft) {
+    return !!String(draft?.subject || "").trim();
+  }
+
   // ======================================================
   // HOME MENU
   // ======================================================
@@ -223,24 +231,60 @@ function makeKadiMenus(deps) {
 
   // ======================================================
   // PREVIEW MENU
+  // draft param optionnel, pour futurs boutons dynamiques
   // ======================================================
-  async function sendPreviewMenu(to) {
+  async function sendPreviewMenu(to, draft = null) {
+    const buttons = [
+      { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
+      { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ];
+
+    // Future-ready:
+    // si plus tard tu veux passer draft ici,
+    // on peut choisir d’afficher autre chose selon clientPhone/subject.
+    void draft;
+
     return sendButtons(
       to,
       `📄 *Vérifiez votre document*\n\n` +
         `Tout est correct ?`,
-      [
-        { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
-        { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
-        { id: "DOC_CANCEL", title: "🏠 Menu" },
-      ]
+      buttons
     );
   }
 
   // ======================================================
   // AFTER PRODUCT MENU
+  // draft param optionnel pour proposer les bons next steps
   // ======================================================
-  async function sendAfterProductMenu(to) {
+  async function sendAfterProductMenu(to, draft = null) {
+    const hasSubj = hasSubject(draft);
+    const hasPhone = hasClientPhone(draft);
+
+    if (draft && !hasSubj) {
+      return sendButtons(
+        to,
+        "Que voulez-vous faire maintenant ?",
+        [
+          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+          { id: "DOC_ADD_SUBJECT", title: "📝 Objet" },
+          { id: "DOC_FINISH", title: "✅ Terminer" },
+        ]
+      );
+    }
+
+    if (draft && hasSubj && !hasPhone) {
+      return sendButtons(
+        to,
+        "Que voulez-vous faire maintenant ?",
+        [
+          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+          { id: "DOC_ADD_CLIENT_PHONE", title: "📱 Client" },
+          { id: "DOC_FINISH", title: "✅ Terminer" },
+        ]
+      );
+    }
+
     return sendButtons(
       to,
       "Que voulez-vous faire maintenant ?",
@@ -354,17 +398,33 @@ function makeKadiMenus(deps) {
 
   // ======================================================
   // ALREADY GENERATED
+  // draft param optionnel
   // ======================================================
-  async function sendAlreadyGeneratedMenu(to) {
+  async function sendAlreadyGeneratedMenu(to, draft = null) {
+    const buttons = [
+      { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
+      { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ];
+
+    if (draft && hasClientPhone(draft)) {
+      return sendButtons(
+        to,
+        `📄 *Ce document existe déjà.*\n\n` +
+          `Que voulez-vous faire ?`,
+        [
+          { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
+          { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
+          { id: "DOC_CANCEL", title: "🏠 Menu" },
+        ]
+      );
+    }
+
     return sendButtons(
       to,
       `📄 *Ce document existe déjà.*\n\n` +
         `Que voulez-vous faire ?`,
-      [
-        { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
-        { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-        { id: "DOC_CANCEL", title: "🏠 Menu" },
-      ]
+      buttons
     );
   }
 

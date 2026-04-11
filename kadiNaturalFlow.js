@@ -1,5 +1,10 @@
 "use strict";
 
+const {
+  detectVagueRequest,
+  buildSmartGuidanceMessage,
+} = require("./kadiNaturalGuidance");
+
 function makeKadiNaturalFlow(deps) {
   const {
     getSession,
@@ -93,7 +98,7 @@ function makeKadiNaturalFlow(deps) {
         const qty = Number(item?.qty || 0);
         const unitPrice = Number(item?.unitPrice || 0);
         const lineTotal = Number(
-          item?.lineTotal ?? item?.total ?? (qty * unitPrice) ?? 0
+          item?.lineTotal ?? item?.total ?? qty * unitPrice ?? 0
         );
 
         if (qty <= 0) issues.push("invalid_qty");
@@ -223,6 +228,25 @@ function makeKadiNaturalFlow(deps) {
     const rawText = String(text || "").trim();
     if (!rawText) return false;
 
+    const vagueCheck = detectVagueRequest(rawText);
+
+    if (vagueCheck.isVague && !s.lastDocDraft) {
+      await logLearningEvent({
+        waId: from,
+        rawText,
+        parseSuccess: false,
+        failureReason: vagueCheck.reason || "vague_request",
+        itemsCount: 0,
+      });
+
+      await sendText(from, buildSmartGuidanceMessage(rawText));
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "HOME_DOCS", title: "Créer un document" },
+        { id: "BACK_HOME", title: "Menu" },
+      ]);
+      return true;
+    }
+
     if (s.lastDocDraft && s.step === "item_label") {
       const parsedInline = await parseNaturalSmart(rawText);
       const parsedAsStructured =
@@ -295,22 +319,19 @@ function makeKadiNaturalFlow(deps) {
       if (!s.lastDocDraft) {
         s.pendingSmartBlockText = rawText;
 
-        await sendButtons(
-          from,
-          "🧠 J’ai compris une partie du message, mais je veux éviter une erreur.\n\nQuel document voulez-vous créer ?",
-          [
-            { id: "SMARTBLOCK_DEVIS", title: "Devis" },
-            { id: "SMARTBLOCK_FACTURE", title: "Facture" },
-            { id: "SMARTBLOCK_RECU", title: "Reçu" },
-          ]
-        );
-
+        await sendText(from, buildSmartGuidanceMessage(rawText));
+        await sendButtons(from, "Quel document voulez-vous créer ?", [
+          { id: "SMARTBLOCK_DEVIS", title: "Devis" },
+          { id: "SMARTBLOCK_FACTURE", title: "Facture" },
+          { id: "SMARTBLOCK_RECU", title: "Reçu" },
+        ]);
         return true;
       }
 
       await sendText(
         from,
-        "⚠️ Je veux éviter une erreur sur ce document.\nPouvez-vous reformuler clairement ?\n\nExemple : Devis pour Moussa, 2 portes à 25000"
+        "⚠️ Je veux éviter une erreur sur ce document.\n\n" +
+          buildSmartGuidanceMessage(rawText)
       );
       return true;
     }
@@ -341,6 +362,8 @@ function makeKadiNaturalFlow(deps) {
         });
         s.lastDocDraft.type = "decharge";
         s.lastDocDraft.source = "natural_text";
+        s.lastDocDraft.subject = null;
+        s.lastDocDraft.clientPhone = null;
         s.lastDocDraft.meta = makeDraftMeta({
           nluSource: getNluSource(parsed),
         });
@@ -351,6 +374,8 @@ function makeKadiNaturalFlow(deps) {
           docNumber: null,
           date: formatDateISO(),
           client: null,
+          clientPhone: null,
+          subject: null,
           motif: null,
           items: [],
           finance: null,
@@ -373,6 +398,9 @@ function makeKadiNaturalFlow(deps) {
 
       if (parsed.motif) {
         draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+        if (!draft.subject) {
+          draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+        }
       }
 
       if (draft.type === "decharge") {
@@ -411,6 +439,9 @@ function makeKadiNaturalFlow(deps) {
         if (parsed.motif && !draft.motif) {
           draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
           draft.dechargeType = detectDechargeType(draft.motif);
+          if (!draft.subject) {
+            draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+          }
         }
 
         if (!safe(draft.client)) {
@@ -439,6 +470,9 @@ function makeKadiNaturalFlow(deps) {
 
       if (parsed.motif && !draft.motif) {
         draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+        if (!draft.subject) {
+          draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
+        }
       }
 
       if (!safe(draft.client)) {
@@ -451,7 +485,8 @@ function makeKadiNaturalFlow(deps) {
         from,
         `✅ ${String(draft.type || "").toUpperCase()} en cours\n` +
           `👤 Client : ${draft.client}\n` +
-          (draft.motif ? `📝 Motif : ${draft.motif}\n` : "") +
+          (draft.subject ? `📝 Objet : ${draft.subject}\n` : "") +
+          (draft.motif ? `🧾 Motif : ${draft.motif}\n` : "") +
           `\nAjoutez les éléments ou les prix 👇`
       );
 
@@ -462,6 +497,10 @@ function makeKadiNaturalFlow(deps) {
     if (parsed.kind === "items") {
       if (parsed.client) {
         draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+      }
+
+      if (parsed.motif && !draft.subject) {
+        draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
       }
 
       draft.items = (parsed.items || []).map((it) =>

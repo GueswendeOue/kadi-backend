@@ -368,6 +368,8 @@ const {
   createDevisFollowup,
   postponeDevisFollowup,
   markDevisFollowupConverted,
+  markDevisFollowupDone,
+  cancelDevisFollowup,
   processDevisFollowups,
   getDevisFollowupById,
 } = makeKadiFollowups({
@@ -651,6 +653,8 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   getDevisFollowupById,
   markDevisFollowupConverted,
   postponeDevisFollowup,
+  markDevisFollowupDone,
+  cancelDevisFollowup,
 
   formatDateISO,
   sendDocument,

@@ -1,5 +1,10 @@
 "use strict";
 
+const {
+  detectVagueRequest,
+  buildSmartGuidanceMessage,
+} = require("./kadiNaturalGuidance");
+
 function makeKadiProductFlow(deps) {
   const {
     getSession,
@@ -34,6 +39,7 @@ function makeKadiProductFlow(deps) {
         : [],
       finance: draft.finance ? { ...draft.finance } : null,
       meta: draft.meta ? { ...draft.meta } : null,
+      confirmation: draft.confirmation ? { ...draft.confirmation } : null,
     };
   }
 
@@ -77,12 +83,10 @@ function makeKadiProductFlow(deps) {
     s.lastDocDraft = checked.draft;
 
     const finalDraft = s.lastDocDraft;
+
     const preview =
       finalDraft.type === "decharge"
-        ? buildDechargePreviewMessage({
-            doc: finalDraft,
-            money,
-          })
+        ? buildDechargePreviewMessage({ doc: finalDraft, money })
         : buildPreviewMessage({ doc: finalDraft });
 
     await sendText(from, preview);
@@ -90,7 +94,7 @@ function makeKadiProductFlow(deps) {
     const cost = computeBasePdfCost(finalDraft);
     await sendText(from, formatBaseCostLine(cost));
 
-    await sendPreviewMenu(from);
+    await sendPreviewMenu(from, finalDraft);
     return true;
   }
 
@@ -100,6 +104,15 @@ function makeKadiProductFlow(deps) {
 
   function sanitizeItemLabel(value = "") {
     return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizeSubject(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizePhone(value = "") {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits || null;
   }
 
   async function startDocFlow(from, mode, factureKind = null) {
@@ -122,6 +135,8 @@ function makeKadiProductFlow(deps) {
       factureKind,
       date: formatDateISO(),
       client: null,
+      clientPhone: null,
+      subject: null,
       items: [],
       finance: null,
       meta: makeDraftMeta(),
@@ -162,11 +177,60 @@ function makeKadiProductFlow(deps) {
     const t = String(text || "").trim();
     if (!t) return false;
 
+    // ===== CLIENT =====
     if (s.step === "doc_client") {
       s.lastDocDraft.client = sanitizeClientName(t);
       return askItemLabel(from);
     }
 
+    // ===== SUBJECT INPUT =====
+    if (s.step === "doc_subject_input") {
+      if (t === "0") {
+        s.lastDocDraft.subject = null;
+      } else {
+        const subject = sanitizeSubject(t);
+
+        if (!subject) {
+          await sendText(
+            from,
+            "❌ Objet invalide.\nExemple : Réparation voiture"
+          );
+          return true;
+        }
+
+        s.lastDocDraft.subject = subject;
+      }
+
+      s.step = "client_phone_input";
+      await sendText(
+        from,
+        "📱 Numéro du client ?\nExemple : 22670123456\n\nTapez 0 pour ignorer."
+      );
+      return true;
+    }
+
+    // ===== CLIENT PHONE INPUT =====
+    if (s.step === "client_phone_input") {
+      if (t === "0") {
+        s.lastDocDraft.clientPhone = null;
+        return askItemLabel(from);
+      }
+
+      const phone = sanitizePhone(t);
+
+      if (!phone || phone.length < 8) {
+        await sendText(
+          from,
+          "❌ Numéro invalide.\nExemple : 22670123456"
+        );
+        return true;
+      }
+
+      s.lastDocDraft.clientPhone = phone;
+      return askItemLabel(from);
+    }
+
+    // ===== ITEM LABEL =====
     if (s.step === "item_label") {
       const label = sanitizeItemLabel(t);
 
@@ -175,20 +239,42 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      s.itemDraft = {
-        label,
-        qty: 1,
-      };
-
+      s.itemDraft = { label, qty: 1 };
       s.step = "item_price";
+
       await sendText(from, `💰 Prix pour *${label}* ?`);
       return true;
     }
 
+    // ===== ITEM PRICE (PATCH INTELLIGENT) =====
     if (s.step === "item_price") {
       const n = parseNumberSmart(t);
 
       if (n == null || n <= 0) {
+        const vagueCheck = detectVagueRequest(t);
+
+        if (vagueCheck.isVague) {
+          await sendText(
+            from,
+            "⚠️ On était en train d’ajouter un prix.\n\n" +
+              buildSmartGuidanceMessage(t)
+          );
+          return true;
+        }
+
+        if (t.length > 12) {
+          await sendButtons(
+            from,
+            "⚠️ J’attends un prix ici.\n\nQue voulez-vous faire ?",
+            [
+              { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+              { id: "DOC_RESTART", title: "🔁 Recommencer" },
+              { id: "DOC_CANCEL", title: "🏠 Menu" },
+            ]
+          );
+          return true;
+        }
+
         await sendText(from, "❌ Prix invalide.\nExemple : 5000");
         return true;
       }
@@ -211,10 +297,11 @@ function makeKadiProductFlow(deps) {
       s.itemDraft = null;
 
       await sendText(from, "✅ Produit ajouté");
-      await sendAfterProductMenu(from);
+      await sendAfterProductMenu(from, s.lastDocDraft);
       return true;
     }
 
+    // ===== DECHARGE =====
     if (s.step === "decharge_client") {
       s.lastDocDraft.client = sanitizeClientName(t);
       s.step = "decharge_motif";
@@ -242,12 +329,14 @@ function makeKadiProductFlow(deps) {
       s.lastDocDraft.items = [
         makeItem(s.lastDocDraft.motif || "Décharge", 1, n),
       ];
+
       s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
       s.step = "doc_review";
 
       return sendSafePreview(from, s.lastDocDraft);
     }
 
+    // ===== CLIENT MANQUANT =====
     if (s.step === "missing_client_pdf") {
       s.lastDocDraft.client = sanitizeClientName(t);
       s.step = "doc_review";

@@ -71,6 +71,8 @@ function makeKadiInteractiveFlow(deps) {
     getDevisFollowupById,
     markDevisFollowupConverted,
     postponeDevisFollowup,
+    markDevisFollowupDone,
+    cancelDevisFollowup,
 
     // misc
     formatDateISO,
@@ -108,6 +110,15 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     return normalizeAndValidateDraft(clonePlainDraft(draft));
+  }
+
+  function sanitizeSubject(value = "") {
+    return String(value || "").trim().slice(0, 120) || null;
+  }
+
+  function sanitizePhone(value = "") {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits || null;
   }
 
   async function sendDraftBlockedMessage(from, checked) {
@@ -172,6 +183,8 @@ function makeKadiInteractiveFlow(deps) {
       docNumber: null,
       date: formatDateISO(),
       client: intent?.client || null,
+      clientPhone: intent?.clientPhone || null,
+      subject: intent?.subject || intent?.motif || null,
       motif: intent?.motif || null,
       items: Array.isArray(intent?.items)
         ? intent.items.map((it) => ({
@@ -188,6 +201,42 @@ function makeKadiInteractiveFlow(deps) {
         confidence: Number(intent?.confidence || 0),
       }),
     };
+  }
+
+  async function askSubjectQuestion(from) {
+    const s = getSession(from);
+    if (!s?.lastDocDraft) {
+      await sendText(from, noDraftMessage());
+      return;
+    }
+
+    s.step = "doc_subject_choice";
+    await sendButtons(
+      from,
+      "📝 Voulez-vous ajouter un objet au document ?\n\nExemple : Réparation voiture / Installation électrique",
+      [
+        { id: "DOC_ADD_SUBJECT", title: "Ajouter" },
+        { id: "DOC_SKIP_SUBJECT", title: "Ignorer" },
+      ]
+    );
+  }
+
+  async function askClientPhoneQuestion(from) {
+    const s = getSession(from);
+    if (!s?.lastDocDraft) {
+      await sendText(from, noDraftMessage());
+      return;
+    }
+
+    s.step = "doc_client_phone_choice";
+    await sendButtons(
+      from,
+      "📱 Voulez-vous ajouter le numéro du client ?",
+      [
+        { id: "DOC_ADD_CLIENT_PHONE", title: "Ajouter" },
+        { id: "DOC_SKIP_CLIENT_PHONE", title: "Ignorer" },
+      ]
+    );
   }
 
   async function handleInteractiveReply(from, replyId) {
@@ -373,7 +422,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     // ===============================
-    // REÇU FORMAT
+    // RECEIPT FORMAT
     // ===============================
     if (replyId === "RECEIPT_FORMAT_COMPACT") {
       if (!s.lastDocDraft) {
@@ -426,6 +475,8 @@ function makeKadiInteractiveFlow(deps) {
           docNumber: row.doc_number,
           date: row.source_doc?.date || formatDateISO(),
           client: row.source_doc?.client || null,
+          clientPhone: row.source_doc?.clientPhone || null,
+          subject: row.source_doc?.subject || row.source_doc?.motif || null,
           items: row.source_doc?.items || [],
           finance: row.source_doc?.finance || null,
           source: row.source_doc?.source || "product",
@@ -473,6 +524,8 @@ function makeKadiInteractiveFlow(deps) {
           docNumber: row.doc_number,
           date: row.source_doc?.date || formatDateISO(),
           client: row.source_doc?.client || null,
+          clientPhone: row.source_doc?.clientPhone || null,
+          subject: row.source_doc?.subject || row.source_doc?.motif || null,
           items: row.source_doc?.items || [],
           finance: row.source_doc?.finance || null,
           source: row.source_doc?.source || "product",
@@ -503,9 +556,87 @@ function makeKadiInteractiveFlow(deps) {
     const followupLater = replyId.match(/^FOLLOWUP_LATER_(.+)$/);
     if (followupLater) {
       const followupId = followupLater[1];
-      await postponeDevisFollowup(followupId, 24);
-      await sendText(from, "⏳ D’accord, je vous le rappellerai dans 24h.");
+      await postponeDevisFollowup(followupId, 48);
+      await sendText(
+        from,
+        "⏳ D’accord, je vous le rappellerai une dernière fois plus tard."
+      );
       return;
+    }
+
+    const followupDone = replyId.match(/^FOLLOWUP_DONE_(.+)$/);
+    if (followupDone) {
+      const followupId = followupDone[1];
+
+      if (typeof markDevisFollowupDone === "function") {
+        await markDevisFollowupDone(followupId);
+      }
+
+      await sendText(from, "✅ Parfait. Je ferme ce rappel.");
+      return;
+    }
+
+    const followupCancel = replyId.match(/^FOLLOWUP_CANCEL_(.+)$/);
+    if (followupCancel) {
+      const followupId = followupCancel[1];
+
+      if (typeof cancelDevisFollowup === "function") {
+        await cancelDevisFollowup(followupId);
+      }
+
+      await sendText(
+        from,
+        "✅ D’accord, je ne vous relancerai plus pour ce devis."
+      );
+      return;
+    }
+
+    // ===============================
+    // SUBJECT / CLIENT PHONE
+    // ===============================
+    if (replyId === "DOC_ADD_SUBJECT") {
+      s.step = "doc_subject_input";
+      await sendText(
+        from,
+        "📝 Tapez l’objet du document.\nExemple : Réparation voiture"
+      );
+      return;
+    }
+
+    if (replyId === "DOC_SKIP_SUBJECT") {
+      if (s.lastDocDraft) {
+        s.lastDocDraft.subject = null;
+      }
+      return askClientPhoneQuestion(from);
+    }
+
+    if (replyId === "DOC_ADD_CLIENT_PHONE") {
+      s.step = "client_phone_input";
+      await sendText(
+        from,
+        "📱 Tapez le numéro du client.\nExemple : 22670123456"
+      );
+      return;
+    }
+
+    if (replyId === "DOC_SKIP_CLIENT_PHONE") {
+      if (s.lastDocDraft) {
+        s.lastDocDraft.clientPhone = null;
+      }
+      return askItemLabel(from);
+    }
+
+    if (replyId === "DOC_SEND_TO_CLIENT") {
+      await sendText(
+        from,
+        "ℹ️ La fonction d’envoi direct au client sera branchée juste après."
+      );
+      return;
+    }
+
+    if (replyId === "DOC_SKIP_SEND_TO_CLIENT") {
+      await sendText(from, "✅ D’accord.");
+      return sendHomeMenu(from);
     }
 
     // ===============================
@@ -539,6 +670,8 @@ function makeKadiInteractiveFlow(deps) {
         docNumber: null,
         date: formatDateISO(),
         client: null,
+        clientPhone: null,
+        subject: null,
         motif: null,
         items: [],
         finance: null,
@@ -608,6 +741,8 @@ function makeKadiInteractiveFlow(deps) {
         docNumber: null,
         date: formatDateISO(),
         client: null,
+        clientPhone: null,
+        subject: null,
         items: [],
         finance: null,
         source: "ocr",
@@ -635,6 +770,8 @@ function makeKadiInteractiveFlow(deps) {
         docNumber: null,
         date: formatDateISO(),
         client: null,
+        clientPhone: null,
+        subject: null,
         items: [],
         finance: null,
         source: "ocr",
@@ -956,6 +1093,15 @@ function makeKadiInteractiveFlow(deps) {
       if (!draft) {
         await sendText(from, noDraftMessage());
         return;
+      }
+
+      // sujet / téléphone avant preview finale si absents
+      if (!draft.subject && draft.type !== "decharge") {
+        return askSubjectQuestion(from);
+      }
+
+      if (!draft.clientPhone && draft.type !== "decharge") {
+        return askClientPhoneQuestion(from);
       }
 
       s.step = "doc_review";

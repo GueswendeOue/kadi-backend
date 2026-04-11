@@ -16,6 +16,7 @@ const {
 
 const { sendText } = require("./kadiMessaging");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
+const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
 
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
@@ -33,6 +34,7 @@ console.log("ENV CHECK:", {
   HAS_APP_SECRET: !!process.env.APP_SECRET,
   HAS_SUPABASE_URL: !!process.env.SUPABASE_URL,
   HAS_SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  HAS_KADI_ADMIN_WA: !!process.env.KADI_ADMIN_WA,
 });
 
 const app = express();
@@ -61,7 +63,88 @@ const REENGAGEMENT_INACTIVE_DAYS = Number(
 const REENGAGEMENT_INACTIVE_LIMIT = Number(
   process.env.KADI_REENGAGEMENT_INACTIVE_LIMIT || 20
 );
+
+const WEEKLY_REPORT_ENABLED =
+  String(process.env.KADI_WEEKLY_REPORT_ENABLED || "true").toLowerCase() ===
+  "true";
+
+const WEEKLY_REPORT_CHECK_INTERVAL_MS = Number(
+  process.env.KADI_WEEKLY_REPORT_CHECK_INTERVAL_MS || 15 * 60 * 1000
+);
+
+// 0 = dimanche
+const WEEKLY_REPORT_DAY = Number(
+  process.env.KADI_WEEKLY_REPORT_DAY || 0
+);
+const WEEKLY_REPORT_HOUR = Number(
+  process.env.KADI_WEEKLY_REPORT_HOUR || 18
+);
+const WEEKLY_REPORT_MINUTE = Number(
+  process.env.KADI_WEEKLY_REPORT_MINUTE || 0
+);
+
 const KADI_ADMIN_WA = process.env.KADI_ADMIN_WA || "";
+
+// ===============================
+// Weekly report state
+// ===============================
+let lastWeeklyReportRunKey = null;
+
+function getWeeklyRunKey(date = new Date()) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  const h = String(date.getUTCHours()).padStart(2, "0");
+  const min = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}-${h}:${min}`;
+}
+
+function shouldRunWeeklyReport(now = new Date()) {
+  if (!KADI_ADMIN_WA) return false;
+
+  const day = now.getUTCDay();
+  const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
+
+  if (day !== WEEKLY_REPORT_DAY) return false;
+  if (hour !== WEEKLY_REPORT_HOUR) return false;
+  if (minute !== WEEKLY_REPORT_MINUTE) return false;
+
+  const runKey = getWeeklyRunKey(now);
+  if (lastWeeklyReportRunKey === runKey) return false;
+
+  lastWeeklyReportRunKey = runKey;
+  return true;
+}
+
+async function maybeRunWeeklyReport() {
+  try {
+    if (!WEEKLY_REPORT_ENABLED) return;
+    if (!KADI_ADMIN_WA) return;
+
+    const now = new Date();
+
+    if (!shouldRunWeeklyReport(now)) return;
+
+    const reporter = makeKadiWeeklyReport({
+      sendText: async (to, text) => {
+        await sendText(to, text);
+      },
+      adminWaId: KADI_ADMIN_WA,
+    });
+
+    console.log("[KADI/WEEKLY] Sunday report started", {
+      utc: now.toISOString(),
+      adminWaId: KADI_ADMIN_WA,
+    });
+
+    await reporter.sendWeeklyReport();
+
+    console.log("[KADI/WEEKLY] Sunday report sent");
+  } catch (e) {
+    console.error("[KADI/WEEKLY] error:", e);
+  }
+}
 
 // Standard parsing
 app.use(express.urlencoded({ extended: true }));
@@ -136,6 +219,9 @@ app.post(
 app.listen(PORT, () => {
   console.log("🚀 KADI server listening on", PORT);
 
+  // ===============================
+  // Devis follow-up worker
+  // ===============================
   if (typeof processDevisFollowups === "function") {
     console.log(
       `⏱ Devis follow-up worker started (every ${FOLLOWUP_INTERVAL_MS} ms, batch ${FOLLOWUP_BATCH_SIZE})`
@@ -162,6 +248,9 @@ app.listen(PORT, () => {
     console.warn("⚠️ processDevisFollowups is not available from kadiEngine");
   }
 
+  // ===============================
+  // Re-engagement worker
+  // ===============================
   if (
     REENGAGEMENT_ENABLED &&
     typeof getZeroDocUsersBySegment === "function" &&
@@ -208,5 +297,26 @@ app.listen(PORT, () => {
     }, REENGAGEMENT_INTERVAL_MS);
   } else {
     console.warn("⚠️ Re-engagement worker disabled or repo unavailable");
+  }
+
+  // ===============================
+  // Weekly report checker
+  // ===============================
+  if (WEEKLY_REPORT_ENABLED && KADI_ADMIN_WA) {
+    console.log(
+      `📅 Weekly report checker started (every ${WEEKLY_REPORT_CHECK_INTERVAL_MS} ms, target UTC day=${WEEKLY_REPORT_DAY} hour=${WEEKLY_REPORT_HOUR}:${String(
+        WEEKLY_REPORT_MINUTE
+      ).padStart(2, "0")})`
+    );
+
+    setTimeout(async () => {
+      await maybeRunWeeklyReport();
+    }, 45000);
+
+    setInterval(async () => {
+      await maybeRunWeeklyReport();
+    }, WEEKLY_REPORT_CHECK_INTERVAL_MS);
+  } else {
+    console.warn("⚠️ Weekly report disabled or missing KADI_ADMIN_WA");
   }
 });

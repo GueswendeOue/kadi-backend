@@ -12,6 +12,10 @@ function makeKadiCommandFlow(deps) {
 
     ensureAdmin,
     handleStatsCommand,
+    handleTopUsersCommand,
+    handleTopClientsCommand,
+    handleWeeklyReportCommand,
+    handleExportExcelCommand,
     handleBroadcastCommand,
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
@@ -60,7 +64,7 @@ function makeKadiCommandFlow(deps) {
   }
 
   async function handleAdmin(identity, text) {
-    const from = identity?.wa_id;
+    const from = identity?.wa_id || identity?.from || identity?.id;
     const raw = String(text || "");
     const t = norm(text);
 
@@ -81,6 +85,38 @@ function makeKadiCommandFlow(deps) {
         return true;
       }
       return handleStatsCommand(from, raw);
+    }
+
+    if (t === "/top_users") {
+      if (typeof handleTopUsersCommand !== "function") {
+        await sendText(from, "📊 Top users non disponibles.");
+        return true;
+      }
+      return handleTopUsersCommand(from, raw);
+    }
+
+    if (t === "/top_clients") {
+      if (typeof handleTopClientsCommand !== "function") {
+        await sendText(from, "📊 Top clients non disponibles.");
+        return true;
+      }
+      return handleTopClientsCommand(from, raw);
+    }
+
+    if (t === "/weekly_report") {
+      if (typeof handleWeeklyReportCommand !== "function") {
+        await sendText(from, "📊 Weekly report non disponible.");
+        return true;
+      }
+      return handleWeeklyReportCommand(from, raw);
+    }
+
+    if (t === "/export_excel") {
+      if (typeof handleExportExcelCommand !== "function") {
+        await sendText(from, "📁 Export Excel non disponible.");
+        return true;
+      }
+      return handleExportExcelCommand(from, raw);
     }
 
     if (t.startsWith("/credit ")) {

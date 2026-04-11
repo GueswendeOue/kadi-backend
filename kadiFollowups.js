@@ -1,10 +1,11 @@
 "use strict";
 
 function makeKadiFollowups(deps) {
-  const {
-    supabase,
-    sendButtons,
-  } = deps;
+  const { supabase, sendButtons } = deps;
+
+  const MAX_ATTEMPTS = 2;
+  const DEFAULT_FIRST_DELAY_HOURS = 24;
+  const DEFAULT_FINAL_DELAY_HOURS = 48;
 
   async function createDevisFollowup({
     waId,
@@ -13,15 +14,27 @@ function makeKadiFollowups(deps) {
     sourceDoc,
     dueAt,
   }) {
+    const effectiveDueAt =
+      dueAt ||
+      new Date(
+        Date.now() + DEFAULT_FIRST_DELAY_HOURS * 60 * 60 * 1000
+      ).toISOString();
+
     const { error } = await supabase.from("kadi_devis_followups").insert({
       wa_id: waId,
       document_id: documentId || null,
       doc_number: docNumber,
       source_doc: sourceDoc || null,
-      due_at: new Date(dueAt).toISOString(),
+      due_at: new Date(effectiveDueAt).toISOString(),
       status: "pending",
       attempts: 0,
       postponed_count: 0,
+      last_action: null,
+      sent_at: null,
+      converted_to: null,
+      converted_at: null,
+      last_error: null,
+      updated_at: new Date().toISOString(),
     });
 
     if (error) throw error;
@@ -40,26 +53,37 @@ function makeKadiFollowups(deps) {
     if (error) throw error;
   }
 
-  async function postponeDevisFollowup(id, hours = 24) {
+  async function postponeDevisFollowup(id, hours = DEFAULT_FINAL_DELAY_HOURS) {
     const { data, error: readError } = await supabase
       .from("kadi_devis_followups")
-      .select("postponed_count")
+      .select("postponed_count, attempts, status")
       .eq("id", id)
       .maybeSingle();
 
     if (readError) throw readError;
+    if (!data) return null;
+
+    const postponedCount = Number(data?.postponed_count || 0);
+    const attempts = Number(data?.attempts || 0);
+
+    // Une seule relance "plus tard", après on arrête
+    if (postponedCount >= 1 || attempts >= MAX_ATTEMPTS) {
+      return markDevisFollowupDismissed(id, "max_reminders_reached");
+    }
 
     const { error } = await supabase
       .from("kadi_devis_followups")
       .update({
         status: "pending",
         due_at: new Date(Date.now() + hours * 60 * 60 * 1000).toISOString(),
-        postponed_count: Number(data?.postponed_count || 0) + 1,
+        postponed_count: postponedCount + 1,
+        last_action: "postponed",
         updated_at: new Date().toISOString(),
       })
       .eq("id", id);
 
     if (error) throw error;
+    return true;
   }
 
   async function markDevisFollowupConverted(id, convertedTo) {
@@ -69,6 +93,7 @@ function makeKadiFollowups(deps) {
         status: "converted",
         converted_to: convertedTo,
         converted_at: new Date().toISOString(),
+        last_action: "converted",
         updated_at: new Date().toISOString(),
       })
       .eq("id", id);
@@ -76,11 +101,38 @@ function makeKadiFollowups(deps) {
     if (error) throw error;
   }
 
-  async function markDevisFollowupDismissed(id) {
+  async function markDevisFollowupDismissed(id, reason = "dismissed") {
     const { error } = await supabase
       .from("kadi_devis_followups")
       .update({
         status: "dismissed",
+        last_action: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+
+    if (error) throw error;
+  }
+
+  async function markDevisFollowupDone(id) {
+    const { error } = await supabase
+      .from("kadi_devis_followups")
+      .update({
+        status: "done",
+        last_action: "done",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+
+    if (error) throw error;
+  }
+
+  async function cancelDevisFollowup(id) {
+    const { error } = await supabase
+      .from("kadi_devis_followups")
+      .update({
+        status: "cancelled",
+        last_action: "cancelled",
         updated_at: new Date().toISOString(),
       })
       .eq("id", id);
@@ -92,7 +144,7 @@ function makeKadiFollowups(deps) {
     const { data, error } = await supabase
       .from("kadi_devis_followups")
       .select("*")
-      .eq("status", "pending")
+      .in("status", ["pending"])
       .lte("due_at", new Date().toISOString())
       .order("due_at", { ascending: true })
       .limit(limit);
@@ -101,17 +153,57 @@ function makeKadiFollowups(deps) {
     return data || [];
   }
 
-  async function sendDevisFollowupMessage(row) {
-    const text =
+  function buildFollowupText(row) {
+    const attempts = Number(row?.attempts || 0);
+    const postponedCount = Number(row?.postponed_count || 0);
+    const isFinalReminder = attempts >= 1 || postponedCount >= 1;
+
+    if (isFinalReminder) {
+      return (
+        `📄 Rappel final pour votre devis ${row.doc_number}.\n\n` +
+        `Avez-vous conclu avec le client ?\n\n` +
+        `Vous pouvez maintenant le transformer rapidement en :\n` +
+        `• Facture\n• Reçu\n\n` +
+        `Ou arrêter ce rappel si ce n’est plus utile.`
+      );
+    }
+
+    return (
       `📄 Votre devis ${row.doc_number} est prêt depuis 24h.\n\n` +
       `Avez-vous conclu avec le client ?\n\n` +
       `Vous pouvez maintenant le transformer rapidement en :\n` +
-      `• Facture\n• Reçu`;
+      `• Facture\n• Reçu`
+    );
+  }
 
-    await sendButtons(row.wa_id, text, [
+  async function sendDevisFollowupMessage(row) {
+    const text = buildFollowupText(row);
+
+    const attempts = Number(row?.attempts || 0);
+    const postponedCount = Number(row?.postponed_count || 0);
+    const isFinalReminder = attempts >= 1 || postponedCount >= 1;
+
+    const primaryButtons = [
       { id: `FOLLOWUP_FACTURE_${row.id}`, title: "📄 Faire facture" },
       { id: `FOLLOWUP_RECU_${row.id}`, title: "🧾 Faire reçu" },
-      { id: `FOLLOWUP_LATER_${row.id}`, title: "⏳ Plus tard" },
+    ];
+
+    if (!isFinalReminder) {
+      primaryButtons.push({
+        id: `FOLLOWUP_LATER_${row.id}`,
+        title: "⏳ Plus tard",
+      });
+    } else {
+      primaryButtons.push({
+        id: `FOLLOWUP_DONE_${row.id}`,
+        title: "✅ Déjà réglé",
+      });
+    }
+
+    await sendButtons(row.wa_id, text, primaryButtons);
+
+    await sendButtons(row.wa_id, "Autre option :", [
+      { id: `FOLLOWUP_CANCEL_${row.id}`, title: "🛑 Annuler rappel" },
     ]);
   }
 
@@ -123,6 +215,13 @@ function makeKadiFollowups(deps) {
 
     for (const row of rows) {
       try {
+        const attempts = Number(row.attempts || 0);
+
+        if (attempts >= MAX_ATTEMPTS) {
+          await markDevisFollowupDismissed(row.id, "max_attempts_reached");
+          continue;
+        }
+
         await sendDevisFollowupMessage(row);
 
         const { error } = await supabase
@@ -130,7 +229,7 @@ function makeKadiFollowups(deps) {
           .update({
             status: "sent",
             sent_at: new Date().toISOString(),
-            attempts: Number(row.attempts || 0) + 1,
+            attempts: attempts + 1,
             updated_at: new Date().toISOString(),
             last_error: null,
           })
@@ -170,6 +269,8 @@ function makeKadiFollowups(deps) {
     postponeDevisFollowup,
     markDevisFollowupConverted,
     markDevisFollowupDismissed,
+    markDevisFollowupDone,
+    cancelDevisFollowup,
     getDueDevisFollowups,
     sendDevisFollowupMessage,
     processDevisFollowups,

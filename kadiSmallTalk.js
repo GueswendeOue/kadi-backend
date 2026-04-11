@@ -1,5 +1,7 @@
 "use strict";
 
+const { isGreetingToKadi } = require("./kadiNaturalGuidance");
+
 function makeKadiSmallTalk(deps) {
   const { sendButtons, norm } = deps;
 
@@ -29,6 +31,19 @@ function makeKadiSmallTalk(deps) {
       "tu vas bien",
       "vous allez bien",
     ]);
+
+    if (isGreetingToKadi(rawText)) {
+      await sendButtons(
+        from,
+        `👋 Bonjour ! Je suis *KADI*.\n\nJe peux créer vos devis, factures, reçus et décharges sur WhatsApp.\n\nQue voulez-vous faire ?`,
+        [
+          { id: "HOME_DOCS", title: "📄 Documents" },
+          { id: "BACK_HOME", title: "🏠 Menu" },
+          { id: "HOME_TUTORIAL", title: "📚 Tutoriel" },
+        ]
+      );
+      return true;
+    }
 
     if (greetings.has(t)) {
       await sendButtons(
