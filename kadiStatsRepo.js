@@ -56,27 +56,65 @@ function growthPct(current, previous) {
   return Math.round(((c - p) / p) * 100);
 }
 
-async function countDistinct(tableName, column = "wa_id", filters = []) {
-  let q = supabase.from(tableName).select(column);
+function applyFilters(q, filters = []) {
+  let query = q;
 
   for (const f of filters) {
-    if (f.op === "gte") q = q.gte(f.column, f.value);
-    if (f.op === "gt") q = q.gt(f.column, f.value);
-    if (f.op === "lte") q = q.lte(f.column, f.value);
-    if (f.op === "lt") q = q.lt(f.column, f.value);
-    if (f.op === "eq") q = q.eq(f.column, f.value);
-    if (f.op === "in") q = q.in(f.column, f.value);
-    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
+    if (f.op === "gte") query = query.gte(f.column, f.value);
+    if (f.op === "gt") query = query.gt(f.column, f.value);
+    if (f.op === "lte") query = query.lte(f.column, f.value);
+    if (f.op === "lt") query = query.lt(f.column, f.value);
+    if (f.op === "eq") query = query.eq(f.column, f.value);
+    if (f.op === "in") query = query.in(f.column, f.value);
+    if (f.op === "not.is") query = query.not(f.column, "is", f.value);
   }
 
-  const { data, error } = await q;
-  if (error) throw error;
+  return query;
+}
+
+async function fetchAllPaged(
+  tableName,
+  columns = "*",
+  filters = [],
+  orderBy = null,
+  ascending = true,
+  pageSize = 1000
+) {
+  let from = 0;
+  const rows = [];
+
+  while (true) {
+    let q = supabase.from(tableName).select(columns);
+    q = applyFilters(q, filters);
+
+    if (orderBy) {
+      q = q.order(orderBy, { ascending });
+    }
+
+    q = q.range(from, from + pageSize - 1);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    const batch = ensureArray(data);
+    rows.push(...batch);
+
+    if (batch.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return rows;
+}
+
+async function countDistinct(tableName, column = "wa_id", filters = []) {
+  const data = await fetchAllPaged(tableName, column, filters, column, true, 1000);
 
   const set = new Set();
   for (const row of ensureArray(data)) {
     const value = String(row?.[column] || "").trim();
     if (value) set.add(value);
   }
+
   return set.size;
 }
 
@@ -87,24 +125,7 @@ async function fetchRows(
   orderBy = null,
   ascending = true
 ) {
-  let q = supabase.from(tableName).select(columns);
-
-  for (const f of filters) {
-    if (f.op === "gte") q = q.gte(f.column, f.value);
-    if (f.op === "gt") q = q.gt(f.column, f.value);
-    if (f.op === "lte") q = q.lte(f.column, f.value);
-    if (f.op === "lt") q = q.lt(f.column, f.value);
-    if (f.op === "eq") q = q.eq(f.column, f.value);
-    if (f.op === "in") q = q.in(f.column, f.value);
-    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
-  }
-
-  if (orderBy) q = q.order(orderBy, { ascending });
-
-  const { data, error } = await q;
-  if (error) throw error;
-
-  return ensureArray(data);
+  return fetchAllPaged(tableName, columns, filters, orderBy, ascending, 1000);
 }
 
 async function countRows(tableName, filters = []) {
@@ -112,15 +133,7 @@ async function countRows(tableName, filters = []) {
     .from(tableName)
     .select("id", { count: "exact", head: true });
 
-  for (const f of filters) {
-    if (f.op === "gte") q = q.gte(f.column, f.value);
-    if (f.op === "gt") q = q.gt(f.column, f.value);
-    if (f.op === "lte") q = q.lte(f.column, f.value);
-    if (f.op === "lt") q = q.lt(f.column, f.value);
-    if (f.op === "eq") q = q.eq(f.column, f.value);
-    if (f.op === "in") q = q.in(f.column, f.value);
-    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
-  }
+  q = applyFilters(q, filters);
 
   const { count, error } = await q;
   if (error) throw error;
@@ -136,10 +149,7 @@ async function safeTableExistsFetch(fn, fallback = null) {
 }
 
 function sumBy(rows, getter) {
-  return ensureArray(rows).reduce(
-    (acc, row) => acc + toNum(getter(row), 0),
-    0
-  );
+  return ensureArray(rows).reduce((acc, row) => acc + toNum(getter(row), 0), 0);
 }
 
 // ===============================
@@ -161,9 +171,14 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     0
   );
 
+  const totalBusinessProfilesRows = await safeTableExistsFetch(
+    () => countRows("business_profiles"),
+    0
+  );
+
   const totalBusinessProfilesDistinct = await safeTableExistsFetch(
     () => countDistinct("business_profiles", "wa_id"),
-    0
+    totalBusinessProfilesRows
   );
 
   const totalUsers =
