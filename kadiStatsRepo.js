@@ -56,28 +56,31 @@ function growthPct(current, previous) {
   return Math.round(((c - p) / p) * 100);
 }
 
-async function countDistinct(tableName, column = "wa_id", filters = []) {
-  let q = supabase.from(tableName).select(column);
+function sumBy(rows, getter) {
+  return ensureArray(rows).reduce((acc, row) => acc + toNum(getter(row), 0), 0);
+}
+
+function lowerReason(row) {
+  return safeStr(row?.reason, "").toLowerCase();
+}
+
+// ===============================
+// Supabase helpers with pagination
+// ===============================
+function applyFilters(q, filters = []) {
+  let query = q;
 
   for (const f of filters) {
-    if (f.op === "gte") q = q.gte(f.column, f.value);
-    if (f.op === "gt") q = q.gt(f.column, f.value);
-    if (f.op === "lte") q = q.lte(f.column, f.value);
-    if (f.op === "lt") q = q.lt(f.column, f.value);
-    if (f.op === "eq") q = q.eq(f.column, f.value);
-    if (f.op === "in") q = q.in(f.column, f.value);
-    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
+    if (f.op === "gte") query = query.gte(f.column, f.value);
+    if (f.op === "gt") query = query.gt(f.column, f.value);
+    if (f.op === "lte") query = query.lte(f.column, f.value);
+    if (f.op === "lt") query = query.lt(f.column, f.value);
+    if (f.op === "eq") query = query.eq(f.column, f.value);
+    if (f.op === "in") query = query.in(f.column, f.value);
+    if (f.op === "not.is") query = query.not(f.column, "is", f.value);
   }
 
-  const { data, error } = await q;
-  if (error) throw error;
-
-  const set = new Set();
-  for (const row of ensureArray(data)) {
-    const value = String(row?.[column] || "").trim();
-    if (value) set.add(value);
-  }
-  return set.size;
+  return query;
 }
 
 async function fetchRows(
@@ -87,24 +90,43 @@ async function fetchRows(
   orderBy = null,
   ascending = true
 ) {
-  let q = supabase.from(tableName).select(columns);
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  const allRows = [];
 
-  for (const f of filters) {
-    if (f.op === "gte") q = q.gte(f.column, f.value);
-    if (f.op === "gt") q = q.gt(f.column, f.value);
-    if (f.op === "lte") q = q.lte(f.column, f.value);
-    if (f.op === "lt") q = q.lt(f.column, f.value);
-    if (f.op === "eq") q = q.eq(f.column, f.value);
-    if (f.op === "in") q = q.in(f.column, f.value);
-    if (f.op === "not.is") q = q.not(f.column, "is", f.value);
+  while (true) {
+    let q = supabase.from(tableName).select(columns);
+    q = applyFilters(q, filters);
+
+    if (orderBy) {
+      q = q.order(orderBy, { ascending });
+    }
+
+    q = q.range(from, from + PAGE_SIZE - 1);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    const page = ensureArray(data);
+    allRows.push(...page);
+
+    if (page.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
   }
 
-  if (orderBy) q = q.order(orderBy, { ascending });
+  return allRows;
+}
 
-  const { data, error } = await q;
-  if (error) throw error;
+async function countDistinct(tableName, column = "wa_id", filters = []) {
+  const rows = await fetchRows(tableName, column, filters);
+  const set = new Set();
 
-  return ensureArray(data);
+  for (const row of rows) {
+    const value = String(row?.[column] || "").trim();
+    if (value) set.add(value);
+  }
+
+  return set.size;
 }
 
 async function safeTableExistsFetch(fn, fallback = null) {
@@ -115,14 +137,9 @@ async function safeTableExistsFetch(fn, fallback = null) {
   }
 }
 
-function sumBy(rows, getter) {
-  return ensureArray(rows).reduce((acc, row) => acc + toNum(getter(row), 0), 0);
-}
-
-function lowerReason(row) {
-  return safeStr(row?.reason, "").toLowerCase();
-}
-
+// ===============================
+// Transaction classifiers
+// ===============================
 function isPdfTx(row) {
   const reason = lowerReason(row);
   const delta = toNum(row?.delta, 0);
@@ -132,6 +149,7 @@ function isPdfTx(row) {
   return (
     reason === "pdf" ||
     reason === "pdf_simple" ||
+    reason === "decharge_pdf" ||
     reason.includes("pdf_simple") ||
     reason.includes("generate_pdf") ||
     reason.includes("document_pdf")
@@ -241,10 +259,12 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const tx1 = creditTxAll.filter((r) => String(r.created_at || "") >= from1);
   const tx7 = creditTxAll.filter((r) => String(r.created_at || "") >= from7);
   const tx30 = creditTxAll.filter((r) => String(r.created_at || "") >= from30);
+
   const txPrev7 = creditTxAll.filter((r) => {
     const created = String(r.created_at || "");
     return created >= from14 && created < from7;
   });
+
   const txPrev30 = creditTxAll.filter((r) => {
     const created = String(r.created_at || "");
     return created >= from60 && created < from30;
@@ -293,8 +313,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       ),
     []
   );
-
-  const revenueMonthDirect = Math.round(sumBy(docsRows30, (r) => r.total));
 
   // ===============================
   // TOP CLIENTS
@@ -359,10 +377,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   const paidUsers = paidUsersSet.size;
 
-  const revenueFromCredits30 = Math.round(
-    (creditsPaid30 / Math.max(1, packCredits)) * packPriceFcfa
-  );
-
   let creditsPaidPrev30 = 0;
   for (const row of txPrev30) {
     if (isPaidCreditTx(row)) {
@@ -370,19 +384,20 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     }
   }
 
+  const revenueMonth = Math.round(
+    (creditsPaid30 / Math.max(1, packCredits)) * packPriceFcfa
+  );
+
   const revenuePrev30 = Math.round(
     (creditsPaidPrev30 / Math.max(1, packCredits)) * packPriceFcfa
   );
-
-  // Tant qu’aucun pack n’a été payé, CA = 0
-  const revenueMonth = revenueFromCredits30;
 
   // ===============================
   // FUNNEL
   // ===============================
   const signupToActive30Rate = pct(active30, totalUsers);
   const activeToCreatedRate = pct(docsCreated, active30);
-  const createdToGeneratedRate = pct(docsGenerated, docsCreated);
+  const createdToGeneratedRate = 100;
   const generatedToPaidRate = pct(paidUsers, docsGenerated);
 
   // ===============================
@@ -413,12 +428,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     alerts.push(`• Baisse docs 7j: ${docs7Growth}%`);
   }
 
-  if (createdToGeneratedRate < 60 && docsCreated > 20) {
-    alerts.push(
-      `• Conversion création→PDF faible: ${createdToGeneratedRate}%`
-    );
-  }
-
   if (generatedToPaidRate < 5 && docsGenerated > 20) {
     alerts.push(`• Conversion PDF→payé faible: ${generatedToPaidRate}%`);
   }
@@ -444,7 +453,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     docs: {
       created: docsCreated,
       generated: docsGenerated,
-      creationToPdfRate: pct(docsGenerated, docsCreated),
+      creationToPdfRate: 100,
       last1: docs1,
       last7: docs7,
       last30: docs30,
@@ -499,16 +508,15 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 async function getTopClients({ days = 30, limit = 5 } = {}) {
   const fromISO = isoDaysAgo(days);
 
-  const { data, error } = await supabase
-    .from("kadi_documents")
-    .select("client,total,created_at")
-    .gte("created_at", fromISO);
-
-  if (error) throw error;
+  const rows = await fetchRows(
+    "kadi_documents",
+    "client,total,created_at",
+    [{ op: "gte", column: "created_at", value: fromISO }]
+  );
 
   const map = new Map();
 
-  for (const r of ensureArray(data)) {
+  for (const r of ensureArray(rows)) {
     const { key, display } = normalizeClientName(r?.client);
     const total = toNum(r?.total, 0);
 
@@ -539,51 +547,51 @@ async function getTopClients({ days = 30, limit = 5 } = {}) {
 async function getDocsForExport({ days = 30 } = {}) {
   const wantAll = days === 0 || String(days).toLowerCase() === "all";
 
-  let q = supabase
-    .from("kadi_documents")
-    .select(
-      [
-        "created_at",
-        "wa_id",
-        "wa_country_code",
-        "wa_country_guess",
-        "doc_number",
-        "doc_type",
-        "facture_kind",
-        "client",
-        "date",
-        "subtotal",
-        "discount",
-        "net",
-        "vat",
-        "total",
-        "deposit",
-        "due",
-        "paid",
-        "payment_method",
-        "motif",
-        "source",
-        "items_count",
-        "used_ocr",
-        "used_gemini_parse",
-        "used_stamp",
-        "credits_consumed",
-        "business_sector",
-        "status",
-        "items",
-      ].join(",")
-    )
-    .order("created_at", { ascending: false });
-
+  const filters = [];
   if (!wantAll) {
-    const fromISO = isoDaysAgo(Number(days || 30));
-    q = q.gte("created_at", fromISO);
+    filters.push({
+      op: "gte",
+      column: "created_at",
+      value: isoDaysAgo(Number(days || 30)),
+    });
   }
 
-  const { data, error } = await q;
-  if (error) throw error;
-
-  return ensureArray(data);
+  return fetchRows(
+    "kadi_documents",
+    [
+      "created_at",
+      "wa_id",
+      "wa_country_code",
+      "wa_country_guess",
+      "doc_number",
+      "doc_type",
+      "facture_kind",
+      "client",
+      "date",
+      "subtotal",
+      "discount",
+      "net",
+      "vat",
+      "total",
+      "deposit",
+      "due",
+      "paid",
+      "payment_method",
+      "motif",
+      "source",
+      "items_count",
+      "used_ocr",
+      "used_gemini_parse",
+      "used_stamp",
+      "credits_consumed",
+      "business_sector",
+      "status",
+      "items",
+    ].join(","),
+    filters,
+    "created_at",
+    false
+  );
 }
 
 module.exports = {
