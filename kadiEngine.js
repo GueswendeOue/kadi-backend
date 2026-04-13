@@ -50,6 +50,7 @@ const {
 const { makeDraftHelpers } = require("./kadiDraftHelpers");
 const { makeKadiMenus } = require("./kadiMenus");
 const { makeKadiCreditsUi } = require("./kadiCreditsUi");
+const { recordActivity } = require("./kadiActivityRepo");
 
 // ===============================
 // AI / parsing
@@ -824,6 +825,7 @@ async function handleIncomingMessage(value) {
   for (const msg of messages) {
     const from = msg?.from;
     if (!from) continue;
+    await safeRecordActivity(from);
 
     await withUserLock(from, async () => {
       try {
@@ -884,6 +886,14 @@ async function handleIncomingMessage(value) {
 async function handleIncomingStatuses(statuses = []) {
   for (const st of statuses) {
     console.log("[KADI STATUS]", st.status, st.id || st.message_id || "");
+  }
+}
+
+async function safeRecordActivity(waId) {
+  try {
+    await recordActivity(waId);
+  } catch (e) {
+    console.warn("[KADI ACTIVITY] record failed:", e?.message || e);
   }
 }
 
