@@ -138,6 +138,60 @@ async function safeTableExistsFetch(fn, fallback = null) {
 }
 
 // ===============================
+// Unified credit events
+// ===============================
+async function getUnifiedCreditEvents() {
+  const [legacyTx, ledgerTx] = await Promise.all([
+    safeTableExistsFetch(
+      () =>
+        fetchRows(
+          "kadi_credit_tx",
+          "wa_id, delta, reason, created_at",
+          [],
+          "created_at",
+          false
+        ),
+      []
+    ),
+    safeTableExistsFetch(
+      () =>
+        fetchRows(
+          "kadi_credit_ledger",
+          "profile_id, delta, reason, created_at, meta",
+          [],
+          "created_at",
+          false
+        ),
+      []
+    ),
+  ]);
+
+  const normalizedLegacy = ensureArray(legacyTx).map((row) => ({
+    source_table: "legacy_tx",
+    wa_id: safeStr(row?.wa_id, ""),
+    profile_id: null,
+    delta: toNum(row?.delta, 0),
+    reason: safeStr(row?.reason, ""),
+    created_at: row?.created_at || null,
+    meta: null,
+  }));
+
+  const normalizedLedger = ensureArray(ledgerTx).map((row) => ({
+    source_table: "ledger",
+    wa_id: "",
+    profile_id: row?.profile_id || null,
+    delta: toNum(row?.delta, 0),
+    reason: safeStr(row?.reason, ""),
+    created_at: row?.created_at || null,
+    meta: row?.meta || null,
+  }));
+
+  return [...normalizedLegacy, ...normalizedLedger].sort((a, b) =>
+    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+  );
+}
+
+// ===============================
 // Transaction classifiers
 // ===============================
 function isPdfTx(row) {
@@ -150,6 +204,10 @@ function isPdfTx(row) {
     reason === "pdf" ||
     reason === "pdf_simple" ||
     reason === "decharge_pdf" ||
+    reason === "ocr_pdf" ||
+    reason.startsWith("pdf_") ||
+    reason.startsWith("ocr_pdf_") ||
+    reason.startsWith("decharge_pdf_") ||
     reason.includes("pdf_simple") ||
     reason.includes("generate_pdf") ||
     reason.includes("document_pdf")
@@ -161,7 +219,7 @@ function isOcrTx(row) {
   const delta = toNum(row?.delta, 0);
 
   if (!(delta < 0)) return false;
-  return reason.includes("ocr");
+  return reason === "ocr_pdf" || reason.startsWith("ocr_pdf_") || reason.includes("ocr");
 }
 
 function isStampTx(row) {
@@ -178,13 +236,11 @@ function isPaidCreditTx(row) {
 
   if (!(delta > 0)) return false;
 
-  return [
-    "payment_om",
-    "manual_om_topup",
-    "payment",
-    "recharge",
-    "topup",
-  ].some((r) => reason.includes(r));
+  return (
+    reason.includes("payment") ||
+    reason.includes("topup") ||
+    reason.includes("recharge")
+  );
 }
 
 // ===============================
@@ -217,10 +273,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       ? totalKnownUsers
       : 0;
 
+  // IMPORTANT: activity uses last_seen, not created_at
   const active1d = await safeTableExistsFetch(
     () =>
       countDistinct("kadi_activity", "wa_id", [
-        { op: "gte", column: "created_at", value: from1 },
+        { op: "gte", column: "last_seen", value: from1 },
       ]),
     0
   );
@@ -228,7 +285,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const active7 = await safeTableExistsFetch(
     () =>
       countDistinct("kadi_activity", "wa_id", [
-        { op: "gte", column: "created_at", value: from7 },
+        { op: "gte", column: "last_seen", value: from7 },
       ]),
     0
   );
@@ -236,44 +293,34 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const active30 = await safeTableExistsFetch(
     () =>
       countDistinct("kadi_activity", "wa_id", [
-        { op: "gte", column: "created_at", value: from30 },
+        { op: "gte", column: "last_seen", value: from30 },
       ]),
     0
   );
 
   // ===============================
-  // CREDIT TX = SOURCE OF TRUTH
+  // UNIFIED CREDIT EVENTS
   // ===============================
-  const creditTxAll = await safeTableExistsFetch(
-    () =>
-      fetchRows(
-        "kadi_credit_tx",
-        "wa_id, delta, reason, created_at",
-        [],
-        "created_at",
-        false
-      ),
-    []
-  );
+  const creditEventsAll = await getUnifiedCreditEvents();
 
-  const tx1 = creditTxAll.filter((r) => String(r.created_at || "") >= from1);
-  const tx7 = creditTxAll.filter((r) => String(r.created_at || "") >= from7);
-  const tx30 = creditTxAll.filter((r) => String(r.created_at || "") >= from30);
+  const tx1 = creditEventsAll.filter((r) => String(r.created_at || "") >= from1);
+  const tx7 = creditEventsAll.filter((r) => String(r.created_at || "") >= from7);
+  const tx30 = creditEventsAll.filter((r) => String(r.created_at || "") >= from30);
 
-  const txPrev7 = creditTxAll.filter((r) => {
+  const txPrev7 = creditEventsAll.filter((r) => {
     const created = String(r.created_at || "");
     return created >= from14 && created < from7;
   });
 
-  const txPrev30 = creditTxAll.filter((r) => {
+  const txPrev30 = creditEventsAll.filter((r) => {
     const created = String(r.created_at || "");
     return created >= from60 && created < from30;
   });
 
   // ===============================
-  // DOCS / OCR / STAMP FROM CREDIT TX
+  // DOCS / OCR / STAMP FROM UNIFIED EVENTS
   // ===============================
-  const docsGenerated = creditTxAll.filter(isPdfTx).length;
+  const docsGenerated = creditEventsAll.filter(isPdfTx).length;
   const docsCreated = docsGenerated;
 
   const docs1 = tx1.filter(isPdfTx).length;
@@ -281,10 +328,10 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const docs30 = tx30.filter(isPdfTx).length;
   const docsPrev7 = txPrev7.filter(isPdfTx).length;
 
-  const ocrDocsAll = creditTxAll.filter(isOcrTx).length;
+  const ocrDocsAll = creditEventsAll.filter(isOcrTx).length;
   const ocrDocs30 = tx30.filter(isOcrTx).length;
 
-  const stampedDocsAll = creditTxAll.filter(isStampTx).length;
+  const stampedDocsAll = creditEventsAll.filter(isStampTx).length;
   const stampedDocs30 = tx30.filter(isStampTx).length;
 
   // ===============================
@@ -321,6 +368,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   for (const row of docsRows30) {
     const { key, display } = normalizeClientName(row?.client);
+    if (key === "-") continue;
+
     const cur = topClientsMap.get(key) || {
       client: display,
       docs: 0,
@@ -364,18 +413,18 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   // REVENUE / PAYING USERS
   // ===============================
   let creditsPaid30 = 0;
-  const paidUsersSet = new Set();
+  const paidProfileUsersSet = new Set();
 
   for (const row of tx30) {
     if (isPaidCreditTx(row)) {
       creditsPaid30 += toNum(row.delta, 0);
 
-      const waId = safeStr(row?.wa_id, "");
-      if (waId) paidUsersSet.add(waId);
+      const profileId = safeStr(row?.profile_id, "");
+      if (profileId) paidProfileUsersSet.add(profileId);
     }
   }
 
-  const paidUsers = paidUsersSet.size;
+  const paidUsers = paidProfileUsersSet.size;
 
   let creditsPaidPrev30 = 0;
   for (const row of txPrev30) {
@@ -395,8 +444,13 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   // ===============================
   // FUNNEL
   // ===============================
+  const usersWithDocs = await safeTableExistsFetch(
+    () => countDistinct("kadi_documents", "wa_id"),
+    0
+  );
+
   const signupToActive30Rate = pct(active30, totalUsers);
-  const activeToCreatedRate = pct(docsCreated, active30);
+  const activeToCreatedRate = pct(usersWithDocs, active30);
   const createdToGeneratedRate = 100;
   const generatedToPaidRate = pct(paidUsers, docsGenerated);
 
@@ -407,17 +461,38 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const revenue30Growth = growthPct(revenueMonth, revenuePrev30);
 
   // ===============================
-  // EXTRA USER COUNTS
+  // WALLET / PIPELINE (ledger only)
   // ===============================
-  const usersWithDocs = await safeTableExistsFetch(
-    () => countDistinct("kadi_documents", "wa_id"),
-    0
+  const ledgerRows = await safeTableExistsFetch(
+    () =>
+      fetchRows(
+        "kadi_credit_ledger",
+        "profile_id, delta, reason, created_at",
+        [],
+        "created_at",
+        false
+      ),
+    []
   );
 
-  const usersWithWallet = await safeTableExistsFetch(
-    () => countDistinct("kadi_credits", "wa_id"),
-    0
-  );
+  const balanceByProfile = new Map();
+  for (const row of ledgerRows) {
+    const profileId = safeStr(row?.profile_id, "");
+    if (!profileId) continue;
+
+    const cur = balanceByProfile.get(profileId) || 0;
+    balanceByProfile.set(profileId, cur + toNum(row?.delta, 0));
+  }
+
+  let usersZeroCredits = 0;
+  let usersLowCredits = 0;
+
+  for (const balance of balanceByProfile.values()) {
+    if (balance <= 0) usersZeroCredits += 1;
+    else if (balance > 0 && balance <= 2) usersLowCredits += 1;
+  }
+
+  const usersWithWallet = balanceByProfile.size;
 
   // ===============================
   // ALERTS
@@ -492,6 +567,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
     credits: {
       addedPaid30: creditsPaid30,
+    },
+
+    conversion: {
+      usersZeroCredits,
+      usersLowCredits,
     },
 
     kpis: {
