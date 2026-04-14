@@ -244,6 +244,77 @@ function isPaidCreditTx(row) {
 }
 
 // ===============================
+// Insights builder
+// ===============================
+function buildYcInsights({
+  totalUsers,
+  active7,
+  active30,
+  docs7,
+  docs30,
+  docsGenerated,
+  usersWithDocs,
+  paidUsers,
+  revenueMonth,
+  usersZeroCredits,
+  docs7Growth,
+  signupToActive30Rate,
+  activeToCreatedRate,
+  generatedToPaidRate,
+}) {
+  const alerts = [];
+  const insights = [];
+
+  if (docs7Growth < 0) {
+    alerts.push(`• Baisse docs 7j: ${docs7Growth}%`);
+  }
+
+  if (generatedToPaidRate < 5 && docsGenerated > 20) {
+    alerts.push(`• Conversion Doc→Payé faible: ${generatedToPaidRate}%`);
+  }
+
+  if (active30 > 0 && active7 < Math.round(active30 * 0.15)) {
+    alerts.push("• Faible activité récente sur 7 jours");
+  }
+
+  if (activeToCreatedRate <= 10) {
+    insights.push("Les utilisateurs actifs passent encore trop peu à la création de documents.");
+  }
+
+  if (paidUsers === 0 && docsGenerated > 50) {
+    insights.push("Le produit est utilisé, mais la monétisation n’est pas encore déclenchée.");
+  }
+
+  if (usersZeroCredits > 0) {
+    insights.push(`${usersZeroCredits} utilisateur(s) ont épuisé leurs crédits: pipeline chaud de conversion.`);
+  }
+
+  if (signupToActive30Rate < 25) {
+    insights.push("L’activation globale reste faible: l’arrivée dans le produit doit être simplifiée.");
+  }
+
+  if (docs30 > 0 && docs7 === 0) {
+    insights.push("L’usage existe sur 30 jours mais ralentit fortement sur 7 jours.");
+  }
+
+  const priorityAction =
+    paidUsers === 0
+      ? "Activer immédiatement le flow de recharge au moment où les crédits arrivent à zéro."
+      : activeToCreatedRate <= 10
+      ? "Augmenter la conversion vers le premier document avec des entrées plus directes."
+      : "Travailler la rétention 7 jours et la réactivation des utilisateurs récents.";
+
+  return {
+    alerts,
+    insights,
+    priorityAction,
+    summary:
+      insights[0] ||
+      "Le produit montre un usage réel, mais la conversion business doit maintenant devenir prioritaire.",
+  };
+}
+
+// ===============================
 // Main stats
 // ===============================
 async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
@@ -273,7 +344,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       ? totalKnownUsers
       : 0;
 
-  // IMPORTANT: activity uses last_seen, not created_at
   const active1d = await safeTableExistsFetch(
     () =>
       countDistinct("kadi_activity", "wa_id", [
@@ -495,23 +565,111 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const usersWithWallet = balanceByProfile.size;
 
   // ===============================
-  // ALERTS
+  // Derived YC metrics
   // ===============================
-  const alerts = [];
+  const docsPerTotalUser =
+    totalUsers > 0 ? Number((docsGenerated / totalUsers).toFixed(2)) : 0;
 
-  if (docs7Growth < 0) {
-    alerts.push(`• Baisse docs 7j: ${docs7Growth}%`);
-  }
+  const docsPerActive30User =
+    active30 > 0 ? Number((docs30 / active30).toFixed(2)) : 0;
 
-  if (generatedToPaidRate < 5 && docsGenerated > 20) {
-    alerts.push(`• Conversion PDF→payé faible: ${generatedToPaidRate}%`);
-  }
+  const docsPerActive7User =
+    active7 > 0 ? Number((docs7 / active7).toFixed(2)) : 0;
 
-  if (active30 > 0 && active7 < Math.round(active30 * 0.15)) {
-    alerts.push(`• Faible activité récente sur 7 jours`);
-  }
+  const active30Rate = pct(active30, totalUsers);
+  const active7Rate = pct(active7, totalUsers);
+
+  const estimatedNewUsers30 = Math.max(totalUsers - active30, 0);
+
+  const retention7Approx =
+    active30 > 0 ? pct(active7, active30) : 0;
+
+  const insights = buildYcInsights({
+    totalUsers,
+    active7,
+    active30,
+    docs7,
+    docs30,
+    docsGenerated,
+    usersWithDocs,
+    paidUsers,
+    revenueMonth,
+    usersZeroCredits,
+    docs7Growth,
+    signupToActive30Rate,
+    activeToCreatedRate,
+    generatedToPaidRate,
+  });
 
   return {
+    growth: {
+      totalUsers,
+      estimatedNewUsers30,
+      active1d,
+      active7,
+      active30,
+      active7Rate,
+      active30Rate,
+    },
+
+    usage: {
+      docsTotal: docsGenerated,
+      docs1d: docs1,
+      docs7d: docs7,
+      docs30d: docs30,
+      docsPerTotalUser,
+      docsPerActive30User,
+      docsPerActive7User,
+      usersWithDocs,
+      ocrDocsTotal: ocrDocsAll,
+      ocrDocs30d: ocrDocs30,
+      stampedDocsTotal: stampedDocsAll,
+      stampedDocs30d: stampedDocs30,
+      totalDocumentValueAll: Math.round(sumBy(docsRowsAll, (r) => r.total)),
+      totalDocumentValue30d: Math.round(sumBy(docsRows30, (r) => r.total)),
+    },
+
+    monetization: {
+      revenue30d: revenueMonth,
+      revenueGrowth30d,
+      payingUsers: paidUsers,
+      creditsPaid30d: creditsPaid30,
+      packCredits,
+      packPriceFcfa,
+      usersZeroCredits,
+      usersLowCredits,
+      usersWithWallet,
+      arpu30d:
+        paidUsers > 0 ? Math.round(revenueMonth / paidUsers) : 0,
+    },
+
+    funnel: {
+      signupToActive30Rate,
+      activeToCreatedRate,
+      createdToGeneratedRate,
+      generatedToPaidRate,
+    },
+
+    retention: {
+      active7,
+      active30,
+      retention7Approx,
+    },
+
+    comparisons: {
+      docs7Growth,
+      revenue30Growth,
+    },
+
+    topClients,
+    topUsers,
+
+    alerts: insights.alerts,
+    insights: insights.insights,
+    priorityAction: insights.priorityAction,
+    summary: insights.summary,
+
+    // legacy compatibility
     users: {
       total: totalUsers,
       totalUsers,
@@ -526,7 +684,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     },
 
     docs: {
-      created: docsCreated,
+      created: docsGenerated,
       generated: docsGenerated,
       creationToPdfRate: 100,
       last1: docs1,
@@ -541,32 +699,12 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       stampedDocs30,
     },
 
-    comparisons: {
-      docs7Growth,
-      revenue30Growth,
-    },
-
     revenue: {
       month: revenueMonth,
       est30: revenueMonth,
       creditsPaid: creditsPaid30,
       packCredits,
       packPriceFcfa,
-    },
-
-    funnel: {
-      signupToActive30Rate,
-      activeToCreatedRate,
-      createdToGeneratedRate,
-      generatedToPaidRate,
-    },
-
-    topClients,
-    topUsers,
-    alerts,
-
-    credits: {
-      addedPaid30: creditsPaid30,
     },
 
     conversion: {
@@ -578,6 +716,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       onboardingRate: 0,
       activationRate: pct(usersWithDocs, totalUsers),
       paymentConversion: pct(paidUsers, active30),
+      docsPerWeek: docs7,
+      docsPerMonth: docs30,
     },
   };
 }
