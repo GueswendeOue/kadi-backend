@@ -114,6 +114,32 @@ function makeKadiPdfFlow(deps) {
     );
   }
 
+  async function sendLowCreditWarning(from, balance) {
+    if (Number(balance) !== 1) return;
+
+    await sendText(
+      from,
+      "⚠️ Il vous reste *1 crédit*.\n\n" +
+        "Après ce document, vous devrez recharger pour continuer avec KADI.\n" +
+        "💳 2000 FCFA = 25 crédits."
+    );
+  }
+
+  async function sendNoCreditsBlock(from, balance, totalCost) {
+    await sendText(
+      from,
+      "🚫 Vous avez utilisé tous vos crédits gratuits.\n\n" +
+        "KADI vous permet de continuer vos devis, factures et reçus en quelques secondes.\n\n" +
+        `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
+        `💳 Votre solde : *${balance || 0} crédit(s)*`
+    );
+
+    await sendButtons(from, "Choisissez une option 👇", [
+      { id: "CREDITS_RECHARGE", title: "💳 Recharger" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ]);
+  }
+
   async function createAndSendPdf(from) {
     const s = getSession(from);
     const draft = s?.lastDocDraft;
@@ -158,7 +184,11 @@ function makeKadiPdfFlow(deps) {
       await sendText(
         from,
         "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
-          `Détail: ${Array.isArray(checkedDraft?.issues) ? checkedDraft.issues.join(", ") : "données incohérentes"}`
+          `Détail: ${
+            Array.isArray(checkedDraft?.issues)
+              ? checkedDraft.issues.join(", ")
+              : "données incohérentes"
+          }`
       );
       return;
     }
@@ -174,6 +204,7 @@ function makeKadiPdfFlow(deps) {
     }
 
     baseCost = computeBasePdfCost(finalDraft);
+
     const baseReason =
       finalDraft.source === "ocr"
         ? "ocr_pdf"
@@ -207,6 +238,7 @@ function makeKadiPdfFlow(deps) {
 
       const stampExtraCost = useOneTimeStamp ? 1 : 0;
       const totalCost = baseCost + stampExtraCost;
+
       const finalReason = useOneTimeStamp
         ? `${baseReason}_stamp_once`
         : baseReason;
@@ -230,15 +262,14 @@ function makeKadiPdfFlow(deps) {
       );
 
       if (!cons?.ok) {
-        await sendText(
-          from,
-          `❌ Solde insuffisant.\nVous avez ${cons?.balance || 0} crédit(s).\nCe document coûte ${totalCost} crédit(s).\n👉 Tapez RECHARGE.`
-        );
+        await sendNoCreditsBlock(from, cons?.balance || 0, totalCost);
         return;
       }
 
       debited = true;
       finalBalance = cons.balance || 0;
+
+      await sendLowCreditWarning(from, finalBalance);
 
       finalDraft.finance = computeFinance(finalDraft);
 
@@ -398,6 +429,7 @@ function makeKadiPdfFlow(deps) {
             s.addStampForNextDoc === true && s.stampMode === "one_time"
               ? 1
               : 0;
+
           const totalCost = baseCost + stampExtraCost;
 
           await addCredits(
