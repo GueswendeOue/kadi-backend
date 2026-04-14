@@ -18,6 +18,7 @@ function makeKadiOcrFlow(deps) {
     computeBasePdfCost,
     formatBaseCostLine,
     logger,
+    safe,
 
     // OCR low-level
     ocrImageToText,

@@ -398,6 +398,7 @@ const { processOcrImageToDraft } = makeKadiOcrFlow({
   computeBasePdfCost,
   formatBaseCostLine,
   logger,
+  safe,
   ocrImageToText: kadiOcrEngine,
   geminiIsEnabled: () => false,
   ocrLooksGood: () => true,
