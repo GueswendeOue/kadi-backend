@@ -16,6 +16,82 @@ function normalizeUsers(rows = []) {
     .filter((row) => !!row.wa_id);
 }
 
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function buildStats() {
+  return {
+    targeted: 0,
+    sent: 0,
+    template: 0,
+    blocked: 0,
+    failed: 0,
+  };
+}
+
+async function runCampaign({
+  users,
+  sendText,
+  sendTemplateMessage,
+  messageText,
+}) {
+  const stats = buildStats();
+  const normalizedUsers = normalizeUsers(users);
+
+  stats.targeted = normalizedUsers.length;
+
+  for (const user of normalizedUsers) {
+    try {
+      const res = await sendSmartReengagement({
+        waId: user.wa_id,
+        lastActivityAt: user.last_activity_at,
+        sendText,
+        sendTemplateMessage,
+        messageText,
+        templateName: null,
+      });
+
+      if (res?.ok && res?.mode === "free") {
+        stats.sent += 1;
+      } else if (res?.ok && res?.mode === "template") {
+        stats.template += 1;
+      } else if (res?.reason === "blocked_24h") {
+        stats.blocked += 1;
+      } else {
+        stats.failed += 1;
+      }
+    } catch (_) {
+      stats.failed += 1;
+    }
+  }
+
+  return stats;
+}
+
+async function sendCampaignReport({
+  sendText,
+  from,
+  title,
+  metaLines = [],
+  stats,
+}) {
+  await sendText(
+    from,
+    [
+      `✅ ${title}`,
+      ...metaLines,
+      `Ciblés : ${stats.targeted}`,
+      `Envoyés : ${stats.sent}`,
+      `Templates : ${stats.template}`,
+      `Bloqués : ${stats.blocked}`,
+      `Échecs : ${stats.failed}`,
+    ].join("\n")
+  );
+}
+
 function makeKadiReengagementService({
   sendText,
   getZeroDocUsersBySegment,
@@ -35,48 +111,25 @@ function makeKadiReengagementService({
       return true;
     }
 
-    const limit = Number(match[1] || 50);
+    const limit = clampInt(match[1], 1, 500, 50);
     const variant = String(match[2] || "A").toUpperCase();
 
     const rawUsers = await getZeroDocUsersBySegment(limit, variant);
-    const users = normalizeUsers(rawUsers);
 
-    const stats = {
-      targeted: users.length,
-      sent: 0,
-      template: 0,
-      blocked: 0,
-      failed: 0,
-    };
+    const stats = await runCampaign({
+      users: rawUsers,
+      sendText,
+      sendTemplateMessage,
+      messageText: getZeroDocMessageByVariant(variant),
+    });
 
-    for (const user of users) {
-      const res = await sendSmartReengagement({
-        waId: user.wa_id,
-        lastActivityAt: user.last_activity_at,
-        sendText,
-        sendTemplateMessage,
-        messageText: getZeroDocMessageByVariant(variant),
-        templateName: null,
-      });
-
-      if (res.ok && res.mode === "free") stats.sent += 1;
-      else if (res.ok && res.mode === "template") stats.template += 1;
-      else if (res.reason === "blocked_24h") stats.blocked += 1;
-      else stats.failed += 1;
-    }
-
-    await sendText(
+    await sendCampaignReport({
+      sendText,
       from,
-      [
-        "✅ Re-engagement zéro docs terminé.",
-        `Segment : ${variant}`,
-        `Ciblés : ${stats.targeted}`,
-        `Envoyés : ${stats.sent}`,
-        `Templates : ${stats.template}`,
-        `Bloqués : ${stats.blocked}`,
-        `Échecs : ${stats.failed}`,
-      ].join("\n")
-    );
+      title: "Re-engagement zéro docs terminé.",
+      metaLines: [`Segment : ${variant}`],
+      stats,
+    });
 
     if (adminWaId) {
       await notifyAdminReengagement({
@@ -102,48 +155,25 @@ function makeKadiReengagementService({
       return true;
     }
 
-    const days = Number(match[1] || 30);
-    const limit = Number(match[2] || 50);
+    const days = clampInt(match[1], 1, 365, 30);
+    const limit = clampInt(match[2], 1, 500, 50);
 
     const rawUsers = await getInactiveUsers(days, limit);
-    const users = normalizeUsers(rawUsers);
 
-    const stats = {
-      targeted: users.length,
-      sent: 0,
-      template: 0,
-      blocked: 0,
-      failed: 0,
-    };
+    const stats = await runCampaign({
+      users: rawUsers,
+      sendText,
+      sendTemplateMessage,
+      messageText: buildInactiveMessage(days),
+    });
 
-    for (const user of users) {
-      const res = await sendSmartReengagement({
-        waId: user.wa_id,
-        lastActivityAt: user.last_activity_at,
-        sendText,
-        sendTemplateMessage,
-        messageText: buildInactiveMessage(days),
-        templateName: null,
-      });
-
-      if (res.ok && res.mode === "free") stats.sent += 1;
-      else if (res.ok && res.mode === "template") stats.template += 1;
-      else if (res.reason === "blocked_24h") stats.blocked += 1;
-      else stats.failed += 1;
-    }
-
-    await sendText(
+    await sendCampaignReport({
+      sendText,
       from,
-      [
-        "✅ Re-engagement inactifs terminé.",
-        `Jours : ${days}`,
-        `Ciblés : ${stats.targeted}`,
-        `Envoyés : ${stats.sent}`,
-        `Templates : ${stats.template}`,
-        `Bloqués : ${stats.blocked}`,
-        `Échecs : ${stats.failed}`,
-      ].join("\n")
-    );
+      title: "Re-engagement inactifs terminé.",
+      metaLines: [`Jours : ${days}`],
+      stats,
+    });
 
     if (adminWaId) {
       await notifyAdminReengagement({
