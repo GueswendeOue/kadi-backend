@@ -24,10 +24,10 @@ const RECHARGE_OFFERS = {
 
   PACK_5000: {
     id: "PACK_5000",
-    label: "5000F = 50 crédits + Tampon",
+    label: "5000F = 70 crédits",
     amountFcfa: 5000,
-    credits: 50,
-    includesStamp: true,
+    credits: 70,
+    includesStamp: false,
     isActive: true,
     sortOrder: 3,
   },
@@ -65,34 +65,7 @@ function getRechargeOfferById(id) {
   return cloneOffer(offer);
 }
 
-function getRechargeOfferByAmount(amountFcfa) {
-  const amount = Number(amountFcfa || 0);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-
-  const offer = Object.values(RECHARGE_OFFERS).find(
-    (item) => item?.isActive !== false && Number(item.amountFcfa) === amount
-  );
-
-  return cloneOffer(offer);
-}
-
-function getRecommendedRechargeOffer() {
-  const offer = Object.values(RECHARGE_OFFERS).find(
-    (item) => item?.isActive !== false && item?.isRecommended === true
-  );
-
-  if (offer) return cloneOffer(offer);
-
-  const firstActive = Object.values(RECHARGE_OFFERS)
-    .filter((item) => item?.isActive !== false)
-    .sort((a, b) => Number(a?.sortOrder || 999) - Number(b?.sortOrder || 999))[0];
-
-  return cloneOffer(firstActive);
-}
-
 module.exports = {
   getRechargeOffers,
   getRechargeOfferById,
-  getRechargeOfferByAmount,
-  getRecommendedRechargeOffer,
 };

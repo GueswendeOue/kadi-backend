@@ -1,17 +1,29 @@
 "use strict";
 
-const { sendButtons, sendText } = require("./whatsappApi");
+const { sendButtons } = require("./whatsappApi");
 const { OM_NUMBER, OM_NAME } = process.env;
 
+function buildRechargePacksText() {
+  return (
+    "💳 *Recharger vos crédits KADI*\n\n" +
+    "Continuez à créer vos documents sans interruption.\n\n" +
+    "📦 *Packs disponibles*\n" +
+    "• 1000F = 10 crédits\n" +
+    "• 2000F = 25 crédits\n" +
+    "• 5000F = 70 crédits\n\n" +
+    "📄 *Coûts utiles*\n" +
+    "• PDF simple = 1 crédit\n" +
+    "• Tampon sur un document = +1 crédit"
+  );
+}
+
 async function sendRechargePacksMenu(to) {
-  const text =
-    "💳 *Recharger vos crédits Kadi*\n\n" +
-    "Choisissez un pack :";
+  const text = buildRechargePacksText();
 
   await sendButtons(to, text, [
     { id: "PACK_1000", title: "1000F = 10 crédits" },
     { id: "PACK_2000", title: "2000F = 25 crédits" },
-    { id: "PACK_5000", title: "5000F = 50 + Tampon" },
+    { id: "PACK_5000", title: "5000F = 70 crédits" },
   ]);
 }
 
@@ -19,9 +31,8 @@ async function sendRechargePaymentMethodMenu(to, offer) {
   const text =
     `💳 *${offer.label}*\n\n` +
     `Montant : *${offer.amountFcfa} FCFA*\n` +
-    `Crédits : *${offer.credits}*\n` +
-    (offer.includesStamp ? `🎁 Tampon illimité offert\n` : "") +
-    `\nChoisissez un mode de paiement :`;
+    `Crédits : *${offer.credits}*\n\n` +
+    "Choisissez un mode de paiement :";
 
   await sendButtons(to, text, [
     { id: `PAY_OM_${offer.amountFcfa}`, title: "Orange Money" },
@@ -34,14 +45,13 @@ async function sendOrangeMoneyInstructions(to, offer) {
   const text =
     "🟠 *Paiement via Orange Money*\n\n" +
     `1️⃣ Envoyez : *${offer.amountFcfa} FCFA*\n` +
-    `2️⃣ Au numéro : *${OM_NUMBER}*\n` +
-    `3️⃣ Nom : *${OM_NAME}*\n\n` +
-    "📌 Important :\n" +
-    "Après paiement, envoyez ici :\n" +
-    "• le message de confirmation (copier/coller)\n" +
+    `2️⃣ Au numéro : *${OM_NUMBER || "-"}*\n` +
+    `3️⃣ Nom : *${OM_NAME || "-"}*\n\n` +
+    "📌 Après paiement, envoyez ici :\n" +
+    "• le message de confirmation\n" +
     "OU\n" +
     "• une capture d’écran\n\n" +
-    "👉 Cela permet de valider rapidement votre recharge.";
+    "✅ Dès validation, vos crédits seront ajoutés et vous pourrez reprendre votre document.";
 
   await sendButtons(to, text, [
     { id: `OM_PAID_${offer.amountFcfa}`, title: "J’ai payé" },
