@@ -51,8 +51,6 @@ function makeKadiInteractiveFlow(deps) {
     updateProfile,
     hasStampProfileReady,
     resetStampChoice,
-    consumeFeature,
-    STAMP_ONE_TIME_COST,
 
     // decharge
     buildDechargeConfirmationMessage,
@@ -261,56 +259,56 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     // INTENT REVIEW (VOICE / IA)
     // ===============================
-    if (replyId === "INTENT_OK") {
-      const intent = s.intent || null;
+ if (replyId === "INTENT_OK") {
+  const intent = s.intent || null;
 
-      if (!intent) {
-        await sendText(
-          from,
-          "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
-        );
-        return;
-      }
+  if (!intent) {
+    await sendText(
+      from,
+      "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
+    );
+    return;
+  }
 
-      if (Array.isArray(intent.missing) && intent.missing.length > 0) {
-        if (intent.missing.includes("client")) {
-          s.step = "intent_fix_client";
-          await sendText(from, "👤 Quel est le nom du client ?");
-          return;
-        }
-
-        if (intent.missing.includes("price")) {
-          const item = Array.isArray(intent.items)
-            ? intent.items.find((i) => i?.unitPrice == null)
-            : null;
-
-          s.step = "intent_fix_price";
-          s.intentPendingItemLabel = item?.label || null;
-
-          await sendText(
-            from,
-            `💰 Quel est le prix pour : *${item?.label || "cet article"}* ?`
-          );
-          return;
-        }
-
-        if (intent.missing.includes("items")) {
-          s.step = "intent_fix_items";
-          await sendText(
-            from,
-            "📦 Je n’ai pas bien compris les éléments.\nÉcrivez-les clairement pour continuer."
-          );
-          return;
-        }
-      }
-
-      s.lastDocDraft = buildDraftFromIntent(intent);
-      s.step = "doc_review";
-      s.intent = null;
-      s.intentPendingItemLabel = null;
-
-      return sendCurrentDraftPreview(from, s.lastDocDraft);
+  if (Array.isArray(intent.missing) && intent.missing.length > 0) {
+    if (intent.missing.includes("client")) {
+      s.step = "intent_fix_client";
+      await sendText(from, "👤 Quel est le nom du client ?");
+      return;
     }
+
+    if (intent.missing.includes("price")) {
+      const item = Array.isArray(intent.items)
+        ? intent.items.find((i) => i?.unitPrice == null)
+        : null;
+
+      s.step = "intent_fix_price";
+      s.intentPendingItemLabel = item?.label || null;
+
+      await sendText(
+        from,
+        `💰 Quel est le prix pour : *${item?.label || "cet article"}* ?`
+      );
+      return;
+    }
+
+    if (intent.missing.includes("items")) {
+      s.step = "intent_fix_items";
+      await sendText(
+        from,
+        "📦 Je n’ai pas bien compris les éléments.\nÉcrivez-les clairement pour continuer."
+      );
+      return;
+    }
+  }
+
+  s.lastDocDraft = buildDraftFromIntent(intent);
+  s.step = "doc_review";
+  s.intent = null;
+  s.intentPendingItemLabel = null;
+
+  return sendCurrentDraftPreview(from, s.lastDocDraft);
+}
 
     if (replyId === "INTENT_FIX") {
       const intent = s.intent || null;
@@ -792,45 +790,17 @@ function makeKadiInteractiveFlow(deps) {
 
     if (replyId === "STAMP_TOGGLE") {
       const p = await getOrCreateProfile(from);
+      const nextEnabled = !(p?.stamp_enabled === true);
 
-      if (p?.stamp_enabled === true) {
-        await updateProfile(from, { stamp_enabled: false });
-        await sendText(from, "🟦 Tampon désactivé.");
-        return sendStampMenu(from);
-      }
+      await updateProfile(from, { stamp_enabled: nextEnabled });
 
-      if (p?.stamp_paid !== true) {
-        const res = await consumeFeature(
-          { waId: from },
-          "stamp_addon",
-          `stamp:addon:${from}`,
-          { feature: "stamp_addon" }
-        );
+      await sendText(
+        from,
+        nextEnabled
+          ? "🟦 Tampon activé dans votre profil."
+          : "🟦 Tampon désactivé."
+      );
 
-        if (!res?.ok) {
-          await sendText(
-            from,
-            `⚠️ Solde insuffisant.\nLe tampon coûte *${STAMP_ONE_TIME_COST} crédits* (paiement unique).\nTapez RECHARGE pour continuer.`
-          );
-          return sendStampMenu(from);
-        }
-
-        await updateProfile(from, {
-          stamp_paid: true,
-          stamp_paid_at: new Date().toISOString(),
-          stamp_enabled: true,
-        });
-
-        await sendText(
-          from,
-          `🟦 *Tampon activé !*\n✅ Paiement unique effectué : *${STAMP_ONE_TIME_COST} crédits*\n📄 Le tampon sera ajouté gratuitement à vos PDF.`
-        );
-
-        return sendStampMenu(from);
-      }
-
-      await updateProfile(from, { stamp_enabled: true });
-      await sendText(from, "🟦 Tampon activé.");
       return sendStampMenu(from);
     }
 
@@ -898,7 +868,7 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingRechargePack = selectedOffer.id;
       s.pendingRechargeAmount = selectedOffer.amountFcfa;
       s.pendingRechargeCredits = selectedOffer.credits;
-      s.pendingRechargeIncludesStamp = !!selectedOffer.includesStamp;
+      s.pendingRechargeIncludesStamp = false;
       s.pendingTopupId = null;
       s.pendingTopupReference = null;
       s.pendingTopupMethod = null;
@@ -924,13 +894,13 @@ function makeKadiInteractiveFlow(deps) {
         waId: from,
         amountFcfa: offer.amountFcfa,
         credits: offer.credits,
-        includesStamp: !!offer.includesStamp,
+        includesStamp: false,
       });
 
       s.pendingRechargePack = offer.id;
       s.pendingRechargeAmount = offer.amountFcfa;
       s.pendingRechargeCredits = offer.credits;
-      s.pendingRechargeIncludesStamp = !!offer.includesStamp;
+      s.pendingRechargeIncludesStamp = false;
       s.pendingTopupId = topup.id;
       s.pendingTopupReference = topup.reference;
       s.pendingTopupMethod = "orange_money";
@@ -956,7 +926,7 @@ function makeKadiInteractiveFlow(deps) {
       s.pendingRechargePack = offer.id;
       s.pendingRechargeAmount = offer.amountFcfa;
       s.pendingRechargeCredits = offer.credits;
-      s.pendingRechargeIncludesStamp = !!offer.includesStamp;
+      s.pendingRechargeIncludesStamp = false;
       s.pendingTopupId = null;
       s.pendingTopupReference = null;
       s.pendingTopupMethod = "pispi";
@@ -1026,13 +996,6 @@ function makeKadiInteractiveFlow(deps) {
 
       await approveTopup(topup.id);
 
-      if (topup.includes_stamp === true) {
-        await updateProfile(topup.wa_id, {
-          stamp_paid: true,
-          stamp_enabled: true,
-          stamp_paid_at: new Date().toISOString(),
-        });
-      }
 
       await sendText(
         from,
@@ -1041,9 +1004,7 @@ function makeKadiInteractiveFlow(deps) {
 
       await sendText(
         topup.wa_id,
-        `✅ Paiement validé !\n\n🎉 ${topup.credits} crédits ajoutés à votre compte${
-          topup.includes_stamp ? "\n🟦 Tampon activé." : ""
-        }`
+        `✅ Paiement validé !\n\n🎉 ${topup.credits} crédits ajoutés à votre compte.`
       );
       return;
     }
@@ -1185,22 +1146,22 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
-      const p = await getOrCreateProfile(from);
+const p = await getOrCreateProfile(from);
 
-      if (p?.stamp_paid === true && p?.stamp_enabled === true) {
-        resetStampChoice(s);
-
-        finalDraft._saving = true;
-        try {
-          await createAndSendPdf(from);
-          return;
-        } finally {
-          finalDraft._saving = false;
-        }
+      if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
+        await sendPreGenerateStampMenu(from);
+        return;
       }
 
-      await sendPreGenerateStampMenu(from);
-      return;
+      resetStampChoice(s);
+
+      finalDraft._saving = true;
+      try {
+        await createAndSendPdf(from);
+        return;
+      } finally {
+        finalDraft._saving = false;
+      }
     }
 
     if (replyId === "PRESTAMP_SKIP") {
@@ -1267,12 +1228,14 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_RESTART") {
+      resetStampChoice(s);
       resetDraftSession(s);
       await sendText(from, "🔁 Recommençons.");
       return sendDocsMenu(from);
     }
 
     if (replyId === "DOC_CANCEL") {
+      resetStampChoice(s);
       resetDraftSession(s);
       await sendText(from, "✅ Retour au menu.");
       return sendHomeMenu(from);

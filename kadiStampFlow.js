@@ -7,7 +7,6 @@ function makeKadiStampFlow(deps) {
     sendButtons,
     getOrCreateProfile,
     updateProfile,
-    STAMP_ONE_TIME_COST,
   } = deps;
 
   function hasStampProfileReady(profile) {
@@ -40,7 +39,7 @@ function makeKadiStampFlow(deps) {
     return sendButtons(to, text, [
       { id: "PRESTAMP_ADD_ONCE", title: "🟦 Ajouter tampon" },
       { id: "PRESTAMP_SKIP", title: "⚪ Sans tampon" },
-      { id: "PROFILE_STAMP", title: "💎 Tampon illimité" },
+      { id: "PROFILE_STAMP", title: "⚙️ Réglages tampon" },
     ]);
   }
 
@@ -61,25 +60,20 @@ function makeKadiStampFlow(deps) {
   async function sendStampMenu(to) {
     const p = await getOrCreateProfile(to);
 
-    const enabled = p?.stamp_enabled === true;
-    const paid = p?.stamp_paid === true;
-
+const enabled = p?.stamp_enabled === true;
     const pos = p?.stamp_position || "bottom-right";
     const size = p?.stamp_size || 170;
     const title = p?.stamp_title || "—";
-
-    const pricingLine = paid
-      ? `💳 Prix: *Payé ✅* (tampon gratuit sur tous vos PDF)`
-      : `💳 Prix: *${STAMP_ONE_TIME_COST} crédits (paiement unique)*`;
+    const ready = hasStampProfileReady(p);
 
     const header =
       `🟦 *Tampon (PDF)*\n\n` +
       `• Statut : *${enabled ? "ON ✅" : "OFF ❌"}*\n` +
-      `• Paiement : *${paid ? "OK ✅" : "Non ❌"}*\n` +
       `• Fonction : *${title}*\n` +
       `• Position : *${stampPosLabel(pos)}*\n` +
-      `• Taille : *${stampSizeLabel(size)}*\n\n` +
-      `${pricingLine}`;
+      `• Taille : *${stampSizeLabel(size)}*\n` +
+      `• Profil prêt : *${ready ? "Oui ✅" : "Non ❌"}*\n\n` +
+      `💳 Le tampon est proposé avant génération à *+1 crédit par document*.`;
 
     return sendButtons(to, header + "\n\n👇 Choisissez :", [
       { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },

@@ -48,8 +48,7 @@ function makeKadiPdfFlow(deps) {
   ) {
     let buf = pdfBuffer;
 
-    const canStamp =
-      profile?.stamp_enabled === true && profile?.stamp_paid === true;
+    const canStamp = profile?.stamp_enabled === true;
 
     if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
       try {
@@ -128,7 +127,7 @@ function makeKadiPdfFlow(deps) {
   async function sendNoCreditsBlock(from, balance, totalCost) {
     await sendText(
       from,
-      "🚫 Vous avez utilisé tous vos crédits gratuits.\n\n" +
+      "🚫 Vous avez utilisé tous vos crédits disponibles.\n\n" +
         "KADI vous permet de continuer vos devis, factures et reçus en quelques secondes.\n\n" +
         `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
         `💳 Votre solde : *${balance || 0} crédit(s)*`
@@ -228,18 +227,13 @@ function makeKadiPdfFlow(deps) {
     try {
       const profile = await getOrCreateProfile(from);
 
-      const usePaidStamp =
-        profile?.stamp_enabled === true && profile?.stamp_paid === true;
+      const useStampForThisDoc =
+        s.addStampForNextDoc === true && s.stampMode === "one_time";
 
-      const useOneTimeStamp =
-        s.addStampForNextDoc === true &&
-        s.stampMode === "one_time" &&
-        profile?.stamp_paid !== true;
-
-      const stampExtraCost = useOneTimeStamp ? 1 : 0;
+      const stampExtraCost = useStampForThisDoc ? 1 : 0;
       const totalCost = baseCost + stampExtraCost;
 
-      const finalReason = useOneTimeStamp
+      const finalReason = useStampForThisDoc
         ? `${baseReason}_stamp_once`
         : baseReason;
 
@@ -256,8 +250,7 @@ function makeKadiPdfFlow(deps) {
           source: finalDraft.source || null,
           baseCost,
           stampExtraCost,
-          usePaidStamp,
-          useOneTimeStamp,
+          useStampForThisDoc,
         }
       );
 
@@ -329,14 +322,15 @@ function makeKadiPdfFlow(deps) {
         logoBuffer: logoBuf,
       });
 
-      const stampProfile =
-        usePaidStamp || useOneTimeStamp
-          ? {
-              ...profile,
-              stamp_enabled: true,
-              stamp_paid: true,
-            }
-          : profile;
+      const stampProfile = useStampForThisDoc
+        ? {
+            ...profile,
+            stamp_enabled: true,
+          }
+        : {
+            ...profile,
+            stamp_enabled: false,
+          };
 
       pdfBuf = await applyStampAndSignatureIfAny(
         pdfBuf,
@@ -347,15 +341,11 @@ function makeKadiPdfFlow(deps) {
       finalDraft.meta = makeDraftMeta({
         ...(finalDraft.meta || {}),
         creditsConsumed: totalCost,
-        usedStamp: !!(usePaidStamp || useOneTimeStamp),
+        usedStamp: !!useStampForThisDoc,
         usedGeminiParse: !!finalDraft?.meta?.usedGeminiParse,
         businessSector: finalDraft?.meta?.businessSector || null,
         requestId: finalDraft.requestId,
-        stampMode: usePaidStamp
-          ? "unlimited"
-          : useOneTimeStamp
-          ? "one_time"
-          : "none",
+        stampMode: useStampForThisDoc ? "one_time" : "none",
       });
 
       finalDraft.status = "generated";
