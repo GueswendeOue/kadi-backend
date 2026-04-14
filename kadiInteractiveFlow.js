@@ -302,10 +302,11 @@ function makeKadiInteractiveFlow(deps) {
     }
   }
 
-  s.lastDocDraft = buildDraftFromIntent(intent);
-  s.step = "doc_review";
-  s.intent = null;
-  s.intentPendingItemLabel = null;
+ s.lastDocDraft = buildDraftFromIntent(intent);
+resetStampChoice(s);
+s.step = "doc_review";
+s.intent = null;
+s.intentPendingItemLabel = null;
 
   return sendCurrentDraftPreview(from, s.lastDocDraft);
 }
@@ -411,13 +412,13 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
-    if (
-      replyId === "RECHARGE_1000" ||
-      replyId === "RECHARGE_2000" ||
-      replyId === "RECHARGE_3500"
-    ) {
-      return sendRechargePacksMenu(from);
-    }
+  if (
+  replyId === "RECHARGE_1000" ||
+  replyId === "RECHARGE_2000" ||
+  replyId === "RECHARGE_5000"
+) {
+  return sendRechargePacksMenu(from);
+}
 
     // ===============================
     // RECEIPT FORMAT
@@ -466,24 +467,25 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
-      s.lastDocDraft = cloneDraftToNewDocType(
-        {
-          type: "devis",
-          factureKind: null,
-          docNumber: row.doc_number,
-          date: row.source_doc?.date || formatDateISO(),
-          client: row.source_doc?.client || null,
-          clientPhone: row.source_doc?.clientPhone || null,
-          subject: row.source_doc?.subject || row.source_doc?.motif || null,
-          items: row.source_doc?.items || [],
-          finance: row.source_doc?.finance || null,
-          source: row.source_doc?.source || "product",
-          meta: makeDraftMeta(),
-        },
-        "facture"
-      );
+s.lastDocDraft = cloneDraftToNewDocType(
+  {
+    type: "devis",
+    factureKind: null,
+    docNumber: row.doc_number,
+    date: row.source_doc?.date || formatDateISO(),
+    client: row.source_doc?.client || null,
+    clientPhone: row.source_doc?.clientPhone || null,
+    subject: row.source_doc?.subject || row.source_doc?.motif || null,
+    items: row.source_doc?.items || [],
+    finance: row.source_doc?.finance || null,
+    source: row.source_doc?.source || "product",
+    meta: makeDraftMeta(),
+  },
+  "facture"
+);
 
-      const checked = validateDraftForUi(s.lastDocDraft);
+resetStampChoice(s);
+const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
 
       if (!checked.ok) {
@@ -515,24 +517,25 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
-      s.lastDocDraft = cloneDraftToNewDocType(
-        {
-          type: "devis",
-          factureKind: null,
-          docNumber: row.doc_number,
-          date: row.source_doc?.date || formatDateISO(),
-          client: row.source_doc?.client || null,
-          clientPhone: row.source_doc?.clientPhone || null,
-          subject: row.source_doc?.subject || row.source_doc?.motif || null,
-          items: row.source_doc?.items || [],
-          finance: row.source_doc?.finance || null,
-          source: row.source_doc?.source || "product",
-          meta: makeDraftMeta(),
-        },
-        "recu"
-      );
+  s.lastDocDraft = cloneDraftToNewDocType(
+  {
+    type: "devis",
+    factureKind: null,
+    docNumber: row.doc_number,
+    date: row.source_doc?.date || formatDateISO(),
+    client: row.source_doc?.client || null,
+    clientPhone: row.source_doc?.clientPhone || null,
+    subject: row.source_doc?.subject || row.source_doc?.motif || null,
+    items: row.source_doc?.items || [],
+    finance: row.source_doc?.finance || null,
+    source: row.source_doc?.source || "product",
+    meta: makeDraftMeta(),
+  },
+  "recu"
+);
 
-      const checked = validateDraftForUi(s.lastDocDraft);
+resetStampChoice(s);
+const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
 
       if (!checked.ok) {
@@ -662,22 +665,23 @@ function makeKadiInteractiveFlow(deps) {
           ? "recu"
           : "devis";
 
-      s.lastDocDraft = {
-        type: mode,
-        factureKind: mode === "facture" ? "definitive" : null,
-        docNumber: null,
-        date: formatDateISO(),
-        client: null,
-        clientPhone: null,
-        subject: null,
-        motif: null,
-        items: [],
-        finance: null,
-        source: "natural_text",
-        meta: makeDraftMeta(),
-      };
+  s.lastDocDraft = {
+  type: mode,
+  factureKind: mode === "facture" ? "definitive" : null,
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  clientPhone: null,
+  subject: null,
+  motif: null,
+  items: [],
+  finance: null,
+  source: "natural_text",
+  meta: makeDraftMeta(),
+};
 
-      s.pendingSmartBlockText = null;
+resetStampChoice(s);
+s.pendingSmartBlockText = null;
 
       const handled = await tryHandleNaturalMessage(from, raw);
       if (handled) return;
@@ -697,9 +701,20 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     // CATALOGUE DOCS
     // ===============================
-    if (replyId === "DOC_DEVIS") return startDocFlow(from, "devis");
-    if (replyId === "DOC_RECU") return startDocFlow(from, "recu");
-    if (replyId === "DOC_DECHARGE") return startDocFlow(from, "decharge");
+   if (replyId === "DOC_DEVIS") {
+  resetStampChoice(s);
+  return startDocFlow(from, "devis");
+}
+
+if (replyId === "DOC_RECU") {
+  resetStampChoice(s);
+  return startDocFlow(from, "recu");
+}
+
+if (replyId === "DOC_DECHARGE") {
+  resetStampChoice(s);
+  return startDocFlow(from, "decharge");
+}
 
     if (replyId === "DOC_FACTURE_MENU") {
       return sendFactureCatalogMenu
@@ -713,9 +728,10 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
-      const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
-      return startDocFlow(from, "facture", kind);
-    }
+  resetStampChoice(s);
+  const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
+  return startDocFlow(from, "facture", kind);
+}
 
     // ===============================
     // OCR
@@ -733,21 +749,22 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-      s.lastDocDraft = {
-        type: mode,
-        factureKind: null,
-        docNumber: null,
-        date: formatDateISO(),
-        client: null,
-        clientPhone: null,
-        subject: null,
-        items: [],
-        finance: null,
-        source: "ocr",
-        meta: makeDraftMeta(),
-      };
+  s.lastDocDraft = {
+  type: mode,
+  factureKind: null,
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  clientPhone: null,
+  subject: null,
+  items: [],
+  finance: null,
+  source: "ocr",
+  meta: makeDraftMeta(),
+};
 
-      return processOcrImageToDraft(from, mediaId);
+resetStampChoice(s);
+return processOcrImageToDraft(from, mediaId);
     }
 
     if (replyId === "OCR_FACTURE") {
@@ -762,21 +779,22 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
-      s.lastDocDraft = {
-        type: "facture",
-        factureKind: "definitive",
-        docNumber: null,
-        date: formatDateISO(),
-        client: null,
-        clientPhone: null,
-        subject: null,
-        items: [],
-        finance: null,
-        source: "ocr",
-        meta: makeDraftMeta(),
-      };
+   s.lastDocDraft = {
+  type: "facture",
+  factureKind: "definitive",
+  docNumber: null,
+  date: formatDateISO(),
+  client: null,
+  clientPhone: null,
+  subject: null,
+  items: [],
+  finance: null,
+  source: "ocr",
+  meta: makeDraftMeta(),
+};
 
-      return processOcrImageToDraft(from, mediaId);
+resetStampChoice(s);
+return processOcrImageToDraft(from, mediaId);
     }
 
     // ===============================
@@ -1118,51 +1136,56 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
-    if (replyId === "DOC_CONFIRM") {
-      const draft = s.lastDocDraft;
+if (replyId === "DOC_CONFIRM") {
+  const draft = s.lastDocDraft;
 
-      if (!draft) {
-        await sendText(from, noDraftMessage());
-        return;
-      }
+  if (!draft) {
+    await sendText(from, noDraftMessage());
+    return;
+  }
 
-      const checked = validateDraftForUi(draft);
-      if (!checked.ok) {
-        s.lastDocDraft = checked.draft;
-        return sendDraftBlockedMessage(from, checked);
-      }
-      s.lastDocDraft = checked.draft;
+  const checked = validateDraftForUi(draft);
+  if (!checked.ok) {
+    s.lastDocDraft = checked.draft;
+    return sendDraftBlockedMessage(from, checked);
+  }
+  s.lastDocDraft = checked.draft;
 
-      const finalDraft = s.lastDocDraft;
+  const finalDraft = s.lastDocDraft;
 
-      if (finalDraft._saving === true || s.isGeneratingPdf === true) {
-        await sendText(from, "⏳ Génération en cours...");
-        return;
-      }
+  if (finalDraft._saving === true || s.isGeneratingPdf === true) {
+    await sendText(from, "⏳ Génération en cours...");
+    return;
+  }
 
-      if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
-        s.step = "doc_already_generated";
-        await sendAlreadyGeneratedMenu(from);
-        return;
-      }
+  if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
+    s.step = "doc_already_generated";
+    await sendAlreadyGeneratedMenu(from);
+    return;
+  }
 
-const p = await getOrCreateProfile(from);
+  const p = await getOrCreateProfile(from);
 
-      if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
-        await sendPreGenerateStampMenu(from);
-        return;
-      }
+  if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
+    await sendText(
+      from,
+      "💡 *Ajoutez un tampon professionnel ?*\n\n" +
+        "Pour seulement *+1 crédit*, votre document paraît plus crédible et plus pro."
+    );
+    await sendPreGenerateStampMenu(from);
+    return;
+  }
 
-      resetStampChoice(s);
+  resetStampChoice(s);
 
-      finalDraft._saving = true;
-      try {
-        await createAndSendPdf(from);
-        return;
-      } finally {
-        finalDraft._saving = false;
-      }
-    }
+  finalDraft._saving = true;
+  try {
+    await createAndSendPdf(from);
+    return;
+  } finally {
+    finalDraft._saving = false;
+  }
+}
 
     if (replyId === "PRESTAMP_SKIP") {
       resetStampChoice(s);
