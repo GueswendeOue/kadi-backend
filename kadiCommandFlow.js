@@ -4,12 +4,14 @@ function makeKadiCommandFlow(deps) {
   const {
     sendText,
 
+    // user actions
     startProfileFlow,
     sendHomeMenu,
     sendCreditsMenu,
     sendRechargePacksMenu,
     sendDocsMenu,
 
+    // admin / services
     ensureAdmin,
     handleStatsCommand,
     handleTopUsersCommand,
@@ -20,19 +22,43 @@ function makeKadiCommandFlow(deps) {
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
 
+    // helpers
     norm,
   } = deps;
 
+  function normalizeText(text = "") {
+    return String(norm ? norm(text) : text || "").trim();
+  }
+
   function splitArgs(text = "") {
-    return String(text || "").trim().split(/\s+/).filter(Boolean);
+    return String(text || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
   }
 
   function isOneOf(value, allowed = []) {
-    return allowed.includes(String(value || "").trim().toLowerCase());
+    const v = String(value || "").trim().toLowerCase();
+    return allowed.includes(v);
   }
 
+  async function sendUnavailable(from, label) {
+    await sendText(from, `❌ ${label} non disponible.`);
+    return true;
+  }
+
+  async function runIfExists(from, handler, label, ...args) {
+    if (typeof handler !== "function") {
+      return sendUnavailable(from, label);
+    }
+    return handler(...args);
+  }
+
+  // ===============================
+  // USER COMMANDS
+  // ===============================
   async function handleUserCommand(from, text) {
-    const t = norm(text);
+    const t = normalizeText(text);
     if (!t) return false;
 
     if (isOneOf(t, ["menu", "home", "accueil"])) {
@@ -45,7 +71,15 @@ function makeKadiCommandFlow(deps) {
       return true;
     }
 
-    if (isOneOf(t, ["solde", "credit", "credits", "crédit", "crédits"])) {
+    if (
+      isOneOf(t, [
+        "solde",
+        "credit",
+        "credits",
+        "crédit",
+        "crédits",
+      ])
+    ) {
       await sendCreditsMenu(from);
       return true;
     }
@@ -63,62 +97,63 @@ function makeKadiCommandFlow(deps) {
     return false;
   }
 
+  // ===============================
+  // ADMIN COMMANDS
+  // ===============================
   async function handleAdmin(identity, text) {
     const from = identity?.wa_id || identity?.from || identity?.id;
     const raw = String(text || "");
-    const t = norm(text);
+    const t = normalizeText(text);
 
-    if (!ensureAdmin(identity)) return false;
+    if (!from) return false;
     if (!t) return false;
+    if (!ensureAdmin(identity)) return false;
 
+    // broadcast
     if (t.startsWith("/broadcast ")) {
-      if (typeof handleBroadcastCommand !== "function") {
-        await sendText(from, "❌ Service broadcast non disponible.");
-        return true;
-      }
-      return handleBroadcastCommand(from, raw);
+      return runIfExists(
+        from,
+        handleBroadcastCommand,
+        "Service broadcast",
+        from,
+        raw
+      );
     }
 
+    // stats
     if (t === "/stats") {
-      if (typeof handleStatsCommand !== "function") {
-        await sendText(from, "📊 Stats non disponibles.");
-        return true;
-      }
-      return handleStatsCommand(from, raw);
+      return runIfExists(from, handleStatsCommand, "Stats", from, raw);
     }
 
     if (t === "/top_users") {
-      if (typeof handleTopUsersCommand !== "function") {
-        await sendText(from, "📊 Top users non disponibles.");
-        return true;
-      }
-      return handleTopUsersCommand(from, raw);
+      return runIfExists(from, handleTopUsersCommand, "Top users", from, raw);
     }
 
     if (t === "/top_clients") {
-      if (typeof handleTopClientsCommand !== "function") {
-        await sendText(from, "📊 Top clients non disponibles.");
-        return true;
-      }
-      return handleTopClientsCommand(from, raw);
+      return runIfExists(from, handleTopClientsCommand, "Top clients", from, raw);
     }
 
     if (t === "/weekly_report") {
-      if (typeof handleWeeklyReportCommand !== "function") {
-        await sendText(from, "📊 Weekly report non disponible.");
-        return true;
-      }
-      return handleWeeklyReportCommand(from, raw);
+      return runIfExists(
+        from,
+        handleWeeklyReportCommand,
+        "Weekly report",
+        from,
+        raw
+      );
     }
 
     if (t === "/export_excel") {
-      if (typeof handleExportExcelCommand !== "function") {
-        await sendText(from, "📁 Export Excel non disponible.");
-        return true;
-      }
-      return handleExportExcelCommand(from, raw);
+      return runIfExists(
+        from,
+        handleExportExcelCommand,
+        "Export Excel",
+        from,
+        raw
+      );
     }
 
+    // manual credit command placeholder
     if (t.startsWith("/credit ")) {
       const parts = splitArgs(raw);
 
@@ -127,7 +162,7 @@ function makeKadiCommandFlow(deps) {
         return true;
       }
 
-      const target = parts[1];
+      const target = String(parts[1] || "").trim();
       const amount = Number(parts[2]);
 
       if (!target || !Number.isFinite(amount) || amount <= 0) {
@@ -135,29 +170,40 @@ function makeKadiCommandFlow(deps) {
         return true;
       }
 
-      await sendText(from, `✅ Crédit ajouté à ${target}: ${amount}`);
+      await sendText(
+        from,
+        `✅ Commande reçue.\nNuméro: ${target}\nMontant: ${amount}`
+      );
       return true;
     }
 
+    // re-engagement
     if (t.startsWith("/reengage_zero_docs")) {
-      if (typeof handleReengageZeroDocsCommand !== "function") {
-        await sendText(from, "❌ Service re-engagement zero-docs non disponible.");
-        return true;
-      }
-      return handleReengageZeroDocsCommand(from, raw);
+      return runIfExists(
+        from,
+        handleReengageZeroDocsCommand,
+        "Service re-engagement zero-docs",
+        from,
+        raw
+      );
     }
 
     if (t.startsWith("/reengage_inactive")) {
-      if (typeof handleReengageInactiveCommand !== "function") {
-        await sendText(from, "❌ Service re-engagement inactifs non disponible.");
-        return true;
-      }
-      return handleReengageInactiveCommand(from, raw);
+      return runIfExists(
+        from,
+        handleReengageInactiveCommand,
+        "Service re-engagement inactifs",
+        from,
+        raw
+      );
     }
 
     return false;
   }
 
+  // ===============================
+  // MAIN ENTRY
+  // ===============================
   async function handleCommand(from, text, identity) {
     if (!text) return false;
 
@@ -170,6 +216,7 @@ function makeKadiCommandFlow(deps) {
   return {
     handleCommand,
     handleAdmin,
+    handleUserCommand,
   };
 }
 
