@@ -748,6 +748,10 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
   startProfileFlow,
   replyBalance,
   sendRechargePacksMenu,
+  sendStampMenu,
+  sendProfileMenu,
+  sendCreditsMenu,
+  sendAlreadyGeneratedMenu,
 });
 
 // ===============================
@@ -756,12 +760,14 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 async function handleTextMessage(from, text, msg) {
   console.log("[KADI/TEXT] raw:", text, "| norm:", norm(text).toLowerCase());
 
-  if (await handleUltraPriorityText(from, text)) return true;
-  if (await handleSmallTalk(from, text)) return true;
-
-  await maybeSendOnboarding(from);
-
+  // 1) Commandes explicites d'abord (admin + user)
   if (await handleCommand(from, text, { wa_id: from })) return true;
+
+  // 2) Intentions produit prioritaires
+  if (await handleUltraPriorityText(from, text)) return true;
+
+  // 3) Petit small talk
+  if (await handleSmallTalk(from, text)) return true;
 
   const s = getSession(from);
 
@@ -771,6 +777,7 @@ async function handleTextMessage(from, text, msg) {
     hasIntent: !!s?.intent,
   });
 
+  // 4) Correction guidée d’intent
   if (isIntentFixStep(s?.step)) {
     const handledIntentFix = await handleIntentFixText(from, text);
     if (handledIntentFix) return true;
@@ -782,14 +789,20 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
+  // 5) Flows structurés
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
-
-  if (await tryHandleNaturalMessage(from, text)) return true;
-  if (await handleSmartItemsBlockText(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
+  // 6) Onboarding seulement si on n’a pas déjà répondu
+  await maybeSendOnboarding(from);
+
+  // 7) Compréhension naturelle
+  if (await tryHandleNaturalMessage(from, text)) return true;
+  if (await handleSmartItemsBlockText(from, text)) return true;
+
+  // 8) Fallback
   await sendText(
     from,
     "🤔 Je n’ai pas bien compris.\n\n" +

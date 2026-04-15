@@ -10,54 +10,312 @@ function makeKadiPriorityRouter(deps) {
     startProfileFlow,
     replyBalance,
     sendRechargePacksMenu,
+    sendStampMenu,
+    sendProfileMenu,
+    sendCreditsMenu,
+    sendAlreadyGeneratedMenu = null,
   } = deps;
 
-  async function handleUltraPriorityText(from, rawText) {
+  function hasAny(text, patterns = []) {
+    return patterns.some((p) => p.test(text));
+  }
+
+  function detectPriorityIntent(rawText) {
     const t = norm(rawText).toLowerCase();
-    if (!t) return false;
+    if (!t) return null;
+
+    // ===============================
+    // MENU / NAV
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bmenu\b/,
+        /\baccueil\b/,
+        /\bhome\b/,
+        /\bretour\b/,
+      ])
+    ) {
+      return "menu";
+    }
+
+    if (
+      hasAny(t, [
+        /\bdoc\b/,
+        /\bdocs\b/,
+        /\bdocument\b/,
+        /\bdocuments\b/,
+        /\bdevis\b/,
+        /\bfacture\b/,
+        /\breçu\b/,
+        /\brecu\b/,
+        /\bdécharge\b/,
+        /\bdecharge\b/,
+      ])
+    ) {
+      return "docs";
+    }
+
+    if (
+      hasAny(t, [
+        /\bprofil\b/,
+        /\bprofile\b/,
+        /mon profil/,
+        /modifier profil/,
+        /configurer profil/,
+      ])
+    ) {
+      return "profile";
+    }
+
+    // ===============================
+    // CREDITS / BALANCE
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bsolde\b/,
+        /\bcredit\b/,
+        /\bcredits\b/,
+        /\bcrédit\b/,
+        /\bcrédits\b/,
+        /combien.*credit/,
+        /combien.*crédit/,
+        /combien.*reste/,
+        /il me reste combien/,
+        /mes credits/,
+        /mes crédits/,
+        /mon solde/,
+        /solde restant/,
+      ])
+    ) {
+      return "balance";
+    }
+
+    if (
+      hasAny(t, [
+        /\brecharge\b/,
+        /\brecharger\b/,
+        /\bacheter\b/,
+        /\bpayer\b/,
+        /\bpaiement\b/,
+        /orange money/,
+        /numero de compte/,
+        /numéro de compte/,
+        /envoyer.*numero/,
+        /envoyer.*numéro/,
+        /comment payer/,
+        /comment recharger/,
+        /je veux recharger/,
+        /ou payer/,
+        /où payer/,
+        /compte orange money/,
+        /numero om/,
+        /numéro om/,
+      ])
+    ) {
+      return "recharge";
+    }
+
+    // ===============================
+    // OCR / PHOTO
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bocr\b/,
+        /\bphoto\b/,
+        /\bimage\b/,
+        /\bscanner\b/,
+        /scanner facture/,
+        /photo facture/,
+        /transformer photo/,
+        /photo en pdf/,
+        /envoyer photo/,
+      ])
+    ) {
+      return "ocr_help";
+    }
+
+    // ===============================
+    // STAMP / TAMPON
+    // ===============================
+    if (
+      hasAny(t, [
+        /\btampon\b/,
+        /\bcachet\b/,
+        /\bstamp\b/,
+        /\bsignature\b/,
+        /activer tampon/,
+        /configurer tampon/,
+      ])
+    ) {
+      return "stamp";
+    }
+
+    // ===============================
+    // HISTORY / LAST DOC
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bhistorique\b/,
+        /dernier document/,
+        /dernier pdf/,
+        /renvoyer pdf/,
+        /renvoie pdf/,
+        /renvoyer document/,
+        /mes documents/,
+      ])
+    ) {
+      return "history";
+    }
+
+    // ===============================
+    // HELP / TUTORIAL
+    // ===============================
+    if (
+      hasAny(t, [
+        /\baide\b/,
+        /\bhelp\b/,
+        /comment ça marche/,
+        /comment utiliser/,
+        /comment tu fonctionnes/,
+        /tutoriel/,
+        /exemple/,
+        /exemples/,
+        /que peux tu faire/,
+        /quels documents/,
+        /que fais tu/,
+      ])
+    ) {
+      return "help";
+    }
+
+    // ===============================
+    // BUG / SUPPORT
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bbug\b/,
+        /\bprobleme\b/,
+        /\bproblème\b/,
+        /ça ne marche pas/,
+        /ca ne marche pas/,
+        /ça bloque/,
+        /ca bloque/,
+        /erreur/,
+      ])
+    ) {
+      return "support";
+    }
+
+    return null;
+  }
+
+  async function handleUltraPriorityText(from, rawText) {
+    const intent = detectPriorityIntent(rawText);
+    if (!intent) return false;
 
     try {
-      if (t === "menu" || t === "home" || t === "accueil") {
+      if (intent === "menu") {
         await sendHomeMenu(from);
         return true;
       }
 
-      if (t === "doc" || t === "docs" || t === "document" || t === "documents") {
+      if (intent === "docs") {
         await sendDocsMenu(from);
         return true;
       }
 
-      if (t === "profil" || t === "profile") {
-        await startProfileFlow(from);
+      if (intent === "profile") {
+        if (typeof startProfileFlow === "function") {
+          await startProfileFlow(from);
+        } else if (typeof sendProfileMenu === "function") {
+          await sendProfileMenu(from);
+        } else {
+          await sendText(from, "👤 Ouvrez le profil depuis le menu.");
+        }
         return true;
       }
 
-      if (
-        t === "solde" ||
-        t === "credit" ||
-        t === "credits" ||
-        t === "crédit" ||
-        t === "crédits"
-      ) {
-        await replyBalance(from);
+      if (intent === "balance") {
+        if (typeof replyBalance === "function") {
+          await replyBalance(from);
+        } else if (typeof sendCreditsMenu === "function") {
+          await sendCreditsMenu(from);
+        } else {
+          await sendText(from, "💳 Vérification du solde indisponible pour le moment.");
+        }
         return true;
       }
 
-      if (t === "recharge" || t === "recharger") {
-        await sendRechargePacksMenu(from);
+      if (intent === "recharge") {
+        if (typeof sendRechargePacksMenu === "function") {
+          await sendRechargePacksMenu(from);
+        } else {
+          await sendText(
+            from,
+            "💳 Pour recharger, ouvrez le menu Crédits puis choisissez un pack."
+          );
+        }
         return true;
       }
 
-      if (t === "aide" || t === "help") {
+      if (intent === "ocr_help") {
         await sendText(
           from,
-          `❓ *Aide rapide*\n\n` +
-            `Vous pouvez écrire simplement :\n` +
+          "📷 Envoyez simplement une photo claire de votre facture, devis ou reçu.\n\nKADI peut extraire les informations et générer un document propre."
+        );
+        return true;
+      }
+
+      if (intent === "stamp") {
+        if (typeof sendStampMenu === "function") {
+          await sendStampMenu(from);
+        } else {
+          await sendText(
+            from,
+            "🟦 Le tampon peut être configuré depuis votre profil entreprise."
+          );
+        }
+        return true;
+      }
+
+      if (intent === "history") {
+        if (typeof sendAlreadyGeneratedMenu === "function") {
+          await sendAlreadyGeneratedMenu(from);
+        } else {
+          await sendText(
+            from,
+            "📚 L’historique complet arrive bientôt. Pour l’instant, vous pouvez demander le renvoi du dernier PDF si disponible."
+          );
+        }
+        return true;
+      }
+
+      if (intent === "help") {
+        await sendText(
+          from,
+          `❓ *Aide rapide KADI*\n\n` +
+            `KADI peut créer :\n` +
+            `• Devis\n` +
+            `• Factures\n` +
+            `• Reçus\n` +
+            `• Décharges\n\n` +
+            `Vous pouvez :\n` +
+            `• écrire normalement\n` +
+            `• envoyer un vocal\n` +
+            `• envoyer une photo\n\n` +
+            `Exemples :\n` +
             `• Devis pour Moussa, 2 portes à 25000\n` +
             `• Facture pour Awa, 5 pagnes à 3000\n` +
-            `• Reçu loyer avril 100000 pour Adama\n` +
-            `• Décharge pour prêt de 50000 à Issa\n\n` +
-            `Tapez aussi : MENU, PROFIL, SOLDE ou RECHARGE`
+            `• Reçu loyer 100000 pour Adama\n\n` +
+            `Tapez aussi : MENU, SOLDE, RECHARGE, PROFIL`
+        );
+        return true;
+      }
+
+      if (intent === "support") {
+        await sendText(
+          from,
+          "⚠️ D’accord. Décrivez-moi le problème en une phrase.\n\nExemple :\nLe PDF ne se génère pas\nou\nJe n’arrive pas à recharger."
         );
         return true;
       }
@@ -65,7 +323,7 @@ function makeKadiPriorityRouter(deps) {
       return false;
     } catch (e) {
       if (logger?.error) {
-        logger.error("priority_router", e, { from, rawText });
+        logger.error("priority_router", e, { from, rawText, intent });
       }
 
       await sendText(
@@ -77,6 +335,7 @@ function makeKadiPriorityRouter(deps) {
   }
 
   return {
+    detectPriorityIntent,
     handleUltraPriorityText,
   };
 }
