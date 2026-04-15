@@ -219,7 +219,11 @@ function isOcrTx(row) {
   const delta = toNum(row?.delta, 0);
 
   if (!(delta < 0)) return false;
-  return reason === "ocr_pdf" || reason.startsWith("ocr_pdf_") || reason.includes("ocr");
+  return (
+    reason === "ocr_pdf" ||
+    reason.startsWith("ocr_pdf_") ||
+    reason.includes("ocr")
+  );
 }
 
 function isStampTx(row) {
@@ -278,23 +282,33 @@ function buildYcInsights({
   }
 
   if (activeToCreatedRate <= 10) {
-    insights.push("Les utilisateurs actifs passent encore trop peu à la création de documents.");
+    insights.push(
+      "Les utilisateurs actifs passent encore trop peu à la création de documents."
+    );
   }
 
   if (paidUsers === 0 && docsGenerated > 50) {
-    insights.push("Le produit est utilisé, mais la monétisation n’est pas encore déclenchée.");
+    insights.push(
+      "Le produit est utilisé, mais la monétisation n’est pas encore déclenchée."
+    );
   }
 
   if (usersZeroCredits > 0) {
-    insights.push(`${usersZeroCredits} utilisateur(s) ont épuisé leurs crédits: pipeline chaud de conversion.`);
+    insights.push(
+      `${usersZeroCredits} utilisateur(s) ont épuisé leurs crédits: pipeline chaud de conversion.`
+    );
   }
 
   if (signupToActive30Rate < 25) {
-    insights.push("L’activation globale reste faible: l’arrivée dans le produit doit être simplifiée.");
+    insights.push(
+      "L’activation globale reste faible: l’arrivée dans le produit doit être simplifiée."
+    );
   }
 
   if (docs30 > 0 && docs7 === 0) {
-    insights.push("L’usage existe sur 30 jours mais ralentit fortement sur 7 jours.");
+    insights.push(
+      "L’usage existe sur 30 jours mais ralentit fortement sur 7 jours."
+    );
   }
 
   const priorityAction =
@@ -364,6 +378,15 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     () =>
       countDistinct("kadi_activity", "wa_id", [
         { op: "gte", column: "last_seen", value: from30 },
+      ]),
+    0
+  );
+
+  const activePrev30 = await safeTableExistsFetch(
+    () =>
+      countDistinct("kadi_activity", "wa_id", [
+        { op: "gte", column: "last_seen", value: from60 },
+        { op: "lt", column: "last_seen", value: from30 },
       ]),
     0
   );
@@ -529,6 +552,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   // ===============================
   const docs7Growth = growthPct(docs7, docsPrev7);
   const revenue30Growth = growthPct(revenueMonth, revenuePrev30);
+  const user30Growth = growthPct(active30, activePrev30);
 
   // ===============================
   // WALLET / PIPELINE (ledger only)
@@ -581,8 +605,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
   const estimatedNewUsers30 = Math.max(totalUsers - active30, 0);
 
-  const retention7Approx =
-    active30 > 0 ? pct(active7, active30) : 0;
+  const retention7Approx = active30 > 0 ? pct(active7, active30) : 0;
 
   const insights = buildYcInsights({
     totalUsers,
@@ -631,7 +654,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 
     monetization: {
       revenue30d: revenueMonth,
-      revenueGrowth30d,
+      revenueGrowth30d: revenue30Growth,
       payingUsers: paidUsers,
       creditsPaid30d: creditsPaid30,
       packCredits,
@@ -639,8 +662,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       usersZeroCredits,
       usersLowCredits,
       usersWithWallet,
-      arpu30d:
-        paidUsers > 0 ? Math.round(revenueMonth / paidUsers) : 0,
+      arpu30d: paidUsers > 0 ? Math.round(revenueMonth / paidUsers) : 0,
     },
 
     funnel: {
@@ -657,10 +679,10 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     },
 
     comparisons: {
-  docs7Growth: docsGrowth7d,
-  revenue30Growth: revenueGrowth30d,
-  user30Growth: userGrowth30d,
-},
+      docs7Growth,
+      revenue30Growth,
+      user30Growth,
+    },
 
     topClients,
     topUsers,
@@ -685,7 +707,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     },
 
     docs: {
-      created: docsGenerated,
+      created: docsCreated,
       generated: docsGenerated,
       creationToPdfRate: 100,
       last1: docs1,

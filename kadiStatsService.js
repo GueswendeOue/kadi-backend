@@ -30,15 +30,111 @@ function makeKadiStatsService(deps) {
     return String(n(value, 0));
   }
 
+  function pickNumber(...values) {
+    for (const v of values) {
+      const x = Number(v);
+      if (Number.isFinite(x)) return x;
+    }
+    return 0;
+  }
+
   function normalizeYcStats(raw) {
     const src = raw && typeof raw === "object" ? raw : {};
 
+    const growth = src.growth && typeof src.growth === "object" ? src.growth : {};
+    const usage = src.usage && typeof src.usage === "object" ? src.usage : {};
+    const monetization =
+      src.monetization && typeof src.monetization === "object"
+        ? src.monetization
+        : {};
+    const funnel = src.funnel && typeof src.funnel === "object" ? src.funnel : {};
+    const retention =
+      src.retention && typeof src.retention === "object" ? src.retention : {};
+
     return {
-      growth: src.growth || {},
-      usage: src.usage || {},
-      monetization: src.monetization || {},
-      funnel: src.funnel || {},
-      retention: src.retention || {},
+      growth: {
+        totalUsers: pickNumber(
+          growth.totalUsers,
+          src.users?.totalUsers,
+          src.users?.total
+        ),
+        active30: pickNumber(
+          growth.active30,
+          src.users?.active30
+        ),
+        active30Rate: pickNumber(growth.active30Rate),
+        active7: pickNumber(
+          growth.active7,
+          src.users?.active7
+        ),
+        active7Rate: pickNumber(growth.active7Rate),
+        estimatedNewUsers30: pickNumber(
+          growth.estimatedNewUsers30,
+          growth.newUsers30,
+          src.users?.newUsers30
+        ),
+      },
+
+      usage: {
+        docsTotal: pickNumber(
+          usage.docsTotal,
+          src.docs?.total,
+          src.docs?.generated,
+          src.docs?.created
+        ),
+        docs30d: pickNumber(
+          usage.docs30d,
+          src.docs?.last30,
+          src.docs?.docs30
+        ),
+        docs7d: pickNumber(
+          usage.docs7d,
+          src.docs?.last7,
+          src.docs?.docs7
+        ),
+        docsPerActive30User: pickNumber(usage.docsPerActive30User),
+      },
+
+      monetization: {
+        revenue30d: pickNumber(
+          monetization.revenue30d,
+          src.revenue?.month,
+          src.revenue?.est30
+        ),
+        payingUsers: pickNumber(
+          monetization.payingUsers,
+          src.users?.paid,
+          src.users?.usersRecharged
+        ),
+        usersZeroCredits: pickNumber(
+          monetization.usersZeroCredits,
+          src.conversion?.usersZeroCredits
+        ),
+        usersLowCredits: pickNumber(
+          monetization.usersLowCredits,
+          src.conversion?.usersLowCredits
+        ),
+      },
+
+      funnel: {
+        signupToActive30Rate: pickNumber(
+          funnel.signupToActive30Rate,
+          src.funnel?.signupToActive30Rate
+        ),
+        activeToCreatedRate: pickNumber(
+          funnel.activeToCreatedRate,
+          src.funnel?.activeToCreatedRate
+        ),
+        generatedToPaidRate: pickNumber(
+          funnel.generatedToPaidRate,
+          src.funnel?.generatedToPaidRate
+        ),
+      },
+
+      retention: {
+        retention7Approx: pickNumber(retention.retention7Approx),
+      },
+
       topClients: arr(src.topClients),
       topUsers: arr(src.topUsers),
       alerts: arr(src.alerts),
@@ -48,53 +144,103 @@ function makeKadiStatsService(deps) {
     };
   }
 
+  function buildDashboardMessage(s) {
+    return (
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 *KADI — DASHBOARD*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+
+      `📈 *TRACTION*\n` +
+      `Users total       ${n(s.growth.totalUsers)}\n` +
+      `Actifs 30j        ${n(s.growth.active30)} (${n(s.growth.active30Rate)}%)\n` +
+      `Actifs 7j         ${n(s.growth.active7)} (${n(s.growth.active7Rate)}%)\n` +
+      `Nouveaux ~30j     ${n(s.growth.estimatedNewUsers30)}\n\n` +
+
+      `⚡ *ACTIVATION / USAGE*\n` +
+      `Docs total        ${n(s.usage.docsTotal)}\n` +
+      `Docs 30j          ${n(s.usage.docs30d)}\n` +
+      `Docs 7j           ${n(s.usage.docs7d)}\n` +
+      `Docs/actif 30j    ${n(s.usage.docsPerActive30User)}\n\n` +
+
+      `💰 *MONÉTISATION*\n` +
+      `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
+      `Payants           ${n(s.monetization.payingUsers)}\n` +
+      `0 crédit          ${n(s.monetization.usersZeroCredits)}\n` +
+      `Crédits faibles   ${n(s.monetization.usersLowCredits)}\n\n` +
+
+      `🎯 *FUNNEL*\n` +
+      `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
+      `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
+      `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
+
+      `🔁 *RÉTENTION*\n` +
+      `Retour 7j/30j     ${n(s.retention.retention7Approx)}%\n\n` +
+
+      (s.alerts.length
+        ? `🚨 *ALERTES*\n${s.alerts.join("\n")}\n\n`
+        : "") +
+
+      `🧠 *INSIGHT*\n` +
+      `${txt(s.summary, "Aucun insight pour le moment.")}\n\n` +
+
+      `✅ *ACTION PRIORITAIRE*\n` +
+      `${txt(s.priorityAction, "Continuer à observer les métriques.")}\n\n` +
+
+      `━━━━━━━━━━━━━━━━━━━━`
+    );
+  }
+
+  function buildWeeklyReportMessage(s, analysis) {
+    const alerts = arr(analysis?.alerts);
+    const insights = arr(analysis?.insights);
+
+    return (
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 *KADI — WEEKLY REPORT*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+
+      `📈 *TRACTION*\n` +
+      `Users total       ${n(s.growth.totalUsers)}\n` +
+      `Actifs 30j        ${n(s.growth.active30)}\n` +
+      `Actifs 7j         ${n(s.growth.active7)}\n\n` +
+
+      `⚡ *USAGE*\n` +
+      `Docs total        ${n(s.usage.docsTotal)}\n` +
+      `Docs 30j          ${n(s.usage.docs30d)}\n` +
+      `Docs 7j           ${n(s.usage.docs7d)}\n\n` +
+
+      `💰 *MONÉTISATION*\n` +
+      `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
+      `Payants           ${n(s.monetization.payingUsers)}\n` +
+      `0 crédit          ${n(s.monetization.usersZeroCredits)}\n\n` +
+
+      `🎯 *FUNNEL*\n` +
+      `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
+      `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
+      `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
+
+      (alerts.length
+        ? `🚨 *ALERTES*\n${alerts.join("\n")}\n\n`
+        : "") +
+
+      `🧠 *INSIGHT*\n` +
+      `${txt(insights[0] || s.summary, "Rien de critique cette semaine.")}\n\n` +
+
+      `✅ *ACTION PRIORITAIRE*\n` +
+      `${txt(
+        analysis?.priorityAction || s.priorityAction,
+        "Continuer à observer les métriques."
+      )}\n\n` +
+
+      `━━━━━━━━━━━━━━━━━━━━`
+    );
+  }
+
   async function handleStatsCommand(from) {
     try {
       const raw = await getStats();
       const s = normalizeYcStats(raw);
-
-      const msg =
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *KADI — DASHBOARD*\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n\n` +
-
-        `🚀 *GROWTH*\n` +
-        `Users total       ${n(s.growth.totalUsers)}\n` +
-        `Actifs 30j        ${n(s.growth.active30)} (${n(s.growth.active30Rate)}%)\n` +
-        `Actifs 7j         ${n(s.growth.active7)} (${n(s.growth.active7Rate)}%)\n` +
-        `Nouveaux ~30j     ${n(s.growth.estimatedNewUsers30)}\n\n` +
-
-        `⚡ *USAGE*\n` +
-        `Docs total        ${n(s.usage.docsTotal)}\n` +
-        `Docs 30j          ${n(s.usage.docs30d)}\n` +
-        `Docs 7j           ${n(s.usage.docs7d)}\n` +
-        `Docs / actif 30j  ${n(s.usage.docsPerActive30User)}\n\n` +
-
-        `💰 *MONETIZATION*\n` +
-        `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
-        `Payants           ${n(s.monetization.payingUsers)}\n` +
-        `0 crédit          ${n(s.monetization.usersZeroCredits)}\n` +
-        `Crédits faibles   ${n(s.monetization.usersLowCredits)}\n\n` +
-
-        `🎯 *FUNNEL*\n` +
-        `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
-        `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
-        `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
-
-        `🔁 *RETENTION*\n` +
-        `Retour 7j/30j     ${n(s.retention.retention7Approx)}%\n\n` +
-
-        ((s.alerts || []).length
-          ? `🚨 *ALERTES*\n${s.alerts.join("\n")}\n\n`
-          : "") +
-
-        `🧠 *INSIGHT*\n` +
-        `${txt(s.summary, "Aucun insight pour le moment.")}\n\n` +
-
-        `✅ *ACTION PRIORITAIRE*\n` +
-        `${txt(s.priorityAction, "Continuer à observer les métriques.")}\n\n` +
-
-        `━━━━━━━━━━━━━━━━━━━━`;
+      const msg = buildDashboardMessage(s);
 
       await sendText(from, msg);
       return true;
@@ -167,9 +313,10 @@ function makeKadiStatsService(deps) {
       const s = normalizeYcStats(raw);
 
       const fallbackAnalysis = {
-        alerts: s.alerts || [],
-        insights: s.insights || [],
-        priorityAction: s.priorityAction || "Continuer à observer les métriques.",
+        alerts: s.alerts,
+        insights: s.insights,
+        priorityAction:
+          s.priorityAction || "Continuer à observer les métriques.",
       };
 
       const analysis =
@@ -177,48 +324,7 @@ function makeKadiStatsService(deps) {
           ? buildInsights(raw || s)
           : fallbackAnalysis;
 
-      const alerts = arr(analysis.alerts);
-      const insights = arr(analysis.insights);
-
-      const msg =
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *KADI — WEEKLY REPORT*\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n\n` +
-
-        `🚀 *GROWTH*\n` +
-        `Users total       ${n(s.growth.totalUsers)}\n` +
-        `Actifs 30j        ${n(s.growth.active30)}\n` +
-        `Actifs 7j         ${n(s.growth.active7)}\n\n` +
-
-        `⚡ *USAGE*\n` +
-        `Docs total        ${n(s.usage.docsTotal)}\n` +
-        `Docs 30j          ${n(s.usage.docs30d)}\n` +
-        `Docs 7j           ${n(s.usage.docs7d)}\n\n` +
-
-        `💰 *MONETIZATION*\n` +
-        `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
-        `Payants           ${n(s.monetization.payingUsers)}\n` +
-        `0 crédit          ${n(s.monetization.usersZeroCredits)}\n\n` +
-
-        `🎯 *FUNNEL*\n` +
-        `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
-        `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
-        `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
-
-        (alerts.length
-          ? `🚨 *ALERTES*\n${alerts.join("\n")}\n\n`
-          : "") +
-
-        `🧠 *INSIGHT*\n` +
-        `${insights[0] || s.summary || "Rien de critique cette semaine."}\n\n` +
-
-        `✅ *ACTION PRIORITAIRE*\n` +
-        `${txt(
-          analysis.priorityAction || s.priorityAction,
-          "Continuer à observer les métriques."
-        )}\n\n` +
-
-        `━━━━━━━━━━━━━━━━━━━━`;
+      const msg = buildWeeklyReportMessage(s, analysis);
 
       await sendText(from, msg);
       return true;
