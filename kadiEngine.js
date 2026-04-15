@@ -359,7 +359,6 @@ const {
   sendButtons,
   getOrCreateProfile,
   updateProfile,
-  STAMP_ONE_TIME_COST,
 });
 
 // ===============================
@@ -684,11 +683,14 @@ const { handleBroadcastCommand } = makeKadiAdminBroadcastService({
   broadcastToAllKnownUsers,
 });
 
+const { sendTemplate } = require("./whatsappApi");
+
 const {
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
 } = makeKadiReengagementService({
   sendText,
+  sendTemplateMessage: sendTemplate,
   getZeroDocUsersBySegment,
   getInactiveUsers,
   sendZeroDocReOnboarding,

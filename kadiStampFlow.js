@@ -24,23 +24,24 @@ function makeKadiStampFlow(deps) {
   }
 
   function buildPreGenerateStampMessage() {
-    return (
-      "📄 Votre document est prêt à être généré.\n\n" +
-      "✨ Ajouter un tampon professionnel ?\n" +
-      "✔️ Rend votre document plus crédible\n" +
-      "✔️ Donne une image professionnelle\n" +
-      "💳 Coût du tampon sur ce document : *1 crédit*"
-    );
-  }
+  return (
+    "📄 *Votre document est prêt.*\n\n" +
+    "🟦 *Ajoutez un tampon professionnel pour seulement +1 crédit.*\n\n" +
+    "✅ Document plus crédible\n" +
+    "✅ Image plus professionnelle\n" +
+    "✅ Meilleure impression chez le client\n\n" +
+    "💳 *Supplément : 1 crédit sur ce document*"
+  );
+}
 
   async function sendPreGenerateStampMenu(to) {
     const text = buildPreGenerateStampMessage();
 
     return sendButtons(to, text, [
-      { id: "PRESTAMP_ADD_ONCE", title: "🟦 Ajouter tampon" },
-      { id: "PRESTAMP_SKIP", title: "⚪ Sans tampon" },
-      { id: "PROFILE_STAMP", title: "⚙️ Réglages tampon" },
-    ]);
+  { id: "PRESTAMP_ADD_ONCE", title: "🟦 Oui +1 crédit" },
+  { id: "PRESTAMP_SKIP", title: "⚪ Non merci" },
+  { id: "PROFILE_STAMP", title: "⚙️ Réglages" },
+]);
   }
 
   function stampPosLabel(pos) {

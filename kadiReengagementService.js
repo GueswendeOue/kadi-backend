@@ -32,11 +32,17 @@ function buildStats() {
   };
 }
 
+function isReasonableSendHour(date = new Date()) {
+  const h = date.getHours();
+  return h >= 8 && h <= 19;
+}
+
 async function runCampaign({
   users,
   sendText,
   sendTemplateMessage,
   messageText,
+  templateName,
 }) {
   const stats = buildStats();
   const normalizedUsers = normalizeUsers(users);
@@ -51,7 +57,7 @@ async function runCampaign({
         sendText,
         sendTemplateMessage,
         messageText,
-        templateName: null,
+        templateName,
       });
 
       if (res?.ok && res?.mode === "free") {
@@ -102,7 +108,7 @@ function makeKadiReengagementService({
   async function handleReengageZeroDocsCommand(from, text) {
     const match = String(text || "")
       .trim()
-      .match(/^\/reengage_zero_docs\s+(\d+)\s+([AB])$/i);
+      .match(/^\/reengage_zero_docs\s+(\d+)\s+([ABC])$/i);
 
     if (!match) return false;
 
@@ -111,16 +117,32 @@ function makeKadiReengagementService({
       return true;
     }
 
+    if (!isReasonableSendHour()) {
+      await sendText(
+        from,
+        "⏰ Envoi bloqué : le réengagement part seulement entre 08h et 19h."
+      );
+      return true;
+    }
+
     const limit = clampInt(match[1], 1, 500, 50);
     const variant = String(match[2] || "A").toUpperCase();
 
-    const rawUsers = await getZeroDocUsersBySegment(limit, variant);
+    const rawUsers = await getZeroDocUsersBySegment(variant, limit);
+
+    const templateName =
+      variant === "A"
+        ? "kadi_zero_doc_a_v1"
+        : variant === "B"
+        ? "kadi_zero_doc_b_v1"
+        : "kadi_zero_doc_c_v1";
 
     const stats = await runCampaign({
       users: rawUsers,
       sendText,
       sendTemplateMessage,
       messageText: getZeroDocMessageByVariant(variant),
+      templateName,
     });
 
     await sendCampaignReport({
@@ -155,6 +177,14 @@ function makeKadiReengagementService({
       return true;
     }
 
+    if (!isReasonableSendHour()) {
+      await sendText(
+        from,
+        "⏰ Envoi bloqué : le réengagement part seulement entre 08h et 19h."
+      );
+      return true;
+    }
+
     const days = clampInt(match[1], 1, 365, 30);
     const limit = clampInt(match[2], 1, 500, 50);
 
@@ -165,6 +195,7 @@ function makeKadiReengagementService({
       sendText,
       sendTemplateMessage,
       messageText: buildInactiveMessage(days),
+      templateName: "kadi_inactive_v1",
     });
 
     await sendCampaignReport({

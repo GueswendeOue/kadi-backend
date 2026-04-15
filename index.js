@@ -6,6 +6,7 @@ const express = require("express");
 const {
   verifyRequestSignature,
   extractStatusesFromWebhookValue,
+  sendTemplate, // ✅ centralisé ici
 } = require("./whatsappApi");
 
 const {
@@ -23,190 +24,112 @@ let getInactiveUsers = null;
 
 try {
   ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
-} catch (_) {}
+} catch (e) {
+  console.warn("⚠️ Reengagement repo not loaded:", e?.message);
+}
 
 console.log("🟢 KADI booting...");
-console.log("ENV CHECK:", {
-  PORT: process.env.PORT,
-  HAS_WHATSAPP_TOKEN: !!process.env.WHATSAPP_TOKEN,
-  HAS_PHONE_NUMBER_ID: !!process.env.PHONE_NUMBER_ID,
-  HAS_VERIFY_TOKEN: !!process.env.VERIFY_TOKEN,
-  HAS_APP_SECRET: !!process.env.APP_SECRET,
-  HAS_SUPABASE_URL: !!process.env.SUPABASE_URL,
-  HAS_SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-  HAS_KADI_ADMIN_WA: !!process.env.KADI_ADMIN_WA,
-});
 
+// ===============================
+// APP INIT
+// ===============================
 const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
 
-const FOLLOWUP_INTERVAL_MS = Number(
-  process.env.KADI_DEVIS_FOLLOWUP_INTERVAL_MS || 5 * 60 * 1000
-);
-const FOLLOWUP_BATCH_SIZE = Number(
-  process.env.KADI_DEVIS_FOLLOWUP_BATCH_SIZE || 20
-);
+// ===============================
+// CONFIG
+// ===============================
+const FOLLOWUP_INTERVAL_MS = Number(process.env.KADI_DEVIS_FOLLOWUP_INTERVAL_MS || 5 * 60 * 1000);
+const FOLLOWUP_BATCH_SIZE = Number(process.env.KADI_DEVIS_FOLLOWUP_BATCH_SIZE || 20);
 
 const REENGAGEMENT_ENABLED =
-  String(process.env.KADI_REENGAGEMENT_ENABLED || "false").toLowerCase() ===
-  "true";
+  String(process.env.KADI_REENGAGEMENT_ENABLED || "false").toLowerCase() === "true";
+
 const REENGAGEMENT_INTERVAL_MS = Number(
   process.env.KADI_REENGAGEMENT_INTERVAL_MS || 6 * 60 * 60 * 1000
 );
+
 const REENGAGEMENT_ZERO_DOCS_LIMIT = Number(
   process.env.KADI_REENGAGEMENT_ZERO_DOCS_LIMIT || 20
 );
+
 const REENGAGEMENT_INACTIVE_DAYS = Number(
   process.env.KADI_REENGAGEMENT_INACTIVE_DAYS || 30
 );
+
 const REENGAGEMENT_INACTIVE_LIMIT = Number(
   process.env.KADI_REENGAGEMENT_INACTIVE_LIMIT || 20
 );
 
 const WEEKLY_REPORT_ENABLED =
-  String(process.env.KADI_WEEKLY_REPORT_ENABLED || "true").toLowerCase() ===
-  "true";
+  String(process.env.KADI_WEEKLY_REPORT_ENABLED || "true").toLowerCase() === "true";
 
 const WEEKLY_REPORT_CHECK_INTERVAL_MS = Number(
   process.env.KADI_WEEKLY_REPORT_CHECK_INTERVAL_MS || 15 * 60 * 1000
 );
 
-// 0 = dimanche
-const WEEKLY_REPORT_DAY = Number(
-  process.env.KADI_WEEKLY_REPORT_DAY || 0
-);
-const WEEKLY_REPORT_HOUR = Number(
-  process.env.KADI_WEEKLY_REPORT_HOUR || 18
-);
-const WEEKLY_REPORT_MINUTE = Number(
-  process.env.KADI_WEEKLY_REPORT_MINUTE || 0
-);
+const WEEKLY_REPORT_DAY = Number(process.env.KADI_WEEKLY_REPORT_DAY || 0);
+const WEEKLY_REPORT_HOUR = Number(process.env.KADI_WEEKLY_REPORT_HOUR || 18);
+const WEEKLY_REPORT_MINUTE = Number(process.env.KADI_WEEKLY_REPORT_MINUTE || 0);
 
 const KADI_ADMIN_WA = process.env.KADI_ADMIN_WA || "";
 
 // ===============================
-// Weekly report state
+// HEALTH
 // ===============================
-let lastWeeklyReportRunKey = null;
+app.get("/", (_, res) => res.status(200).send("✅ Kadi backend is running"));
 
-function getWeeklyRunKey(date = new Date()) {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  const h = String(date.getUTCHours()).padStart(2, "0");
-  const min = String(date.getUTCMinutes()).padStart(2, "0");
-  return `${y}-${m}-${d}-${h}:${min}`;
-}
-
-function shouldRunWeeklyReport(now = new Date()) {
-  if (!KADI_ADMIN_WA) return false;
-
-  const day = now.getUTCDay();
-  const hour = now.getUTCHours();
-  const minute = now.getUTCMinutes();
-
-  if (day !== WEEKLY_REPORT_DAY) return false;
-  if (hour !== WEEKLY_REPORT_HOUR) return false;
-  if (minute !== WEEKLY_REPORT_MINUTE) return false;
-
-  const runKey = getWeeklyRunKey(now);
-  if (lastWeeklyReportRunKey === runKey) return false;
-
-  lastWeeklyReportRunKey = runKey;
-  return true;
-}
-
-async function maybeRunWeeklyReport() {
-  try {
-    if (!WEEKLY_REPORT_ENABLED) return;
-    if (!KADI_ADMIN_WA) return;
-
-    const now = new Date();
-
-    if (!shouldRunWeeklyReport(now)) return;
-
-    const reporter = makeKadiWeeklyReport({
-      sendText: async (to, text) => {
-        await sendText(to, text);
-      },
-      adminWaId: KADI_ADMIN_WA,
-    });
-
-    console.log("[KADI/WEEKLY] Sunday report started", {
-      utc: now.toISOString(),
-      adminWaId: KADI_ADMIN_WA,
-    });
-
-    await reporter.sendWeeklyReport();
-
-    console.log("[KADI/WEEKLY] Sunday report sent");
-  } catch (e) {
-    console.error("[KADI/WEEKLY] error:", e);
-  }
-}
-
-// Standard parsing
-app.use(express.urlencoded({ extended: true }));
-
-app.get("/", (req, res) => res.status(200).send("✅ Kadi backend is running"));
-
-app.get("/health", (req, res) => {
-  return res.status(200).json({
-    ok: true,
-    ts: new Date().toISOString(),
-  });
+app.get("/health", (_, res) => {
+  res.status(200).json({ ok: true, ts: new Date().toISOString() });
 });
 
-// Webhook verification (GET)
+// ===============================
+// WEBHOOK VERIFY
+// ===============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  const ok = mode === "subscribe" && token && token === VERIFY_TOKEN;
-  if (!ok) return res.sendStatus(403);
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
 
-  return res.status(200).send(challenge);
+  return res.sendStatus(403);
 });
 
-// Webhook receive (POST)
+// ===============================
+// WEBHOOK RECEIVE
+// ===============================
 app.post(
   "/webhook",
   express.json({
     limit: "2mb",
     verify: (req, res, buf) => {
       verifyRequestSignature(req, res, buf);
-      req.rawBody = buf.toString();
     },
   }),
   (req, res) => {
     res.status(200).send("EVENT_RECEIVED");
 
     try {
-      const body = req.body || {};
+      const body = req.body;
       if (body.object !== "whatsapp_business_account") return;
 
-      const entries = body.entry || [];
-
-      for (const entry of entries) {
-        const changes = entry.changes || [];
-
-        for (const change of changes) {
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
           const value = change.value;
           if (!value) continue;
 
           const statuses = extractStatusesFromWebhookValue(value);
+
           if (statuses.length) {
-            Promise.resolve(handleIncomingStatuses(statuses)).catch((e) => {
-              console.error("💥 handleIncomingStatuses error:", e);
-            });
+            handleIncomingStatuses(statuses).catch(console.error);
           }
 
           if (value.messages?.length) {
-            Promise.resolve(handleIncomingMessage(value)).catch((e) => {
-              console.error("💥 handleIncomingMessage error:", e);
-            });
+            handleIncomingMessage(value).catch(console.error);
           }
         }
       }
@@ -216,54 +139,43 @@ app.post(
   }
 );
 
+// ===============================
+// SERVER START
+// ===============================
 app.listen(PORT, () => {
   console.log("🚀 KADI server listening on", PORT);
 
   // ===============================
-  // Devis follow-up worker
+  // FOLLOWUPS
   // ===============================
   if (typeof processDevisFollowups === "function") {
-    console.log(
-      `⏱ Devis follow-up worker started (every ${FOLLOWUP_INTERVAL_MS} ms, batch ${FOLLOWUP_BATCH_SIZE})`
-    );
-
-    setTimeout(async () => {
-      try {
-        const sent = await processDevisFollowups(FOLLOWUP_BATCH_SIZE);
-        console.log(`✅ processDevisFollowups startup ok: ${sent} followup(s) sent`);
-      } catch (e) {
-        console.error("💥 processDevisFollowups startup error FULL:", e);
-      }
-    }, 15000);
+    console.log(`⏱ Followups worker started (${FOLLOWUP_INTERVAL_MS} ms)`);
 
     setInterval(async () => {
       try {
         const sent = await processDevisFollowups(FOLLOWUP_BATCH_SIZE);
-        console.log(`✅ processDevisFollowups interval ok: ${sent} followup(s) sent`);
+        console.log("✅ followups:", sent);
       } catch (e) {
-        console.error("💥 processDevisFollowups interval error FULL:", e);
+        console.error("💥 followups error:", e);
       }
     }, FOLLOWUP_INTERVAL_MS);
-  } else {
-    console.warn("⚠️ processDevisFollowups is not available from kadiEngine");
   }
 
   // ===============================
-  // Re-engagement worker
+  // REENGAGEMENT (🔥 IMPORTANT)
   // ===============================
   if (
     REENGAGEMENT_ENABLED &&
-    typeof getZeroDocUsersBySegment === "function" &&
-    typeof getInactiveUsers === "function"
+    getZeroDocUsersBySegment &&
+    getInactiveUsers
   ) {
-    console.log(
-      `🤖 Re-engagement worker started (every ${REENGAGEMENT_INTERVAL_MS} ms)`
-    );
+    console.log(`🤖 Reengagement started (${REENGAGEMENT_INTERVAL_MS} ms)`);
 
-    setTimeout(async () => {
+    const run = async () => {
       try {
         const result = await runReengagementCycle({
           sendText,
+          sendTemplateMessage: sendTemplate, // ✅ CRITIQUE
           getZeroDocUsersBySegment,
           getInactiveUsers,
           adminWaId: KADI_ADMIN_WA,
@@ -272,51 +184,33 @@ app.listen(PORT, () => {
           inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
         });
 
-        console.log("✅ reengagement startup ok:", result);
+        console.log("✅ reengagement:", result);
       } catch (e) {
-        console.error("💥 reengagement startup error FULL:", e);
+        console.error("💥 reengagement error:", e);
       }
-    }, 30000);
+    };
 
-    setInterval(async () => {
-      try {
-        const result = await runReengagementCycle({
-          sendText,
-          getZeroDocUsersBySegment,
-          getInactiveUsers,
-          adminWaId: KADI_ADMIN_WA,
-          zeroDocsLimit: REENGAGEMENT_ZERO_DOCS_LIMIT,
-          inactiveDays: REENGAGEMENT_INACTIVE_DAYS,
-          inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
-        });
-
-        console.log("✅ reengagement interval ok:", result);
-      } catch (e) {
-        console.error("💥 reengagement interval error FULL:", e);
-      }
-    }, REENGAGEMENT_INTERVAL_MS);
-  } else {
-    console.warn("⚠️ Re-engagement worker disabled or repo unavailable");
+    setTimeout(run, 30000);
+    setInterval(run, REENGAGEMENT_INTERVAL_MS);
   }
 
   // ===============================
-  // Weekly report checker
+  // WEEKLY REPORT
   // ===============================
   if (WEEKLY_REPORT_ENABLED && KADI_ADMIN_WA) {
-    console.log(
-      `📅 Weekly report checker started (every ${WEEKLY_REPORT_CHECK_INTERVAL_MS} ms, target UTC day=${WEEKLY_REPORT_DAY} hour=${WEEKLY_REPORT_HOUR}:${String(
-        WEEKLY_REPORT_MINUTE
-      ).padStart(2, "0")})`
-    );
-
-    setTimeout(async () => {
-      await maybeRunWeeklyReport();
-    }, 45000);
+    console.log("📅 Weekly report started");
 
     setInterval(async () => {
-      await maybeRunWeeklyReport();
+      try {
+        const reporter = makeKadiWeeklyReport({
+          sendText,
+          adminWaId: KADI_ADMIN_WA,
+        });
+
+        await reporter.sendWeeklyReport();
+      } catch (e) {
+        console.error("💥 weekly report error:", e);
+      }
     }, WEEKLY_REPORT_CHECK_INTERVAL_MS);
-  } else {
-    console.warn("⚠️ Weekly report disabled or missing KADI_ADMIN_WA");
   }
 });

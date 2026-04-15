@@ -1,5 +1,8 @@
 "use strict";
 
+// ===============================
+// Utils
+// ===============================
 function isWithin24h(lastActivityAt) {
   if (!lastActivityAt) return false;
 
@@ -9,6 +12,9 @@ function isWithin24h(lastActivityAt) {
   return Date.now() - ts < 24 * 60 * 60 * 1000;
 }
 
+// ===============================
+// MAIN FUNCTION
+// ===============================
 async function sendSmartReengagement({
   waId,
   lastActivityAt,
@@ -17,9 +23,10 @@ async function sendSmartReengagement({
   messageText,
   templateName = null,
   templateLanguageCode = "fr",
-  templateComponents = null,
+  templateComponents = [],
 }) {
   const to = String(waId || "").trim();
+
   if (!to) {
     return { ok: false, reason: "missing_wa_id" };
   }
@@ -28,28 +35,58 @@ async function sendSmartReengagement({
     return { ok: false, reason: "send_text_missing" };
   }
 
-  if (!String(messageText || "").trim() && !templateName) {
+  const safeMessageText = String(messageText || "").trim();
+  const safeTemplateName = String(templateName || "").trim();
+
+  if (!safeMessageText && !safeTemplateName) {
     return { ok: false, reason: "missing_message_payload" };
   }
 
   try {
+    // ===============================
+    // CASE 1 → fenêtre 24h ouverte
+    // ===============================
     if (isWithin24h(lastActivityAt)) {
-      await sendText(to, String(messageText || "").trim());
-      return { ok: true, mode: "free" };
+      if (!safeMessageText) {
+        return { ok: false, reason: "empty_free_message" };
+      }
+
+      await sendText(to, safeMessageText);
+
+      return {
+        ok: true,
+        mode: "free",
+      };
     }
 
-    if (templateName && typeof sendTemplateMessage === "function") {
+    // ===============================
+    // CASE 2 → hors 24h → template obligatoire
+    // ===============================
+    if (safeTemplateName && typeof sendTemplateMessage === "function") {
       await sendTemplateMessage({
         to,
-        templateName,
-        languageCode: templateLanguageCode,
-        components: templateComponents,
+        name: safeTemplateName,
+        language: templateLanguageCode,
+
+        // ✅ sécurité Meta
+        components: Array.isArray(templateComponents)
+          ? templateComponents
+          : [],
       });
 
-      return { ok: true, mode: "template" };
+      return {
+        ok: true,
+        mode: "template",
+      };
     }
 
-    return { ok: false, reason: "blocked_24h" };
+    // ===============================
+    // CASE 3 → bloqué Meta
+    // ===============================
+    return {
+      ok: false,
+      reason: "blocked_24h",
+    };
   } catch (error) {
     return {
       ok: false,

@@ -657,9 +657,10 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     },
 
     comparisons: {
-      docs7Growth,
-      revenue30Growth,
-    },
+  docs7Growth: docsGrowth7d,
+  revenue30Growth: revenueGrowth30d,
+  user30Growth: userGrowth30d,
+},
 
     topClients,
     topUsers,

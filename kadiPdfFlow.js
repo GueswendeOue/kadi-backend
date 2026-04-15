@@ -127,14 +127,14 @@ function makeKadiPdfFlow(deps) {
   async function sendNoCreditsBlock(from, balance, totalCost) {
     await sendText(
       from,
-      "🚫 Vous avez utilisé tous vos crédits disponibles.\n\n" +
-        "KADI vous permet de continuer vos devis, factures et reçus en quelques secondes.\n\n" +
+      "🚫 Vous n’avez pas assez de crédits.\n\n" +
         `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
-        `💳 Votre solde : *${balance || 0} crédit(s)*`
+        `💳 Votre solde : *${balance || 0} crédit(s)*\n\n` +
+        "🔥 Pack conseillé pour continuer maintenant : *1000F = 10 crédits*"
     );
 
     await sendButtons(from, "Choisissez une option 👇", [
-      { id: "CREDITS_RECHARGE", title: "💳 Recharger" },
+      { id: "CREDITS_RECHARGE", title: "� Recharger 1000F+" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }

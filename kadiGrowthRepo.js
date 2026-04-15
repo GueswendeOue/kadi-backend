@@ -27,11 +27,223 @@ function diffDays(fromDate) {
 }
 
 function normalizeProfessionCategory(profile = {}) {
+  return profile?.profession_category || profile?.business_sector || null;
+}
+
+function growthPct(current, previous) {
+  const c = toNum(current, 0);
+  const p = toNum(previous, 0);
+
+  if (p <= 0) return c > 0 ? 100 : 0;
+  return Math.round(((c - p) / p) * 100);
+}
+
+function lowerReason(row) {
+  return String(row?.reason || "").trim().toLowerCase();
+}
+
+function applyFilters(q, filters = []) {
+  let query = q;
+
+  for (const f of filters) {
+    if (f.op === "gte") query = query.gte(f.column, f.value);
+    if (f.op === "gt") query = query.gt(f.column, f.value);
+    if (f.op === "lte") query = query.lte(f.column, f.value);
+    if (f.op === "lt") query = query.lt(f.column, f.value);
+    if (f.op === "eq") query = query.eq(f.column, f.value);
+    if (f.op === "in") query = query.in(f.column, f.value);
+    if (f.op === "not.is") query = query.not(f.column, "is", f.value);
+  }
+
+  return query;
+}
+
+async function fetchRows(
+  tableName,
+  columns = "*",
+  filters = [],
+  orderBy = null,
+  ascending = true
+) {
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  const allRows = [];
+
+  while (true) {
+    let q = supabase.from(tableName).select(columns);
+    q = applyFilters(q, filters);
+
+    if (orderBy) {
+      q = q.order(orderBy, { ascending });
+    }
+
+    q = q.range(from, from + PAGE_SIZE - 1);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    const page = ensureArray(data);
+    allRows.push(...page);
+
+    if (page.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return allRows;
+}
+
+async function countDistinct(tableName, column = "wa_id", filters = []) {
+  const rows = await fetchRows(tableName, column, filters);
+  const set = new Set();
+
+  for (const row of rows) {
+    const value = String(row?.[column] || "").trim();
+    if (value) set.add(value);
+  }
+
+  return set.size;
+}
+
+function isPdfTx(row) {
+  const reason = lowerReason(row);
+  const delta = toNum(row?.delta, 0);
+
+  if (!(delta < 0)) return false;
+
   return (
-    profile?.profession_category ||
-    profile?.business_sector ||
-    null
+    reason === "pdf" ||
+    reason === "ocr_pdf" ||
+    reason === "decharge_pdf" ||
+    reason === "pdf_stamp_once" ||
+    reason.startsWith("pdf_") ||
+    reason.startsWith("ocr_pdf_") ||
+    reason.startsWith("decharge_pdf_")
   );
+}
+
+function isPaidCreditTx(row) {
+  const reason = lowerReason(row);
+  const delta = toNum(row?.delta, 0);
+
+  if (!(delta > 0)) return false;
+
+  return (
+    reason.includes("payment") ||
+    reason.includes("topup") ||
+    reason.includes("recharge")
+  );
+}
+
+async function getUnifiedCreditEvents() {
+  const [legacyTx, ledgerTx] = await Promise.all([
+    fetchRows(
+      "kadi_credit_tx",
+      "wa_id, delta, reason, created_at",
+      [],
+      "created_at",
+      false
+    ).catch(() => []),
+    fetchRows(
+      "kadi_credit_ledger",
+      "profile_id, delta, reason, created_at",
+      [],
+      "created_at",
+      false
+    ).catch(() => []),
+  ]);
+
+  const normalizedLegacy = ensureArray(legacyTx).map((row) => ({
+    source_table: "legacy_tx",
+    wa_id: String(row?.wa_id || "").trim(),
+    profile_id: null,
+    delta: toNum(row?.delta, 0),
+    reason: String(row?.reason || "").trim(),
+    created_at: row?.created_at || null,
+  }));
+
+  const normalizedLedger = ensureArray(ledgerTx).map((row) => ({
+    source_table: "ledger",
+    wa_id: "",
+    profile_id: row?.profile_id || null,
+    delta: toNum(row?.delta, 0),
+    reason: String(row?.reason || "").trim(),
+    created_at: row?.created_at || null,
+  }));
+
+  return [...normalizedLegacy, ...normalizedLedger].sort((a, b) =>
+    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+  );
+}
+
+// ===============================
+// GROWTH METRICS
+// ===============================
+async function getDocsGrowth7d() {
+  const from7 = isoDaysAgo(7);
+  const from14 = isoDaysAgo(14);
+
+  const events = await getUnifiedCreditEvents();
+
+  const current = events.filter((r) => {
+    const created = String(r.created_at || "");
+    return created >= from7 && isPdfTx(r);
+  }).length;
+
+  const previous = events.filter((r) => {
+    const created = String(r.created_at || "");
+    return created >= from14 && created < from7 && isPdfTx(r);
+  }).length;
+
+  return growthPct(current, previous);
+}
+
+async function getRevenueGrowth30d({
+  packCredits = 25,
+  packPriceFcfa = 2000,
+} = {}) {
+  const from30 = isoDaysAgo(30);
+  const from60 = isoDaysAgo(60);
+
+  const events = await getUnifiedCreditEvents();
+
+  const credits30 = events
+    .filter((r) => {
+      const created = String(r.created_at || "");
+      return created >= from30 && isPaidCreditTx(r);
+    })
+    .reduce((acc, r) => acc + toNum(r.delta, 0), 0);
+
+  const creditsPrev30 = events
+    .filter((r) => {
+      const created = String(r.created_at || "");
+      return created >= from60 && created < from30 && isPaidCreditTx(r);
+    })
+    .reduce((acc, r) => acc + toNum(r.delta, 0), 0);
+
+  const revenue30 = Math.round(
+    (credits30 / Math.max(1, packCredits)) * packPriceFcfa
+  );
+  const revenuePrev30 = Math.round(
+    (creditsPrev30 / Math.max(1, packCredits)) * packPriceFcfa
+  );
+
+  return growthPct(revenue30, revenuePrev30);
+}
+
+async function getUserGrowth30d() {
+  const from30 = isoDaysAgo(30);
+  const from60 = isoDaysAgo(60);
+
+  const current = await countDistinct("business_profiles", "wa_id", [
+    { op: "gte", column: "created_at", value: from30 },
+  ]).catch(() => 0);
+
+  const previous = await countDistinct("business_profiles", "wa_id", [
+    { op: "gte", column: "created_at", value: from60 },
+    { op: "lt", column: "created_at", value: from30 },
+  ]).catch(() => 0);
+
+  return growthPct(current, previous);
 }
 
 // ===============================
@@ -109,7 +321,6 @@ async function getZeroDocUsersBySegment(segment = "A", limit = 20) {
 
 // ===============================
 // INACTIVE USERS
-// Users ayant au moins 1 doc mais pas d’activité récente
 // ===============================
 async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
   const minDays = Math.min(Math.max(Number(minDaysInactive || 30), 1), 365);
@@ -145,8 +356,9 @@ async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
       wa_id: waId,
       last_doc_at: lastDate,
       days_inactive: diffDays(lastDate),
+      last_activity_at: lastDate,
     }))
-    .slice(0, max * 3); // buffer avant enrichissement profil
+    .slice(0, max * 3);
 
   if (!inactiveWaIds.length) return [];
 
@@ -154,7 +366,9 @@ async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
 
   const { data: profiles, error: profilesError } = await supabase
     .from("business_profiles")
-    .select("wa_id, profession_category, business_sector, business_name, owner_name")
+    .select(
+      "wa_id, profession_category, business_sector, business_name, owner_name"
+    )
     .in("wa_id", waIds);
 
   if (profilesError) throw profilesError;
@@ -169,6 +383,7 @@ async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
       return {
         wa_id: u.wa_id,
         last_doc_at: u.last_doc_at,
+        last_activity_at: u.last_activity_at,
         days_inactive: u.days_inactive,
         profession_category: normalizeProfessionCategory(p),
         business_name: p.business_name || null,
@@ -180,6 +395,9 @@ async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
 }
 
 module.exports = {
+  getDocsGrowth7d,
+  getRevenueGrowth30d,
+  getUserGrowth30d,
   getZeroDocUsersBySegment,
   getInactiveUsers,
 };
