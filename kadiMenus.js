@@ -20,86 +20,81 @@ function makeKadiMenus(deps) {
   // HOME MENU
   // ======================================================
   async function sendHomeMenu(to) {
-    return sendList(to, {
-      body:
-        "👋 Bienvenue dans le menu KADI\n\n" +
-        "Choisissez simplement ce que vous voulez faire",
-      buttonText: "Ouvrir le menu",
-      footer: "Appuyez sur un élément pour continuer",
-      sections: [
-        {
-          title: "Documents",
-          rows: [
-            {
-              id: "DOC_FACTURE_MENU",
-              title: "📄 Facture",
-              description: "Créer une facture",
-            },
-            {
-              id: "DOC_FEC",
-              title: "⚡ FEC",
-              description: "Facture Électronique Certifiée",
-            },
-            {
-              id: "DOC_DEVIS",
-              title: "📋 Devis",
-              description: "Créer un devis",
-            },
-            {
-              id: "DOC_RECU",
-              title: "🧾 Reçu",
-              description: "Créer un reçu",
-            },
-            {
-              id: "DOC_DECHARGE",
-              title: "📝 Décharge",
-              description: "Créer une décharge officielle",
-            },
-          ],
-        },
-        {
-          title: "Compte",
-          rows: [
-            {
-              id: "CREDITS_SOLDE",
-              title: "💳 Crédits",
-              description: "Voir mon solde",
-            },
-            {
-              id: "CREDITS_RECHARGE",
-              title: "🔄 Recharger",
-              description: "Acheter des crédits",
-            },
-            {
-              id: "HOME_PROFILE",
-              title: "🏢 Profil",
-              description: "Voir ou modifier mon profil",
-            },
-            {
-              id: "HOME_HISTORY",
-              title: "📚 Historique",
-              description: "Voir mes documents récents",
-            },
-          ],
-        },
-        {
-          title: "Assistance",
-          rows: [
-            {
-              id: "HOME_TUTORIAL",
-              title: "📘 Tutoriel",
-              description: "Guide pas à pas",
-            },
-            {
-              id: "HOME_HELP",
-              title: "❓ Aide rapide",
-              description: "Exemples et commandes utiles",
-            },
-          ],
-        },
-      ],
-    });
-  }
+  return sendList(to, {
+    body:
+      "👋 Bienvenue dans le menu KADI\n\n" +
+      "Choisissez simplement ce que vous voulez faire",
+    buttonText: "Ouvrir le menu",
+    footer: "Appuyez sur un élément pour continuer",
+    sections: [
+      {
+        title: "Documents",
+        rows: [
+          {
+            id: "DOC_FACTURE_MENU",
+            title: "📄 Facture",
+            description: "Créer une facture",
+          },
+          {
+            id: "DOC_FEC",
+            title: "⚡ FEC",
+            description: "Facture Électronique Certifiée",
+          },
+          {
+            id: "DOC_DEVIS",
+            title: "📋 Devis",
+            description: "Créer un devis",
+          },
+          {
+            id: "DOC_RECU",
+            title: "🧾 Reçu",
+            description: "Créer un reçu",
+          },
+          {
+            id: "DOC_DECHARGE",
+            title: "📝 Décharge",
+            description: "Créer une décharge officielle",
+          },
+        ],
+      },
+      {
+        title: "Compte",
+        rows: [
+          {
+            id: "CREDITS_SOLDE",
+            title: "💳 Crédits",
+            description: "Voir mon solde",
+          },
+          {
+            id: "CREDITS_RECHARGE",
+            title: "🔄 Recharger",
+            description: "Acheter des crédits",
+          },
+          {
+            id: "HOME_PROFILE",
+            title: "🏢 Profil",
+            description: "Voir ou modifier mon profil",
+          },
+          {
+            id: "HOME_HISTORY",
+            title: "📚 Historique",
+            description: "Voir mes documents récents",
+          },
+        ],
+      },
+      {
+        title: "Assistance",
+        rows: [
+          {
+            id: "HOME_HELP",
+            title: "❓ Aide & tuto",
+            description: "Guide, exemples et aide rapide",
+          },
+        ],
+      },
+    ],
+  });
+}
 
   // ======================================================
   // DOCS MENU
