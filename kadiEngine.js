@@ -84,6 +84,7 @@ const {
 const {
   makeKadiReengagementService,
 } = require("./kadiReengagementService");
+const { makeKadiHistoryFlow } = require("./kadiHistoryFlow");
 
 // ===============================
 // Certified module (FEC)
@@ -153,6 +154,10 @@ const {
 } = require("./kadiCreditsRepo");
 
 const { getStats } = require("./kadiStatsRepo");
+const {
+  listRecentDocumentsByWaId,
+  getLatestResendableDocumentByWaId,
+} = require("./kadiHistoryRepo");
 
 const { saveDocument } = require("./kadiRepo");
 const { nextDocNumber } = require("./kadiCounterRepo");
@@ -731,6 +736,29 @@ const {
   money,
 });
 
+
+// ===============================
+// History flow
+// ===============================
+const {
+  sendHistoryHome,
+  handleHistoryInteractiveReply,
+  handleHistoryText,
+} = makeKadiHistoryFlow({
+  getSession,
+  sendText,
+  sendButtons,
+  sendDocument,
+
+  listRecentDocumentsByWaId,
+  getLatestResendableDocumentByWaId,
+
+  sendRecentCertifiedInvoices,
+  sendHomeMenu,
+
+  money,
+});
+
 // ===============================
 // Stats service
 // ===============================
@@ -833,10 +861,13 @@ async function handleTextMessage(from, text, msg) {
   // 1) Commandes explicites d'abord (admin + user)
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
-  // 2) Intentions produit prioritaires
+  // 2) Historique d'abord
+  if (await handleHistoryText(from, text)) return true;
+
+  // 3) Intentions produit prioritaires
   if (await handleUltraPriorityText(from, text)) return true;
 
-  // 2.5) Entrée directe flow FEC
+  // 4) Entrée directe flow FEC
   if (
     normalizedText.includes("facture electronique certifiee") ||
     normalizedText.includes("facture électronique certifiée") ||
@@ -847,7 +878,7 @@ async function handleTextMessage(from, text, msg) {
     return startCertifiedInvoiceFlow(from);
   }
 
-  // 3) Petit small talk
+  // 5) Petit small talk
   if (await handleSmallTalk(from, text)) return true;
 
   const s = getSession(from);
@@ -858,7 +889,7 @@ async function handleTextMessage(from, text, msg) {
     hasIntent: !!s?.intent,
   });
 
-  // 4) Correction guidée d’intent
+  // 6) Correction guidée d’intent
   if (isIntentFixStep(s?.step)) {
     const handledIntentFix = await handleIntentFixText(from, text);
     if (handledIntentFix) return true;
@@ -870,23 +901,23 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 5) Flow FEC si session ouverte
+  // 7) Flow FEC si session ouverte
   if (await handleCertifiedInvoiceText(from, text)) return true;
 
-  // 6) Flows structurés
+  // 8) Flows structurés
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
-  // 7) Onboarding seulement si on n’a pas déjà répondu
+  // 9) Onboarding seulement si on n’a pas déjà répondu
   await maybeSendOnboarding(from);
 
-  // 8) Compréhension naturelle
+  // 10) Compréhension naturelle
   if (await tryHandleNaturalMessage(from, text)) return true;
   if (await handleSmartItemsBlockText(from, text)) return true;
 
-  // 9) Fallback
+  // 11) Fallback
   await sendText(
     from,
     "🤔 Je n’ai pas bien compris.\n\n" +
@@ -903,6 +934,9 @@ async function handleInteractiveMessage(from, msg) {
   if (replyId) {
     const handledProfileReply = await handleProfileReply(from, replyId);
     if (handledProfileReply) return true;
+
+    const handledHistoryReply = await handleHistoryInteractiveReply(from, replyId);
+    if (handledHistoryReply) return true;
 
     // Compat: ancien ID + nouvel ID
     if (
