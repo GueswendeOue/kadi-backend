@@ -14,6 +14,10 @@ function makeKadiPriorityRouter(deps) {
     sendProfileMenu,
     sendCreditsMenu,
     sendAlreadyGeneratedMenu = null,
+
+    // FEC
+    startCertifiedInvoiceFlow = null,
+    sendRecentCertifiedInvoices = null,
   } = deps;
 
   function hasAny(text, patterns = []) {
@@ -38,6 +42,49 @@ function makeKadiPriorityRouter(deps) {
       return "menu";
     }
 
+    // ===============================
+    // FEC HISTORY (avant docs)
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bhistorique fec\b/,
+        /\bmes fec\b/,
+        /\bmes factures electroniques certifiees\b/,
+        /\bmes factures électroniques certifiées\b/,
+        /\bdernier fec\b/,
+        /\bderniere fec\b/,
+        /\bdernière fec\b/,
+        /\brenvoyer fec\b/,
+        /\brenvoie fec\b/,
+        /\brenvoyer facture electronique certifiee\b/,
+        /\brenvoyer facture électronique certifiée\b/,
+      ])
+    ) {
+      return "fec_history";
+    }
+
+    // ===============================
+    // FEC (avant docs)
+    // ===============================
+    if (
+      hasAny(t, [
+        /\bfec\b/,
+        /\bfacture electronique certifiee\b/,
+        /\bfacture électronique certifiée\b/,
+        /\bfacture certifiee\b/,
+        /\bfacture certifiée\b/,
+        /\bcreer fec\b/,
+        /\bcréer fec\b/,
+        /\bnouvelle fec\b/,
+        /\bfacture fiscale\b/,
+      ])
+    ) {
+      return "fec";
+    }
+
+    // ===============================
+    // DOCS / NAV DOCS
+    // ===============================
     if (
       hasAny(t, [
         /\bdoc\b/,
@@ -219,6 +266,33 @@ function makeKadiPriorityRouter(deps) {
         return true;
       }
 
+      if (intent === "fec") {
+        if (typeof startCertifiedInvoiceFlow === "function") {
+          await startCertifiedInvoiceFlow(from);
+        } else {
+          await sendText(
+            from,
+            "🧾 La FEC est disponible depuis le menu Documents."
+          );
+          if (typeof sendDocsMenu === "function") {
+            await sendDocsMenu(from);
+          }
+        }
+        return true;
+      }
+
+      if (intent === "fec_history") {
+        if (typeof sendRecentCertifiedInvoices === "function") {
+          await sendRecentCertifiedInvoices(from);
+        } else {
+          await sendText(
+            from,
+            "📚 L’historique FEC arrive bientôt."
+          );
+        }
+        return true;
+      }
+
       if (intent === "docs") {
         await sendDocsMenu(from);
         return true;
@@ -298,7 +372,8 @@ function makeKadiPriorityRouter(deps) {
             `• Devis\n` +
             `• Factures\n` +
             `• Reçus\n` +
-            `• Décharges\n\n` +
+            `• Décharges\n` +
+            `• FEC\n\n` +
             `Vous pouvez :\n` +
             `• écrire normalement\n` +
             `• envoyer un vocal\n` +
@@ -306,7 +381,7 @@ function makeKadiPriorityRouter(deps) {
             `Exemples :\n` +
             `• Devis pour Moussa, 2 portes à 25000\n` +
             `• Facture pour Awa, 5 pagnes à 3000\n` +
-            `• Reçu loyer 100000 pour Adama\n\n` +
+            `• FEC pour Moussa, 3 sacs de ciment à 7500\n\n` +
             `Tapez aussi : MENU, SOLDE, RECHARGE, PROFIL`
         );
         return true;

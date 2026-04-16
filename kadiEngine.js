@@ -86,6 +86,29 @@ const {
 } = require("./kadiReengagementService");
 
 // ===============================
+// Certified module (FEC)
+// ===============================
+const {
+  createCertifiedInvoiceDraft,
+  markCertifiedInvoiceCertified,
+  attachCertifiedInvoicePdf,
+  getCertifiedInvoiceById,
+  listRecentCertifiedInvoices,
+} = require("./kadiCertified/kadiCertifiedRepo");
+
+const {
+  buildCertifiedInvoicePdfBuffer,
+} = require("./kadiCertified/kadiCertifiedPdf");
+
+const {
+  makeKadiCertifiedService,
+} = require("./kadiCertified/kadiCertifiedService");
+
+const {
+  makeKadiCertifiedFlow,
+} = require("./kadiCertified/kadiCertifiedFlow");
+
+// ===============================
 // Existing business modules
 // ===============================
 const {
@@ -359,6 +382,7 @@ const {
   sendButtons,
   getOrCreateProfile,
   updateProfile,
+  STAMP_ONE_TIME_COST,
 });
 
 // ===============================
@@ -515,6 +539,26 @@ const {
 });
 
 // ===============================
+// Certified service (FEC)
+// ===============================
+const {
+  createCertifiedInvoiceFromDraft,
+  rebuildCertifiedInvoicePdf,
+} = makeKadiCertifiedService({
+  getOrCreateProfile,
+  getSignedLogoUrl,
+  downloadSignedUrlToBuffer,
+  uploadMediaBuffer,
+
+  createCertifiedInvoiceDraft,
+  markCertifiedInvoiceCertified,
+  attachCertifiedInvoicePdf,
+  getCertifiedInvoiceById,
+
+  buildCertifiedInvoicePdfBuffer,
+});
+
+// ===============================
 // Image flow
 // ===============================
 const { handleIncomingImage } = makeKadiImageFlow({
@@ -665,6 +709,28 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 });
 
 // ===============================
+// Certified flow (FEC)
+// ===============================
+const {
+  startCertifiedInvoiceFlow,
+  handleCertifiedInvoiceInteractiveReply,
+  handleCertifiedInvoiceText,
+} = makeKadiCertifiedFlow({
+  getSession,
+  sendText,
+  sendButtons,
+  sendDocument,
+
+  getOrCreateProfile,
+
+  createCertifiedInvoiceFromDraft,
+  listRecentCertifiedInvoices,
+  rebuildCertifiedInvoicePdf,
+
+  money,
+});
+
+// ===============================
 // Stats service
 // ===============================
 const { handleStatsCommand } = makeKadiStatsService({
@@ -752,19 +818,33 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
   sendProfileMenu,
   sendCreditsMenu,
   sendAlreadyGeneratedMenu,
+  startCertifiedInvoiceFlow,
+  sendRecentCertifiedInvoices,
 });
 
 // ===============================
 // Message handlers
 // ===============================
 async function handleTextMessage(from, text, msg) {
-  console.log("[KADI/TEXT] raw:", text, "| norm:", norm(text).toLowerCase());
+  const normalizedText = norm(text).toLowerCase();
+  console.log("[KADI/TEXT] raw:", text, "| norm:", normalizedText);
 
   // 1) Commandes explicites d'abord (admin + user)
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
   // 2) Intentions produit prioritaires
   if (await handleUltraPriorityText(from, text)) return true;
+
+  // 2.5) Entrée directe flow FEC
+  if (
+    normalizedText.includes("facture electronique certifiee") ||
+    normalizedText.includes("facture électronique certifiée") ||
+    normalizedText.includes("facture certifiee") ||
+    normalizedText.includes("facture certifiée") ||
+    normalizedText === "fec"
+  ) {
+    return startCertifiedInvoiceFlow(from);
+  }
 
   // 3) Petit small talk
   if (await handleSmallTalk(from, text)) return true;
@@ -789,20 +869,23 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 5) Flows structurés
+  // 5) Flow FEC si session ouverte
+  if (await handleCertifiedInvoiceText(from, text)) return true;
+
+  // 6) Flows structurés
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
-  // 6) Onboarding seulement si on n’a pas déjà répondu
+  // 7) Onboarding seulement si on n’a pas déjà répondu
   await maybeSendOnboarding(from);
 
-  // 7) Compréhension naturelle
+  // 8) Compréhension naturelle
   if (await tryHandleNaturalMessage(from, text)) return true;
   if (await handleSmartItemsBlockText(from, text)) return true;
 
-  // 8) Fallback
+  // 9) Fallback
   await sendText(
     from,
     "🤔 Je n’ai pas bien compris.\n\n" +
@@ -819,6 +902,21 @@ async function handleInteractiveMessage(from, msg) {
   if (replyId) {
     const handledProfileReply = await handleProfileReply(from, replyId);
     if (handledProfileReply) return true;
+
+    // Compat: ancien ID + nouvel ID
+    if (
+      replyId === "DOC_FEC" ||
+      replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE"
+    ) {
+      await startCertifiedInvoiceFlow(from);
+      return true;
+    }
+
+    const handledCertifiedReply = await handleCertifiedInvoiceInteractiveReply(
+      from,
+      replyId
+    );
+    if (handledCertifiedReply) return true;
 
     await handleInteractiveReply(from, replyId);
     return true;

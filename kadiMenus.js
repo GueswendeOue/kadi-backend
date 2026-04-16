@@ -36,6 +36,11 @@ function makeKadiMenus(deps) {
               description: "Créer une facture",
             },
             {
+              id: "DOC_FEC",
+              title: "⚡ FEC",
+              description: "Facture Électronique Certifiée",
+            },
+            {
               id: "DOC_DEVIS",
               title: "📋 Devis",
               description: "Créer un devis",
@@ -114,6 +119,11 @@ function makeKadiMenus(deps) {
               id: "DOC_FACTURE_MENU",
               title: "📄 Facture",
               description: "Définitive ou proforma",
+            },
+            {
+              id: "DOC_FEC",
+              title: "⚡ FEC",
+              description: "Facture Électronique Certifiée",
             },
             {
               id: "DOC_DEVIS",
@@ -231,7 +241,6 @@ function makeKadiMenus(deps) {
 
   // ======================================================
   // PREVIEW MENU
-  // draft param optionnel, pour futurs boutons dynamiques
   // ======================================================
   async function sendPreviewMenu(to, draft = null) {
     const buttons = [
@@ -240,9 +249,6 @@ function makeKadiMenus(deps) {
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ];
 
-    // Future-ready:
-    // si plus tard tu veux passer draft ici,
-    // on peut choisir d’afficher autre chose selon clientPhone/subject.
     void draft;
 
     return sendButtons(
@@ -255,7 +261,6 @@ function makeKadiMenus(deps) {
 
   // ======================================================
   // AFTER PRODUCT MENU
-  // draft param optionnel pour proposer les bons next steps
   // ======================================================
   async function sendAfterProductMenu(to, draft = null) {
     const hasSubj = hasSubject(draft);
@@ -398,7 +403,6 @@ function makeKadiMenus(deps) {
 
   // ======================================================
   // ALREADY GENERATED
-  // draft param optionnel
   // ======================================================
   async function sendAlreadyGeneratedMenu(to, draft = null) {
     const buttons = [
