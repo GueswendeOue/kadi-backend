@@ -713,6 +713,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
 // ===============================
 const {
   startCertifiedInvoiceFlow,
+  sendRecentCertifiedInvoices,
   handleCertifiedInvoiceInteractiveReply,
   handleCertifiedInvoiceText,
 } = makeKadiCertifiedFlow({

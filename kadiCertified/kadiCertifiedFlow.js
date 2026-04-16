@@ -665,12 +665,13 @@ function makeKadiCertifiedFlow(deps) {
     return false;
   }
 
-  return {
+ return {
     isCertifiedStep,
     resetCertifiedDraftSession,
     startCertifiedInvoiceFlow,
     startCertifiedInvoiceCreation,
     sendCertifiedPreview,
+    sendRecentCertifiedInvoices,
     handleCertifiedInvoiceInteractiveReply,
     handleCertifiedInvoiceText,
   };
