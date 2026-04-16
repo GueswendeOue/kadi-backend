@@ -6,6 +6,7 @@ const {
   buildInactiveMessage,
   getZeroDocMessageByVariant,
 } = require("./kadiReengagementMessages");
+const { logReengagementSend } = require("./kadiReengagementRepo");
 
 // ===============================
 // Utils
@@ -15,7 +16,8 @@ function normalizeUsers(rows = []) {
     .map((row) => ({
       wa_id: String(row?.wa_id || "").trim(),
       last_activity_at: row?.last_activity_at || row?.created_at || null,
-      owner_name: row?.owner_name || null, // ✅ IMPORTANT pour template
+      owner_name: row?.owner_name || null,
+      created_at: row?.created_at || null,
     }))
     .filter((row) => !!row.wa_id);
 }
@@ -25,14 +27,20 @@ function isReasonableSendHour(date = new Date()) {
   return h >= 8 && h <= 19;
 }
 
-// Anti spam simple (évite double envoi dans même cycle)
 function dedupeUsers(users = []) {
   const seen = new Set();
-  return users.filter((u) => {
-    if (seen.has(u.wa_id)) return false;
-    seen.add(u.wa_id);
+
+  return (Array.isArray(users) ? users : []).filter((u) => {
+    const waId = String(u?.wa_id || "").trim();
+    if (!waId) return false;
+    if (seen.has(waId)) return false;
+    seen.add(waId);
     return true;
   });
+}
+
+function buildCycleKey(date = new Date()) {
+  return `reengagement_${date.toISOString()}`;
 }
 
 // ===============================
@@ -44,8 +52,13 @@ async function runBatch({
   sendTemplateMessage = null,
   messageText,
   templateName = null,
+  campaignType,
+  cycleKey,
+  alreadyTargetedSet,
 }) {
-  const cleanUsers = dedupeUsers(users);
+  const cleanUsers = dedupeUsers(users).filter(
+    (u) => !alreadyTargetedSet.has(u.wa_id)
+  );
 
   const stats = {
     targeted: cleanUsers.length,
@@ -64,8 +77,6 @@ async function runBatch({
         sendTemplateMessage,
         messageText,
         templateName,
-
-        // ✅ 🔥 VARIABLE TEMPLATE (CRITIQUE)
         templateComponents: [
           {
             type: "body",
@@ -79,11 +90,44 @@ async function runBatch({
         ],
       });
 
-      if (res?.ok && res?.mode === "free") stats.sent += 1;
-      else if (res?.ok && res?.mode === "template") stats.template += 1;
-      else if (res?.reason === "blocked_24h") stats.blocked += 1;
-      else stats.failed += 1;
-    } catch (e) {
+      if (res?.ok && res?.mode === "free") {
+        stats.sent += 1;
+        alreadyTargetedSet.add(user.wa_id);
+
+        await logReengagementSend({
+          waId: user.wa_id,
+          campaignType,
+          templateName: null,
+          messageMode: "free",
+          status: "sent",
+          cycleKey,
+          meta: {
+            owner_name: user.owner_name || null,
+            last_activity_at: user.last_activity_at || null,
+          },
+        });
+      } else if (res?.ok && res?.mode === "template") {
+        stats.template += 1;
+        alreadyTargetedSet.add(user.wa_id);
+
+        await logReengagementSend({
+          waId: user.wa_id,
+          campaignType,
+          templateName,
+          messageMode: "template",
+          status: "sent",
+          cycleKey,
+          meta: {
+            owner_name: user.owner_name || null,
+            last_activity_at: user.last_activity_at || null,
+          },
+        });
+      } else if (res?.reason === "blocked_24h") {
+        stats.blocked += 1;
+      } else {
+        stats.failed += 1;
+      }
+    } catch (_) {
       stats.failed += 1;
     }
   }
@@ -103,6 +147,9 @@ async function runReengagementCycle({
   zeroDocsLimit = 30,
   inactiveDays = 30,
   inactiveLimit = 30,
+  reengagementCooldownDays = Number(
+    process.env.KADI_REENGAGEMENT_COOLDOWN_DAYS || 7
+  ),
 }) {
   if (typeof sendText !== "function") {
     throw new Error("sendText manquant");
@@ -116,7 +163,6 @@ async function runReengagementCycle({
     throw new Error("getInactiveUsers manquant");
   }
 
-  // ✅ respect des horaires (anti ban Meta)
   if (!isReasonableSendHour()) {
     console.log("[KADI/REENGAGEMENT] skipped: outside allowed hours");
     return {
@@ -125,13 +171,22 @@ async function runReengagementCycle({
     };
   }
 
-  console.log("[KADI/REENGAGEMENT] cycle start");
+  const cycleKey = buildCycleKey();
+  const alreadyTargetedSet = new Set();
+
+  console.log("[KADI/REENGAGEMENT] cycle start", {
+    cycleKey,
+    cooldownDays: reengagementCooldownDays,
+  });
 
   // ===============================
-  // ZERO DOC USERS (HIGH PRIORITY)
+  // ZERO DOC USERS
   // ===============================
   const zeroDocsUsers = normalizeUsers(
-    await getZeroDocUsersBySegment("A", zeroDocsLimit)
+    await getZeroDocUsersBySegment("A", zeroDocsLimit, {
+      cooldownDays: reengagementCooldownDays,
+      excludeWaIds: Array.from(alreadyTargetedSet),
+    })
   );
 
   const zeroStats = await runBatch({
@@ -139,7 +194,10 @@ async function runReengagementCycle({
     sendText,
     sendTemplateMessage,
     messageText: getZeroDocMessageByVariant("A"),
-    templateName: "kadi_zero_doc_a_v1", // ✅ ton template Meta
+    templateName: "kadi_zero_doc_a_v1",
+    campaignType: "zero_docs_a",
+    cycleKey,
+    alreadyTargetedSet,
   });
 
   if (adminWaId) {
@@ -155,7 +213,10 @@ async function runReengagementCycle({
   // INACTIVE USERS
   // ===============================
   const inactiveUsers = normalizeUsers(
-    await getInactiveUsers(inactiveDays, inactiveLimit)
+    await getInactiveUsers(inactiveDays, inactiveLimit, {
+      cooldownDays: reengagementCooldownDays,
+      excludeWaIds: Array.from(alreadyTargetedSet),
+    })
   );
 
   const inactiveStats = await runBatch({
@@ -163,7 +224,10 @@ async function runReengagementCycle({
     sendText,
     sendTemplateMessage,
     messageText: buildInactiveMessage(inactiveDays),
-    templateName: "kadi_inactive_v1", // ✅ template Meta
+    templateName: "kadi_inactive_v1",
+    campaignType: `inactive_${inactiveDays}d`,
+    cycleKey,
+    alreadyTargetedSet,
   });
 
   if (adminWaId) {
@@ -176,11 +240,16 @@ async function runReengagementCycle({
   }
 
   console.log("[KADI/REENGAGEMENT] cycle done", {
+    cycleKey,
+    targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
   });
 
   return {
+    cycleKey,
+    cooldownDays: reengagementCooldownDays,
+    targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
   };
