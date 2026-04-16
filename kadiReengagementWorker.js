@@ -1,7 +1,10 @@
 "use strict";
 
 const { sendSmartReengagement } = require("./kadiSmartReengagement");
-const { notifyAdminReengagement } = require("./kadiAdminNotifier");
+const {
+  notifyAdminReengagement,
+  notifyAdminReengagementCycleSummary,
+} = require("./kadiAdminNotifier");
 const {
   buildInactiveMessage,
   getZeroDocMessageByVariant,
@@ -22,8 +25,9 @@ function normalizeUsers(rows = []) {
     .filter((row) => !!row.wa_id);
 }
 
+// ✅ Burkina = UTC+0, on verrouille en UTC
 function isReasonableSendHour(date = new Date()) {
-  const h = date.getHours();
+  const h = date.getUTCHours();
   return h >= 8 && h <= 19;
 }
 
@@ -41,6 +45,10 @@ function dedupeUsers(users = []) {
 
 function buildCycleKey(date = new Date()) {
   return `reengagement_${date.toISOString()}`;
+}
+
+function diffCount(beforeSet, afterSet) {
+  return Math.max(0, afterSet.size - beforeSet.size);
 }
 
 // ===============================
@@ -182,12 +190,16 @@ async function runReengagementCycle({
   // ===============================
   // ZERO DOC USERS
   // ===============================
+  const zeroExcludedBefore = alreadyTargetedSet.size;
+
   const zeroDocsUsers = normalizeUsers(
     await getZeroDocUsersBySegment("A", zeroDocsLimit, {
       cooldownDays: reengagementCooldownDays,
       excludeWaIds: Array.from(alreadyTargetedSet),
     })
   );
+
+  const zeroBeforeSend = new Set(alreadyTargetedSet);
 
   const zeroStats = await runBatch({
     users: zeroDocsUsers,
@@ -200,24 +212,38 @@ async function runReengagementCycle({
     alreadyTargetedSet,
   });
 
+  const zeroUniqueTouched = diffCount(zeroBeforeSend, alreadyTargetedSet);
+
   if (adminWaId) {
     await notifyAdminReengagement({
       sendText,
       adminWaId,
       type: "auto_zero_docs",
       stats: zeroStats,
+      meta: {
+        cycleKey,
+        cooldownDays: reengagementCooldownDays,
+        uniqueTouched: zeroUniqueTouched,
+        excludedThisSegment: zeroExcludedBefore,
+        alreadyTargetedInCycle: zeroExcludedBefore,
+        timestamp: new Date().toISOString(),
+      },
     });
   }
 
   // ===============================
   // INACTIVE USERS
   // ===============================
+  const inactiveExcludedBefore = alreadyTargetedSet.size;
+
   const inactiveUsers = normalizeUsers(
     await getInactiveUsers(inactiveDays, inactiveLimit, {
       cooldownDays: reengagementCooldownDays,
       excludeWaIds: Array.from(alreadyTargetedSet),
     })
   );
+
+  const inactiveBeforeSend = new Set(alreadyTargetedSet);
 
   const inactiveStats = await runBatch({
     users: inactiveUsers,
@@ -230,17 +256,46 @@ async function runReengagementCycle({
     alreadyTargetedSet,
   });
 
+  const inactiveUniqueTouched = diffCount(
+    inactiveBeforeSend,
+    alreadyTargetedSet
+  );
+
   if (adminWaId) {
     await notifyAdminReengagement({
       sendText,
       adminWaId,
       type: `auto_inactive_${inactiveDays}d`,
       stats: inactiveStats,
+      meta: {
+        cycleKey,
+        cooldownDays: reengagementCooldownDays,
+        uniqueTouched: inactiveUniqueTouched,
+        excludedThisSegment: inactiveExcludedBefore,
+        alreadyTargetedInCycle: inactiveExcludedBefore,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  // ===============================
+  // GLOBAL SUMMARY
+  // ===============================
+  if (adminWaId) {
+    await notifyAdminReengagementCycleSummary({
+      sendText,
+      adminWaId,
+      cycleKey,
+      cooldownDays: reengagementCooldownDays,
+      zeroStats,
+      inactiveStats,
+      targetedUnique: alreadyTargetedSet.size,
     });
   }
 
   console.log("[KADI/REENGAGEMENT] cycle done", {
     cycleKey,
+    cooldownDays: reengagementCooldownDays,
     targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
