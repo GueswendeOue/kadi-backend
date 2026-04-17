@@ -15,7 +15,6 @@ const REONBOARDING_BONUS_CREDITS = Number(
   process.env.REONBOARDING_BONUS_CREDITS || 0
 );
 
-// Mets ici ton lien TikTok / vidéo démo
 const KADI_DEMO_VIDEO_URL =
   process.env.KADI_DEMO_VIDEO_URL || "https://www.tiktok.com/@kadi/video/DEMO";
 
@@ -129,7 +128,7 @@ async function ensureWelcomeCredits(waId) {
     }
 
     const balRes = await getBalance(waId);
-    const bal = balRes?.balance || 0;
+    const bal = Number(balRes?.balance || 0);
 
     if (bal > 0) {
       _WELCOME_CACHE.set(waId, Date.now());
@@ -137,6 +136,18 @@ async function ensureWelcomeCredits(waId) {
     }
 
     await addCredits(waId, WELCOME_CREDITS, "welcome");
+
+    try {
+      await updateProfile(waId, {
+        welcome_credits_granted: true,
+      });
+    } catch (profileErr) {
+      console.warn(
+        "⚠️ ensureWelcomeCredits:updateProfile:",
+        profileErr?.message || profileErr
+      );
+    }
+
     _WELCOME_CACHE.set(waId, Date.now());
 
     await sendText(
@@ -146,7 +157,7 @@ async function ensureWelcomeCredits(waId) {
         `📄 1 PDF = ${PDF_SIMPLE_CREDITS} crédit.`
     );
   } catch (e) {
-    console.warn("⚠️ ensureWelcomeCredits:", e?.message);
+    console.warn("⚠️ ensureWelcomeCredits:", e?.message || e);
   }
 }
 
@@ -194,7 +205,7 @@ async function maybeSendOnboarding(from) {
       await markOnboardingDone(from, 1);
     } catch (_) {}
   } catch (e) {
-    console.warn("⚠️ onboarding:", e?.message);
+    console.warn("⚠️ onboarding:", e?.message || e);
   }
 }
 
@@ -222,7 +233,7 @@ async function tryHandleProfessionIntro(from, text) {
 
     return true;
   } catch (e) {
-    console.warn("⚠️ tryHandleProfessionIntro:", e?.message);
+    console.warn("⚠️ tryHandleProfessionIntro:", e?.message || e);
     return false;
   }
 }
@@ -256,21 +267,21 @@ async function handleOnboardingReply(from, replyId) {
 
     return true;
   } catch (e) {
-    console.warn("⚠️ handleOnboardingReply:", e?.message);
+    console.warn("⚠️ handleOnboardingReply:", e?.message || e);
     return false;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
 // 🔁 RE-ONBOARDING USERS SANS DOCUMENT
-// daysSinceSignup = nombre de jours depuis inscription
 // ─────────────────────────────────────────────────────────────
 async function sendZeroDocReOnboarding(from, options = {}) {
   try {
     const daysSinceSignup = Number(options.daysSinceSignup || 0);
     const professionCategory = options.professionCategory || null;
     const segment = getZeroDocSegment(daysSinceSignup);
-    const example = buildProfessionExample(professionCategory) || pickExample(from);
+    const example =
+      buildProfessionExample(professionCategory) || pickExample(from);
 
     if (segment === "A") {
       await sendText(
@@ -306,7 +317,7 @@ async function sendZeroDocReOnboarding(from, options = {}) {
     );
     return true;
   } catch (e) {
-    console.warn("⚠️ sendZeroDocReOnboarding:", e?.message);
+    console.warn("⚠️ sendZeroDocReOnboarding:", e?.message || e);
     return false;
   }
 }
@@ -317,7 +328,8 @@ async function sendZeroDocReOnboarding(from, options = {}) {
 async function sendActivationJ1(from) {
   try {
     const p = await getOrCreateProfile(from);
-    const example = buildProfessionExample(p?.profession_category) || pickExample(from);
+    const example =
+      buildProfessionExample(p?.profession_category) || pickExample(from);
 
     await sendText(
       from,
@@ -326,7 +338,7 @@ async function sendActivationJ1(from) {
         `Ou envoyez votre demande en vocal 🎤`
     );
   } catch (e) {
-    console.warn("⚠️ activationJ1:", e?.message);
+    console.warn("⚠️ activationJ1:", e?.message || e);
   }
 }
 
@@ -346,7 +358,7 @@ async function sendActivationJ7(from) {
       ]
     );
   } catch (e) {
-    console.warn("⚠️ activationJ7:", e?.message);
+    console.warn("⚠️ activationJ7:", e?.message || e);
   }
 }
 
@@ -354,7 +366,8 @@ async function sendReactivationNudge(from, options = {}) {
   try {
     const daysInactive = Number(options.daysInactive || 0);
     const professionCategory = options.professionCategory || null;
-    const example = buildProfessionExample(professionCategory) || pickExample(from);
+    const example =
+      buildProfessionExample(professionCategory) || pickExample(from);
 
     let intro = `👋 Cela fait un moment.\n\n`;
     if (daysInactive >= 30) {
@@ -371,7 +384,7 @@ async function sendReactivationNudge(from, options = {}) {
 
     return true;
   } catch (e) {
-    console.warn("⚠️ sendReactivationNudge:", e?.message);
+    console.warn("⚠️ sendReactivationNudge:", e?.message || e);
     return false;
   }
 }
@@ -392,7 +405,7 @@ async function sendLowCreditsAlert(from, balance = 0) {
       ]
     );
   } catch (e) {
-    console.warn("⚠️ lowCreditsAlert:", e?.message);
+    console.warn("⚠️ lowCreditsAlert:", e?.message || e);
   }
 }
 
@@ -412,7 +425,7 @@ async function sendZeroCreditsBlock(from) {
       ]
     );
   } catch (e) {
-    console.warn("⚠️ zeroCreditsBlock:", e?.message);
+    console.warn("⚠️ zeroCreditsBlock:", e?.message || e);
   }
 }
 
