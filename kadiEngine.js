@@ -295,6 +295,53 @@ function getInteractiveReplyId(msg) {
   );
 }
 
+function isHardGlobalInterrupt(text = "") {
+  const t = norm(text).toLowerCase().trim();
+
+  return (
+    t === "menu" ||
+    t === "accueil" ||
+    t === "home" ||
+    t === "retour" ||
+    t === "annuler" ||
+    t === "annule" ||
+    t === "stop"
+  );
+}
+
+function isHistoryStep(step = "") {
+  return String(step || "").startsWith("history");
+}
+
+function isStructuredCaptureStep(step = "") {
+  const s = String(step || "");
+
+  return (
+    s === "doc_client" ||
+    s === "doc_subject_input" ||
+    s === "client_phone_input" ||
+    s === "item_label" ||
+    s === "item_price" ||
+    s === "item_qty" ||
+    s === "receipt_format" ||
+    s === "facture_kind" ||
+    s === "stamp_title" ||
+    s === "recharge_proof" ||
+    s === "pispi_pending" ||
+    s === "doc_review" ||
+    s === "doc_subject_choice" ||
+    s === "doc_client_phone_choice" ||
+    s === "missing_client_pdf" ||
+    s === "decharge_client" ||
+    s === "decharge_motif" ||
+    s === "decharge_amount" ||
+    s === "profile" ||
+    s === "profile_logo_upload" ||
+    s.startsWith("intent_fix") ||
+    s.startsWith("certified_invoice_")
+  );
+}
+
 // ===============================
 // Draft helpers
 // ===============================
@@ -736,7 +783,6 @@ const {
   money,
 });
 
-
 // ===============================
 // History flow
 // ===============================
@@ -855,19 +901,68 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 // Message handlers
 // ===============================
 async function handleTextMessage(from, text, msg) {
-  const normalizedText = norm(text).toLowerCase();
+  const normalizedText = norm(text).toLowerCase().trim();
   console.log("[KADI/TEXT] raw:", text, "| norm:", normalizedText);
 
   // 1) Commandes explicites d'abord (admin + user)
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
-  // 2) Historique d'abord
+  const s = getSession(from);
+  const inHistoryFlow = isHistoryStep(s?.step);
+  const inStructuredFlow = isStructuredCaptureStep(s?.step);
+  const wantsGlobalInterrupt = isHardGlobalInterrupt(text);
+
+  logger.info("engine", "text routing", {
+    from,
+    step: s?.step || null,
+    inHistoryFlow,
+    inStructuredFlow,
+    wantsGlobalInterrupt,
+    hasIntent: !!s?.intent,
+  });
+
+  // 2) Si on est dans un flow historique, on le laisse gérer d'abord
+  if (inHistoryFlow && !wantsGlobalInterrupt) {
+    if (await handleHistoryText(from, text)) return true;
+
+    await sendText(
+      from,
+      "⚠️ Je suis encore dans votre historique.\nRépondez à l’action demandée ou tapez MENU."
+    );
+    return true;
+  }
+
+  // 3) Si un flow structuré est actif, il garde la priorité
+  // sauf si l'utilisateur tape une interruption globale explicite
+  if (inStructuredFlow && !wantsGlobalInterrupt) {
+    if (isIntentFixStep(s?.step)) {
+      const handledIntentFix = await handleIntentFixText(from, text);
+      if (handledIntentFix) return true;
+
+      await sendText(
+        from,
+        "⚠️ Je complète encore votre document.\nRépondez à la question demandée ou tapez MENU."
+      );
+      return true;
+    }
+
+    if (await handleCertifiedInvoiceText(from, text)) return true;
+    if (await tryHandleDechargeConfirmation(from, text)) return true;
+    if (await handleProfileText(from, text, msg)) return true;
+    if (await handleStampFlow(from, text)) return true;
+    if (await handleProductFlowText(from, text)) return true;
+
+    await sendText(
+      from,
+      "⚠️ Je suis encore en train de compléter votre document.\nRépondez à la question demandée ou tapez MENU."
+    );
+    return true;
+  }
+
+  // 4) Historique libre
   if (await handleHistoryText(from, text)) return true;
 
-  // 3) Intentions produit prioritaires
-  if (await handleUltraPriorityText(from, text)) return true;
-
-  // 4) Entrée directe flow FEC
+  // 5) Entrée directe flow FEC
   if (
     normalizedText.includes("facture electronique certifiee") ||
     normalizedText.includes("facture électronique certifiée") ||
@@ -878,18 +973,13 @@ async function handleTextMessage(from, text, msg) {
     return startCertifiedInvoiceFlow(from);
   }
 
-  // 5) Petit small talk
+  // 6) Intentions produit prioritaires
+  if (await handleUltraPriorityText(from, text)) return true;
+
+  // 7) Petit small talk
   if (await handleSmallTalk(from, text)) return true;
 
-  const s = getSession(from);
-
-  logger.info("engine", "checking intent-fix gate", {
-    from,
-    step: s?.step || null,
-    hasIntent: !!s?.intent,
-  });
-
-  // 6) Correction guidée d’intent
+  // 8) Correction guidée d’intent
   if (isIntentFixStep(s?.step)) {
     const handledIntentFix = await handleIntentFixText(from, text);
     if (handledIntentFix) return true;
@@ -901,23 +991,23 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 7) Flow FEC si session ouverte
+  // 9) Flow FEC si session ouverte
   if (await handleCertifiedInvoiceText(from, text)) return true;
 
-  // 8) Flows structurés
+  // 10) Flows structurés
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
-  // 9) Onboarding seulement si on n’a pas déjà répondu
+  // 11) Onboarding seulement si on n’a pas déjà répondu
   await maybeSendOnboarding(from);
 
-  // 10) Compréhension naturelle
+  // 12) Compréhension naturelle
   if (await tryHandleNaturalMessage(from, text)) return true;
   if (await handleSmartItemsBlockText(from, text)) return true;
 
-  // 11) Fallback
+  // 13) Fallback
   await sendText(
     from,
     "🤔 Je n’ai pas bien compris.\n\n" +

@@ -119,6 +119,12 @@ function makeKadiInteractiveFlow(deps) {
     return digits || null;
   }
 
+  function resetTransientProductState(session) {
+    if (!session) return;
+    session.itemDraft = null;
+    session.intentPendingItemLabel = null;
+  }
+
   async function sendDraftBlockedMessage(from, checked) {
     const s = getSession(from);
     if (s) s.step = "doc_review";
@@ -208,7 +214,9 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
+    resetTransientProductState(s);
     s.step = "doc_subject_choice";
+
     await sendButtons(
       from,
       "📝 Voulez-vous ajouter un objet au document ?\n\nExemple : Réparation voiture / Installation électrique",
@@ -226,7 +234,9 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
+    resetTransientProductState(s);
     s.step = "doc_client_phone_choice";
+
     await sendButtons(
       from,
       "📱 Voulez-vous ajouter le numéro du client ?",
@@ -259,57 +269,60 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     // INTENT REVIEW (VOICE / IA)
     // ===============================
- if (replyId === "INTENT_OK") {
-  const intent = s.intent || null;
+    if (replyId === "INTENT_OK") {
+      const intent = s.intent || null;
 
-  if (!intent) {
-    await sendText(
-      from,
-      "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
-    );
-    return;
-  }
+      if (!intent) {
+        await sendText(
+          from,
+          "🎙️ Je n’ai pas retrouvé votre dernière analyse.\nRenvoyez votre message pour recommencer."
+        );
+        return;
+      }
 
-  if (Array.isArray(intent.missing) && intent.missing.length > 0) {
-    if (intent.missing.includes("client")) {
-      s.step = "intent_fix_client";
-      await sendText(from, "👤 Quel est le nom du client ?");
-      return;
+      if (Array.isArray(intent.missing) && intent.missing.length > 0) {
+        if (intent.missing.includes("client")) {
+          resetTransientProductState(s);
+          s.step = "intent_fix_client";
+          await sendText(from, "👤 Quel est le nom du client ?");
+          return;
+        }
+
+        if (intent.missing.includes("price")) {
+          const item = Array.isArray(intent.items)
+            ? intent.items.find((i) => i?.unitPrice == null)
+            : null;
+
+          resetTransientProductState(s);
+          s.step = "intent_fix_price";
+          s.intentPendingItemLabel = item?.label || null;
+
+          await sendText(
+            from,
+            `💰 Quel est le prix pour : *${item?.label || "cet article"}* ?`
+          );
+          return;
+        }
+
+        if (intent.missing.includes("items")) {
+          resetTransientProductState(s);
+          s.step = "intent_fix_items";
+          await sendText(
+            from,
+            "📦 Je n’ai pas bien compris les éléments.\nÉcrivez-les clairement pour continuer."
+          );
+          return;
+        }
+      }
+
+      s.lastDocDraft = buildDraftFromIntent(intent);
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      s.step = "doc_review";
+      s.intent = null;
+
+      return sendCurrentDraftPreview(from, s.lastDocDraft);
     }
-
-    if (intent.missing.includes("price")) {
-      const item = Array.isArray(intent.items)
-        ? intent.items.find((i) => i?.unitPrice == null)
-        : null;
-
-      s.step = "intent_fix_price";
-      s.intentPendingItemLabel = item?.label || null;
-
-      await sendText(
-        from,
-        `💰 Quel est le prix pour : *${item?.label || "cet article"}* ?`
-      );
-      return;
-    }
-
-    if (intent.missing.includes("items")) {
-      s.step = "intent_fix_items";
-      await sendText(
-        from,
-        "📦 Je n’ai pas bien compris les éléments.\nÉcrivez-les clairement pour continuer."
-      );
-      return;
-    }
-  }
-
- s.lastDocDraft = buildDraftFromIntent(intent);
-resetStampChoice(s);
-s.step = "doc_review";
-s.intent = null;
-s.intentPendingItemLabel = null;
-
-  return sendCurrentDraftPreview(from, s.lastDocDraft);
-}
 
     if (replyId === "INTENT_FIX") {
       const intent = s.intent || null;
@@ -322,6 +335,7 @@ s.intentPendingItemLabel = null;
         return;
       }
 
+      resetTransientProductState(s);
       s.step = "intent_fix";
       await sendText(
         from,
@@ -351,6 +365,7 @@ s.intentPendingItemLabel = null;
         return;
       }
 
+      resetTransientProductState(s);
       s.step = "doc_review";
       return sendCurrentDraftPreview(from, draft);
     }
@@ -369,6 +384,7 @@ s.intentPendingItemLabel = null;
     if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
 
     if (replyId === "HOME_OCR") {
+      resetTransientProductState(s);
       s.step = "awaiting_ocr_image";
       await sendText(
         from,
@@ -412,13 +428,13 @@ s.intentPendingItemLabel = null;
       return;
     }
 
-  if (
-  replyId === "RECHARGE_1000" ||
-  replyId === "RECHARGE_2000" ||
-  replyId === "RECHARGE_5000"
-) {
-  return sendRechargePacksMenu(from);
-}
+    if (
+      replyId === "RECHARGE_1000" ||
+      replyId === "RECHARGE_2000" ||
+      replyId === "RECHARGE_5000"
+    ) {
+      return sendRechargePacksMenu(from);
+    }
 
     // ===============================
     // RECEIPT FORMAT
@@ -429,6 +445,7 @@ s.intentPendingItemLabel = null;
         return;
       }
 
+      resetTransientProductState(s);
       s.lastDocDraft.receiptFormat = "compact";
       s.step = "doc_client";
 
@@ -443,6 +460,7 @@ s.intentPendingItemLabel = null;
         return;
       }
 
+      resetTransientProductState(s);
       s.lastDocDraft.receiptFormat = "a4";
       s.step = "doc_client";
 
@@ -450,7 +468,6 @@ s.intentPendingItemLabel = null;
       await sendText(from, "👤 Nom du client ?\n(Ex: Awa / Ben / Société X)");
       return;
     }
-
     // ===============================
     // FOLLOWUPS DEVIS
     // ===============================
@@ -467,25 +484,27 @@ s.intentPendingItemLabel = null;
         return;
       }
 
-s.lastDocDraft = cloneDraftToNewDocType(
-  {
-    type: "devis",
-    factureKind: null,
-    docNumber: row.doc_number,
-    date: row.source_doc?.date || formatDateISO(),
-    client: row.source_doc?.client || null,
-    clientPhone: row.source_doc?.clientPhone || null,
-    subject: row.source_doc?.subject || row.source_doc?.motif || null,
-    items: row.source_doc?.items || [],
-    finance: row.source_doc?.finance || null,
-    source: row.source_doc?.source || "product",
-    meta: makeDraftMeta(),
-  },
-  "facture"
-);
+      s.lastDocDraft = cloneDraftToNewDocType(
+        {
+          type: "devis",
+          factureKind: null,
+          docNumber: row.doc_number,
+          date: row.source_doc?.date || formatDateISO(),
+          client: row.source_doc?.client || null,
+          clientPhone: row.source_doc?.clientPhone || null,
+          subject: row.source_doc?.subject || row.source_doc?.motif || null,
+          items: row.source_doc?.items || [],
+          finance: row.source_doc?.finance || null,
+          source: row.source_doc?.source || "product",
+          meta: makeDraftMeta(),
+        },
+        "facture"
+      );
 
-resetStampChoice(s);
-const checked = validateDraftForUi(s.lastDocDraft);
+      resetStampChoice(s);
+      resetTransientProductState(s);
+
+      const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
 
       if (!checked.ok) {
@@ -517,25 +536,27 @@ const checked = validateDraftForUi(s.lastDocDraft);
         return;
       }
 
-  s.lastDocDraft = cloneDraftToNewDocType(
-  {
-    type: "devis",
-    factureKind: null,
-    docNumber: row.doc_number,
-    date: row.source_doc?.date || formatDateISO(),
-    client: row.source_doc?.client || null,
-    clientPhone: row.source_doc?.clientPhone || null,
-    subject: row.source_doc?.subject || row.source_doc?.motif || null,
-    items: row.source_doc?.items || [],
-    finance: row.source_doc?.finance || null,
-    source: row.source_doc?.source || "product",
-    meta: makeDraftMeta(),
-  },
-  "recu"
-);
+      s.lastDocDraft = cloneDraftToNewDocType(
+        {
+          type: "devis",
+          factureKind: null,
+          docNumber: row.doc_number,
+          date: row.source_doc?.date || formatDateISO(),
+          client: row.source_doc?.client || null,
+          clientPhone: row.source_doc?.clientPhone || null,
+          subject: row.source_doc?.subject || row.source_doc?.motif || null,
+          items: row.source_doc?.items || [],
+          finance: row.source_doc?.finance || null,
+          source: row.source_doc?.source || "product",
+          meta: makeDraftMeta(),
+        },
+        "recu"
+      );
 
-resetStampChoice(s);
-const checked = validateDraftForUi(s.lastDocDraft);
+      resetStampChoice(s);
+      resetTransientProductState(s);
+
+      const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
 
       if (!checked.ok) {
@@ -596,6 +617,7 @@ const checked = validateDraftForUi(s.lastDocDraft);
     // SUBJECT / CLIENT PHONE
     // ===============================
     if (replyId === "DOC_ADD_SUBJECT") {
+      resetTransientProductState(s);
       s.step = "doc_subject_input";
       await sendText(
         from,
@@ -605,6 +627,7 @@ const checked = validateDraftForUi(s.lastDocDraft);
     }
 
     if (replyId === "DOC_SKIP_SUBJECT") {
+      resetTransientProductState(s);
       if (s.lastDocDraft) {
         s.lastDocDraft.subject = null;
       }
@@ -612,15 +635,17 @@ const checked = validateDraftForUi(s.lastDocDraft);
     }
 
     if (replyId === "DOC_ADD_CLIENT_PHONE") {
+      resetTransientProductState(s);
       s.step = "client_phone_input";
       await sendText(
         from,
-        "📱 Tapez le numéro du client.\nExemple : 22670123456"
+        "📱 Tapez le numéro du client.\nExemple : 22670123456\n\nTapez 0 pour ignorer."
       );
       return;
     }
 
     if (replyId === "DOC_SKIP_CLIENT_PHONE") {
+      resetTransientProductState(s);
       if (s.lastDocDraft) {
         s.lastDocDraft.clientPhone = null;
       }
@@ -665,23 +690,24 @@ const checked = validateDraftForUi(s.lastDocDraft);
           ? "recu"
           : "devis";
 
-  s.lastDocDraft = {
-  type: mode,
-  factureKind: mode === "facture" ? "definitive" : null,
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  clientPhone: null,
-  subject: null,
-  motif: null,
-  items: [],
-  finance: null,
-  source: "natural_text",
-  meta: makeDraftMeta(),
-};
+      s.lastDocDraft = {
+        type: mode,
+        factureKind: mode === "facture" ? "definitive" : null,
+        docNumber: null,
+        date: formatDateISO(),
+        client: null,
+        clientPhone: null,
+        subject: null,
+        motif: null,
+        items: [],
+        finance: null,
+        source: "natural_text",
+        meta: makeDraftMeta(),
+      };
 
-resetStampChoice(s);
-s.pendingSmartBlockText = null;
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      s.pendingSmartBlockText = null;
 
       const handled = await tryHandleNaturalMessage(from, raw);
       if (handled) return;
@@ -701,20 +727,23 @@ s.pendingSmartBlockText = null;
     // ===============================
     // CATALOGUE DOCS
     // ===============================
-   if (replyId === "DOC_DEVIS") {
-  resetStampChoice(s);
-  return startDocFlow(from, "devis");
-}
+    if (replyId === "DOC_DEVIS") {
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      return startDocFlow(from, "devis");
+    }
 
-if (replyId === "DOC_RECU") {
-  resetStampChoice(s);
-  return startDocFlow(from, "recu");
-}
+    if (replyId === "DOC_RECU") {
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      return startDocFlow(from, "recu");
+    }
 
-if (replyId === "DOC_DECHARGE") {
-  resetStampChoice(s);
-  return startDocFlow(from, "decharge");
-}
+    if (replyId === "DOC_DECHARGE") {
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      return startDocFlow(from, "decharge");
+    }
 
     if (replyId === "DOC_FACTURE_MENU") {
       return sendFactureCatalogMenu
@@ -723,15 +752,17 @@ if (replyId === "DOC_DECHARGE") {
     }
 
     if (replyId === "DOC_FACTURE") {
+      resetTransientProductState(s);
       s.step = "facture_kind";
       return sendFactureKindMenu(from);
     }
 
     if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
-  resetStampChoice(s);
-  const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
-  return startDocFlow(from, "facture", kind);
-}
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
+      return startDocFlow(from, "facture", kind);
+    }
 
     // ===============================
     // OCR
@@ -749,22 +780,24 @@ if (replyId === "DOC_DECHARGE") {
       }
 
       const mode = replyId === "OCR_RECU" ? "recu" : "devis";
-  s.lastDocDraft = {
-  type: mode,
-  factureKind: null,
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  clientPhone: null,
-  subject: null,
-  items: [],
-  finance: null,
-  source: "ocr",
-  meta: makeDraftMeta(),
-};
 
-resetStampChoice(s);
-return processOcrImageToDraft(from, mediaId);
+      s.lastDocDraft = {
+        type: mode,
+        factureKind: null,
+        docNumber: null,
+        date: formatDateISO(),
+        client: null,
+        clientPhone: null,
+        subject: null,
+        items: [],
+        finance: null,
+        source: "ocr",
+        meta: makeDraftMeta(),
+      };
+
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      return processOcrImageToDraft(from, mediaId);
     }
 
     if (replyId === "OCR_FACTURE") {
@@ -779,22 +812,23 @@ return processOcrImageToDraft(from, mediaId);
         return;
       }
 
-   s.lastDocDraft = {
-  type: "facture",
-  factureKind: "definitive",
-  docNumber: null,
-  date: formatDateISO(),
-  client: null,
-  clientPhone: null,
-  subject: null,
-  items: [],
-  finance: null,
-  source: "ocr",
-  meta: makeDraftMeta(),
-};
+      s.lastDocDraft = {
+        type: "facture",
+        factureKind: "definitive",
+        docNumber: null,
+        date: formatDateISO(),
+        client: null,
+        clientPhone: null,
+        subject: null,
+        items: [],
+        finance: null,
+        source: "ocr",
+        meta: makeDraftMeta(),
+      };
 
-resetStampChoice(s);
-return processOcrImageToDraft(from, mediaId);
+      resetStampChoice(s);
+      resetTransientProductState(s);
+      return processOcrImageToDraft(from, mediaId);
     }
 
     // ===============================
@@ -803,6 +837,7 @@ return processOcrImageToDraft(from, mediaId);
     if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
     if (replyId === "PROFILE_EDIT") {
+      resetTransientProductState(s);
       return startProfileFlow(from);
     }
 
@@ -823,6 +858,7 @@ return processOcrImageToDraft(from, mediaId);
     }
 
     if (replyId === "STAMP_EDIT_TITLE") {
+      resetTransientProductState(s);
       s.step = "stamp_title";
       await sendText(
         from,
@@ -874,7 +910,6 @@ return processOcrImageToDraft(from, mediaId);
       await updateProfile(from, { stamp_size: 200 });
       return sendStampMenu(from);
     }
-
     // ===============================
     // CRÉDITS / RECHARGE
     // ===============================
@@ -883,6 +918,7 @@ return processOcrImageToDraft(from, mediaId);
 
     const selectedOffer = getRechargeOfferById(replyId);
     if (selectedOffer) {
+      resetTransientProductState(s);
       s.pendingRechargePack = selectedOffer.id;
       s.pendingRechargeAmount = selectedOffer.amountFcfa;
       s.pendingRechargeCredits = selectedOffer.credits;
@@ -915,6 +951,7 @@ return processOcrImageToDraft(from, mediaId);
         includesStamp: false,
       });
 
+      resetTransientProductState(s);
       s.pendingRechargePack = offer.id;
       s.pendingRechargeAmount = offer.amountFcfa;
       s.pendingRechargeCredits = offer.credits;
@@ -941,6 +978,7 @@ return processOcrImageToDraft(from, mediaId);
         return sendRechargePacksMenu(from);
       }
 
+      resetTransientProductState(s);
       s.pendingRechargePack = offer.id;
       s.pendingRechargeAmount = offer.amountFcfa;
       s.pendingRechargeCredits = offer.credits;
@@ -954,6 +992,7 @@ return processOcrImageToDraft(from, mediaId);
     }
 
     if (replyId.startsWith("OM_PAID_")) {
+      resetTransientProductState(s);
       s.step = "recharge_proof";
       await sendText(
         from,
@@ -963,6 +1002,7 @@ return processOcrImageToDraft(from, mediaId);
     }
 
     if (replyId.startsWith("OM_SEND_PROOF_")) {
+      resetTransientProductState(s);
       s.step = "recharge_proof";
       await sendText(
         from,
@@ -1014,7 +1054,6 @@ return processOcrImageToDraft(from, mediaId);
 
       await approveTopup(topup.id);
 
-
       await sendText(
         from,
         `✅ Recharge validée.\n\nRéférence : ${topup.reference || "-"}`
@@ -1064,8 +1103,15 @@ return processOcrImageToDraft(from, mediaId);
     // ===============================
     // PRODUIT / PREVIEW / PDF
     // ===============================
-    if (replyId === "ITEM_EDIT") return askItemLabel(from);
-    if (replyId === "DOC_ADD_MORE") return askItemLabel(from);
+    if (replyId === "ITEM_EDIT") {
+      resetTransientProductState(s);
+      return askItemLabel(from);
+    }
+
+    if (replyId === "DOC_ADD_MORE") {
+      resetTransientProductState(s);
+      return askItemLabel(from);
+    }
 
     if (replyId === "DOC_FINISH") {
       const draft = s.lastDocDraft;
@@ -1074,7 +1120,8 @@ return processOcrImageToDraft(from, mediaId);
         return;
       }
 
-      // sujet / téléphone avant preview finale si absents
+      resetTransientProductState(s);
+
       if (!draft.subject && draft.type !== "decharge") {
         return askSubjectQuestion(from);
       }
@@ -1136,59 +1183,61 @@ return processOcrImageToDraft(from, mediaId);
       return;
     }
 
-if (replyId === "DOC_CONFIRM") {
-  const draft = s.lastDocDraft;
+    if (replyId === "DOC_CONFIRM") {
+      const draft = s.lastDocDraft;
 
-  if (!draft) {
-    await sendText(from, noDraftMessage());
-    return;
-  }
+      if (!draft) {
+        await sendText(from, noDraftMessage());
+        return;
+      }
 
-  const checked = validateDraftForUi(draft);
-  if (!checked.ok) {
-    s.lastDocDraft = checked.draft;
-    return sendDraftBlockedMessage(from, checked);
-  }
-  s.lastDocDraft = checked.draft;
+      const checked = validateDraftForUi(draft);
+      if (!checked.ok) {
+        s.lastDocDraft = checked.draft;
+        return sendDraftBlockedMessage(from, checked);
+      }
+      s.lastDocDraft = checked.draft;
 
-  const finalDraft = s.lastDocDraft;
+      const finalDraft = s.lastDocDraft;
 
-  if (finalDraft._saving === true || s.isGeneratingPdf === true) {
-    await sendText(from, "⏳ Génération en cours...");
-    return;
-  }
+      if (finalDraft._saving === true || s.isGeneratingPdf === true) {
+        await sendText(from, "⏳ Génération en cours...");
+        return;
+      }
 
-  if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
-    s.step = "doc_already_generated";
-    await sendAlreadyGeneratedMenu(from);
-    return;
-  }
+      if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
+        s.step = "doc_already_generated";
+        await sendAlreadyGeneratedMenu(from);
+        return;
+      }
 
-  const p = await getOrCreateProfile(from);
+      const p = await getOrCreateProfile(from);
 
-  if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
-    await sendText(
-      from,
-      "💡 *Ajoutez un tampon professionnel ?*\n\n" +
-        "Pour seulement *+1 crédit*, votre document paraît plus crédible et plus pro."
-    );
-    await sendPreGenerateStampMenu(from);
-    return;
-  }
+      if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
+        await sendText(
+          from,
+          "💡 *Ajoutez un tampon professionnel ?*\n\n" +
+            "Pour seulement *+1 crédit*, votre document paraît plus crédible et plus pro."
+        );
+        await sendPreGenerateStampMenu(from);
+        return;
+      }
 
-  resetStampChoice(s);
+      resetStampChoice(s);
+      resetTransientProductState(s);
 
-  finalDraft._saving = true;
-  try {
-    await createAndSendPdf(from);
-    return;
-  } finally {
-    finalDraft._saving = false;
-  }
-}
+      finalDraft._saving = true;
+      try {
+        await createAndSendPdf(from);
+        return;
+      } finally {
+        finalDraft._saving = false;
+      }
+    }
 
     if (replyId === "PRESTAMP_SKIP") {
       resetStampChoice(s);
+      resetTransientProductState(s);
 
       const draft = s.lastDocDraft;
       if (!draft) {
@@ -1240,6 +1289,8 @@ if (replyId === "DOC_CONFIRM") {
       }
       s.lastDocDraft = checked.draft;
 
+      resetTransientProductState(s);
+
       const finalDraft = s.lastDocDraft;
       finalDraft._saving = true;
       try {
@@ -1252,6 +1303,7 @@ if (replyId === "DOC_CONFIRM") {
 
     if (replyId === "DOC_RESTART") {
       resetStampChoice(s);
+      resetTransientProductState(s);
       resetDraftSession(s);
       await sendText(from, "🔁 Recommençons.");
       return sendDocsMenu(from);
@@ -1259,6 +1311,7 @@ if (replyId === "DOC_CONFIRM") {
 
     if (replyId === "DOC_CANCEL") {
       resetStampChoice(s);
+      resetTransientProductState(s);
       resetDraftSession(s);
       await sendText(from, "✅ Retour au menu.");
       return sendHomeMenu(from);
@@ -1310,6 +1363,7 @@ if (replyId === "DOC_CONFIRM") {
 
       const checked = validateDraftForUi(draft);
       s.lastDocDraft = checked.draft;
+      resetTransientProductState(s);
       s.step = "doc_review";
 
       if (!checked.ok) {

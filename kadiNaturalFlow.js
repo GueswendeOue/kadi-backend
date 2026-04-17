@@ -36,6 +36,11 @@ function makeKadiNaturalFlow(deps) {
     getOrCreateProfile,
   } = deps;
 
+  function sanitizeText(value = "", max = 120) {
+    const clean = String(value || "").trim().slice(0, max);
+    return clean || null;
+  }
+
   function getNluSource(parsed) {
     if (!parsed || typeof parsed !== "object") return "unknown";
     if (
@@ -54,7 +59,7 @@ function makeKadiNaturalFlow(deps) {
     if (parsed.shouldFallbackToManual === true) return false;
 
     if (parsed.kind === "simple_payment") {
-      return Number.isFinite(Number(parsed.total)) && Number(parsed.total) > 0;
+      return Number.isFinite(Number(parsed.total)) && Number(parsed.total) >= 0;
     }
 
     if (parsed.kind === "items") {
@@ -104,12 +109,12 @@ function makeKadiNaturalFlow(deps) {
         if (qty <= 0) issues.push("invalid_qty");
         if (unitPrice < 0) issues.push("invalid_unit_price");
 
-        if (qty > 0 && unitPrice > 0) {
+        if (qty > 0 && unitPrice >= 0) {
           const expected = Math.round(qty * unitPrice);
           computed += expected;
 
-          if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
-            issues.push("line_total_zero");
+          if (!Number.isFinite(lineTotal) || lineTotal < 0) {
+            issues.push("line_total_invalid");
           }
         }
       }
@@ -173,6 +178,116 @@ function makeKadiNaturalFlow(deps) {
     return aiParsed || localParsed || null;
   }
 
+  function makeEmptyDraftForDocType(docType) {
+    if (docType === "decharge") {
+      const draft = initDechargeDraft({
+        dateISO: formatDateISO(),
+        makeDraftMeta,
+      });
+
+      draft.type = "decharge";
+      draft.source = "natural_text";
+      draft.subject = null;
+      draft.clientPhone = null;
+      return draft;
+    }
+
+    return {
+      type: docType || "devis",
+      factureKind: docType === "facture" ? "definitive" : null,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      clientPhone: null,
+      subject: null,
+      motif: null,
+      items: [],
+      finance: null,
+      source: "natural_text",
+      meta: makeDraftMeta(),
+    };
+  }
+
+  function ensureDraftForParsedDocType(session, parsed) {
+    const parsedDocType = parsed?.docType || null;
+
+    if (!session.lastDocDraft) {
+      const draft = makeEmptyDraftForDocType(parsedDocType || "devis");
+      draft.meta = makeDraftMeta({
+        ...(draft.meta || {}),
+        nluSource: getNluSource(parsed),
+      });
+      session.lastDocDraft = draft;
+      return session.lastDocDraft;
+    }
+
+    const draft = session.lastDocDraft;
+
+    if (!draft.type && parsedDocType) {
+      draft.type = parsedDocType;
+    }
+
+    if (
+      draft.type === "facture" &&
+      !draft.factureKind
+    ) {
+      draft.factureKind = "definitive";
+    }
+
+    draft.meta = makeDraftMeta({
+      ...(draft.meta || {}),
+      nluSource: getNluSource(parsed),
+    });
+
+    return draft;
+  }
+
+  function applyCommonParsedFields(draft, parsed) {
+    if (!draft || !parsed) return;
+
+    if (parsed.client) {
+      draft.client = sanitizeText(parsed.client, LIMITS.maxClientNameLength);
+    }
+
+    if (parsed.clientPhone) {
+      draft.clientPhone = sanitizeText(parsed.clientPhone, 30);
+    }
+
+    if (parsed.motif) {
+      const motif = sanitizeText(parsed.motif, LIMITS.maxItemLabelLength);
+      if (motif) {
+        draft.motif = motif;
+        if (!draft.subject) draft.subject = motif;
+      }
+    }
+
+    if (parsed.subject) {
+      const subject = sanitizeText(parsed.subject, LIMITS.maxItemLabelLength);
+      if (subject) {
+        draft.subject = subject;
+      }
+    }
+
+    if (draft.type === "decharge") {
+      const base = draft.motif || parsed.motif || "";
+      draft.dechargeType = detectDechargeType(base);
+    }
+  }
+
+  async function sendClientMissingPrompt(from, draft) {
+    const s = getSession(from);
+
+    if (draft?.type === "decharge") {
+      s.step = "decharge_client";
+      await sendText(from, "👤 Quel est le nom de la personne concernée ?");
+      return true;
+    }
+
+    s.step = "missing_client_pdf";
+    await sendText(from, "👤 Quel est le nom du client ?");
+    return true;
+  }
+
   async function sendDraftPreviewOrRecover(from, draft, rawText) {
     const validation = validateDraftForPreview(draft);
 
@@ -191,10 +306,7 @@ function makeKadiNaturalFlow(deps) {
       );
 
       if (!safe(draft.client)) {
-        const s = getSession(from);
-        s.step = "missing_client_pdf";
-        await sendText(from, "👤 Quel est le nom du client ?");
-        return true;
+        return sendClientMissingPrompt(from, draft);
       }
 
       if (!Array.isArray(draft.items) || draft.items.length === 0) {
@@ -247,12 +359,15 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
+    // Si on attend juste un nom de produit mais que le user donne
+    // en fait une vraie phrase structurée, on essaie de la parser.
     if (s.lastDocDraft && s.step === "item_label") {
       const parsedInline = await parseNaturalSmart(rawText);
       const parsedAsStructured =
         parsedInline &&
         (parsedInline.kind === "items" ||
-          parsedInline.kind === "simple_payment");
+          parsedInline.kind === "simple_payment" ||
+          parsedInline.kind === "intent_only");
 
       if (!parsedAsStructured) {
         if (rawText.length < 2) return true;
@@ -336,80 +451,19 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
-    if (!s.lastDocDraft) {
-      const detectedType = parsed.docType;
-
-      if (!detectedType) {
-        s.pendingSmartBlockText = rawText;
-
-        await sendButtons(
-          from,
-          "🧠 J’ai reconnu le message.\n\nQuel document voulez-vous créer ?",
-          [
-            { id: "SMARTBLOCK_DEVIS", title: "Devis" },
-            { id: "SMARTBLOCK_FACTURE", title: "Facture" },
-            { id: "SMARTBLOCK_RECU", title: "Reçu" },
-          ]
-        );
-
-        return true;
-      }
-
-      if (detectedType === "decharge") {
-        s.lastDocDraft = initDechargeDraft({
-          dateISO: formatDateISO(),
-          makeDraftMeta,
-        });
-        s.lastDocDraft.type = "decharge";
-        s.lastDocDraft.source = "natural_text";
-        s.lastDocDraft.subject = null;
-        s.lastDocDraft.clientPhone = null;
-        s.lastDocDraft.meta = makeDraftMeta({
-          nluSource: getNluSource(parsed),
-        });
-      } else {
-        s.lastDocDraft = {
-          type: detectedType,
-          factureKind: detectedType === "facture" ? "definitive" : null,
-          docNumber: null,
-          date: formatDateISO(),
-          client: null,
-          clientPhone: null,
-          subject: null,
-          motif: null,
-          items: [],
-          finance: null,
-          source: "natural_text",
-          meta: makeDraftMeta({
-            nluSource: getNluSource(parsed),
-          }),
-        };
-      }
-    }
-
-    const draft = s.lastDocDraft;
+    const draft = ensureDraftForParsedDocType(s, parsed);
+    applyCommonParsedFields(draft, parsed);
 
     if (parsed.kind === "simple_payment") {
-      draft.type = parsed.docType || draft.type || "recu";
-
-      if (parsed.client) {
-        draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
+      if (!draft.type) {
+        draft.type = parsed.docType || "recu";
       }
 
-      if (parsed.motif) {
-        draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-        if (!draft.subject) {
-          draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-        }
-      }
+      const itemLabel =
+        sanitizeText(parsed.motif || parsed.subject || "Paiement", LIMITS.maxItemLabelLength) ||
+        "Paiement";
 
-      if (draft.type === "decharge") {
-        draft.dechargeType = detectDechargeType(
-          draft.motif || parsed.motif || ""
-        );
-      }
-
-      draft.items = [makeItem(parsed.motif || "Paiement", 1, parsed.total || 0)];
+      draft.items = [makeItem(itemLabel, 1, Number(parsed.total || 0))];
       computeDraftFinance(draft);
 
       if (!safe(draft.client)) {
@@ -421,9 +475,7 @@ function makeKadiNaturalFlow(deps) {
           itemsCount: 1,
         });
 
-        s.step = "missing_client_pdf";
-        await sendText(from, "👤 Quel est le nom du client ?");
-        return true;
+        return sendClientMissingPrompt(from, draft);
       }
 
       s.step = "doc_review";
@@ -432,18 +484,6 @@ function makeKadiNaturalFlow(deps) {
 
     if (parsed.kind === "intent_only") {
       if (draft.type === "decharge") {
-        if (parsed.client && !draft.client) {
-          draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
-        }
-
-        if (parsed.motif && !draft.motif) {
-          draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-          draft.dechargeType = detectDechargeType(draft.motif);
-          if (!draft.subject) {
-            draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-          }
-        }
-
         if (!safe(draft.client)) {
           s.step = "decharge_client";
           await sendText(from, "👤 Quel est le nom de la personne concernée ?");
@@ -462,17 +502,6 @@ function makeKadiNaturalFlow(deps) {
           "💰 Quel est le montant ?\nSi pas de montant, tapez *0*."
         );
         return true;
-      }
-
-      if (parsed.client && !draft.client) {
-        draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
-      }
-
-      if (parsed.motif && !draft.motif) {
-        draft.motif = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-        if (!draft.subject) {
-          draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-        }
       }
 
       if (!safe(draft.client)) {
@@ -495,14 +524,6 @@ function makeKadiNaturalFlow(deps) {
     }
 
     if (parsed.kind === "items") {
-      if (parsed.client) {
-        draft.client = parsed.client.slice(0, LIMITS.maxClientNameLength);
-      }
-
-      if (parsed.motif && !draft.subject) {
-        draft.subject = parsed.motif.slice(0, LIMITS.maxItemLabelLength);
-      }
-
       draft.items = (parsed.items || []).map((it) =>
         makeItem(it.label, it.qty, it.unitPrice)
       );
@@ -532,9 +553,7 @@ function makeKadiNaturalFlow(deps) {
           itemsCount: draft.items.length || 0,
         });
 
-        s.step = "missing_client_pdf";
-        await sendText(from, "👤 Quel est le nom du client ?");
-        return true;
+        return sendClientMissingPrompt(from, draft);
       }
 
       const smartMessage = buildSmartMismatchMessage({

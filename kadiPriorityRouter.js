@@ -20,63 +20,136 @@ function makeKadiPriorityRouter(deps) {
     sendRecentCertifiedInvoices = null,
   } = deps;
 
-  function hasAny(text, patterns = []) {
-    return patterns.some((p) => p.test(text));
+  function normalizeText(rawText = "") {
+    return String(norm(rawText) || "")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  function countWords(text = "") {
+    if (!text) return 0;
+    return text.split(" ").filter(Boolean).length;
+  }
+
+  function isExactMatch(text, options = []) {
+    return options.includes(text);
+  }
+
+  function looksLikeNaturalDocumentRequest(text = "") {
+    if (!text) return false;
+
+    const hasDocWord =
+      /\b(devis|facture|recu|reçu|decharge|décharge|fec)\b/.test(text);
+
+    if (!hasDocWord) return false;
+
+    const strongBusinessSignals = [
+      /\bpour\b/,
+      /\bclient\b/,
+      /\bloyer\b/,
+      /\bmois\b/,
+      /\bavril\b/,
+      /\bmai\b/,
+      /\bjuin\b/,
+      /\bjuillet\b/,
+      /\baout\b/,
+      /\baoût\b/,
+      /\bseptembre\b/,
+      /\boctobre\b/,
+      /\bnovembre\b/,
+      /\bdecembre\b/,
+      /\bdécembre\b/,
+      /\bfcfa\b/,
+      /\bf\b/,
+      /\bmontant\b/,
+      /\bprix\b/,
+      /\bquantite\b/,
+      /\bquantité\b/,
+      /\barticle\b/,
+      /\bproduit\b/,
+      /\bservice\b/,
+      /\bversement\b/,
+      /\bpaiement\b/,
+      /\blocatio?n\b/,
+      /\breparation\b/,
+      /\bréparation\b/,
+      /\binstallation\b/,
+      /\bconsultation\b/,
+      /\bhonoraires\b/,
+      /\b1000\b/,
+      /\b2000\b/,
+      /\b5000\b/,
+      /\b10000\b/,
+      /\b50000\b/,
+      /\b100000\b/,
+      /\d{4,}/,
+    ];
+
+    return strongBusinessSignals.some((re) => re.test(text));
   }
 
   function detectPriorityIntent(rawText) {
-    const t = norm(rawText).toLowerCase();
+    const t = normalizeText(rawText);
     if (!t) return null;
+
+    // Si ça ressemble à une vraie demande métier complète,
+    // on ne vole surtout pas la main au parseur naturel.
+    if (looksLikeNaturalDocumentRequest(t)) {
+      return null;
+    }
+
+    const words = countWords(t);
 
     // ===============================
     // MENU / NAV
     // ===============================
     if (
-      hasAny(t, [
-        /\bmenu\b/,
-        /\baccueil\b/,
-        /\bhome\b/,
-        /\bretour\b/,
+      isExactMatch(t, [
+        "menu",
+        "accueil",
+        "home",
+        "retour",
       ])
     ) {
       return "menu";
     }
 
     // ===============================
-    // FEC HISTORY (avant docs)
+    // FEC HISTORY
     // ===============================
     if (
-      hasAny(t, [
-        /\bhistorique fec\b/,
-        /\bmes fec\b/,
-        /\bmes factures electroniques certifiees\b/,
-        /\bmes factures électroniques certifiées\b/,
-        /\bdernier fec\b/,
-        /\bderniere fec\b/,
-        /\bdernière fec\b/,
-        /\brenvoyer fec\b/,
-        /\brenvoie fec\b/,
-        /\brenvoyer facture electronique certifiee\b/,
-        /\brenvoyer facture électronique certifiée\b/,
+      isExactMatch(t, [
+        "historique fec",
+        "mes fec",
+        "mes factures electroniques certifiees",
+        "mes factures électroniques certifiées",
+        "dernier fec",
+        "derniere fec",
+        "dernière fec",
+        "renvoyer fec",
+        "renvoie fec",
+        "renvoyer facture electronique certifiee",
+        "renvoyer facture électronique certifiée",
       ])
     ) {
       return "fec_history";
     }
 
     // ===============================
-    // FEC (avant docs)
+    // FEC
     // ===============================
     if (
-      hasAny(t, [
-        /\bfec\b/,
-        /\bfacture electronique certifiee\b/,
-        /\bfacture électronique certifiée\b/,
-        /\bfacture certifiee\b/,
-        /\bfacture certifiée\b/,
-        /\bcreer fec\b/,
-        /\bcréer fec\b/,
-        /\bnouvelle fec\b/,
-        /\bfacture fiscale\b/,
+      isExactMatch(t, [
+        "fec",
+        "facture electronique certifiee",
+        "facture électronique certifiée",
+        "facture certifiee",
+        "facture certifiée",
+        "creer fec",
+        "créer fec",
+        "nouvelle fec",
+        "facture fiscale",
       ])
     ) {
       return "fec";
@@ -84,31 +157,37 @@ function makeKadiPriorityRouter(deps) {
 
     // ===============================
     // DOCS / NAV DOCS
+    // On ne déclenche que sur navigation courte,
+    // jamais sur une phrase métier complète.
     // ===============================
     if (
-      hasAny(t, [
-        /\bdoc\b/,
-        /\bdocs\b/,
-        /\bdocument\b/,
-        /\bdocuments\b/,
-        /\bdevis\b/,
-        /\bfacture\b/,
-        /\breçu\b/,
-        /\brecu\b/,
-        /\bdécharge\b/,
-        /\bdecharge\b/,
+      words <= 2 &&
+      isExactMatch(t, [
+        "doc",
+        "docs",
+        "document",
+        "documents",
+        "devis",
+        "facture",
+        "recu",
+        "reçu",
+        "decharge",
+        "décharge",
       ])
     ) {
       return "docs";
     }
 
+    // ===============================
+    // PROFILE
+    // ===============================
     if (
-      hasAny(t, [
-        /\bprofil\b/,
-        /\bprofile\b/,
-        /mon profil/,
-        /modifier profil/,
-        /configurer profil/,
+      isExactMatch(t, [
+        "profil",
+        "profile",
+        "mon profil",
+        "modifier profil",
+        "configurer profil",
       ])
     ) {
       return "profile";
@@ -118,45 +197,39 @@ function makeKadiPriorityRouter(deps) {
     // CREDITS / BALANCE
     // ===============================
     if (
-      hasAny(t, [
-        /\bsolde\b/,
-        /\bcredit\b/,
-        /\bcredits\b/,
-        /\bcrédit\b/,
-        /\bcrédits\b/,
-        /combien.*credit/,
-        /combien.*crédit/,
-        /combien.*reste/,
-        /il me reste combien/,
-        /mes credits/,
-        /mes crédits/,
-        /mon solde/,
-        /solde restant/,
+      isExactMatch(t, [
+        "solde",
+        "credit",
+        "credits",
+        "crédit",
+        "crédits",
+        "mon solde",
+        "mes credits",
+        "mes crédits",
+        "solde restant",
+        "il me reste combien",
       ])
     ) {
       return "balance";
     }
 
     if (
-      hasAny(t, [
-        /\brecharge\b/,
-        /\brecharger\b/,
-        /\bacheter\b/,
-        /\bpayer\b/,
-        /\bpaiement\b/,
-        /orange money/,
-        /numero de compte/,
-        /numéro de compte/,
-        /envoyer.*numero/,
-        /envoyer.*numéro/,
-        /comment payer/,
-        /comment recharger/,
-        /je veux recharger/,
-        /ou payer/,
-        /où payer/,
-        /compte orange money/,
-        /numero om/,
-        /numéro om/,
+      isExactMatch(t, [
+        "recharge",
+        "recharger",
+        "acheter credits",
+        "acheter crédits",
+        "payer",
+        "paiement",
+        "comment payer",
+        "comment recharger",
+        "je veux recharger",
+        "ou payer",
+        "où payer",
+        "orange money",
+        "numero om",
+        "numéro om",
+        "compte orange money",
       ])
     ) {
       return "recharge";
@@ -166,16 +239,16 @@ function makeKadiPriorityRouter(deps) {
     // OCR / PHOTO
     // ===============================
     if (
-      hasAny(t, [
-        /\bocr\b/,
-        /\bphoto\b/,
-        /\bimage\b/,
-        /\bscanner\b/,
-        /scanner facture/,
-        /photo facture/,
-        /transformer photo/,
-        /photo en pdf/,
-        /envoyer photo/,
+      isExactMatch(t, [
+        "ocr",
+        "photo",
+        "image",
+        "scanner",
+        "scanner facture",
+        "photo facture",
+        "transformer photo",
+        "photo en pdf",
+        "envoyer photo",
       ])
     ) {
       return "ocr_help";
@@ -185,13 +258,13 @@ function makeKadiPriorityRouter(deps) {
     // STAMP / TAMPON
     // ===============================
     if (
-      hasAny(t, [
-        /\btampon\b/,
-        /\bcachet\b/,
-        /\bstamp\b/,
-        /\bsignature\b/,
-        /activer tampon/,
-        /configurer tampon/,
+      isExactMatch(t, [
+        "tampon",
+        "cachet",
+        "stamp",
+        "signature",
+        "activer tampon",
+        "configurer tampon",
       ])
     ) {
       return "stamp";
@@ -201,14 +274,14 @@ function makeKadiPriorityRouter(deps) {
     // HISTORY / LAST DOC
     // ===============================
     if (
-      hasAny(t, [
-        /\bhistorique\b/,
-        /dernier document/,
-        /dernier pdf/,
-        /renvoyer pdf/,
-        /renvoie pdf/,
-        /renvoyer document/,
-        /mes documents/,
+      isExactMatch(t, [
+        "historique",
+        "dernier document",
+        "dernier pdf",
+        "renvoyer pdf",
+        "renvoie pdf",
+        "renvoyer document",
+        "mes documents",
       ])
     ) {
       return "history";
@@ -218,18 +291,19 @@ function makeKadiPriorityRouter(deps) {
     // HELP / TUTORIAL
     // ===============================
     if (
-      hasAny(t, [
-        /\baide\b/,
-        /\bhelp\b/,
-        /comment ça marche/,
-        /comment utiliser/,
-        /comment tu fonctionnes/,
-        /tutoriel/,
-        /exemple/,
-        /exemples/,
-        /que peux tu faire/,
-        /quels documents/,
-        /que fais tu/,
+      isExactMatch(t, [
+        "aide",
+        "help",
+        "comment ca marche",
+        "comment ça marche",
+        "comment utiliser",
+        "comment tu fonctionnes",
+        "tutoriel",
+        "exemple",
+        "exemples",
+        "que peux tu faire",
+        "quels documents",
+        "que fais tu",
       ])
     ) {
       return "help";
@@ -239,15 +313,15 @@ function makeKadiPriorityRouter(deps) {
     // BUG / SUPPORT
     // ===============================
     if (
-      hasAny(t, [
-        /\bbug\b/,
-        /\bprobleme\b/,
-        /\bproblème\b/,
-        /ça ne marche pas/,
-        /ca ne marche pas/,
-        /ça bloque/,
-        /ca bloque/,
-        /erreur/,
+      isExactMatch(t, [
+        "bug",
+        "probleme",
+        "problème",
+        "ca ne marche pas",
+        "ça ne marche pas",
+        "ca bloque",
+        "ça bloque",
+        "erreur",
       ])
     ) {
       return "support";
@@ -285,10 +359,7 @@ function makeKadiPriorityRouter(deps) {
         if (typeof sendRecentCertifiedInvoices === "function") {
           await sendRecentCertifiedInvoices(from);
         } else {
-          await sendText(
-            from,
-            "📚 L’historique FEC arrive bientôt."
-          );
+          await sendText(from, "📚 L’historique FEC arrive bientôt.");
         }
         return true;
       }
@@ -315,7 +386,10 @@ function makeKadiPriorityRouter(deps) {
         } else if (typeof sendCreditsMenu === "function") {
           await sendCreditsMenu(from);
         } else {
-          await sendText(from, "💳 Vérification du solde indisponible pour le moment.");
+          await sendText(
+            from,
+            "💳 Vérification du solde indisponible pour le moment."
+          );
         }
         return true;
       }
@@ -375,13 +449,13 @@ function makeKadiPriorityRouter(deps) {
             `• Décharges\n` +
             `• FEC\n\n` +
             `Vous pouvez :\n` +
-            `• écrire normalement\n` +
+            `• écrire naturellement\n` +
             `• envoyer un vocal\n` +
             `• envoyer une photo\n\n` +
             `Exemples :\n` +
             `• Devis pour Moussa, 2 portes à 25000\n` +
             `• Facture pour Awa, 5 pagnes à 3000\n` +
-            `• FEC pour Moussa, 3 sacs de ciment à 7500\n\n` +
+            `• Reçu pour Ouedraogo, loyer avril 100000\n\n` +
             `Tapez aussi : MENU, SOLDE, RECHARGE, PROFIL`
         );
         return true;

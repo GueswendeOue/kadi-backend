@@ -55,6 +55,25 @@ function makeKadiProductFlow(deps) {
     return normalizeAndValidateDraft(clonePlainDraft(draft));
   }
 
+  function resetItemCaptureState(session) {
+    if (!session) return;
+    session.itemDraft = null;
+  }
+
+  function isSkipValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return (
+      t === "0" ||
+      t === "non" ||
+      t === "aucun" ||
+      t === "aucune" ||
+      t === "rien" ||
+      t === "ignorer" ||
+      t === "ignore" ||
+      t === "skip"
+    );
+  }
+
   async function sendBlockedDraft(from, issues = []) {
     await sendText(
       from,
@@ -99,15 +118,18 @@ function makeKadiProductFlow(deps) {
   }
 
   function sanitizeClientName(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
+    const clean = String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
+    return clean || null;
   }
 
   function sanitizeItemLabel(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+    const clean = String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+    return clean || null;
   }
 
   function sanitizeSubject(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+    const clean = String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+    return clean || null;
   }
 
   function sanitizePhone(value = "") {
@@ -118,6 +140,8 @@ function makeKadiProductFlow(deps) {
   async function startDocFlow(from, mode, factureKind = null) {
     const s = getSession(from);
     const type = String(mode || "").toLowerCase();
+
+    resetItemCaptureState(s);
 
     if (type === "decharge") {
       s.lastDocDraft = initDechargeDraft({
@@ -162,12 +186,12 @@ function makeKadiProductFlow(deps) {
       return;
     }
 
+    resetItemCaptureState(s);
     s.step = "item_label";
 
-    await sendText(
-      from,
-      `🧾 Produit ${(s.lastDocDraft.items.length || 0) + 1}\nNom ?`
-    );
+    const nextIndex = (Array.isArray(s.lastDocDraft.items) ? s.lastDocDraft.items.length : 0) + 1;
+
+    await sendText(from, `🧾 Produit ${nextIndex}\nNom ?`);
   }
 
   async function handleProductFlowText(from, text) {
@@ -177,15 +201,29 @@ function makeKadiProductFlow(deps) {
     const t = String(text || "").trim();
     if (!t) return false;
 
-    // ===== CLIENT =====
+    // ===============================
+    // CLIENT
+    // ===============================
     if (s.step === "doc_client") {
-      s.lastDocDraft.client = sanitizeClientName(t);
+      resetItemCaptureState(s);
+
+      const client = sanitizeClientName(t);
+      if (!client) {
+        await sendText(from, "❌ Nom du client invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
       return askItemLabel(from);
     }
 
-    // ===== SUBJECT INPUT =====
+    // ===============================
+    // SUBJECT INPUT
+    // ===============================
     if (s.step === "doc_subject_input") {
-      if (t === "0") {
+      resetItemCaptureState(s);
+
+      if (isSkipValue(t)) {
         s.lastDocDraft.subject = null;
       } else {
         const subject = sanitizeSubject(t);
@@ -209,9 +247,13 @@ function makeKadiProductFlow(deps) {
       return true;
     }
 
-    // ===== CLIENT PHONE INPUT =====
+    // ===============================
+    // CLIENT PHONE INPUT
+    // ===============================
     if (s.step === "client_phone_input") {
-      if (t === "0") {
+      resetItemCaptureState(s);
+
+      if (isSkipValue(t)) {
         s.lastDocDraft.clientPhone = null;
         return askItemLabel(from);
       }
@@ -230,7 +272,9 @@ function makeKadiProductFlow(deps) {
       return askItemLabel(from);
     }
 
-    // ===== ITEM LABEL =====
+    // ===============================
+    // ITEM LABEL
+    // ===============================
     if (s.step === "item_label") {
       const label = sanitizeItemLabel(t);
 
@@ -239,15 +283,25 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      s.itemDraft = { label, qty: 1 };
-      s.step = "item_price";
+      s.itemDraft = {
+        label,
+        qty: 1,
+      };
 
+      s.step = "item_price";
       await sendText(from, `💰 Prix pour *${label}* ?`);
       return true;
     }
 
-    // ===== ITEM PRICE (PATCH INTELLIGENT) =====
+    // ===============================
+    // ITEM PRICE
+    // ===============================
     if (s.step === "item_price") {
+      if (!s.itemDraft?.label) {
+        resetItemCaptureState(s);
+        return askItemLabel(from);
+      }
+
       const n = parseNumberSmart(t);
 
       if (n == null || n <= 0) {
@@ -279,7 +333,7 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      const label = sanitizeItemLabel(s.itemDraft?.label || "Produit");
+      const label = sanitizeItemLabel(s.itemDraft.label) || "Produit";
       const item = makeItem(label, 1, n);
 
       s.lastDocDraft.items.push(item);
@@ -288,29 +342,67 @@ function makeKadiProductFlow(deps) {
 
       if (!checked.ok) {
         s.lastDocDraft = checked.draft;
-        s.itemDraft = null;
+        resetItemCaptureState(s);
         await sendBlockedDraft(from, checked.issues);
         return true;
       }
 
       s.lastDocDraft = checked.draft;
-      s.itemDraft = null;
+      resetItemCaptureState(s);
+      s.step = "doc_after_item_choice";
 
       await sendText(from, "✅ Produit ajouté");
       await sendAfterProductMenu(from, s.lastDocDraft);
       return true;
     }
 
-    // ===== DECHARGE =====
+    // ===============================
+    // AFTER ITEM CHOICE
+    // Empêche qu'un texte libre soit reconsidéré comme
+    // un ancien prix ou un ancien produit.
+    // ===============================
+    if (s.step === "doc_after_item_choice") {
+      resetItemCaptureState(s);
+
+      await sendText(
+        from,
+        "ℹ️ Utilisez les boutons proposés pour continuer :\n" +
+          "• Ajouter\n" +
+          "• Terminer\n" +
+          "• Menu"
+      );
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
+    }
+
+    // ===============================
+    // DECHARGE
+    // ===============================
     if (s.step === "decharge_client") {
-      s.lastDocDraft.client = sanitizeClientName(t);
+      resetItemCaptureState(s);
+
+      const client = sanitizeClientName(t);
+      if (!client) {
+        await sendText(from, "❌ Nom invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
       s.step = "decharge_motif";
       await sendText(from, "📝 Motif ?");
       return true;
     }
 
     if (s.step === "decharge_motif") {
-      s.lastDocDraft.motif = sanitizeItemLabel(t);
+      resetItemCaptureState(s);
+
+      const motif = sanitizeItemLabel(t);
+      if (!motif) {
+        await sendText(from, "❌ Motif invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.motif = motif;
       s.lastDocDraft.dechargeType = detectDechargeType(t);
 
       s.step = "decharge_amount";
@@ -319,6 +411,8 @@ function makeKadiProductFlow(deps) {
     }
 
     if (s.step === "decharge_amount") {
+      resetItemCaptureState(s);
+
       const n = parseNumberSmart(t);
 
       if (n == null || n < 0) {
@@ -336,9 +430,19 @@ function makeKadiProductFlow(deps) {
       return sendSafePreview(from, s.lastDocDraft);
     }
 
-    // ===== CLIENT MANQUANT =====
+    // ===============================
+    // CLIENT MANQUANT PDF
+    // ===============================
     if (s.step === "missing_client_pdf") {
-      s.lastDocDraft.client = sanitizeClientName(t);
+      resetItemCaptureState(s);
+
+      const client = sanitizeClientName(t);
+      if (!client) {
+        await sendText(from, "❌ Nom du client invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
       s.step = "doc_review";
 
       return sendSafePreview(from, s.lastDocDraft);
