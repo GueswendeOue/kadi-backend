@@ -1187,14 +1187,7 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       resetTransientProductState(s);
-
-      if (!draft.subject && draft.type !== "decharge") {
-        return askSubjectQuestion(from, "finish_preview");
-      }
-
-      if (!draft.clientPhone && draft.type !== "decharge") {
-        return askClientPhoneQuestion(from, "finish_preview");
-      }
+      resetFieldReturnTargets(s);
 
       s.step = "doc_review";
       return sendCurrentDraftPreview(from, draft);
