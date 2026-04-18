@@ -185,8 +185,8 @@ async function listRecentDocumentsByWaId(waId, limit = 10) {
   const { data, error } = await supabase
     .from("kadi_documents")
     .select(
-      "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,raw"
-    )
+  "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,pdf_media_id,pdf_filename,pdf_caption,raw"
+)
     .eq("wa_id", safeWaId)
     .order("created_at", { ascending: false })
     .limit(queryLimit);
@@ -209,8 +209,8 @@ async function listRecentDocumentsByType(waId, docType, limit = 10) {
   const { data, error } = await supabase
     .from("kadi_documents")
     .select(
-      "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,raw"
-    )
+  "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,pdf_media_id,pdf_filename,pdf_caption,raw"
+)
     .eq("wa_id", safeWaId)
     .eq("doc_type", safeDocType)
     .order("created_at", { ascending: false })

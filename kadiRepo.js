@@ -76,6 +76,24 @@ async function saveDocument({ waId, doc }) {
 
   const source = s(doc?.source) || "product";
 
+ const pdfMediaId =
+  s(doc?.pdf_media_id) ||
+  s(doc?.pdfMediaId) ||
+  s(doc?.savedPdfMediaId) ||
+  s(doc?.meta?.savedPdfMediaId);
+
+const pdfFilename =
+  s(doc?.pdf_filename) ||
+  s(doc?.pdfFilename) ||
+  s(doc?.savedPdfFilename) ||
+  s(doc?.meta?.savedPdfFilename);
+
+const pdfCaption =
+  s(doc?.pdf_caption) ||
+  s(doc?.pdfCaption) ||
+  s(doc?.savedPdfCaption) ||
+  s(doc?.meta?.savedPdfCaption);
+
   const payload = {
     wa_id: s(waId),
     wa_country_code: country.wa_country_code,
@@ -103,6 +121,9 @@ async function saveDocument({ waId, doc }) {
     credits_consumed: n(doc?.meta?.creditsConsumed),
     business_sector: s(doc?.meta?.businessSector || doc?.meta?.businessType),
     status: s(doc?.status) || "generated",
+    pdf_media_id: pdfMediaId,
+pdf_filename: pdfFilename,
+pdf_caption: pdfCaption,
     items,
     raw: doc || {},
   };

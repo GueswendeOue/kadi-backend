@@ -352,39 +352,44 @@ function makeKadiPdfFlow(deps) {
 
       const fileName = `${finalDraft.docNumber}-${formatDateISO()}.pdf`;
 
-      const up = await uploadMediaBuffer({
-        buffer: pdfBuf,
-        filename: fileName,
-        mimeType: "application/pdf",
-      });
+     const up = await uploadMediaBuffer({
+  buffer: pdfBuf,
+  filename: fileName,
+  mimeType: "application/pdf",
+});
 
-      if (!up?.id) {
-        throw new Error("UPLOAD_PDF_ECHOUE");
-      }
+if (!up?.id) {
+  throw new Error("UPLOAD_PDF_ECHOUE");
+}
 
-      const saved = await saveDocumentWithRetry({
-        waId: from,
-        draft: finalDraft,
-        maxAttempts: 3,
-      });
+finalDraft.savedPdfMediaId = up.id;
+finalDraft.savedPdfFilename = fileName;
+finalDraft.savedPdfCaption =
+  `✅ ${title} ${finalDraft.docNumber}\n` +
+  `Total: ${money(total)} FCFA\n` +
+  `Coût: ${totalCost} crédit(s)\n` +
+  `Solde: ${finalBalance} crédit(s)`;
 
-      finalDraft.savedDocumentId = saved?.id || "generated";
-      successAfterDebit = true;
+// Alias canoniques pour persistance robuste
+finalDraft.pdf_media_id = up.id;
+finalDraft.pdf_filename = fileName;
+finalDraft.pdf_caption = finalDraft.savedPdfCaption;
 
-      finalDraft.savedPdfMediaId = up.id;
-      finalDraft.savedPdfFilename = fileName;
-      finalDraft.savedPdfCaption =
-        `✅ ${title} ${finalDraft.docNumber}\n` +
-        `Total: ${money(total)} FCFA\n` +
-        `Coût: ${totalCost} crédit(s)\n` +
-        `Solde: ${finalBalance} crédit(s)`;
+const saved = await saveDocumentWithRetry({
+  waId: from,
+  draft: finalDraft,
+  maxAttempts: 3,
+});
 
-      await sendDocument({
-        to: from,
-        mediaId: finalDraft.savedPdfMediaId,
-        filename: finalDraft.savedPdfFilename,
-        caption: finalDraft.savedPdfCaption,
-      });
+finalDraft.savedDocumentId = saved?.id || "generated";
+successAfterDebit = true;
+
+await sendDocument({
+  to: from,
+  mediaId: finalDraft.savedPdfMediaId,
+  filename: finalDraft.savedPdfFilename,
+  caption: finalDraft.savedPdfCaption,
+});
 
       if (finalDraft.type === "devis") {
         try {
