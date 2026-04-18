@@ -157,6 +157,7 @@ const { getStats } = require("./kadiStatsRepo");
 const {
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
+  getDocumentById,
 } = require("./kadiHistoryRepo");
 
 const { saveDocument } = require("./kadiRepo");
@@ -799,10 +800,12 @@ const {
   getSession,
   sendText,
   sendButtons,
+  sendList,
   sendDocument,
 
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
+  getDocumentById,
 
   sendRecentCertifiedInvoices,
   sendHomeMenu,
