@@ -32,6 +32,7 @@ function makeKadiProductFlow(deps) {
 
   function clonePlainDraft(draft) {
     if (!draft || typeof draft !== "object") return null;
+
     return {
       ...draft,
       items: Array.isArray(draft.items)
@@ -58,20 +59,6 @@ function makeKadiProductFlow(deps) {
   function resetItemCaptureState(session) {
     if (!session) return;
     session.itemDraft = null;
-  }
-
-  function isSkipValue(value = "") {
-    const t = String(value || "").trim().toLowerCase();
-    return (
-      t === "0" ||
-      t === "non" ||
-      t === "aucun" ||
-      t === "aucune" ||
-      t === "rien" ||
-      t === "ignorer" ||
-      t === "ignore" ||
-      t === "skip"
-    );
   }
 
   async function sendBlockedDraft(from, issues = []) {
@@ -118,18 +105,15 @@ function makeKadiProductFlow(deps) {
   }
 
   function sanitizeClientName(value = "") {
-    const clean = String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
-    return clean || null;
+    return String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
   }
 
   function sanitizeItemLabel(value = "") {
-    const clean = String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
-    return clean || null;
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
   }
 
   function sanitizeSubject(value = "") {
-    const clean = String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
-    return clean || null;
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
   }
 
   function sanitizePhone(value = "") {
@@ -137,11 +121,66 @@ function makeKadiProductFlow(deps) {
     return digits || null;
   }
 
+  function isSkipValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return t === "0";
+  }
+
+  function isCancelValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return (
+      t === "annuler" ||
+      t === "cancel" ||
+      t === "retour" ||
+      t === "stop" ||
+      t === "abandonner"
+    );
+  }
+
+  async function continueAfterSubjectInput(from, s) {
+    const target = s.subjectReturnTarget || "ask_item";
+    s.subjectReturnTarget = null;
+
+    if (target === "after_product_menu") {
+      s.step = "doc_after_item_choice";
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
+    }
+
+    s.clientPhoneReturnTarget = target;
+    s.step = "client_phone_input";
+    await sendText(
+      from,
+      "📱 Numéro du client ?\nExemple : 22670123456\n\nTapez 0 pour ignorer."
+    );
+    return true;
+  }
+
+  async function continueAfterClientPhoneInput(from, s) {
+    const target = s.clientPhoneReturnTarget || "ask_item";
+    s.clientPhoneReturnTarget = null;
+
+    if (target === "after_product_menu") {
+      s.step = "doc_after_item_choice";
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
+    }
+
+    if (target === "finish_preview") {
+      s.step = "doc_review";
+      return sendSafePreview(from, s.lastDocDraft);
+    }
+
+    return askItemLabel(from);
+  }
+
   async function startDocFlow(from, mode, factureKind = null) {
     const s = getSession(from);
     const type = String(mode || "").toLowerCase();
 
     resetItemCaptureState(s);
+    s.subjectReturnTarget = null;
+    s.clientPhoneReturnTarget = null;
 
     if (type === "decharge") {
       s.lastDocDraft = initDechargeDraft({
@@ -189,9 +228,10 @@ function makeKadiProductFlow(deps) {
     resetItemCaptureState(s);
     s.step = "item_label";
 
-    const nextIndex = (Array.isArray(s.lastDocDraft.items) ? s.lastDocDraft.items.length : 0) + 1;
-
-    await sendText(from, `🧾 Produit ${nextIndex}\nNom ?`);
+    await sendText(
+      from,
+      `🧾 Produit ${(s.lastDocDraft.items.length || 0) + 1}\nNom ?`
+    );
   }
 
   async function handleProductFlowText(from, text) {
@@ -201,15 +241,12 @@ function makeKadiProductFlow(deps) {
     const t = String(text || "").trim();
     if (!t) return false;
 
-    // ===============================
-    // CLIENT
-    // ===============================
+    // ===== CLIENT =====
     if (s.step === "doc_client") {
-      resetItemCaptureState(s);
-
       const client = sanitizeClientName(t);
+
       if (!client) {
-        await sendText(from, "❌ Nom du client invalide.");
+        await sendText(from, "❌ Nom client invalide.");
         return true;
       }
 
@@ -217,14 +254,14 @@ function makeKadiProductFlow(deps) {
       return askItemLabel(from);
     }
 
-    // ===============================
-    // SUBJECT INPUT
-    // ===============================
+    // ===== SUBJECT INPUT =====
     if (s.step === "doc_subject_input") {
       resetItemCaptureState(s);
 
       if (isSkipValue(t)) {
         s.lastDocDraft.subject = null;
+      } else if (isCancelValue(t)) {
+        return continueAfterSubjectInput(from, s);
       } else {
         const subject = sanitizeSubject(t);
 
@@ -239,23 +276,20 @@ function makeKadiProductFlow(deps) {
         s.lastDocDraft.subject = subject;
       }
 
-      s.step = "client_phone_input";
-      await sendText(
-        from,
-        "📱 Numéro du client ?\nExemple : 22670123456\n\nTapez 0 pour ignorer."
-      );
-      return true;
+      return continueAfterSubjectInput(from, s);
     }
 
-    // ===============================
-    // CLIENT PHONE INPUT
-    // ===============================
+    // ===== CLIENT PHONE INPUT =====
     if (s.step === "client_phone_input") {
       resetItemCaptureState(s);
 
+      if (isCancelValue(t)) {
+        return continueAfterClientPhoneInput(from, s);
+      }
+
       if (isSkipValue(t)) {
         s.lastDocDraft.clientPhone = null;
-        return askItemLabel(from);
+        return continueAfterClientPhoneInput(from, s);
       }
 
       const phone = sanitizePhone(t);
@@ -269,13 +303,30 @@ function makeKadiProductFlow(deps) {
       }
 
       s.lastDocDraft.clientPhone = phone;
-      return askItemLabel(from);
+      return continueAfterClientPhoneInput(from, s);
     }
 
-    // ===============================
-    // ITEM LABEL
-    // ===============================
+    // ===== ITEM LABEL =====
     if (s.step === "item_label") {
+      if (isCancelValue(t) || isSkipValue(t)) {
+        resetItemCaptureState(s);
+
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
+
+        await sendText(
+          from,
+          "⚠️ Entrez un nom de ligne.\nExemple : Loyer du mois de mai"
+        );
+        return true;
+      }
+
       const label = sanitizeItemLabel(t);
 
       if (!label) {
@@ -283,22 +334,27 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      s.itemDraft = {
-        label,
-        qty: 1,
-      };
-
+      s.itemDraft = { label, qty: 1 };
       s.step = "item_price";
+
       await sendText(from, `💰 Prix pour *${label}* ?`);
       return true;
     }
 
-    // ===============================
-    // ITEM PRICE
-    // ===============================
+    // ===== ITEM PRICE =====
     if (s.step === "item_price") {
-      if (!s.itemDraft?.label) {
+      if (isCancelValue(t) || isSkipValue(t)) {
         resetItemCaptureState(s);
+
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
+
         return askItemLabel(from);
       }
 
@@ -333,7 +389,7 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      const label = sanitizeItemLabel(s.itemDraft.label) || "Produit";
+      const label = sanitizeItemLabel(s.itemDraft?.label || "Produit");
       const item = makeItem(label, 1, n);
 
       s.lastDocDraft.items.push(item);
@@ -356,32 +412,10 @@ function makeKadiProductFlow(deps) {
       return true;
     }
 
-    // ===============================
-    // AFTER ITEM CHOICE
-    // Empêche qu'un texte libre soit reconsidéré comme
-    // un ancien prix ou un ancien produit.
-    // ===============================
-    if (s.step === "doc_after_item_choice") {
-      resetItemCaptureState(s);
-
-      await sendText(
-        from,
-        "ℹ️ Utilisez les boutons proposés pour continuer :\n" +
-          "• Ajouter\n" +
-          "• Terminer\n" +
-          "• Menu"
-      );
-      await sendAfterProductMenu(from, s.lastDocDraft);
-      return true;
-    }
-
-    // ===============================
-    // DECHARGE
-    // ===============================
+    // ===== DECHARGE =====
     if (s.step === "decharge_client") {
-      resetItemCaptureState(s);
-
       const client = sanitizeClientName(t);
+
       if (!client) {
         await sendText(from, "❌ Nom invalide.");
         return true;
@@ -394,9 +428,8 @@ function makeKadiProductFlow(deps) {
     }
 
     if (s.step === "decharge_motif") {
-      resetItemCaptureState(s);
-
       const motif = sanitizeItemLabel(t);
+
       if (!motif) {
         await sendText(from, "❌ Motif invalide.");
         return true;
@@ -411,8 +444,6 @@ function makeKadiProductFlow(deps) {
     }
 
     if (s.step === "decharge_amount") {
-      resetItemCaptureState(s);
-
       const n = parseNumberSmart(t);
 
       if (n == null || n < 0) {
@@ -430,15 +461,12 @@ function makeKadiProductFlow(deps) {
       return sendSafePreview(from, s.lastDocDraft);
     }
 
-    // ===============================
-    // CLIENT MANQUANT PDF
-    // ===============================
+    // ===== CLIENT MANQUANT =====
     if (s.step === "missing_client_pdf") {
-      resetItemCaptureState(s);
-
       const client = sanitizeClientName(t);
+
       if (!client) {
-        await sendText(from, "❌ Nom du client invalide.");
+        await sendText(from, "❌ Nom client invalide.");
         return true;
       }
 

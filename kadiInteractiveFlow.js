@@ -110,6 +110,18 @@ function makeKadiInteractiveFlow(deps) {
     return normalizeAndValidateDraft(clonePlainDraft(draft));
   }
 
+  function resetTransientProductState(session) {
+    if (!session) return;
+    session.itemDraft = null;
+    session.intentPendingItemLabel = null;
+  }
+
+  function resetFieldReturnTargets(session) {
+    if (!session) return;
+    session.subjectReturnTarget = null;
+    session.clientPhoneReturnTarget = null;
+  }
+
   function sanitizeSubject(value = "") {
     return String(value || "").trim().slice(0, 120) || null;
   }
@@ -119,10 +131,18 @@ function makeKadiInteractiveFlow(deps) {
     return digits || null;
   }
 
-  function resetTransientProductState(session) {
-    if (!session) return;
-    session.itemDraft = null;
-    session.intentPendingItemLabel = null;
+  function resolveFieldReturnTarget(session, fallback = "after_product_menu") {
+    if (!session) return fallback;
+
+    if (session.step === "doc_after_item_choice") {
+      return "after_product_menu";
+    }
+
+    if (session.step === "doc_review") {
+      return "finish_preview";
+    }
+
+    return fallback;
   }
 
   async function sendDraftBlockedMessage(from, checked) {
@@ -207,7 +227,7 @@ function makeKadiInteractiveFlow(deps) {
     };
   }
 
-  async function askSubjectQuestion(from) {
+  async function askSubjectQuestion(from, returnTarget = "finish_preview") {
     const s = getSession(from);
     if (!s?.lastDocDraft) {
       await sendText(from, noDraftMessage());
@@ -215,6 +235,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     resetTransientProductState(s);
+    s.subjectReturnTarget = returnTarget;
     s.step = "doc_subject_choice";
 
     await sendButtons(
@@ -227,7 +248,7 @@ function makeKadiInteractiveFlow(deps) {
     );
   }
 
-  async function askClientPhoneQuestion(from) {
+  async function askClientPhoneQuestion(from, returnTarget = "finish_preview") {
     const s = getSession(from);
     if (!s?.lastDocDraft) {
       await sendText(from, noDraftMessage());
@@ -235,6 +256,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     resetTransientProductState(s);
+    s.clientPhoneReturnTarget = returnTarget;
     s.step = "doc_client_phone_choice";
 
     await sendButtons(
@@ -283,6 +305,7 @@ function makeKadiInteractiveFlow(deps) {
       if (Array.isArray(intent.missing) && intent.missing.length > 0) {
         if (intent.missing.includes("client")) {
           resetTransientProductState(s);
+          resetFieldReturnTargets(s);
           s.step = "intent_fix_client";
           await sendText(from, "👤 Quel est le nom du client ?");
           return;
@@ -294,6 +317,7 @@ function makeKadiInteractiveFlow(deps) {
             : null;
 
           resetTransientProductState(s);
+          resetFieldReturnTargets(s);
           s.step = "intent_fix_price";
           s.intentPendingItemLabel = item?.label || null;
 
@@ -306,6 +330,7 @@ function makeKadiInteractiveFlow(deps) {
 
         if (intent.missing.includes("items")) {
           resetTransientProductState(s);
+          resetFieldReturnTargets(s);
           s.step = "intent_fix_items";
           await sendText(
             from,
@@ -318,6 +343,7 @@ function makeKadiInteractiveFlow(deps) {
       s.lastDocDraft = buildDraftFromIntent(intent);
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.step = "doc_review";
       s.intent = null;
 
@@ -336,6 +362,7 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.step = "intent_fix";
       await sendText(
         from,
@@ -385,6 +412,7 @@ function makeKadiInteractiveFlow(deps) {
 
     if (replyId === "HOME_OCR") {
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.step = "awaiting_ocr_image";
       await sendText(
         from,
@@ -446,6 +474,7 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.lastDocDraft.receiptFormat = "compact";
       s.step = "doc_client";
 
@@ -461,6 +490,7 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.lastDocDraft.receiptFormat = "a4";
       s.step = "doc_client";
 
@@ -468,6 +498,7 @@ function makeKadiInteractiveFlow(deps) {
       await sendText(from, "👤 Nom du client ?\n(Ex: Awa / Ben / Société X)");
       return;
     }
+
     // ===============================
     // FOLLOWUPS DEVIS
     // ===============================
@@ -503,6 +534,7 @@ function makeKadiInteractiveFlow(deps) {
 
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
 
       const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
@@ -555,6 +587,7 @@ function makeKadiInteractiveFlow(deps) {
 
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
 
       const checked = validateDraftForUi(s.lastDocDraft);
       s.lastDocDraft = checked.draft;
@@ -617,8 +650,12 @@ function makeKadiInteractiveFlow(deps) {
     // SUBJECT / CLIENT PHONE
     // ===============================
     if (replyId === "DOC_ADD_SUBJECT") {
+      const returnTarget = resolveFieldReturnTarget(s, "after_product_menu");
+
       resetTransientProductState(s);
+      s.subjectReturnTarget = returnTarget;
       s.step = "doc_subject_input";
+
       await sendText(
         from,
         "📝 Tapez l’objet du document.\nExemple : Réparation voiture"
@@ -627,16 +664,23 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_SKIP_SUBJECT") {
-      resetTransientProductState(s);
       if (s.lastDocDraft) {
         s.lastDocDraft.subject = null;
       }
-      return askClientPhoneQuestion(from);
+
+      return askClientPhoneQuestion(
+        from,
+        s.subjectReturnTarget || "finish_preview"
+      );
     }
 
     if (replyId === "DOC_ADD_CLIENT_PHONE") {
+      const returnTarget = resolveFieldReturnTarget(s, "after_product_menu");
+
       resetTransientProductState(s);
+      s.clientPhoneReturnTarget = returnTarget;
       s.step = "client_phone_input";
+
       await sendText(
         from,
         "📱 Tapez le numéro du client.\nExemple : 22670123456\n\nTapez 0 pour ignorer."
@@ -645,11 +689,24 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_SKIP_CLIENT_PHONE") {
-      resetTransientProductState(s);
       if (s.lastDocDraft) {
         s.lastDocDraft.clientPhone = null;
       }
-      return askItemLabel(from);
+
+      const target = s.clientPhoneReturnTarget || "finish_preview";
+      s.clientPhoneReturnTarget = null;
+
+      if (target === "finish_preview") {
+        s.step = "doc_review";
+        return sendCurrentDraftPreview(from, s.lastDocDraft);
+      }
+
+      s.step = "doc_after_item_choice";
+      return sendButtons(from, "Que voulez-vous faire maintenant ?", [
+        { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+        { id: "DOC_ADD_CLIENT_PHONE", title: "📱 Client" },
+        { id: "DOC_FINISH", title: "✅ Terminer" },
+      ]);
     }
 
     if (replyId === "DOC_SEND_TO_CLIENT") {
@@ -707,6 +764,7 @@ function makeKadiInteractiveFlow(deps) {
 
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.pendingSmartBlockText = null;
 
       const handled = await tryHandleNaturalMessage(from, raw);
@@ -730,18 +788,21 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "DOC_DEVIS") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return startDocFlow(from, "devis");
     }
 
     if (replyId === "DOC_RECU") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return startDocFlow(from, "recu");
     }
 
     if (replyId === "DOC_DECHARGE") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return startDocFlow(from, "decharge");
     }
 
@@ -753,6 +814,7 @@ function makeKadiInteractiveFlow(deps) {
 
     if (replyId === "DOC_FACTURE") {
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.step = "facture_kind";
       return sendFactureKindMenu(from);
     }
@@ -760,6 +822,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "FAC_PROFORMA" || replyId === "FAC_DEFINITIVE") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       const kind = replyId === "FAC_PROFORMA" ? "proforma" : "definitive";
       return startDocFlow(from, "facture", kind);
     }
@@ -797,6 +860,7 @@ function makeKadiInteractiveFlow(deps) {
 
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return processOcrImageToDraft(from, mediaId);
     }
 
@@ -828,6 +892,7 @@ function makeKadiInteractiveFlow(deps) {
 
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return processOcrImageToDraft(from, mediaId);
     }
 
@@ -910,6 +975,7 @@ function makeKadiInteractiveFlow(deps) {
       await updateProfile(from, { stamp_size: 200 });
       return sendStampMenu(from);
     }
+
     // ===============================
     // CRÉDITS / RECHARGE
     // ===============================
@@ -1123,11 +1189,11 @@ function makeKadiInteractiveFlow(deps) {
       resetTransientProductState(s);
 
       if (!draft.subject && draft.type !== "decharge") {
-        return askSubjectQuestion(from);
+        return askSubjectQuestion(from, "finish_preview");
       }
 
       if (!draft.clientPhone && draft.type !== "decharge") {
-        return askClientPhoneQuestion(from);
+        return askClientPhoneQuestion(from, "finish_preview");
       }
 
       s.step = "doc_review";
@@ -1304,6 +1370,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "DOC_RESTART") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       resetDraftSession(s);
       await sendText(from, "🔁 Recommençons.");
       return sendDocsMenu(from);
@@ -1312,6 +1379,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "DOC_CANCEL") {
       resetStampChoice(s);
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       resetDraftSession(s);
       await sendText(from, "✅ Retour au menu.");
       return sendHomeMenu(from);
@@ -1364,6 +1432,7 @@ function makeKadiInteractiveFlow(deps) {
       const checked = validateDraftForUi(draft);
       s.lastDocDraft = checked.draft;
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       s.step = "doc_review";
 
       if (!checked.ok) {

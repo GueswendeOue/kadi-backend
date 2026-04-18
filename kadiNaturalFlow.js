@@ -34,6 +34,7 @@ function makeKadiNaturalFlow(deps) {
     buildSmartMismatchMessage,
     safe,
     getOrCreateProfile,
+    resetStampChoice = null,
   } = deps;
 
   function sanitizeText(value = "", max = 120) {
@@ -227,10 +228,7 @@ function makeKadiNaturalFlow(deps) {
       draft.type = parsedDocType;
     }
 
-    if (
-      draft.type === "facture" &&
-      !draft.factureKind
-    ) {
+    if (draft.type === "facture" && !draft.factureKind) {
       draft.factureKind = "definitive";
     }
 
@@ -272,6 +270,61 @@ function makeKadiNaturalFlow(deps) {
       const base = draft.motif || parsed.motif || "";
       draft.dechargeType = detectDechargeType(base);
     }
+  }
+
+  function isExplicitNewDocumentRequest(parsed, rawText) {
+    if (!parsed || !parsed.docType) return false;
+
+    if (parsed.kind === "simple_payment") return true;
+
+    if (
+      parsed.kind === "items" &&
+      Array.isArray(parsed.items) &&
+      parsed.items.length > 0
+    ) {
+      return true;
+    }
+
+    if (
+      parsed.kind === "intent_only" &&
+      (parsed.client || parsed.motif || parsed.subject)
+    ) {
+      return true;
+    }
+
+    return /^(je veux faire|je veux creer|je veux créer|creer|créer|cree|crée|nouveau)?\s*(devis|facture|recu|reçu|decharge|décharge)\b/i.test(
+      String(rawText || "").trim()
+    );
+  }
+
+  function clearSessionForFreshDraft(session) {
+    if (!session) return;
+    session.lastDocDraft = null;
+    session.itemDraft = null;
+    session.pendingSmartBlockText = null;
+    session.intentPendingItemLabel = null;
+  }
+
+  function shouldStartFreshDraft(session, parsed, rawText) {
+    const current = session?.lastDocDraft;
+    if (!current) return true;
+    if (!isExplicitNewDocumentRequest(parsed, rawText)) return false;
+
+    if (current.savedDocumentId || current.savedPdfMediaId) return true;
+
+    if (parsed.docType && current.type && parsed.docType !== current.type) {
+      return true;
+    }
+
+    if (
+      session.step === "doc_review" ||
+      session.step === "doc_already_generated" ||
+      session.step === "doc_after_item_choice"
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   async function sendClientMissingPrompt(from, draft) {
@@ -359,8 +412,6 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
-    // Si on attend juste un nom de produit mais que le user donne
-    // en fait une vraie phrase structurée, on essaie de la parser.
     if (s.lastDocDraft && s.step === "item_label") {
       const parsedInline = await parseNaturalSmart(rawText);
       const parsedAsStructured =
@@ -451,17 +502,26 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
+    if (shouldStartFreshDraft(s, parsed, rawText)) {
+      clearSessionForFreshDraft(s);
+
+      if (typeof resetStampChoice === "function") {
+        resetStampChoice(s);
+      }
+    }
+
     const draft = ensureDraftForParsedDocType(s, parsed);
     applyCommonParsedFields(draft, parsed);
-
     if (parsed.kind === "simple_payment") {
       if (!draft.type) {
         draft.type = parsed.docType || "recu";
       }
 
       const itemLabel =
-        sanitizeText(parsed.motif || parsed.subject || "Paiement", LIMITS.maxItemLabelLength) ||
-        "Paiement";
+        sanitizeText(
+          parsed.motif || parsed.subject || "Paiement",
+          LIMITS.maxItemLabelLength
+        ) || "Paiement";
 
       draft.items = [makeItem(itemLabel, 1, Number(parsed.total || 0))];
       computeDraftFinance(draft);

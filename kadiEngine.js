@@ -329,9 +329,13 @@ function isStructuredCaptureStep(step = "") {
     s === "recharge_proof" ||
     s === "pispi_pending" ||
     s === "doc_review" ||
+    s === "doc_after_item_choice" ||
     s === "doc_subject_choice" ||
     s === "doc_client_phone_choice" ||
+    s === "doc_already_generated" ||
     s === "missing_client_pdf" ||
+    s === "smartblock_warning" ||
+    s === "awaiting_ocr_image" ||
     s === "decharge_client" ||
     s === "decharge_motif" ||
     s === "decharge_amount" ||
@@ -552,6 +556,7 @@ const {
   buildSmartMismatchMessage,
   safe,
   getOrCreateProfile,
+  resetStampChoice,
 });
 
 // ===============================
