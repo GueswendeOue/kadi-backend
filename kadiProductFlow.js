@@ -137,6 +137,10 @@ function makeKadiProductFlow(deps) {
     );
   }
 
+  function shouldAskClientPhoneEarly(draft) {
+    return String(draft?.type || "").toLowerCase() === "recu";
+  }
+
   async function continueAfterSubjectInput(from, s) {
     const target = s.subjectReturnTarget || "ask_item";
     s.subjectReturnTarget = null;
@@ -251,6 +255,17 @@ function makeKadiProductFlow(deps) {
       }
 
       s.lastDocDraft.client = client;
+
+      if (shouldAskClientPhoneEarly(s.lastDocDraft)) {
+        s.clientPhoneReturnTarget = "ask_item";
+        s.step = "client_phone_input";
+        await sendText(
+          from,
+          "📱 Numéro du client ?\nExemple : 22670123456\n\nTapez 0 pour ignorer."
+        );
+        return true;
+      }
+
       return askItemLabel(from);
     }
 
@@ -334,10 +349,50 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      s.itemDraft = { label, qty: 1 };
-      s.step = "item_price";
+      s.itemDraft = { label, qty: null };
+      s.step = "item_qty";
 
-      await sendText(from, `💰 Prix pour *${label}* ?`);
+      await sendText(
+        from,
+        `🔢 Quantité pour *${label}* ?\nExemple : 1`
+      );
+      return true;
+    }
+
+    // ===== ITEM QTY =====
+    if (s.step === "item_qty") {
+      if (isCancelValue(t)) {
+        resetItemCaptureState(s);
+
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
+
+        return askItemLabel(from);
+      }
+
+      const qty = parseNumberSmart(t);
+
+      if (qty == null || qty <= 0) {
+        await sendText(from, "❌ Quantité invalide.\nExemple : 1");
+        return true;
+      }
+
+      s.itemDraft = {
+        ...(s.itemDraft || {}),
+        qty,
+      };
+
+      s.step = "item_price";
+      await sendText(
+        from,
+        `💰 Prix unitaire pour *${s.itemDraft.label || "ce produit"}* ?`
+      );
       return true;
     }
 
@@ -366,7 +421,7 @@ function makeKadiProductFlow(deps) {
         if (vagueCheck.isVague) {
           await sendText(
             from,
-            "⚠️ On était en train d’ajouter un prix.\n\n" +
+            "⚠️ On était en train d’ajouter un prix unitaire.\n\n" +
               buildSmartGuidanceMessage(t)
           );
           return true;
@@ -375,7 +430,7 @@ function makeKadiProductFlow(deps) {
         if (t.length > 12) {
           await sendButtons(
             from,
-            "⚠️ J’attends un prix ici.\n\nQue voulez-vous faire ?",
+            "⚠️ J’attends un prix unitaire ici.\n\nQue voulez-vous faire ?",
             [
               { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
               { id: "DOC_RESTART", title: "🔁 Recommencer" },
@@ -390,9 +445,15 @@ function makeKadiProductFlow(deps) {
       }
 
       const label = sanitizeItemLabel(s.itemDraft?.label || "Produit");
-      const item = makeItem(label, 1, n);
+      const qty =
+        Number.isFinite(Number(s.itemDraft?.qty)) && Number(s.itemDraft?.qty) > 0
+          ? Number(s.itemDraft.qty)
+          : 1;
+
+      const item = makeItem(label, qty, n);
 
       s.lastDocDraft.items.push(item);
+      s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
 
       const checked = validateDraftForUi(s.lastDocDraft);
 
@@ -407,7 +468,10 @@ function makeKadiProductFlow(deps) {
       resetItemCaptureState(s);
       s.step = "doc_after_item_choice";
 
-      await sendText(from, "✅ Produit ajouté");
+      await sendText(
+        from,
+        `✅ Produit ajouté\nQté: ${qty} • PU: ${money(n)} F`
+      );
       await sendAfterProductMenu(from, s.lastDocDraft);
       return true;
     }
