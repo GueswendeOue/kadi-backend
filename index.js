@@ -50,6 +50,9 @@ const FOLLOWUP_BATCH_SIZE = Number(
 const REENGAGEMENT_ENABLED =
   String(process.env.KADI_REENGAGEMENT_ENABLED || "false").toLowerCase() === "true";
 
+const REENGAGEMENT_RUN_ON_BOOT =
+  String(process.env.KADI_REENGAGEMENT_RUN_ON_BOOT || "false").toLowerCase() === "true";
+
 const REENGAGEMENT_INTERVAL_MS = Number(
   process.env.KADI_REENGAGEMENT_INTERVAL_MS || 6 * 60 * 60 * 1000
 );
@@ -253,7 +256,7 @@ app.listen(PORT, () => {
     typeof getZeroDocUsersBySegment === "function" &&
     typeof getInactiveUsers === "function"
   ) {
-    console.log(`🤖 Reengagement started (${REENGAGEMENT_INTERVAL_MS} ms)`);
+    console.log(`🤖 Reengagement scheduler started (${REENGAGEMENT_INTERVAL_MS} ms)`);
 
     const runReengagement = async () => {
       try {
@@ -274,7 +277,13 @@ app.listen(PORT, () => {
       }
     };
 
-    setTimeout(runReengagement, 30000);
+    if (REENGAGEMENT_RUN_ON_BOOT) {
+      console.log("⚠️ Reengagement boot run enabled");
+      setTimeout(runReengagement, 30000);
+    } else {
+      console.log("🛑 Reengagement boot run disabled");
+    }
+
     setInterval(runReengagement, REENGAGEMENT_INTERVAL_MS);
   } else {
     console.warn("⚠️ Reengagement disabled or repo unavailable");
