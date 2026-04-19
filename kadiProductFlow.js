@@ -171,7 +171,8 @@ function makeKadiProductFlow(deps) {
       return sendSafePreview(from, s.lastDocDraft);
     }
 
-    return askItemLabel(from);
+    await askItemLabel(from);
+    return true;
   }
 
   async function startDocFlow(from, mode, factureKind = null) {
@@ -255,7 +256,8 @@ function makeKadiProductFlow(deps) {
       }
 
       s.lastDocDraft.client = client;
-      return askItemLabel(from);
+      await askItemLabel(from);
+      return true;
     }
 
     // ===== SUBJECT INPUT =====
@@ -359,7 +361,8 @@ function makeKadiProductFlow(deps) {
           return true;
         }
 
-        return askItemLabel(from);
+        await askItemLabel(from);
+        return true;
       }
 
       const qty = parseNumberSmart(t);
@@ -397,7 +400,8 @@ function makeKadiProductFlow(deps) {
           return true;
         }
 
-        return askItemLabel(from);
+        await askItemLabel(from);
+        return true;
       }
 
       const n = parseNumberSmart(t);
