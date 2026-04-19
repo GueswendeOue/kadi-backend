@@ -20,6 +20,37 @@ function makeKadiHistoryFlow(deps) {
     money,
   } = deps;
 
+  const KNOWN_WA_COUNTRY_CODES = [
+    "971",
+    "351",
+    "243",
+    "242",
+    "237",
+    "235",
+    "234",
+    "229",
+    "228",
+    "227",
+    "226",
+    "225",
+    "223",
+    "221",
+    "216",
+    "213",
+    "212",
+    "90",
+    "49",
+    "44",
+    "41",
+    "39",
+    "34",
+    "33",
+    "32",
+    "31",
+    "20",
+    "1",
+  ];
+
   function safeText(v, def = "") {
     const s = String(v ?? "").trim();
     return s || def;
@@ -54,6 +85,46 @@ function makeKadiHistoryFlow(deps) {
     return String(value || "").trim().slice(0, max);
   }
 
+  function sanitizePhone(value = "") {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits || null;
+  }
+
+  function extractCountryCodeFromWaId(waId = "") {
+    const digits = String(waId || "").replace(/\D/g, "");
+
+    for (const code of KNOWN_WA_COUNTRY_CODES) {
+      if (digits.startsWith(code)) return code;
+    }
+
+    return null;
+  }
+
+  function normalizeClientWaId(value = "", senderWaId = "") {
+    let digits = String(value || "").replace(/\D/g, "");
+    if (!digits) return null;
+
+    if (digits.startsWith("00")) {
+      digits = digits.slice(2);
+    }
+
+    if (digits.length >= 10 && digits.length <= 15) {
+      return digits;
+    }
+
+    const senderCode = extractCountryCodeFromWaId(senderWaId);
+    if (senderCode && digits.length === 8) {
+      return `${senderCode}${digits}`;
+    }
+
+    return null;
+  }
+
+  function formatDisplayWaId(waId = "") {
+    const digits = String(waId || "").replace(/\D/g, "");
+    return digits ? `+${digits}` : "-";
+  }
+
   function buildDocLabel(row = {}) {
     const type = safeText(row?.doc_type).toLowerCase();
     const kind = safeText(row?.facture_kind).toLowerCase();
@@ -68,6 +139,33 @@ function makeKadiHistoryFlow(deps) {
     if (type === "decharge") return "Décharge";
 
     return safeText(row?.doc_label, "Document");
+  }
+
+  function extractClientPhoneFromRow(row = {}) {
+    return (
+      safeText(row?.client_phone, null) ||
+      safeText(row?.clientPhone, null) ||
+      safeText(row?.raw?.clientPhone, null) ||
+      safeText(row?.raw?.client_phone, null) ||
+      null
+    );
+  }
+
+  function buildClientDocumentCaption(row = {}) {
+    const docLabel = buildDocLabel(row);
+    const docNumber = safeText(row?.doc_number, "");
+    const client = safeText(row?.client, "");
+
+    let text = `📄 ${docLabel}`;
+    if (docNumber) text += ` ${docNumber}`;
+    if (client) text += `\n👤 Client : ${client}`;
+
+    return text;
+  }
+
+  function canSendRowToClient(from, row = {}) {
+    const clientPhone = extractClientPhoneFromRow(row);
+    return !!normalizeClientWaId(clientPhone || "", from);
   }
 
   function isHistoryStep(step = "") {
@@ -122,6 +220,7 @@ function makeKadiHistoryFlow(deps) {
     const docNumber = safeText(row?.doc_number, "-");
     const created = formatDate(row?.created_at || row?.date);
     const hasPdf = !!row?.pdf_media_id;
+    const clientPhone = extractClientPhoneFromRow(row);
 
     return (
       `📄 *${label}*\n\n` +
@@ -129,7 +228,8 @@ function makeKadiHistoryFlow(deps) {
       `Client : ${client}\n` +
       `Total : ${total}\n` +
       `Date : ${created}\n` +
-      `PDF : ${hasPdf ? "Disponible" : "Indisponible"}`
+      `PDF : ${hasPdf ? "Disponible" : "Indisponible"}\n` +
+      `Numéro client : ${clientPhone ? clientPhone : "Non renseigné"}`
     );
   }
 
@@ -355,10 +455,7 @@ function makeKadiHistoryFlow(deps) {
     }
 
     if (!rows.length) {
-      await sendText(
-        from,
-        `📭 Aucun document trouvé pour : *${safeQuery}*`
-      );
+      await sendText(from, `📭 Aucun document trouvé pour : *${safeQuery}*`);
 
       await sendButtons(from, "Que voulez-vous faire ?", [
         { id: "HISTORY_SEARCH", title: "Nouvelle rech." },
@@ -428,6 +525,36 @@ function makeKadiHistoryFlow(deps) {
     return session?.historyView === "search" ? "Retour rés." : "Retour docs";
   }
 
+  async function sendSelectedDocumentActions(from, row, session) {
+    const hasPdf = !!row?.pdf_media_id;
+    const canSendClient = hasPdf && canSendRowToClient(from, row);
+
+    if (hasPdf && canSendClient) {
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "HISTORY_RESEND_SELECTED", title: "Renvoyer PDF" },
+        { id: "HISTORY_SEND_SELECTED_CLIENT", title: "Envoyer client" },
+        { id: "HISTORY_BACK", title: getBackButtonTitle(session) },
+      ]);
+      return true;
+    }
+
+    if (hasPdf) {
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "HISTORY_RESEND_SELECTED", title: "Renvoyer PDF" },
+        { id: "HISTORY_BACK", title: getBackButtonTitle(session) },
+        { id: "HISTORY_CLOSE", title: "Fermer" },
+      ]);
+      return true;
+    }
+
+    await sendButtons(from, "Que voulez-vous faire ?", [
+      { id: "HISTORY_BACK", title: getBackButtonTitle(session) },
+      { id: "HISTORY_SEARCH", title: "Rechercher" },
+      { id: "HISTORY_CLOSE", title: "Fermer" },
+    ]);
+    return true;
+  }
+
   async function openHistoryDocument(from, docId) {
     const s = getSession(from);
     const row = await loadHistoryDocumentForUser(from, s, docId);
@@ -452,22 +579,7 @@ function makeKadiHistoryFlow(deps) {
     }
 
     await sendText(from, buildDocSummary(row));
-
-    if (row?.pdf_media_id) {
-      await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "HISTORY_RESEND_SELECTED", title: "Renvoyer PDF" },
-        { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
-        { id: "HISTORY_CLOSE", title: "Fermer" },
-      ]);
-    } else {
-      await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
-        { id: "HISTORY_SEARCH", title: "Rechercher" },
-        { id: "HISTORY_CLOSE", title: "Fermer" },
-      ]);
-    }
-
-    return true;
+    return sendSelectedDocumentActions(from, row, s);
   }
 
   async function sendFecHistory(from) {
@@ -503,6 +615,47 @@ function makeKadiHistoryFlow(deps) {
     });
 
     await sendText(from, successText);
+    return true;
+  }
+
+  async function sendDocumentToClient(from, row) {
+    if (!row?.pdf_media_id) {
+      await sendText(
+        from,
+        "📭 Ce document n’a pas de PDF renvoyable pour le moment."
+      );
+      return true;
+    }
+
+    const rawPhone = extractClientPhoneFromRow(row);
+    const clientWaId = normalizeClientWaId(rawPhone || "", from);
+
+    if (!clientWaId) {
+      await sendText(
+        from,
+        "⚠️ Le numéro du client est manquant ou invalide sur ce document."
+      );
+      return true;
+    }
+
+    const caption = buildClientDocumentCaption(row);
+
+    await sendDocument({
+      to: clientWaId,
+      mediaId: row.pdf_media_id,
+      filename:
+        safeText(row.pdf_filename) ||
+        `${safeText(row.doc_number, "document")}.pdf`,
+      caption,
+    });
+
+    await sendText(
+      from,
+      `✅ Document envoyé au client.\n📱 Numéro : ${formatDisplayWaId(
+        clientWaId
+      )}`
+    );
+
     return true;
   }
 
@@ -559,14 +712,39 @@ function makeKadiHistoryFlow(deps) {
     }
 
     await sendDocumentRow(from, row, "✅ PDF renvoyé.");
+    return sendSelectedDocumentActions(from, row, s);
+  }
 
-    await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
-      { id: "HISTORY_SEARCH", title: "Rechercher" },
-      { id: "HISTORY_CLOSE", title: "Fermer" },
-    ]);
+  async function sendSelectedKadiPdfToClient(from) {
+    const s = getSession(from);
+    const docId = safeText(s?.historySelectedDocId, null);
 
-    return true;
+    if (!docId) {
+      await sendText(from, "⚠️ Je n’ai pas retrouvé le document sélectionné.");
+
+      if (s?.historyView === "search" && s?.historySearchQuery) {
+        return sendSearchResults(from, s.historySearchQuery);
+      }
+
+      return sendKadiHistory(from);
+    }
+
+    const row =
+      s?.historySelectedDoc ||
+      (await loadHistoryDocumentForUser(from, s, docId));
+
+    if (!row) {
+      await sendText(from, "⚠️ Je n’ai pas retrouvé ce document.");
+
+      if (s?.historyView === "search" && s?.historySearchQuery) {
+        return sendSearchResults(from, s.historySearchQuery);
+      }
+
+      return sendKadiHistory(from);
+    }
+
+    await sendDocumentToClient(from, row);
+    return sendSelectedDocumentActions(from, row, s);
   }
 
   async function goBackInHistory(from) {
@@ -597,7 +775,10 @@ function makeKadiHistoryFlow(deps) {
       return sendHistoryHome(from);
     }
 
-    if (replyId === "HISTORY_LATEST_PDF" || replyId === "HISTORY_RESEND_LAST") {
+    if (
+      replyId === "HISTORY_LATEST_PDF" ||
+      replyId === "HISTORY_RESEND_LAST"
+    ) {
       return resendLastKadiPdf(from);
     }
 
@@ -615,6 +796,10 @@ function makeKadiHistoryFlow(deps) {
 
     if (replyId === "HISTORY_RESEND_SELECTED") {
       return resendSelectedKadiPdf(from);
+    }
+
+    if (replyId === "HISTORY_SEND_SELECTED_CLIENT") {
+      return sendSelectedKadiPdfToClient(from);
     }
 
     if (replyId === "HISTORY_BACK" || replyId === "HISTORY_BACK_LIST") {
@@ -734,6 +919,15 @@ function makeKadiHistoryFlow(deps) {
         }
 
         return sendHistoryHome(from);
+      }
+
+      if (
+        s.step === "history_doc_selected" &&
+        (t === "envoyer client" ||
+          t === "envoyer au client" ||
+          t === "client")
+      ) {
+        return sendSelectedKadiPdfToClient(from);
       }
 
       const idx = Number(t);
