@@ -693,6 +693,55 @@ const { handleIncomingImage } = makeKadiImageFlow({
 });
 
 // ===============================
+// Certified flow (FEC)
+// ===============================
+const {
+  startCertifiedInvoiceFlow,
+  sendRecentCertifiedInvoices,
+  handleCertifiedInvoiceInteractiveReply,
+  handleCertifiedInvoiceText,
+} = makeKadiCertifiedFlow({
+  getSession,
+  sendText,
+  sendButtons,
+  sendDocument,
+
+  getOrCreateProfile,
+
+  createCertifiedInvoiceFromDraft,
+  listRecentCertifiedInvoices,
+  rebuildCertifiedInvoicePdf,
+
+  money,
+});
+
+// ===============================
+// History flow
+// ===============================
+const {
+  sendHistoryHome,
+  handleHistoryInteractiveReply,
+  handleHistoryText,
+} = makeKadiHistoryFlow({
+  getSession,
+  sendText,
+  sendButtons,
+  sendList,
+  sendDocument,
+
+  listRecentDocumentsByWaId,
+  getLatestResendableDocumentByWaId,
+  getDocumentById,
+  getDocumentByIdForWaId,
+  searchDocumentsByWaId,
+
+  sendRecentCertifiedInvoices,
+  sendHomeMenu,
+
+  money,
+});
+
+// ===============================
 // Interactive flow
 // ===============================
 const { handleInteractiveReply } = makeKadiInteractiveFlow({
@@ -766,55 +815,6 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   startProfileFlow,
   replyBalance,
   replyRechargeInfo,
-});
-
-// ===============================
-// Certified flow (FEC)
-// ===============================
-const {
-  startCertifiedInvoiceFlow,
-  sendRecentCertifiedInvoices,
-  handleCertifiedInvoiceInteractiveReply,
-  handleCertifiedInvoiceText,
-} = makeKadiCertifiedFlow({
-  getSession,
-  sendText,
-  sendButtons,
-  sendDocument,
-
-  getOrCreateProfile,
-
-  createCertifiedInvoiceFromDraft,
-  listRecentCertifiedInvoices,
-  rebuildCertifiedInvoicePdf,
-
-  money,
-});
-
-// ===============================
-// History flow
-// ===============================
-const {
-  sendHistoryHome,
-  handleHistoryInteractiveReply,
-  handleHistoryText,
-} = makeKadiHistoryFlow({
-  getSession,
-  sendText,
-  sendButtons,
-  sendList,
-  sendDocument,
-
-  listRecentDocumentsByWaId,
-  getLatestResendableDocumentByWaId,
-  getDocumentById,
-  getDocumentByIdForWaId,
-  searchDocumentsByWaId,
-
-  sendRecentCertifiedInvoices,
-  sendHomeMenu,
-
-  money,
 });
 
 // ===============================
@@ -1037,7 +1037,10 @@ async function handleInteractiveMessage(from, msg) {
     const handledProfileReply = await handleProfileReply(from, replyId);
     if (handledProfileReply) return true;
 
-    const handledHistoryReply = await handleHistoryInteractiveReply(from, replyId);
+    const handledHistoryReply = await handleHistoryInteractiveReply(
+      from,
+      replyId
+    );
     if (handledHistoryReply) return true;
 
     // Compat: ancien ID + nouvel ID

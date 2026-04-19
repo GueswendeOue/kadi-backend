@@ -11,6 +11,10 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSCRIPTION_MODEL =
   process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 
+const KADI_AUDIO_MAX_BYTES = Number(
+  process.env.KADI_AUDIO_MAX_BYTES || 8 * 1024 * 1024
+);
+
 if (!WHATSAPP_TOKEN) {
   throw new Error("WHATSAPP_TOKEN manquant");
 }
@@ -35,13 +39,19 @@ function normalizeTranscript(text = "") {
     .trim();
 }
 
+function clipForUser(text = "", max = 220) {
+  const s = String(text || "").trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
+
 function prepareTranscriptVariants(text = "", options = {}) {
   const rawTranscriptText = String(text || "").trim();
   const normalizedTranscriptText = normalizeTranscript(rawTranscriptText);
 
   const normalized = normalizeBusinessInput(normalizedTranscriptText, {
     localeHint: options.localeHint || "fr-BF",
-    languages: options.languages || ["fr", "moore"],
+    languages: options.languages || ["fr", "moore", "dioula", "fulfulde"],
   });
 
   return {
@@ -89,9 +99,10 @@ async function safeReadText(res) {
 function buildTranscriptionPrompt() {
   return [
     "Transcrire le message vocal WhatsApp le plus fidèlement possible.",
-    "Conserver les mots exacts, les noms, les montants, les produits et les quantités.",
+    "Conserver exactement les noms, produits, montants, quantités et numéros.",
+    "La langue principale est le français.",
+    "Le message peut contenir quelques mots locaux ou expressions locales du Burkina Faso.",
     "Ne pas reformuler. Ne pas inventer. Ne pas résumer.",
-    "Le message peut contenir du français avec quelques mots en mooré.",
   ].join(" ");
 }
 
@@ -140,7 +151,6 @@ function clearAudioIntentState(session) {
   session.intent = null;
   session.intentRawText = null;
   session.intentPendingItemLabel = null;
-  session.step = null;
 }
 
 // ======================================================
@@ -176,6 +186,7 @@ async function getWhatsAppMediaUrl(mediaId) {
   return {
     url: data.url,
     mimeType: data.mime_type || null,
+    fileSize: Number(data.file_size || 0) || 0,
   };
 }
 
@@ -217,17 +228,22 @@ async function transcribeAudioBuffer(buffer, options = {}) {
   const filename = options.filename || guessAudioFilename(mimeType);
   const file = new File([buffer], filename, { type: mimeType });
 
-  const result = await openai.audio.transcriptions.create({
+  const request = {
     file,
     model: OPENAI_TRANSCRIPTION_MODEL,
-    language: options.language || "fr",
     prompt: options.prompt || buildTranscriptionPrompt(),
     temperature: 0,
-  });
+  };
+
+  if (options.language) {
+    request.language = options.language;
+  }
+
+  const result = await openai.audio.transcriptions.create(request);
 
   const variants = prepareTranscriptVariants(result?.text || "", {
     localeHint: options.localeHint || "fr-BF",
-    languages: options.languages || ["fr", "moore"],
+    languages: options.languages || ["fr", "moore", "dioula", "fulfulde"],
   });
 
   return {
@@ -239,6 +255,30 @@ async function transcribeAudioBuffer(buffer, options = {}) {
     detectedLanguages: variants.detectedLanguages,
     raw: result,
   };
+}
+
+async function transcribeForKadiVoice(buffer, options = {}) {
+  const first = await transcribeAudioBuffer(buffer, {
+    ...options,
+    language: "fr",
+  });
+
+  const firstRaw = String(first?.text || "").trim();
+  const firstParse = String(first?.parseText || "").trim();
+  const firstIntent = buildIntent(firstParse) || null;
+
+  if (firstRaw && looksUsableIntent(firstIntent)) {
+    return first;
+  }
+
+  if (!firstRaw) {
+    return transcribeAudioBuffer(buffer, {
+      ...options,
+      language: undefined,
+    });
+  }
+
+  return first;
 }
 
 // ======================================================
@@ -278,13 +318,21 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
   try {
     const mediaMeta = await getWhatsAppMediaUrl(mediaId);
+
+    if (mediaMeta.fileSize && mediaMeta.fileSize > KADI_AUDIO_MAX_BYTES) {
+      await sendText(
+        from,
+        "⚠️ Ce vocal est trop lourd.\nEnvoyez un vocal plus court ou écrivez votre demande."
+      );
+      return true;
+    }
+
     const media = await downloadWhatsAppMedia(mediaMeta.url);
 
-    const transcript = await transcribeAudioBuffer(media.buffer, {
+    const transcript = await transcribeForKadiVoice(media.buffer, {
       mimeType: media.mimeType || mediaMeta.mimeType || "audio/ogg",
-      language: "fr",
       localeHint: "fr-BF",
-      languages: ["fr", "moore"],
+      languages: ["fr", "moore", "dioula", "fulfulde"],
     });
 
     const rawTranscriptText = String(transcript?.text || "").trim();
@@ -301,10 +349,13 @@ async function handleIncomingAudioMessage(msg, value, deps) {
         ""
     ).trim();
 
-    console.log("[KADI/AUDIO] raw transcript:", rawTranscriptText);
-    console.log("[KADI/AUDIO] normalized transcript:", normalizedTranscriptText);
-    console.log("[KADI/AUDIO] display transcript:", displayText);
-    console.log("[KADI/AUDIO] parse transcript:", businessText);
+    console.log("[KADI/AUDIO] transcript", {
+      from,
+      mediaId,
+      raw: rawTranscriptText,
+      parse: businessText,
+      detectedLanguages: transcript?.detectedLanguages || [],
+    });
 
     if (!rawTranscriptText) {
       await sendText(
@@ -316,7 +367,13 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
     const intent = buildIntent(businessText) || null;
 
-    console.log("[KADI/AUDIO] built intent:", intent);
+    console.log("[KADI/AUDIO] intent", {
+      from,
+      mediaId,
+      hasClient: !!intent?.client,
+      itemsCount: Array.isArray(intent?.items) ? intent.items.length : 0,
+      missing: intent?.missing || [],
+    });
 
     const s = getSession(from);
 
@@ -329,11 +386,10 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       s.intent = null;
       s.intentRawText = null;
       s.intentPendingItemLabel = null;
-      s.step = null;
 
       await sendText(
         from,
-        `🎤 J’ai transcrit :\n"${displayText || rawTranscriptText}"\n\n` +
+        `🎤 J’ai compris :\n"${clipForUser(displayText || rawTranscriptText)}"\n\n` +
           `Je n’ai pas encore assez d’informations pour préparer le document.\n\n` +
           `Exemple :\n"Devis pour Moussa, 2 portes à 25000"`
       );
@@ -375,7 +431,12 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
     return true;
   } catch (error) {
-    console.error("[KADI/AUDIO] error:", error);
+    console.error("[KADI/AUDIO] error:", {
+      from,
+      mediaId,
+      message: error?.message || error,
+      stack: error?.stack,
+    });
 
     try {
       const s = getSession(from);
