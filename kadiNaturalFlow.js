@@ -384,7 +384,7 @@ function makeKadiNaturalFlow(deps) {
     const cost = computeBasePdfCost(draft);
     await sendText(from, formatBaseCostLine(cost));
 
-    await sendPreviewMenu(from);
+    await sendPreviewMenu(from, draft);
     return true;
   }
 
@@ -785,7 +785,7 @@ function makeKadiNaturalFlow(deps) {
       );
     }
 
-    await sendPreviewMenu(from);
+    await sendPreviewMenu(from, draft);
     return true;
   }
 
