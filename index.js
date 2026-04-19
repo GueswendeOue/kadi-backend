@@ -3,6 +3,8 @@
 require("dotenv").config();
 const express = require("express");
 
+const { supabase } = require("./supabaseClient");
+
 const {
   verifyRequestSignature,
   extractStatusesFromWebhookValue,
@@ -36,6 +38,7 @@ console.log("🟢 KADI booting...");
 const app = express();
 const PORT = process.env.PORT || 10000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
+const SERVER_BOOT_AT = Date.now();
 
 // ===============================
 // CONFIG
@@ -67,6 +70,24 @@ const REENGAGEMENT_INACTIVE_DAYS = Number(
 
 const REENGAGEMENT_INACTIVE_LIMIT = Number(
   process.env.KADI_REENGAGEMENT_INACTIVE_LIMIT || 20
+);
+
+const REENGAGEMENT_GUARD_ENABLED =
+  String(process.env.KADI_REENGAGEMENT_GUARD_ENABLED || "true").toLowerCase() === "true";
+
+const REENGAGEMENT_GUARD_TABLE =
+  process.env.KADI_REENGAGEMENT_GUARD_TABLE || "kadi_scheduler_guard";
+
+const REENGAGEMENT_JOB_NAME =
+  process.env.KADI_REENGAGEMENT_JOB_NAME || "reengagement_main";
+
+const REENGAGEMENT_BOOT_GRACE_MS = Number(
+  process.env.KADI_REENGAGEMENT_BOOT_GRACE_MS || 10 * 60 * 1000
+);
+
+const REENGAGEMENT_LOCK_LEASE_MS = Number(
+  process.env.KADI_REENGAGEMENT_LOCK_LEASE_MS ||
+    Math.min(REENGAGEMENT_INTERVAL_MS, 30 * 60 * 1000)
 );
 
 const WEEKLY_REPORT_ENABLED =
@@ -140,6 +161,198 @@ async function maybeRunWeeklyReport() {
   } catch (e) {
     console.error("💥 weekly report error:", e);
   }
+}
+
+// ===============================
+// REENGAGEMENT GUARD
+// ===============================
+let reengagementInFlight = false;
+
+function getTimeBucketKey(date = new Date(), bucketMs = 60 * 60 * 1000) {
+  const ts = date.getTime();
+  const startTs = Math.floor(ts / bucketMs) * bucketMs;
+  return new Date(startTs).toISOString();
+}
+
+function getProcessUptimeMs() {
+  return Date.now() - SERVER_BOOT_AT;
+}
+
+async function tryAcquireReengagementGuard(trigger = "interval") {
+  const now = new Date();
+  const uptimeMs = getProcessUptimeMs();
+  const bucketKey = getTimeBucketKey(now, REENGAGEMENT_INTERVAL_MS);
+
+  if (uptimeMs < REENGAGEMENT_BOOT_GRACE_MS) {
+    return {
+      ok: false,
+      reason: "boot_grace",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  if (reengagementInFlight) {
+    return {
+      ok: false,
+      reason: "local_inflight",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  if (!REENGAGEMENT_GUARD_ENABLED) {
+    reengagementInFlight = true;
+    return {
+      ok: true,
+      reason: "guard_disabled",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  const nowIso = now.toISOString();
+  const lockUntilIso = new Date(now.getTime() + REENGAGEMENT_LOCK_LEASE_MS).toISOString();
+
+  const { data: row, error: readError } = await supabase
+    .from(REENGAGEMENT_GUARD_TABLE)
+    .select("job_name,last_run_bucket,locked_until,last_status")
+    .eq("job_name", REENGAGEMENT_JOB_NAME)
+    .maybeSingle();
+
+  if (readError) {
+    throw readError;
+  }
+
+  if (!row) {
+    const { error: insertError } = await supabase
+      .from(REENGAGEMENT_GUARD_TABLE)
+      .insert({
+        job_name: REENGAGEMENT_JOB_NAME,
+        last_run_bucket: bucketKey,
+        locked_until: lockUntilIso,
+        last_started_at: nowIso,
+        last_finished_at: null,
+        last_status: "running",
+        last_error: null,
+        updated_at: nowIso,
+      });
+
+    if (insertError) {
+      if (String(insertError.code || "") === "23505") {
+        return {
+          ok: false,
+          reason: "insert_race",
+          trigger,
+          bucketKey,
+          uptimeMs,
+        };
+      }
+      throw insertError;
+    }
+
+    reengagementInFlight = true;
+    return {
+      ok: true,
+      reason: "acquired_new",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  if (safeSameBucket(row.last_run_bucket, bucketKey)) {
+    return {
+      ok: false,
+      reason: "already_ran_bucket",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  if (row.locked_until && new Date(row.locked_until).getTime() > now.getTime()) {
+    return {
+      ok: false,
+      reason: "remote_locked",
+      trigger,
+      bucketKey,
+      uptimeMs,
+    };
+  }
+
+  const { error: updateError } = await supabase
+    .from(REENGAGEMENT_GUARD_TABLE)
+    .update({
+      last_run_bucket: bucketKey,
+      locked_until: lockUntilIso,
+      last_started_at: nowIso,
+      last_finished_at: null,
+      last_status: "running",
+      last_error: null,
+      updated_at: nowIso,
+    })
+    .eq("job_name", REENGAGEMENT_JOB_NAME);
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  reengagementInFlight = true;
+  return {
+    ok: true,
+    reason: "acquired_existing",
+    trigger,
+    bucketKey,
+    uptimeMs,
+  };
+}
+
+async function releaseReengagementGuard({
+  success,
+  errorMessage = null,
+  bucketKey = null,
+  trigger = "interval",
+}) {
+  reengagementInFlight = false;
+
+  if (!REENGAGEMENT_GUARD_ENABLED) {
+    return;
+  }
+
+  try {
+    const nowIso = new Date().toISOString();
+
+    const { error } = await supabase
+      .from(REENGAGEMENT_GUARD_TABLE)
+      .update({
+        locked_until: null,
+        last_finished_at: nowIso,
+        last_status: success ? "success" : "error",
+        last_error: errorMessage ? String(errorMessage).slice(0, 1000) : null,
+        updated_at: nowIso,
+      })
+      .eq("job_name", REENGAGEMENT_JOB_NAME);
+
+    if (error) {
+      throw error;
+    }
+
+    console.log("[KADI/REENGAGEMENT] guard released", {
+      success,
+      trigger,
+      bucketKey,
+    });
+  } catch (e) {
+    console.error("💥 reengagement guard release error:", e);
+  }
+}
+
+function safeSameBucket(a, b) {
+  return String(a || "").trim() === String(b || "").trim();
 }
 
 // ===============================
@@ -256,10 +469,33 @@ app.listen(PORT, () => {
     typeof getZeroDocUsersBySegment === "function" &&
     typeof getInactiveUsers === "function"
   ) {
-    console.log(`🤖 Reengagement scheduler started (${REENGAGEMENT_INTERVAL_MS} ms)`);
+    console.log(
+      `🤖 Reengagement scheduler started (${REENGAGEMENT_INTERVAL_MS} ms)`
+    );
+    console.log("[KADI/REENGAGEMENT] config", {
+      enabled: REENGAGEMENT_ENABLED,
+      runOnBoot: REENGAGEMENT_RUN_ON_BOOT,
+      intervalMs: REENGAGEMENT_INTERVAL_MS,
+      bootGraceMs: REENGAGEMENT_BOOT_GRACE_MS,
+      lockLeaseMs: REENGAGEMENT_LOCK_LEASE_MS,
+      guardEnabled: REENGAGEMENT_GUARD_ENABLED,
+      guardTable: REENGAGEMENT_GUARD_TABLE,
+      jobName: REENGAGEMENT_JOB_NAME,
+    });
 
-    const runReengagement = async () => {
+    const runReengagement = async (trigger = "interval") => {
+      let guard = null;
+
       try {
+        guard = await tryAcquireReengagementGuard(trigger);
+
+        if (!guard?.ok) {
+          console.log("[KADI/REENGAGEMENT] skipped", guard);
+          return;
+        }
+
+        console.log("[KADI/REENGAGEMENT] started", guard);
+
         const result = await runReengagementCycle({
           sendText,
           sendTemplateMessage: sendTemplate,
@@ -271,20 +507,47 @@ app.listen(PORT, () => {
           inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
         });
 
-        console.log("✅ reengagement:", result);
+        console.log("✅ reengagement:", {
+          trigger,
+          bucketKey: guard.bucketKey,
+          result,
+        });
+
+        await releaseReengagementGuard({
+          success: true,
+          bucketKey: guard.bucketKey,
+          trigger,
+        });
       } catch (e) {
         console.error("💥 reengagement error:", e);
+
+        await releaseReengagementGuard({
+          success: false,
+          errorMessage: e?.message || String(e),
+          bucketKey: guard?.bucketKey || null,
+          trigger,
+        });
       }
     };
 
     if (REENGAGEMENT_RUN_ON_BOOT) {
-      console.log("⚠️ Reengagement boot run enabled");
-      setTimeout(runReengagement, 30000);
+      const bootDelay = Math.max(30000, REENGAGEMENT_BOOT_GRACE_MS + 5000);
+      console.log("⚠️ Reengagement boot run enabled", { bootDelay });
+
+      setTimeout(() => {
+        runReengagement("boot").catch((e) => {
+          console.error("💥 reengagement boot fatal error:", e);
+        });
+      }, bootDelay);
     } else {
       console.log("🛑 Reengagement boot run disabled");
     }
 
-    setInterval(runReengagement, REENGAGEMENT_INTERVAL_MS);
+    setInterval(() => {
+      runReengagement("interval").catch((e) => {
+        console.error("💥 reengagement interval fatal error:", e);
+      });
+    }, REENGAGEMENT_INTERVAL_MS);
   } else {
     console.warn("⚠️ Reengagement disabled or repo unavailable");
   }
