@@ -20,81 +20,81 @@ function makeKadiMenus(deps) {
   // HOME MENU
   // ======================================================
   async function sendHomeMenu(to) {
-  return sendList(to, {
-    body:
-      "👋 Bienvenue dans le menu KADI\n\n" +
-      "Choisissez simplement ce que vous voulez faire",
-    buttonText: "Ouvrir le menu",
-    footer: "Appuyez sur un élément pour continuer",
-    sections: [
-      {
-        title: "Documents",
-        rows: [
-          {
-            id: "DOC_FACTURE_MENU",
-            title: "📄 Facture",
-            description: "Créer une facture",
-          },
-          {
-            id: "DOC_FEC",
-            title: "⚡ FEC",
-            description: "Facture Électronique Certifiée",
-          },
-          {
-            id: "DOC_DEVIS",
-            title: "📋 Devis",
-            description: "Créer un devis",
-          },
-          {
-            id: "DOC_RECU",
-            title: "🧾 Reçu",
-            description: "Créer un reçu",
-          },
-          {
-            id: "DOC_DECHARGE",
-            title: "📝 Décharge",
-            description: "Créer une décharge officielle",
-          },
-        ],
-      },
-      {
-        title: "Compte",
-        rows: [
-          {
-            id: "CREDITS_SOLDE",
-            title: "💳 Crédits",
-            description: "Voir mon solde",
-          },
-          {
-            id: "CREDITS_RECHARGE",
-            title: "🔄 Recharger",
-            description: "Acheter des crédits",
-          },
-          {
-            id: "HOME_PROFILE",
-            title: "🏢 Profil",
-            description: "Voir ou modifier mon profil",
-          },
-          {
-            id: "HOME_HISTORY",
-            title: "📚 Historique",
-            description: "Voir mes documents récents",
-          },
-        ],
-      },
-      {
-        title: "Assistance",
-        rows: [
-          {
-            id: "HOME_HELP",
-            title: "❓ Aide & tuto",
-            description: "Guide, exemples et aide rapide",
-          },
-        ],
-      },
-    ],
-  });
-}
+    return sendList(to, {
+      body:
+        "👋 Bienvenue dans le menu KADI\n\n" +
+        "Choisissez simplement ce que vous voulez faire",
+      buttonText: "Ouvrir le menu",
+      footer: "Appuyez sur un élément pour continuer",
+      sections: [
+        {
+          title: "Documents",
+          rows: [
+            {
+              id: "DOC_FACTURE_MENU",
+              title: "📄 Facture",
+              description: "Créer une facture",
+            },
+            {
+              id: "DOC_FEC",
+              title: "⚡ FEC",
+              description: "Facture Électronique Certifiée",
+            },
+            {
+              id: "DOC_DEVIS",
+              title: "📋 Devis",
+              description: "Créer un devis",
+            },
+            {
+              id: "DOC_RECU",
+              title: "🧾 Reçu",
+              description: "Créer un reçu",
+            },
+            {
+              id: "DOC_DECHARGE",
+              title: "📝 Décharge",
+              description: "Créer une décharge officielle",
+            },
+          ],
+        },
+        {
+          title: "Compte",
+          rows: [
+            {
+              id: "CREDITS_SOLDE",
+              title: "💳 Crédits",
+              description: "Voir mon solde",
+            },
+            {
+              id: "CREDITS_RECHARGE",
+              title: "🔄 Recharger",
+              description: "Acheter des crédits",
+            },
+            {
+              id: "HOME_PROFILE",
+              title: "🏢 Profil",
+              description: "Voir ou modifier mon profil",
+            },
+            {
+              id: "HOME_HISTORY",
+              title: "📚 Historique",
+              description: "Voir mes documents récents",
+            },
+          ],
+        },
+        {
+          title: "Assistance",
+          rows: [
+            {
+              id: "HOME_HELP",
+              title: "❓ Aide & tuto",
+              description: "Guide, exemples et aide rapide",
+            },
+          ],
+        },
+      ],
+    });
+  }
 
   // ======================================================
   // DOCS MENU
@@ -238,52 +238,104 @@ function makeKadiMenus(deps) {
   // PREVIEW MENU
   // ======================================================
   async function sendPreviewMenu(to, draft = null) {
-    const buttons = [
-      { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
-      { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
-      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    const subjectExists = hasSubject(draft);
+    const phoneExists = hasClientPhone(draft);
+
+    if (typeof sendList !== "function") {
+      return sendButtons(
+        to,
+        `📄 *Vérifiez votre document*\n\n` +
+          `Tout est correct ?`,
+        [
+          { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
+          { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+          { id: "DOC_CANCEL", title: "🏠 Menu" },
+        ]
+      );
+    }
+
+    const enrichRows = [
+      {
+        id: "DOC_ADD_SUBJECT",
+        title: subjectExists ? "📝 Modifier objet" : "📝 Ajouter objet",
+        description: subjectExists
+          ? "Mettre à jour l’objet du document"
+          : "Ajouter un objet au document",
+      },
+      {
+        id: "DOC_ADD_CLIENT_PHONE",
+        title: phoneExists ? "📱 Modifier n° client" : "📱 Ajouter n° client",
+        description: phoneExists
+          ? "Mettre à jour le numéro du client"
+          : "Ajouter le numéro du client",
+      },
     ];
 
-    void draft;
+    const clientRows = phoneExists
+      ? [
+          {
+            id: "DOC_SEND_TO_CLIENT",
+            title: "📨 Envoyer au client",
+            description: "Envoyer le document au numéro du client",
+          },
+        ]
+      : [];
 
-    return sendButtons(
-      to,
-      `📄 *Vérifiez votre document*\n\n` +
-        `Tout est correct ?`,
-      buttons
-    );
+    const sections = [
+      {
+        title: "Actions principales",
+        rows: [
+          {
+            id: "DOC_CONFIRM",
+            title: "📤 Envoyer PDF",
+            description: "Générer et envoyer le PDF maintenant",
+          },
+          {
+            id: "DOC_ADD_MORE",
+            title: "✏️ Modifier",
+            description: "Modifier les lignes ou les informations",
+          },
+        ],
+      },
+      {
+        title: "Compléments",
+        rows: enrichRows,
+      },
+    ];
+
+    if (clientRows.length) {
+      sections.push({
+        title: "Client",
+        rows: clientRows,
+      });
+    }
+
+    sections.push({
+      title: "Navigation",
+      rows: [
+        {
+          id: "DOC_CANCEL",
+          title: "🏠 Menu",
+          description: "Quitter et revenir au menu",
+        },
+      ],
+    });
+
+    return sendList(to, {
+      body:
+        "📄 Vérifiez votre document\n\n" +
+        "Tout est correct ? Vous pouvez envoyer le PDF ou enrichir le document.",
+      buttonText: "Choisir une action",
+      footer: "Envoyez le PDF ou ajoutez des détails optionnels",
+      sections,
+    });
   }
 
   // ======================================================
   // AFTER PRODUCT MENU
   // ======================================================
   async function sendAfterProductMenu(to, draft = null) {
-    const hasSubj = hasSubject(draft);
-    const hasPhone = hasClientPhone(draft);
-
-    if (draft && !hasSubj) {
-      return sendButtons(
-        to,
-        "Que voulez-vous faire maintenant ?",
-        [
-          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
-          { id: "DOC_ADD_SUBJECT", title: "📝 Objet" },
-          { id: "DOC_FINISH", title: "✅ Terminer" },
-        ]
-      );
-    }
-
-    if (draft && hasSubj && !hasPhone) {
-      return sendButtons(
-        to,
-        "Que voulez-vous faire maintenant ?",
-        [
-          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
-          { id: "DOC_ADD_CLIENT_PHONE", title: "📱 Client" },
-          { id: "DOC_FINISH", title: "✅ Terminer" },
-        ]
-      );
-    }
+    void draft;
 
     return sendButtons(
       to,
