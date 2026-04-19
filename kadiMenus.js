@@ -253,7 +253,7 @@ function makeKadiMenus(deps) {
           `Tout est correct ?`,
         [
           { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
-          { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+          { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
           { id: "DOC_CANCEL", title: "🏠 Menu" },
         ]
       );
@@ -298,8 +298,13 @@ function makeKadiMenus(deps) {
           },
           {
             id: "DOC_ADD_MORE",
-            title: "✏️ Modifier",
-            description: "Modifier les lignes ou les informations",
+            title: "➕ Ajouter ligne",
+            description: "Ajouter une nouvelle ligne au document",
+          },
+          {
+            id: "DOC_EDIT_TEXT",
+            title: "✍️ Corriger texte",
+            description: "Recevoir le document en texte puis le corriger",
           },
         ],
       },
@@ -458,20 +463,17 @@ function makeKadiMenus(deps) {
   // ALREADY GENERATED
   // ======================================================
   async function sendAlreadyGeneratedMenu(to, draft = null) {
-    const buttons = [
-      { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
-      { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-      { id: "DOC_CANCEL", title: "🏠 Menu" },
-    ];
+    const hasPhone = hasClientPhone(draft);
+    const hasPdf = hasGeneratedPdf(draft);
 
-    if (draft && hasClientPhone(draft) && hasGeneratedPdf(draft)) {
+    if (hasPhone && hasPdf) {
       return sendButtons(
         to,
         `📄 *Ce document existe déjà.*\n\n` +
           `Que voulez-vous faire ?`,
         [
-          { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
           { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
+          { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
           { id: "DOC_CANCEL", title: "🏠 Menu" },
         ]
       );
@@ -481,7 +483,11 @@ function makeKadiMenus(deps) {
       to,
       `📄 *Ce document existe déjà.*\n\n` +
         `Que voulez-vous faire ?`,
-      buttons
+      [
+        { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
+        { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+        { id: "DOC_CANCEL", title: "🏠 Menu" },
+      ]
     );
   }
 

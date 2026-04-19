@@ -98,31 +98,6 @@ function makeKadiInteractiveFlow(deps) {
     "216",
     "213",
     "212",
-    "971",
-    "351",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
-    "971",
     "90",
     "49",
     "44",
@@ -176,10 +151,6 @@ function makeKadiInteractiveFlow(deps) {
     if (!session) return;
     session.subjectReturnTarget = null;
     session.clientPhoneReturnTarget = null;
-  }
-
-  function sanitizeSubject(value = "") {
-    return String(value || "").trim().slice(0, 120) || null;
   }
 
   function sanitizePhone(value = "") {
@@ -236,7 +207,7 @@ function makeKadiInteractiveFlow(deps) {
     const kind = String(draft?.factureKind || "").toLowerCase();
 
     if (type === "facture") {
-      return kind === "proforma" ? "Facture proforma" : "Facture";
+      return kind === "proforma" ? "Facture proforma" : "Facture définitive";
     }
     if (type === "devis") return "Devis";
     if (type === "recu") return "Reçu";
@@ -258,6 +229,63 @@ function makeKadiInteractiveFlow(deps) {
     return text;
   }
 
+  function getEditableDraftDocTypeLine(draft = null) {
+    const type = String(draft?.type || "").toLowerCase();
+    const kind = String(draft?.factureKind || "").toLowerCase();
+
+    if (type === "facture") {
+      return kind === "proforma" ? "FACTURE_PROFORMA" : "FACTURE_DEFINITIVE";
+    }
+    if (type === "devis") return "DEVIS";
+    if (type === "recu") return "RECU";
+    if (type === "decharge") return "DECHARGE";
+    return "DOCUMENT";
+  }
+
+  function buildEditableDraftText(draft = null) {
+    const lines = [];
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+
+    lines.push(`TYPE: ${getEditableDraftDocTypeLine(draft)}`);
+    lines.push(`DATE: ${String(draft?.date || "").trim() || formatDateISO()}`);
+    lines.push(`CLIENT: ${String(draft?.client || "").trim()}`);
+    lines.push(`CLIENT_PHONE: ${String(draft?.clientPhone || "").trim()}`);
+    lines.push(`OBJET: ${String(draft?.subject || "").trim()}`);
+
+    if (String(draft?.motif || "").trim()) {
+      lines.push(`MOTIF: ${String(draft.motif).trim()}`);
+    }
+
+    items.forEach((item, index) => {
+      const label = String(item?.label || "").trim();
+      const qty = Number(item?.qty || 0);
+      const unitPrice = Number(item?.unitPrice || 0);
+
+      lines.push(
+        `LIGNE ${index + 1}: ${label} | ${qty} | ${Math.round(unitPrice)}`
+      );
+    });
+
+    if (items.length === 0) {
+      lines.push("LIGNE 1:  | 1 | 0");
+    }
+
+    return lines.join("\n");
+  }
+
+  function prepareDraftForEdition(draft = null) {
+    if (!draft || typeof draft !== "object") return draft;
+
+    draft.savedDocumentId = null;
+    draft.savedPdfMediaId = null;
+    draft.savedPdfFilename = null;
+    draft.savedPdfCaption = null;
+    draft.status = "draft";
+    draft.requestId = null;
+
+    return draft;
+  }
+
   async function sendDraftBlockedMessage(from, checked) {
     const s = getSession(from);
     if (s) s.step = "doc_review";
@@ -273,7 +301,7 @@ function makeKadiInteractiveFlow(deps) {
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
       { id: "DOC_RESTART", title: "🔁 Recommencer" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
@@ -308,6 +336,45 @@ function makeKadiInteractiveFlow(deps) {
     await sendText(from, formatBaseCostLine(cost));
 
     return sendPreviewMenu(from, finalDraft);
+  }
+
+  async function sendEditModeHub(from) {
+    await sendText(
+      from,
+      "✏️ *Mode modification activé.*\n\n" +
+        "Choisissez comment vous voulez modifier ce document."
+    );
+
+    await sendButtons(from, "Que voulez-vous faire ?", [
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
+      { id: "DOC_EDIT_TEXT", title: "✍️ Corriger texte" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ]);
+  }
+
+  async function sendEditTextMode(from, draft) {
+    const s = getSession(from);
+
+    const checked = validateDraftForUi(draft);
+    s.lastDocDraft = checked.draft;
+
+    if (!checked.ok) {
+      return sendDraftBlockedMessage(from, checked);
+    }
+
+    s.step = "doc_edit_text_waiting";
+    resetTransientProductState(s);
+    resetFieldReturnTargets(s);
+
+    await sendText(
+      from,
+      "✍️ *Correction texte activée.*\n\n" +
+        "Copiez ce bloc, corrigez-le puis renvoyez-le dans le chat.\n\n" +
+        "Format attendu pour chaque ligne :\n" +
+        "LIGNE X: Désignation | Quantité | Prix unitaire"
+    );
+
+    await sendText(from, buildEditableDraftText(s.lastDocDraft));
   }
 
   function buildDraftFromIntent(intent) {
@@ -871,7 +938,7 @@ function makeKadiInteractiveFlow(deps) {
         `✅ PDF envoyé au client.\n📱 Numéro : +${clientWaId}`
       );
 
-      await sendAlreadyGeneratedMenu(from, draft);
+      await sendAlreadyGeneratedMenu(from);
       return;
     }
 
@@ -1333,8 +1400,50 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_ADD_MORE") {
+      const draft = s.lastDocDraft;
+
+      if (!draft) {
+        await sendText(from, noDraftMessage());
+        return;
+      }
+
+      const hasGeneratedArtifact = !!(
+        draft.savedDocumentId || draft.savedPdfMediaId
+      );
+
+      if (hasGeneratedArtifact) {
+        prepareDraftForEdition(draft);
+        s.lastDocDraft = draft;
+
+        await sendText(
+          from,
+          "➕ *Mode ajout activé.*\n\nAjoutez une nouvelle ligne au document."
+        );
+      }
+
       resetTransientProductState(s);
+      resetFieldReturnTargets(s);
       return askItemLabel(from);
+    }
+
+    if (replyId === "DOC_EDIT_TEXT") {
+      const draft = s.lastDocDraft;
+
+      if (!draft) {
+        await sendText(from, noDraftMessage());
+        return;
+      }
+
+      const hasGeneratedArtifact = !!(
+        draft.savedDocumentId || draft.savedPdfMediaId
+      );
+
+      if (hasGeneratedArtifact) {
+        prepareDraftForEdition(draft);
+        s.lastDocDraft = draft;
+      }
+
+      return sendEditTextMode(from, s.lastDocDraft);
     }
 
     if (replyId === "DOC_FINISH") {
@@ -1424,7 +1533,7 @@ function makeKadiInteractiveFlow(deps) {
 
       if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
         s.step = "doc_already_generated";
-        await sendAlreadyGeneratedMenu(from, finalDraft);
+        await sendAlreadyGeneratedMenu(from);
         return;
       }
 
@@ -1558,7 +1667,7 @@ function makeKadiInteractiveFlow(deps) {
       });
 
       s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from, draft);
+      await sendAlreadyGeneratedMenu(from);
       return;
     }
 
@@ -1573,18 +1682,12 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
-      draft.savedDocumentId = null;
-      draft.savedPdfMediaId = null;
-      draft.savedPdfFilename = null;
-      draft.savedPdfCaption = null;
-      draft.status = "draft";
-      draft.requestId = null;
-
       const checked = validateDraftForUi(draft);
       s.lastDocDraft = checked.draft;
+
       resetTransientProductState(s);
       resetFieldReturnTargets(s);
-      s.step = "doc_review";
+      s.step = "doc_edit_generated_menu";
 
       if (!checked.ok) {
         await sendText(
@@ -1594,19 +1697,7 @@ function makeKadiInteractiveFlow(deps) {
         return sendDraftBlockedMessage(from, checked);
       }
 
-      await sendText(
-        from,
-        "✏️ *Mode modification activé.*\n\n" +
-          "Vous pouvez corriger puis régénérer le document.\n" +
-          "Chaque nouvelle génération consommera le coût normal du document."
-      );
-
-      await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "DOC_ADD_MORE", title: "➕ Modifier" },
-        { id: "DOC_CONFIRM", title: "📄 Régénérer" },
-        { id: "DOC_CANCEL", title: "🏠 Menu" },
-      ]);
-      return;
+      return sendEditModeHub(from);
     }
 
     await sendText(

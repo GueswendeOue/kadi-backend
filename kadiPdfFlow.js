@@ -134,7 +134,7 @@ function makeKadiPdfFlow(deps) {
     );
 
     await sendButtons(from, "Choisissez une option 👇", [
-      { id: "CREDITS_RECHARGE", title: "� Recharger 1000F+" },
+      { id: "CREDITS_RECHARGE", title: "🔄 Recharger" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }
@@ -487,11 +487,23 @@ function makeKadiPdfFlow(deps) {
     const draft = s?.lastDocDraft || null;
     const text = buildAlreadyGeneratedMessage(draft);
 
-    await sendButtons(to, text, [
-      { id: "DOC_RESTART", title: "📤 Nouveau doc" },
-      { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-      { id: "DOC_CANCEL", title: "🏠 Menu" },
-    ]);
+    const hasClientPhone = !!String(draft?.clientPhone || "").trim();
+    const hasGeneratedPdf = !!String(draft?.savedPdfMediaId || "").trim();
+
+    const buttons =
+      hasClientPhone && hasGeneratedPdf
+        ? [
+            { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
+            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+            { id: "DOC_CANCEL", title: "🏠 Menu" },
+          ]
+        : [
+            { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
+            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+            { id: "DOC_CANCEL", title: "🏠 Menu" },
+          ];
+
+    await sendButtons(to, text, buttons);
   }
 
   return {

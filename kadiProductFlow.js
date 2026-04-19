@@ -61,6 +61,281 @@ function makeKadiProductFlow(deps) {
     session.itemDraft = null;
   }
 
+  function sanitizeClientName(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
+  }
+
+  function sanitizeItemLabel(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizeSubject(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizePhone(value = "") {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits || null;
+  }
+
+  function isSkipValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return t === "0";
+  }
+
+  function isCancelValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return (
+      t === "annuler" ||
+      t === "cancel" ||
+      t === "retour" ||
+      t === "stop" ||
+      t === "abandonner"
+    );
+  }
+
+  function getEditableDraftDocTypeLine(draft = null) {
+    const type = String(draft?.type || "").toLowerCase();
+    const kind = String(draft?.factureKind || "").toLowerCase();
+
+    if (type === "facture") {
+      return kind === "proforma" ? "FACTURE_PROFORMA" : "FACTURE_DEFINITIVE";
+    }
+    if (type === "devis") return "DEVIS";
+    if (type === "recu") return "RECU";
+    if (type === "decharge") return "DECHARGE";
+    return "DOCUMENT";
+  }
+
+  function buildEditableDraftText(draft = null) {
+    const lines = [];
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+
+    lines.push(`TYPE: ${getEditableDraftDocTypeLine(draft)}`);
+    lines.push(`DATE: ${String(draft?.date || "").trim() || formatDateISO()}`);
+    lines.push(`CLIENT: ${String(draft?.client || "").trim()}`);
+    lines.push(`CLIENT_PHONE: ${String(draft?.clientPhone || "").trim()}`);
+    lines.push(`OBJET: ${String(draft?.subject || "").trim()}`);
+
+    if (String(draft?.motif || "").trim()) {
+      lines.push(`MOTIF: ${String(draft.motif).trim()}`);
+    }
+
+    items.forEach((item, index) => {
+      const label = String(item?.label || "").trim();
+      const qty = Number(item?.qty || 0);
+      const unitPrice = Number(item?.unitPrice || 0);
+
+      lines.push(
+        `LIGNE ${index + 1}: ${label} | ${qty} | ${Math.round(unitPrice)}`
+      );
+    });
+
+    if (items.length === 0) {
+      lines.push("LIGNE 1:  | 1 | 0");
+    }
+
+    return lines.join("\n");
+  }
+
+  function normalizeStructuredDocType(value = "", fallbackDraft = null) {
+    const raw = String(value || "").trim().toUpperCase();
+
+    if (raw.includes("FACTURE") && raw.includes("PROFORMA")) {
+      return { type: "facture", factureKind: "proforma" };
+    }
+
+    if (raw.includes("FACTURE")) {
+      return { type: "facture", factureKind: "definitive" };
+    }
+
+    if (raw.includes("DEVIS")) {
+      return { type: "devis", factureKind: null };
+    }
+
+    if (raw.includes("RECU") || raw.includes("REÇU")) {
+      return { type: "recu", factureKind: null };
+    }
+
+    if (raw.includes("DECHARGE") || raw.includes("DÉCHARGE")) {
+      return { type: "decharge", factureKind: null };
+    }
+
+    return {
+      type: fallbackDraft?.type || "devis",
+      factureKind:
+        fallbackDraft?.type === "facture"
+          ? fallbackDraft?.factureKind || "definitive"
+          : null,
+    };
+  }
+
+  function formatStructuredEditIssues(issues = []) {
+    const uniq = [...new Set(issues)];
+
+    const labels = uniq.map((issue) => {
+      switch (issue) {
+        case "type_invalid":
+          return "TYPE invalide";
+        case "client_required":
+          return "CLIENT requis";
+        case "line_required":
+          return "au moins une LIGNE valide est requise";
+        case "line_format_invalid":
+          return "format des LIGNES invalide";
+        case "line_label_required":
+          return "désignation manquante";
+        case "line_qty_invalid":
+          return "quantité invalide";
+        case "line_unit_price_invalid":
+          return "prix unitaire invalide";
+        default:
+          return issue;
+      }
+    });
+
+    return labels.join(", ");
+  }
+
+  function parseStructuredEditText(rawText, baseDraft) {
+    const sourceDraft = clonePlainDraft(baseDraft) || {
+      type: "devis",
+      factureKind: null,
+      date: formatDateISO(),
+      client: null,
+      clientPhone: null,
+      subject: null,
+      motif: null,
+      items: [],
+      finance: null,
+      meta: makeDraftMeta(),
+    };
+
+    const draft = {
+      ...sourceDraft,
+      items: Array.isArray(sourceDraft.items)
+        ? sourceDraft.items.map((it) => ({ ...it }))
+        : [],
+      finance: sourceDraft.finance ? { ...sourceDraft.finance } : null,
+      meta: sourceDraft.meta ? { ...sourceDraft.meta } : makeDraftMeta(),
+      savedDocumentId: null,
+      savedPdfMediaId: null,
+      savedPdfFilename: null,
+      savedPdfCaption: null,
+      requestId: null,
+      status: "draft",
+    };
+
+    const lines = String(rawText || "")
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+
+    const issues = [];
+    const parsedItems = [];
+    let lineSeen = false;
+
+    for (const line of lines) {
+      const typeMatch = line.match(/^TYPE\s*:\s*(.+)$/i);
+      if (typeMatch) {
+        const normalized = normalizeStructuredDocType(typeMatch[1], draft);
+        draft.type = normalized.type;
+        draft.factureKind = normalized.factureKind;
+        continue;
+      }
+
+      const dateMatch = line.match(/^DATE\s*:\s*(.*)$/i);
+      if (dateMatch) {
+        const value = String(dateMatch[1] || "").trim();
+        draft.date = value || draft.date || formatDateISO();
+        continue;
+      }
+
+      const clientMatch = line.match(/^CLIENT\s*:\s*(.*)$/i);
+      if (clientMatch) {
+        const value = sanitizeClientName(clientMatch[1] || "");
+        draft.client = value || null;
+        continue;
+      }
+
+      const phoneMatch = line.match(/^CLIENT_PHONE\s*:\s*(.*)$/i);
+      if (phoneMatch) {
+        const value = sanitizePhone(phoneMatch[1] || "");
+        draft.clientPhone = value || null;
+        continue;
+      }
+
+      const subjectMatch = line.match(/^OBJET\s*:\s*(.*)$/i);
+      if (subjectMatch) {
+        const value = sanitizeSubject(subjectMatch[1] || "");
+        draft.subject = value || null;
+        continue;
+      }
+
+      const motifMatch = line.match(/^MOTIF\s*:\s*(.*)$/i);
+      if (motifMatch) {
+        const value = sanitizeItemLabel(motifMatch[1] || "");
+        draft.motif = value || null;
+        continue;
+      }
+
+      const itemMatch = line.match(/^LIGNE\s+\d+\s*:\s*(.+)$/i);
+      if (itemMatch) {
+        lineSeen = true;
+
+        const payload = String(itemMatch[1] || "").trim();
+        const parts = payload.split("|").map((part) => String(part || "").trim());
+
+        if (parts.length !== 3) {
+          issues.push("line_format_invalid");
+          continue;
+        }
+
+        const label = sanitizeItemLabel(parts[0] || "");
+        const qty = parseNumberSmart(parts[1] || "");
+        const unitPrice = parseNumberSmart(parts[2] || "");
+
+        if (!label) issues.push("line_label_required");
+        if (qty == null || qty <= 0) issues.push("line_qty_invalid");
+        if (unitPrice == null || unitPrice < 0)
+          issues.push("line_unit_price_invalid");
+
+        if (label && qty != null && qty > 0 && unitPrice != null && unitPrice >= 0) {
+          parsedItems.push(makeItem(label, Number(qty), Number(unitPrice)));
+        }
+
+        continue;
+      }
+    }
+
+    if (draft.type === "facture" && !draft.factureKind) {
+      draft.factureKind = "definitive";
+    }
+
+    if (!safe(draft.client)) {
+      issues.push("client_required");
+    }
+
+    if (!lineSeen || parsedItems.length === 0) {
+      issues.push("line_required");
+    }
+
+    draft.items = parsedItems;
+    draft.finance = computeFinance(draft);
+
+    if (draft.type === "decharge") {
+      const motif = sanitizeItemLabel(draft.motif || draft.subject || "");
+      draft.motif = motif || draft.motif || null;
+      draft.dechargeType = detectDechargeType(draft.motif || "");
+    }
+
+    return {
+      ok: issues.length === 0,
+      draft,
+      issues: [...new Set(issues)],
+    };
+  }
+
   async function sendBlockedDraft(from, issues = []) {
     await sendText(
       from,
@@ -69,7 +344,7 @@ function makeKadiProductFlow(deps) {
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
       { id: "DOC_RESTART", title: "🔁 Recommencer" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
@@ -102,39 +377,6 @@ function makeKadiProductFlow(deps) {
 
     await sendPreviewMenu(from, finalDraft);
     return true;
-  }
-
-  function sanitizeClientName(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
-  }
-
-  function sanitizeItemLabel(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
-  }
-
-  function sanitizeSubject(value = "") {
-    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
-  }
-
-  function sanitizePhone(value = "") {
-    const digits = String(value || "").replace(/\D/g, "");
-    return digits || null;
-  }
-
-  function isSkipValue(value = "") {
-    const t = String(value || "").trim().toLowerCase();
-    return t === "0";
-  }
-
-  function isCancelValue(value = "") {
-    const t = String(value || "").trim().toLowerCase();
-    return (
-      t === "annuler" ||
-      t === "cancel" ||
-      t === "retour" ||
-      t === "stop" ||
-      t === "abandonner"
-    );
   }
 
   async function continueAfterSubjectInput(from, s) {
@@ -239,12 +481,72 @@ function makeKadiProductFlow(deps) {
     return true;
   }
 
+  async function handleStructuredEditText(from, rawText) {
+    const s = getSession(from);
+    const currentDraft = s?.lastDocDraft;
+
+    if (!currentDraft) {
+      await sendText(
+        from,
+        "📄 Je n’ai pas retrouvé le document à corriger.\nTapez MENU pour recommencer."
+      );
+      return true;
+    }
+
+    const parsed = parseStructuredEditText(rawText, currentDraft);
+
+    if (!parsed.ok) {
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas pu appliquer votre correction.\n\n" +
+          `Détail : ${formatStructuredEditIssues(parsed.issues)}`
+      );
+
+      await sendText(
+        from,
+        "Merci de corriger le bloc puis de le renvoyer exactement dans ce format :"
+      );
+
+      await sendText(from, buildEditableDraftText(currentDraft));
+      s.step = "doc_edit_text_waiting";
+      return true;
+    }
+
+    const checked = validateDraftForUi(parsed.draft);
+    s.lastDocDraft = checked.draft;
+
+    if (!checked.ok) {
+      await sendText(
+        from,
+        "⚠️ La correction a été lue, mais le document reste incohérent.\n\n" +
+          `Détail : ${formatStructuredEditIssues(checked.issues || [])}`
+      );
+
+      await sendText(from, buildEditableDraftText(s.lastDocDraft));
+      s.step = "doc_edit_text_waiting";
+      return true;
+    }
+
+    resetItemCaptureState(s);
+    s.subjectReturnTarget = null;
+    s.clientPhoneReturnTarget = null;
+    s.step = "doc_review";
+
+    await sendText(from, "✅ Correction appliquée.");
+    return sendSafePreview(from, s.lastDocDraft);
+  }
+
   async function handleProductFlowText(from, text) {
     const s = getSession(from);
     if (!s?.lastDocDraft) return false;
 
     const t = String(text || "").trim();
     if (!t) return false;
+
+    // ===== STRUCTURED TEXT EDIT =====
+    if (s.step === "doc_edit_text_waiting") {
+      return handleStructuredEditText(from, text);
+    }
 
     // ===== CLIENT =====
     if (s.step === "doc_client") {
@@ -301,10 +603,7 @@ function makeKadiProductFlow(deps) {
       const phone = sanitizePhone(t);
 
       if (!phone || phone.length < 8) {
-        await sendText(
-          from,
-          "❌ Numéro invalide.\nExemple : 70000000"
-        );
+        await sendText(from, "❌ Numéro invalide.\nExemple : 70000000");
         return true;
       }
 
@@ -423,7 +722,7 @@ function makeKadiProductFlow(deps) {
             from,
             "⚠️ J’attends un prix ici.\n\nQue voulez-vous faire ?",
             [
-              { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+              { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
               { id: "DOC_RESTART", title: "🔁 Recommencer" },
               { id: "DOC_CANCEL", title: "🏠 Menu" },
             ]
