@@ -20,6 +20,9 @@ function makeKadiOcrFlow(deps) {
     logger,
     safe,
 
+    // preview unified
+    sendPreviewMenu = null,
+
     // OCR low-level
     ocrImageToText,
     parseInvoiceTextWithGemini,
@@ -30,21 +33,34 @@ function makeKadiOcrFlow(deps) {
     looksLikeRealItemLabel,
   } = deps;
 
-  function guessDocTypeFromOcr(text) {
+  function guessDocMetaFromOcr(text) {
     const t = String(text || "").toLowerCase();
 
-    if (t.includes("facture")) return "facture";
-    if (t.includes("reçu") || t.includes("recu")) return "recu";
-    if (
-      t.includes("devis") ||
-      t.includes("proforma") ||
-      t.includes("pro forma")
-    ) {
-      return "devis";
+    if (t.includes("proforma") || t.includes("pro forma")) {
+      return { type: "facture", factureKind: "proforma" };
     }
-    if (t.includes("décharge") || t.includes("decharge")) return "decharge";
 
-    return null;
+    if (t.includes("facture")) {
+      return { type: "facture", factureKind: "definitive" };
+    }
+
+    if (t.includes("reçu") || t.includes("recu")) {
+      return { type: "recu", factureKind: null };
+    }
+
+    if (t.includes("devis")) {
+      return { type: "devis", factureKind: null };
+    }
+
+    if (t.includes("décharge") || t.includes("decharge")) {
+      return { type: "decharge", factureKind: null };
+    }
+
+    return { type: "devis", factureKind: null };
+  }
+
+  function guessDocTypeFromOcr(text) {
+    return guessDocMetaFromOcr(text).type;
   }
 
   function extractTotalFromOcr(text) {
@@ -74,6 +90,7 @@ function makeKadiOcrFlow(deps) {
 
     return (
       t.startsWith("type:") ||
+      t.startsWith("facture_kind:") ||
       t.startsWith("client:") ||
       t.startsWith("doc_number:") ||
       t.startsWith("items:") ||
@@ -196,6 +213,38 @@ function makeKadiOcrFlow(deps) {
     };
   }
 
+  function makeFreshOcrBaseDraft({ existingDraft, guessedMeta }) {
+    const current =
+      existingDraft &&
+      typeof existingDraft === "object" &&
+      existingDraft.source === "ocr"
+        ? existingDraft
+        : null;
+
+    const type = current?.type || guessedMeta?.type || "devis";
+    const factureKind =
+      type === "facture"
+        ? current?.factureKind || guessedMeta?.factureKind || "definitive"
+        : null;
+
+    return {
+      type,
+      factureKind,
+      docNumber: null,
+      date: formatDateISO(),
+      client: null,
+      clientPhone: null,
+      subject: null,
+      motif: null,
+      items: [],
+      finance: null,
+      source: "ocr",
+      meta: makeDraftMeta({
+        ...(current?.meta || {}),
+      }),
+    };
+  }
+
   function buildDraftFromParsed(baseDraft, parsed) {
     const draft = {
       ...baseDraft,
@@ -233,13 +282,10 @@ function makeKadiOcrFlow(deps) {
 
   function needsManualReview(draft, parsed = {}) {
     const checked = runDraftValidation(draft);
-
     const issues = Array.isArray(checked?.issues) ? checked.issues : [];
     const detectedTotal = Number(parsed?.detectedTotal || 0);
     const computedTotal = Number(
-      checked?.draft?.finance?.gross ??
-        checked?.draft?.finance?.total ??
-        0
+      checked?.draft?.finance?.gross ?? checked?.draft?.finance?.total ?? 0
     );
 
     if (!checked.ok) {
@@ -250,13 +296,11 @@ function makeKadiOcrFlow(deps) {
       };
     }
 
-    if (
-      detectedTotal > 0 &&
-      computedTotal > 0 &&
-      Math.abs(detectedTotal - computedTotal) > 0
-    ) {
-      const ratio = Math.abs(detectedTotal - computedTotal) / computedTotal;
-      if (ratio >= 0.15) {
+    if (detectedTotal > 0 && computedTotal > 0) {
+      const gap = Math.abs(detectedTotal - computedTotal);
+      const ratio = computedTotal > 0 ? gap / computedTotal : 0;
+
+      if (gap > 500 && ratio >= 0.12) {
         return {
           needsReview: true,
           reason: "ocr_total_gap_high",
@@ -293,7 +337,7 @@ function makeKadiOcrFlow(deps) {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const baseText = await ocrImageToText(buffer);
+        const baseText = await ocrImageToText(buffer, { mimeType });
 
         logger?.info?.("ocr", "Base OCR result", {
           attempt,
@@ -320,6 +364,24 @@ function makeKadiOcrFlow(deps) {
     }
 
     throw lastErr || new Error("OCR_FAILED");
+  }
+
+  async function sendUnifiedPreview(from, draft) {
+    const preview = buildPreviewMessage({ doc: draft });
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(draft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    if (typeof sendPreviewMenu === "function") {
+      return sendPreviewMenu(from, draft);
+    }
+
+    return sendButtons(from, "✅ Valider ?", [
+      { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
+      { id: "DOC_RESTART", title: "🔁 Recommencer" },
+      { id: "BACK_HOME", title: "Menu" },
+    ]);
   }
 
   async function processOcrImageToDraft(from, mediaId) {
@@ -363,29 +425,14 @@ function makeKadiOcrFlow(deps) {
       return;
     }
 
-    if (!s.lastDocDraft) {
-      const guessed = guessDocTypeFromOcr(ocrText) || "devis";
-
-      s.lastDocDraft = {
-        type: guessed,
-        factureKind: guessed === "facture" ? "definitive" : null,
-        docNumber: null,
-        date: formatDateISO(),
-        client: null,
-        items: [],
-        finance: null,
-        source: "ocr",
-        meta: makeDraftMeta(),
-      };
-    }
-
-    if (!s.lastDocDraft.meta) {
-      s.lastDocDraft.meta = makeDraftMeta();
-    }
-
-    s.step = "ocr_review";
+    const guessedMeta = guessDocMetaFromOcr(ocrText);
+    s.lastDocDraft = makeFreshOcrBaseDraft({
+      existingDraft: s.lastDocDraft,
+      guessedMeta,
+    });
 
     let parsed = null;
+    let usedGeminiParse = false;
 
     if (typeof parseInvoiceTextWithGemini === "function") {
       try {
@@ -417,10 +464,7 @@ function makeKadiOcrFlow(deps) {
           throw new Error("Advanced parser returned noisy items");
         }
 
-        s.lastDocDraft.meta = makeDraftMeta({
-          ...(s.lastDocDraft.meta || {}),
-          usedGeminiParse: true,
-        });
+        usedGeminiParse = true;
 
         logger?.info?.("ocr", "Advanced parsing ok", {
           from,
@@ -434,21 +478,21 @@ function makeKadiOcrFlow(deps) {
           message: e?.message,
         });
 
-        s.lastDocDraft.meta = makeDraftMeta({
-          ...(s.lastDocDraft.meta || {}),
-          usedGeminiParse: false,
-        });
-
+        usedGeminiParse = false;
         parsed = parseOcrToDraft(ocrText);
       }
     } else {
-      s.lastDocDraft.meta = makeDraftMeta({
-        ...(s.lastDocDraft.meta || {}),
-        usedGeminiParse: false,
-      });
-
+      usedGeminiParse = false;
       parsed = parseOcrToDraft(ocrText);
     }
+
+    s.lastDocDraft.meta = makeDraftMeta({
+      ...(s.lastDocDraft.meta || {}),
+      usedGeminiParse,
+      ocrDetectedTotal: Number(parsed?.detectedTotal || 0) || null,
+      ocrDocTypeGuess: guessedMeta?.type || null,
+      ocrFactureKindGuess: guessedMeta?.factureKind || null,
+    });
 
     const candidateDraft = buildDraftFromParsed(s.lastDocDraft, parsed);
     const review = needsManualReview(candidateDraft, parsed);
@@ -468,7 +512,10 @@ function makeKadiOcrFlow(deps) {
       reason: review.reason,
     });
 
-    if (!Array.isArray(s.lastDocDraft.items) || s.lastDocDraft.items.length === 0) {
+    if (
+      !Array.isArray(s.lastDocDraft.items) ||
+      s.lastDocDraft.items.length === 0
+    ) {
       await sendText(
         from,
         "⚠️ J’ai lu la photo, mais je n’ai pas extrait de lignes fiables.\n\nEnvoyez une image plus nette ou saisissez le document en texte."
@@ -485,36 +532,16 @@ function makeKadiOcrFlow(deps) {
       return;
     }
 
-    if (review.needsReview) {
-      s.step = "ocr_review_needs_fix";
+    s.step = "doc_review";
 
+    if (review.needsReview) {
       await sendText(
         from,
-        "⚠️ J’ai lu la photo, mais je préfère une vérification avant de générer un aperçu final."
+        "⚠️ J’ai lu la photo, mais je préfère une vérification avant génération.\n\nVous pouvez corriger, ajouter une ligne ou générer si tout vous semble bon."
       );
-
-      const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-      await sendText(from, preview);
-
-      await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
-        { id: "DOC_RESTART", title: "🔁 Recommencer" },
-        { id: "BACK_HOME", title: "Menu" },
-      ]);
-      return;
     }
 
-    const preview = buildPreviewMessage({ doc: s.lastDocDraft });
-    await sendText(from, preview);
-
-    const cost = computeBasePdfCost(s.lastDocDraft);
-    await sendText(from, formatBaseCostLine(cost));
-
-    return sendButtons(from, "✅ Valider ?", [
-      { id: "DOC_CONFIRM", title: "📄 Générer PDF" },
-      { id: "DOC_RESTART", title: "🔁 Recommencer" },
-      { id: "BACK_HOME", title: "Menu" },
-    ]);
+    return sendUnifiedPreview(from, s.lastDocDraft);
   }
 
   return {

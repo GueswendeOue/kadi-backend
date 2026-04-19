@@ -334,6 +334,7 @@ function isStructuredCaptureStep(step = "") {
     s === "doc_subject_choice" ||
     s === "doc_client_phone_choice" ||
     s === "doc_already_generated" ||
+    s === "doc_edit_text_waiting" ||
     s === "missing_client_pdf" ||
     s === "smartblock_warning" ||
     s === "awaiting_ocr_image" ||
@@ -479,10 +480,8 @@ const { processOcrImageToDraft } = makeKadiOcrFlow({
   formatBaseCostLine,
   logger,
   safe,
+  sendPreviewMenu,
   ocrImageToText: kadiOcrEngine,
-  geminiIsEnabled: () => false,
-  ocrLooksGood: () => true,
-  geminiOcrImageBuffer: null,
   parseInvoiceTextWithGemini: null,
   parseNumberSmart,
   sanitizeOcrLabel,

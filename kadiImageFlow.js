@@ -32,6 +32,9 @@ function makeKadiImageFlow(deps) {
     kadiBroadcast,
   } = deps;
 
+  // OCR is started later via interactive reply after user chooses document type.
+  void processOcrImageToDraft;
+
   function isProfileLogoStep(session) {
     if (!session) return false;
 
@@ -39,6 +42,19 @@ function makeKadiImageFlow(deps) {
       session.step === "profile_logo_upload" ||
       (session.step === "profile" && session.profileStep === "logo")
     );
+  }
+
+  function clearRechargeProofState(session) {
+    if (!session || typeof session !== "object") return;
+
+    session.step = null;
+    session.pendingTopupId = null;
+    session.pendingTopupReference = null;
+    session.pendingTopupMethod = null;
+    session.pendingRechargePack = null;
+    session.pendingRechargeAmount = null;
+    session.pendingRechargeCredits = null;
+    session.pendingRechargeIncludesStamp = null;
   }
 
   async function getImagePayload(msg) {
@@ -70,6 +86,30 @@ function makeKadiImageFlow(deps) {
       mimeType,
       ext,
       buffer,
+    };
+  }
+
+  async function validateOcrImage(mediaId) {
+    if (!mediaId) {
+      return {
+        ok: false,
+        error: "❌ Image reçue mais sans media_id. Réessayez.",
+      };
+    }
+
+    const info = await getMediaInfo(mediaId);
+
+    if (info?.file_size && info.file_size > LIMITS.maxImageSize) {
+      return {
+        ok: false,
+        error: "❌ Image trop grande. Envoyez une image plus légère.",
+      };
+    }
+
+    return {
+      ok: true,
+      mediaId,
+      info,
     };
   }
 
@@ -181,12 +221,15 @@ function makeKadiImageFlow(deps) {
     }
 
     if (!topup) {
+      clearRechargeProofState(s);
       await sendText(from, "❌ Aucune recharge en attente trouvée.");
       return true;
     }
 
     const proofImageUrl = `whatsapp://media/${mediaId}`;
     const updated = await markTopupProofImageReceived(topup.id, proofImageUrl);
+
+    clearRechargeProofState(s);
 
     await sendText(
       from,
@@ -219,15 +262,35 @@ function makeKadiImageFlow(deps) {
       return true;
     }
 
-    s.pendingOcrMediaId = mediaId;
+    try {
+      const checked = await validateOcrImage(mediaId);
 
-    await sendButtons(from, "📷 Photo reçue. Générer quel document ?", [
-      { id: "OCR_DEVIS", title: "Devis" },
-      { id: "OCR_FACTURE", title: "Facture" },
-      { id: "OCR_RECU", title: "Reçu" },
-    ]);
+      if (!checked.ok) {
+        await sendText(from, checked.error);
+        return true;
+      }
 
-    return true;
+      s.pendingOcrMediaId = mediaId;
+
+      await sendButtons(
+        from,
+        "📷 Photo reçue.\n\nChoisissez le document que KADI doit préparer à partir de cette image.",
+        [
+          { id: "OCR_DEVIS", title: "Devis" },
+          { id: "OCR_FACTURE", title: "Facture" },
+          { id: "OCR_RECU", title: "Reçu" },
+        ]
+      );
+
+      return true;
+    } catch (e) {
+      console.error("[KADI/IMAGE/ocr_prepare]", e);
+      await sendText(
+        from,
+        "❌ Je n’ai pas pu préparer cette image.\nEssayez une photo plus nette ou renvoyez-la."
+      );
+      return true;
+    }
   }
 
   return {
