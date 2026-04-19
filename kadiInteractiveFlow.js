@@ -194,7 +194,7 @@ function makeKadiInteractiveFlow(deps) {
     const cost = computeBasePdfCost(finalDraft);
     await sendText(from, formatBaseCostLine(cost));
 
-    return sendPreviewMenu(from);
+    return sendPreviewMenu(from, finalDraft);
   }
 
   function buildDraftFromIntent(intent) {
@@ -1238,7 +1238,7 @@ function makeKadiInteractiveFlow(deps) {
       const cost = computeBasePdfCost(s.lastDocDraft);
       await sendText(from, formatBaseCostLine(cost));
 
-      await sendPreviewMenu(from);
+      await sendPreviewMenu(from, s.lastDocDraft);
       return;
     }
 
