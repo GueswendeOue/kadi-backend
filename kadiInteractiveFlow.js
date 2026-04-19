@@ -1238,7 +1238,7 @@ function makeKadiInteractiveFlow(deps) {
       const cost = computeBasePdfCost(s.lastDocDraft);
       await sendText(from, formatBaseCostLine(cost));
 
-      await sendPreviewMenu(from, s.lastDocDraft);
+      await sendPreviewMenu(from);
       return;
     }
 
