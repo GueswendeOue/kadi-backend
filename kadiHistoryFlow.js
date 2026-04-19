@@ -11,6 +11,8 @@ function makeKadiHistoryFlow(deps) {
     listRecentDocumentsByWaId,
     getLatestResendableDocumentByWaId,
     getDocumentById = null,
+    getDocumentByIdForWaId = null,
+    searchDocumentsByWaId = null,
 
     sendRecentCertifiedInvoices = null,
     sendHomeMenu = null,
@@ -48,6 +50,10 @@ function makeKadiHistoryFlow(deps) {
     }
   }
 
+  function clip(value = "", max = 72) {
+    return String(value || "").trim().slice(0, max);
+  }
+
   function buildDocLabel(row = {}) {
     const type = safeText(row?.doc_type).toLowerCase();
     const kind = safeText(row?.facture_kind).toLowerCase();
@@ -70,27 +76,35 @@ function makeKadiHistoryFlow(deps) {
 
   function resetHistorySession(session) {
     if (!session) return;
+
     session.historyRows = null;
     session.historySelectedDocId = null;
     session.historySelectedDoc = null;
-    if (isHistoryStep(session.step)) session.step = null;
+    session.historySearchQuery = null;
+    session.historyView = null;
+
+    if (isHistoryStep(session.step)) {
+      session.step = null;
+    }
   }
 
-  function rememberHistoryRows(session, rows = []) {
+  function rememberHistoryRows(session, rows = [], options = {}) {
     if (!session) return;
+
     session.historyRows = Array.isArray(rows) ? rows.slice(0, 10) : [];
+    session.historyView = safeText(options.view, session.historyView || "kadi");
+    session.historySearchQuery =
+      safeText(options.searchQuery, session.historySearchQuery || null) || null;
   }
 
   function findHistoryRowInSession(session, docId) {
     if (!session || !Array.isArray(session.historyRows)) return null;
-    return (
-      session.historyRows.find((row) => safeText(row?.id) === safeText(docId)) ||
-      null
-    );
-  }
 
-  function clip(value = "", max = 72) {
-    return String(value || "").trim().slice(0, max);
+    return (
+      session.historyRows.find(
+        (row) => safeText(row?.id) === safeText(docId)
+      ) || null
+    );
   }
 
   function buildListRowDescription(row = {}) {
@@ -119,14 +133,15 @@ function makeKadiHistoryFlow(deps) {
     );
   }
 
-  function buildKadiHistoryMessage(rows = []) {
+  function buildRowsTextMessage(title, rows = []) {
     const list = Array.isArray(rows) ? rows : [];
+
     if (!list.length) {
-      return "📭 Vous n’avez pas encore de documents KADI.";
+      return `📭 Aucun document trouvé pour ${title.toLowerCase()}.`;
     }
 
     return (
-      `📚 *Historique — Documents KADI*\n\n` +
+      `📚 *${title}*\n\n` +
       list
         .map((row, idx) => {
           const label = buildDocLabel(row);
@@ -147,12 +162,12 @@ function makeKadiHistoryFlow(deps) {
     );
   }
 
-  function buildHistoryListSections(rows = []) {
+  function buildHistoryListSections(title, rows = []) {
     const safeRows = (Array.isArray(rows) ? rows : []).slice(0, 10);
 
     return [
       {
-        title: "Documents récents",
+        title: clip(title, 24),
         rows: safeRows.map((row) => ({
           id: `HISTORY_OPEN_${safeText(row?.id, "unknown")}`,
           title: clip(buildDocLabel(row), 24),
@@ -164,20 +179,70 @@ function makeKadiHistoryFlow(deps) {
 
   async function sendHistoryHome(from) {
     const s = getSession(from);
+
     if (s) {
       s.step = "history_home";
       s.historySelectedDocId = null;
       s.historySelectedDoc = null;
     }
 
-    await sendButtons(
+    if (typeof sendList === "function") {
+      await sendList(from, {
+        header: "Historique",
+        body: "Choisissez ce que vous voulez consulter.",
+        footer: "PDF existants renvoyés sans nouveau coût",
+        buttonText: "Ouvrir",
+        sections: [
+          {
+            title: "KADI",
+            rows: [
+              {
+                id: "HISTORY_LATEST_PDF",
+                title: "Dernier PDF",
+                description: "Renvoyer le dernier PDF disponible",
+              },
+              {
+                id: "HISTORY_KADI",
+                title: "Docs récents",
+                description: "Voir vos documents KADI récents",
+              },
+              {
+                id: "HISTORY_SEARCH",
+                title: "Rechercher",
+                description: "Chercher par client, numéro ou mot-clé",
+              },
+            ],
+          },
+          {
+            title: "Autres",
+            rows: [
+              {
+                id: "HISTORY_FEC",
+                title: "Voir FEC",
+                description: "Consulter les factures certifiées",
+              },
+              {
+                id: "HISTORY_CLOSE",
+                title: "Fermer",
+                description: "Quitter l’historique",
+              },
+            ],
+          },
+        ],
+      });
+
+      return true;
+    }
+
+    await sendButtons(from, "📚 *Historique*\n\nChoisissez une action.", [
+      { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
+      { id: "HISTORY_KADI", title: "Docs récents" },
+      { id: "HISTORY_SEARCH", title: "Rechercher" },
+    ]);
+
+    await sendText(
       from,
-      "📚 *Historique*\n\nChoisissez ce que vous voulez consulter.",
-      [
-        { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
-        { id: "HISTORY_KADI", title: "Docs récents" },
-        { id: "HISTORY_FEC", title: "Voir FEC" },
-      ]
+      "💡 Tapez *FEC* pour voir l’historique FEC.\nTapez *FERMER* pour quitter."
     );
 
     return true;
@@ -193,7 +258,7 @@ function makeKadiHistoryFlow(deps) {
     const rows = await listRecentDocumentsByWaId(from, 10);
 
     if (s) {
-      rememberHistoryRows(s, rows);
+      rememberHistoryRows(s, rows, { view: "kadi", searchQuery: null });
       s.historySelectedDocId = null;
       s.historySelectedDoc = null;
       s.step = "history_kadi_list";
@@ -202,6 +267,7 @@ function makeKadiHistoryFlow(deps) {
     if (!rows.length) {
       await sendText(from, "📭 Vous n’avez pas encore de documents KADI.");
       await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "HISTORY_SEARCH", title: "Rechercher" },
         { id: "HISTORY_FEC", title: "Voir FEC" },
         { id: "HISTORY_CLOSE", title: "Fermer" },
       ]);
@@ -214,12 +280,12 @@ function makeKadiHistoryFlow(deps) {
         body: "Choisissez un document récent à consulter.",
         footer: "Renvoi du PDF existant gratuit",
         buttonText: "Ouvrir",
-        sections: buildHistoryListSections(rows),
+        sections: buildHistoryListSections("Docs récents", rows),
       });
 
       await sendButtons(from, "Actions rapides :", [
         { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
-        { id: "HISTORY_FEC", title: "Voir FEC" },
+        { id: "HISTORY_SEARCH", title: "Rechercher" },
         { id: "HISTORY_CLOSE", title: "Fermer" },
       ]);
 
@@ -228,12 +294,34 @@ function makeKadiHistoryFlow(deps) {
 
     await sendText(
       from,
-      buildKadiHistoryMessage(rows) +
+      buildRowsTextMessage("Historique — Documents KADI", rows) +
         `\n\nRépondez avec un numéro (1 à ${rows.length}) pour ouvrir un document.`
     );
 
     await sendButtons(from, "Actions rapides :", [
       { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
+      { id: "HISTORY_SEARCH", title: "Rechercher" },
+      { id: "HISTORY_CLOSE", title: "Fermer" },
+    ]);
+
+    return true;
+  }
+
+  async function sendSearchPrompt(from) {
+    const s = getSession(from);
+    if (s) {
+      s.step = "history_search_waiting";
+      s.historySelectedDocId = null;
+      s.historySelectedDoc = null;
+    }
+
+    await sendText(
+      from,
+      "🔎 Tapez un nom client, un numéro de document ou un mot-clé.\n\nExemples :\n• Moussa\n• FAC-2026-0042\n• réparation"
+    );
+
+    await sendButtons(from, "Que voulez-vous faire ?", [
+      { id: "HISTORY_KADI", title: "Docs récents" },
       { id: "HISTORY_FEC", title: "Voir FEC" },
       { id: "HISTORY_CLOSE", title: "Fermer" },
     ]);
@@ -241,7 +329,87 @@ function makeKadiHistoryFlow(deps) {
     return true;
   }
 
-  async function loadHistoryDocument(session, docId) {
+  async function sendSearchResults(from, query) {
+    if (typeof searchDocumentsByWaId !== "function") {
+      await sendText(from, "⚠️ Recherche historique indisponible pour le moment.");
+      return true;
+    }
+
+    const safeQuery = safeText(query);
+    if (!safeQuery) {
+      await sendText(from, "⚠️ Tapez un mot-clé pour lancer la recherche.");
+      return true;
+    }
+
+    const s = getSession(from);
+    const rows = await searchDocumentsByWaId(from, safeQuery, 10, 150);
+
+    if (s) {
+      rememberHistoryRows(s, rows, {
+        view: "search",
+        searchQuery: safeQuery,
+      });
+      s.historySelectedDocId = null;
+      s.historySelectedDoc = null;
+      s.step = "history_search_results";
+    }
+
+    if (!rows.length) {
+      await sendText(
+        from,
+        `📭 Aucun document trouvé pour : *${safeQuery}*`
+      );
+
+      await sendButtons(from, "Que voulez-vous faire ?", [
+        { id: "HISTORY_SEARCH", title: "Nouvelle rech." },
+        { id: "HISTORY_KADI", title: "Docs récents" },
+        { id: "HISTORY_CLOSE", title: "Fermer" },
+      ]);
+
+      return true;
+    }
+
+    if (typeof sendList === "function") {
+      await sendList(from, {
+        header: "Résultats",
+        body: `Résultats pour : ${clip(safeQuery, 60)}`,
+        footer: "Choisissez un document",
+        buttonText: "Ouvrir",
+        sections: buildHistoryListSections("Résultats", rows),
+      });
+
+      await sendButtons(from, "Actions rapides :", [
+        { id: "HISTORY_SEARCH", title: "Nouvelle rech." },
+        { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
+        { id: "HISTORY_CLOSE", title: "Fermer" },
+      ]);
+
+      return true;
+    }
+
+    await sendText(
+      from,
+      buildRowsTextMessage(`Résultats — ${safeQuery}`, rows) +
+        `\n\nRépondez avec un numéro (1 à ${rows.length}) pour ouvrir un document.`
+    );
+
+    await sendButtons(from, "Actions rapides :", [
+      { id: "HISTORY_SEARCH", title: "Nouvelle rech." },
+      { id: "HISTORY_LATEST_PDF", title: "Dernier PDF" },
+      { id: "HISTORY_CLOSE", title: "Fermer" },
+    ]);
+
+    return true;
+  }
+
+  async function loadHistoryDocumentForUser(from, session, docId) {
+    if (typeof getDocumentByIdForWaId === "function") {
+      try {
+        const row = await getDocumentByIdForWaId(from, docId);
+        if (row) return row;
+      } catch (_) {}
+    }
+
     const fromSession = findHistoryRowInSession(session, docId);
     if (fromSession) return fromSession;
 
@@ -256,15 +424,24 @@ function makeKadiHistoryFlow(deps) {
     return null;
   }
 
+  function getBackButtonTitle(session) {
+    return session?.historyView === "search" ? "Retour rés." : "Retour docs";
+  }
+
   async function openHistoryDocument(from, docId) {
     const s = getSession(from);
-    const row = await loadHistoryDocument(s, docId);
+    const row = await loadHistoryDocumentForUser(from, s, docId);
 
     if (!row) {
       await sendText(
         from,
-        "⚠️ Je n’ai pas retrouvé ce document dans votre historique récent."
+        "⚠️ Je n’ai pas retrouvé ce document dans votre historique."
       );
+
+      if (s?.historyView === "search" && s?.historySearchQuery) {
+        return sendSearchResults(from, s.historySearchQuery);
+      }
+
       return sendKadiHistory(from);
     }
 
@@ -279,13 +456,13 @@ function makeKadiHistoryFlow(deps) {
     if (row?.pdf_media_id) {
       await sendButtons(from, "Que voulez-vous faire ?", [
         { id: "HISTORY_RESEND_SELECTED", title: "Renvoyer PDF" },
-        { id: "HISTORY_BACK_LIST", title: "Retour docs" },
+        { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
         { id: "HISTORY_CLOSE", title: "Fermer" },
       ]);
     } else {
       await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "HISTORY_BACK_LIST", title: "Retour docs" },
-        { id: "HISTORY_FEC", title: "Voir FEC" },
+        { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
+        { id: "HISTORY_SEARCH", title: "Rechercher" },
         { id: "HISTORY_CLOSE", title: "Fermer" },
       ]);
     }
@@ -346,7 +523,7 @@ function makeKadiHistoryFlow(deps) {
 
     await sendButtons(from, "Que voulez-vous faire ?", [
       { id: "HISTORY_KADI", title: "Docs récents" },
-      { id: "HISTORY_FEC", title: "Voir FEC" },
+      { id: "HISTORY_SEARCH", title: "Rechercher" },
       { id: "HISTORY_CLOSE", title: "Fermer" },
     ]);
 
@@ -359,26 +536,47 @@ function makeKadiHistoryFlow(deps) {
 
     if (!docId) {
       await sendText(from, "⚠️ Je n’ai pas retrouvé le document sélectionné.");
+
+      if (s?.historyView === "search" && s?.historySearchQuery) {
+        return sendSearchResults(from, s.historySearchQuery);
+      }
+
       return sendKadiHistory(from);
     }
 
     const row =
-      s?.historySelectedDoc || (await loadHistoryDocument(s, docId));
+      s?.historySelectedDoc ||
+      (await loadHistoryDocumentForUser(from, s, docId));
 
     if (!row) {
       await sendText(from, "⚠️ Je n’ai pas retrouvé ce document.");
+
+      if (s?.historyView === "search" && s?.historySearchQuery) {
+        return sendSearchResults(from, s.historySearchQuery);
+      }
+
       return sendKadiHistory(from);
     }
 
     await sendDocumentRow(from, row, "✅ PDF renvoyé.");
 
     await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "HISTORY_BACK_LIST", title: "Retour docs" },
-      { id: "HISTORY_FEC", title: "Voir FEC" },
+      { id: "HISTORY_BACK", title: getBackButtonTitle(s) },
+      { id: "HISTORY_SEARCH", title: "Rechercher" },
       { id: "HISTORY_CLOSE", title: "Fermer" },
     ]);
 
     return true;
+  }
+
+  async function goBackInHistory(from) {
+    const s = getSession(from);
+
+    if (s?.historyView === "search" && safeText(s?.historySearchQuery)) {
+      return sendSearchResults(from, s.historySearchQuery);
+    }
+
+    return sendKadiHistory(from);
   }
 
   async function closeHistory(from) {
@@ -399,7 +597,7 @@ function makeKadiHistoryFlow(deps) {
       return sendHistoryHome(from);
     }
 
-    if (replyId === "HISTORY_LATEST_PDF") {
+    if (replyId === "HISTORY_LATEST_PDF" || replyId === "HISTORY_RESEND_LAST") {
       return resendLastKadiPdf(from);
     }
 
@@ -411,20 +609,22 @@ function makeKadiHistoryFlow(deps) {
       return sendFecHistory(from);
     }
 
-    if (replyId === "HISTORY_RESEND_LAST") {
-      return resendLastKadiPdf(from);
+    if (replyId === "HISTORY_SEARCH") {
+      return sendSearchPrompt(from);
     }
 
     if (replyId === "HISTORY_RESEND_SELECTED") {
       return resendSelectedKadiPdf(from);
     }
 
-    if (replyId === "HISTORY_BACK_LIST") {
-      return sendKadiHistory(from);
+    if (replyId === "HISTORY_BACK" || replyId === "HISTORY_BACK_LIST") {
+      return goBackInHistory(from);
     }
 
     if (replyId === "HISTORY_REFRESH") {
-      return sendKadiHistory(from);
+      return s?.historyView === "search" && s?.historySearchQuery
+        ? sendSearchResults(from, s.historySearchQuery)
+        : sendKadiHistory(from);
     }
 
     if (replyId === "HISTORY_CLOSE") {
@@ -445,7 +645,9 @@ function makeKadiHistoryFlow(deps) {
 
   async function handleHistoryText(from, text) {
     const s = getSession(from);
-    const t = safeText(text).toLowerCase();
+    const raw = safeText(text);
+    const t = raw.toLowerCase();
+
     if (!t) return false;
 
     if (
@@ -457,7 +659,12 @@ function makeKadiHistoryFlow(deps) {
       return sendHistoryHome(from);
     }
 
-    if (t === "historique fec" || t === "mes fec" || t === "fecs") {
+    if (
+      t === "historique fec" ||
+      t === "mes fec" ||
+      t === "fecs" ||
+      t === "fec"
+    ) {
       return sendFecHistory(from);
     }
 
@@ -478,6 +685,40 @@ function makeKadiHistoryFlow(deps) {
       return resendLastKadiPdf(from);
     }
 
+    if (
+      t === "rechercher" ||
+      t === "recherche" ||
+      t === "chercher" ||
+      t === "chercher document"
+    ) {
+      return sendSearchPrompt(from);
+    }
+
+    if (t.startsWith("rechercher ") || t.startsWith("chercher ")) {
+      const query = raw.replace(/^(rechercher|chercher)\s+/i, "").trim();
+      if (query) return sendSearchResults(from, query);
+    }
+
+    if (s?.step === "history_search_waiting") {
+      if (t === "fermer" || t === "quitter" || t === "close") {
+        return closeHistory(from);
+      }
+
+      if (t === "retour" || t === "back") {
+        return sendHistoryHome(from);
+      }
+
+      if (raw.length < 2) {
+        await sendText(
+          from,
+          "⚠️ Tapez au moins 2 caractères pour la recherche."
+        );
+        return true;
+      }
+
+      return sendSearchResults(from, raw);
+    }
+
     if (s && isHistoryStep(s.step)) {
       if (t === "fermer" || t === "quitter" || t === "close") {
         return closeHistory(from);
@@ -485,8 +726,13 @@ function makeKadiHistoryFlow(deps) {
 
       if (t === "retour" || t === "back") {
         if (s.step === "history_doc_selected") {
-          return sendKadiHistory(from);
+          return goBackInHistory(from);
         }
+
+        if (s.step === "history_search_results") {
+          return sendSearchPrompt(from);
+        }
+
         return sendHistoryHome(from);
       }
 

@@ -2,6 +2,9 @@
 
 const { supabase } = require("./supabaseClient");
 
+const HISTORY_SELECT =
+  "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,pdf_media_id,pdf_filename,pdf_caption,raw";
+
 function toNum(v, def = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
@@ -110,7 +113,8 @@ function normalizeTotal(row = {}) {
     return Number(row.total);
   }
 
-  const finance = raw?.finance && typeof raw.finance === "object" ? raw.finance : null;
+  const finance =
+    raw?.finance && typeof raw.finance === "object" ? raw.finance : null;
 
   if (finance) {
     if (Number.isFinite(Number(finance.gross))) return Number(finance.gross);
@@ -146,7 +150,10 @@ function normalizeHistoryRow(row = {}) {
 
   return {
     id: row?.id || null,
-    doc_number: safeText(row?.doc_number, null) || safeText(raw?.docNumber, "-") || "-",
+    doc_number:
+      safeText(row?.doc_number, null) ||
+      safeText(raw?.docNumber, "-") ||
+      "-",
     doc_type: docType,
     facture_kind: factureKind,
     doc_label: buildDocLabel(docType, factureKind),
@@ -175,6 +182,50 @@ function normalizeRows(rows = [], finalLimit = 10) {
     .slice(0, finalLimit);
 }
 
+function normalizeRowsWithoutSlice(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map(normalizeHistoryRow)
+    .filter(isHistoryVisibleRow);
+}
+
+function normalizeSearchQuery(query = "") {
+  return safeText(query).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function buildSearchableText(row = {}) {
+  const raw = getRawObject(row);
+
+  return [
+    safeText(row?.doc_number),
+    safeText(row?.doc_type),
+    safeText(row?.facture_kind),
+    safeText(row?.client),
+    safeText(row?.source),
+    safeText(raw?.subject),
+    safeText(raw?.motif),
+    safeText(raw?.client),
+    safeText(raw?.docNumber),
+    buildDocLabel(row?.doc_type, row?.facture_kind),
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesHistorySearch(row = {}, query = "") {
+  const normalizedQuery = normalizeSearchQuery(query);
+  if (!normalizedQuery) return false;
+
+  const haystack = buildSearchableText(row);
+  if (!haystack) return false;
+
+  const parts = normalizedQuery.split(" ").filter(Boolean);
+  if (!parts.length) return false;
+
+  return parts.every((part) => haystack.includes(part));
+}
+
 async function listRecentDocumentsByWaId(waId, limit = 10) {
   const safeWaId = safeText(waId);
   if (!safeWaId) throw new Error("HISTORY_WA_ID_REQUIRED");
@@ -184,9 +235,7 @@ async function listRecentDocumentsByWaId(waId, limit = 10) {
 
   const { data, error } = await supabase
     .from("kadi_documents")
-    .select(
-  "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,pdf_media_id,pdf_filename,pdf_caption,raw"
-)
+    .select(HISTORY_SELECT)
     .eq("wa_id", safeWaId)
     .order("created_at", { ascending: false })
     .limit(queryLimit);
@@ -208,9 +257,7 @@ async function listRecentDocumentsByType(waId, docType, limit = 10) {
 
   const { data, error } = await supabase
     .from("kadi_documents")
-    .select(
-  "id,doc_number,doc_type,facture_kind,client,total,date,status,source,items_count,created_at,pdf_media_id,pdf_filename,pdf_caption,raw"
-)
+    .select(HISTORY_SELECT)
     .eq("wa_id", safeWaId)
     .eq("doc_type", safeDocType)
     .order("created_at", { ascending: false })
@@ -219,6 +266,36 @@ async function listRecentDocumentsByType(waId, docType, limit = 10) {
   if (error) throw error;
 
   return normalizeRows(data || [], safeLimit);
+}
+
+async function searchDocumentsByWaId(
+  waId,
+  query,
+  limit = 10,
+  windowLimit = 150
+) {
+  const safeWaId = safeText(waId);
+  const safeQuery = normalizeSearchQuery(query);
+
+  if (!safeWaId) throw new Error("HISTORY_WA_ID_REQUIRED");
+  if (!safeQuery) throw new Error("HISTORY_SEARCH_QUERY_REQUIRED");
+
+  const safeLimit = clampLimit(limit, 1, 50, 10);
+  const safeWindow = clampLimit(windowLimit, 20, 300, 150);
+
+  const { data, error } = await supabase
+    .from("kadi_documents")
+    .select(HISTORY_SELECT)
+    .eq("wa_id", safeWaId)
+    .order("created_at", { ascending: false })
+    .limit(safeWindow);
+
+  if (error) throw error;
+
+  const rows = normalizeRowsWithoutSlice(data || []);
+  return rows
+    .filter((row) => matchesHistorySearch(row, safeQuery))
+    .slice(0, safeLimit);
 }
 
 async function getDocumentById(documentId) {
@@ -237,6 +314,26 @@ async function getDocumentById(documentId) {
   return isHistoryVisibleRow(row) ? row : null;
 }
 
+async function getDocumentByIdForWaId(waId, documentId) {
+  const safeWaId = safeText(waId);
+  const safeId = safeText(documentId);
+
+  if (!safeWaId) throw new Error("HISTORY_WA_ID_REQUIRED");
+  if (!safeId) throw new Error("HISTORY_DOCUMENT_ID_REQUIRED");
+
+  const { data, error } = await supabase
+    .from("kadi_documents")
+    .select("*")
+    .eq("wa_id", safeWaId)
+    .eq("id", safeId)
+    .single();
+
+  if (error) throw error;
+
+  const row = normalizeHistoryRow(data || {});
+  return isHistoryVisibleRow(row) ? row : null;
+}
+
 async function getLatestResendableDocumentByWaId(waId, searchLimit = 20) {
   const rows = await listRecentDocumentsByWaId(waId, searchLimit);
   return rows.find((row) => !!row.pdf_media_id) || null;
@@ -245,6 +342,8 @@ async function getLatestResendableDocumentByWaId(waId, searchLimit = 20) {
 module.exports = {
   listRecentDocumentsByWaId,
   listRecentDocumentsByType,
+  searchDocumentsByWaId,
   getDocumentById,
+  getDocumentByIdForWaId,
   getLatestResendableDocumentByWaId,
 };

@@ -158,6 +158,8 @@ const {
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
   getDocumentById,
+  getDocumentByIdForWaId,
+  searchDocumentsByWaId,
 } = require("./kadiHistoryRepo");
 
 const { saveDocument } = require("./kadiRepo");
@@ -805,6 +807,8 @@ const {
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
   getDocumentById,
+  getDocumentByIdForWaId,
+  searchDocumentsByWaId,
 
   sendRecentCertifiedInvoices,
   sendHomeMenu,
