@@ -702,6 +702,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   money,
 
   sendHomeMenu,
+  sendHistoryHome,
   sendDocsMenu,
   sendCreditsMenu,
   sendProfileMenu,
