@@ -16,6 +16,10 @@ function makeKadiMenus(deps) {
     return !!String(draft?.subject || "").trim();
   }
 
+  function hasGeneratedPdf(draft) {
+    return !!String(draft?.savedPdfMediaId || "").trim();
+  }
+
   // ======================================================
   // HOME MENU
   // ======================================================
@@ -240,6 +244,7 @@ function makeKadiMenus(deps) {
   async function sendPreviewMenu(to, draft = null) {
     const subjectExists = hasSubject(draft);
     const phoneExists = hasClientPhone(draft);
+    const pdfExists = hasGeneratedPdf(draft);
 
     if (typeof sendList !== "function") {
       return sendButtons(
@@ -271,15 +276,16 @@ function makeKadiMenus(deps) {
       },
     ];
 
-    const clientRows = phoneExists
-      ? [
-          {
-            id: "DOC_SEND_TO_CLIENT",
-            title: "📨 Envoyer au client",
-            description: "Envoyer le document au numéro du client",
-          },
-        ]
-      : [];
+    const clientRows =
+      phoneExists && pdfExists
+        ? [
+            {
+              id: "DOC_SEND_TO_CLIENT",
+              title: "📨 Envoyer au client",
+              description: "Envoyer le document au numéro du client",
+            },
+          ]
+        : [];
 
     const sections = [
       {
@@ -458,7 +464,7 @@ function makeKadiMenus(deps) {
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ];
 
-    if (draft && hasClientPhone(draft)) {
+    if (draft && hasClientPhone(draft) && hasGeneratedPdf(draft)) {
       return sendButtons(
         to,
         `📄 *Ce document existe déjà.*\n\n` +

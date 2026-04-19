@@ -80,6 +80,62 @@ function makeKadiInteractiveFlow(deps) {
     replyRechargeInfo,
   } = deps;
 
+  const KNOWN_WA_COUNTRY_CODES = [
+    "971",
+    "351",
+    "243",
+    "242",
+    "237",
+    "235",
+    "234",
+    "229",
+    "228",
+    "227",
+    "226",
+    "225",
+    "223",
+    "221",
+    "216",
+    "213",
+    "212",
+    "971",
+    "351",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "971",
+    "90",
+    "49",
+    "44",
+    "41",
+    "39",
+    "34",
+    "33",
+    "32",
+    "31",
+    "20",
+    "1",
+  ];
+
   function noDraftMessage() {
     return "📄 Je ne vois pas encore de document en cours.\nTapez MENU pour commencer.";
   }
@@ -143,6 +199,63 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     return fallback;
+  }
+
+  function extractCountryCodeFromWaId(waId = "") {
+    const digits = String(waId || "").replace(/\D/g, "");
+
+    for (const code of KNOWN_WA_COUNTRY_CODES) {
+      if (digits.startsWith(code)) return code;
+    }
+
+    return null;
+  }
+
+  function normalizeClientWaId(value = "", senderWaId = "") {
+    let digits = String(value || "").replace(/\D/g, "");
+    if (!digits) return null;
+
+    if (digits.startsWith("00")) {
+      digits = digits.slice(2);
+    }
+
+    if (digits.length >= 10 && digits.length <= 15) {
+      return digits;
+    }
+
+    const senderCode = extractCountryCodeFromWaId(senderWaId);
+    if (senderCode && digits.length === 8) {
+      return `${senderCode}${digits}`;
+    }
+
+    return null;
+  }
+
+  function getDraftDocLabel(draft = null) {
+    const type = String(draft?.type || "").toLowerCase();
+    const kind = String(draft?.factureKind || "").toLowerCase();
+
+    if (type === "facture") {
+      return kind === "proforma" ? "Facture proforma" : "Facture";
+    }
+    if (type === "devis") return "Devis";
+    if (type === "recu") return "Reçu";
+    if (type === "decharge") return "Décharge";
+    return "Document";
+  }
+
+  function buildClientDocumentCaption({ draft, businessName }) {
+    const docLabel = getDraftDocLabel(draft);
+    const docNumber = String(draft?.docNumber || "").trim();
+    const client = String(draft?.client || "").trim();
+    const sender = String(businessName || "").trim() || "Votre contact";
+
+    let text = `📄 ${docLabel}`;
+    if (docNumber) text += ` ${docNumber}`;
+    if (client) text += `\n👤 Client : ${client}`;
+    text += `\n🏢 Envoyé par : ${sender}`;
+
+    return text;
   }
 
   async function sendDraftBlockedMessage(from, checked) {
@@ -683,7 +796,7 @@ function makeKadiInteractiveFlow(deps) {
 
       await sendText(
         from,
-        "📱 Tapez le numéro du client.\nExemple : 22670123456\n\nTapez 0 pour ignorer."
+        "📱 Tapez le numéro du client.\nExemple : 70000000\n\nTapez 0 pour ignorer."
       );
       return;
     }
@@ -710,10 +823,55 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_SEND_TO_CLIENT") {
+      const draft = s.lastDocDraft;
+
+      if (!draft) {
+        await sendText(from, noDraftMessage());
+        return;
+      }
+
+      const clientWaId = normalizeClientWaId(draft.clientPhone || "", from);
+
+      if (!clientWaId) {
+        await sendText(
+          from,
+          "⚠️ Le numéro du client est manquant ou invalide.\n" +
+            "Ajoutez un numéro local ou international.\n" +
+            "Exemple : 70000000"
+        );
+        return;
+      }
+
+      if (!draft.savedPdfMediaId) {
+        await sendText(
+          from,
+          "📄 Générez d’abord le PDF, puis utilisez *Envoyer au client*."
+        );
+        return;
+      }
+
+      const profile = await getOrCreateProfile(from);
+      const clientCaption = buildClientDocumentCaption({
+        draft,
+        businessName: profile?.business_name,
+      });
+
+      await sendDocument({
+        to: clientWaId,
+        mediaId: draft.savedPdfMediaId,
+        filename:
+          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+        caption: clientCaption,
+      });
+
+      s.step = "doc_already_generated";
+
       await sendText(
         from,
-        "ℹ️ La fonction d’envoi direct au client sera branchée juste après."
+        `✅ PDF envoyé au client.\n📱 Numéro : +${clientWaId}`
       );
+
+      await sendAlreadyGeneratedMenu(from, draft);
       return;
     }
 
@@ -1238,7 +1396,7 @@ function makeKadiInteractiveFlow(deps) {
       const cost = computeBasePdfCost(s.lastDocDraft);
       await sendText(from, formatBaseCostLine(cost));
 
-      await sendPreviewMenu(from);
+      await sendPreviewMenu(from, s.lastDocDraft);
       return;
     }
 
@@ -1266,7 +1424,7 @@ function makeKadiInteractiveFlow(deps) {
 
       if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
         s.step = "doc_already_generated";
-        await sendAlreadyGeneratedMenu(from);
+        await sendAlreadyGeneratedMenu(from, finalDraft);
         return;
       }
 
@@ -1400,7 +1558,7 @@ function makeKadiInteractiveFlow(deps) {
       });
 
       s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from);
+      await sendAlreadyGeneratedMenu(from, draft);
       return;
     }
 

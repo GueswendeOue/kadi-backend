@@ -302,6 +302,8 @@ function makeKadiPdfFlow(deps) {
           docNumber: finalDraft.docNumber,
           date: finalDraft.date,
           client: finalDraft.client,
+          clientPhone: finalDraft.clientPhone || null,
+          subject: finalDraft.subject || null,
           motif: finalDraft.motif || null,
           dechargeType: finalDraft.dechargeType || null,
           dechargeText:
@@ -352,44 +354,39 @@ function makeKadiPdfFlow(deps) {
 
       const fileName = `${finalDraft.docNumber}-${formatDateISO()}.pdf`;
 
-     const up = await uploadMediaBuffer({
-  buffer: pdfBuf,
-  filename: fileName,
-  mimeType: "application/pdf",
-});
+      const up = await uploadMediaBuffer({
+        buffer: pdfBuf,
+        filename: fileName,
+        mimeType: "application/pdf",
+      });
 
-if (!up?.id) {
-  throw new Error("UPLOAD_PDF_ECHOUE");
-}
+      if (!up?.id) {
+        throw new Error("UPLOAD_PDF_ECHOUE");
+      }
 
-finalDraft.savedPdfMediaId = up.id;
-finalDraft.savedPdfFilename = fileName;
-finalDraft.savedPdfCaption =
-  `✅ ${title} ${finalDraft.docNumber}\n` +
-  `Total: ${money(total)} FCFA\n` +
-  `Coût: ${totalCost} crédit(s)\n` +
-  `Solde: ${finalBalance} crédit(s)`;
+      const saved = await saveDocumentWithRetry({
+        waId: from,
+        draft: finalDraft,
+        maxAttempts: 3,
+      });
 
-// Alias canoniques pour persistance robuste
-finalDraft.pdf_media_id = up.id;
-finalDraft.pdf_filename = fileName;
-finalDraft.pdf_caption = finalDraft.savedPdfCaption;
+      finalDraft.savedDocumentId = saved?.id || "generated";
+      successAfterDebit = true;
 
-const saved = await saveDocumentWithRetry({
-  waId: from,
-  draft: finalDraft,
-  maxAttempts: 3,
-});
+      finalDraft.savedPdfMediaId = up.id;
+      finalDraft.savedPdfFilename = fileName;
+      finalDraft.savedPdfCaption =
+        `✅ ${title} ${finalDraft.docNumber}\n` +
+        `Total: ${money(total)} FCFA\n` +
+        `Coût: ${totalCost} crédit(s)\n` +
+        `Solde: ${finalBalance} crédit(s)`;
 
-finalDraft.savedDocumentId = saved?.id || "generated";
-successAfterDebit = true;
-
-await sendDocument({
-  to: from,
-  mediaId: finalDraft.savedPdfMediaId,
-  filename: finalDraft.savedPdfFilename,
-  caption: finalDraft.savedPdfCaption,
-});
+      await sendDocument({
+        to: from,
+        mediaId: finalDraft.savedPdfMediaId,
+        filename: finalDraft.savedPdfFilename,
+        caption: finalDraft.savedPdfCaption,
+      });
 
       if (finalDraft.type === "devis") {
         try {
@@ -399,6 +396,8 @@ await sendDocument({
             docNumber: finalDraft.docNumber,
             sourceDoc: {
               client: finalDraft.client || null,
+              clientPhone: finalDraft.clientPhone || null,
+              subject: finalDraft.subject || null,
               items: finalDraft.items || [],
               finance: finalDraft.finance || null,
               date: finalDraft.date || null,
@@ -464,11 +463,23 @@ await sendDocument({
     const draft = s?.lastDocDraft || null;
     const text = buildGeneratedSuccessMessage(draft);
 
-    await sendButtons(to, text, [
-      { id: "DOC_RESTART", title: "📤 Nouveau doc" },
-      { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-      { id: "DOC_CANCEL", title: "🏠 Menu" },
-    ]);
+    const hasClientPhone = !!String(draft?.clientPhone || "").trim();
+    const hasGeneratedPdf = !!String(draft?.savedPdfMediaId || "").trim();
+
+    const buttons =
+      hasClientPhone && hasGeneratedPdf
+        ? [
+            { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
+            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+            { id: "DOC_CANCEL", title: "🏠 Menu" },
+          ]
+        : [
+            { id: "DOC_RESTART", title: "📤 Nouveau doc" },
+            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
+            { id: "DOC_CANCEL", title: "🏠 Menu" },
+          ];
+
+    await sendButtons(to, text, buttons);
   }
 
   async function sendAlreadyGeneratedMenu(to) {
