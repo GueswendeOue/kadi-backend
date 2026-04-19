@@ -32,6 +32,22 @@ const LIMITS = {
 };
 
 // ======================================================
+// Logging helpers
+// ======================================================
+function logInfo(context, message, meta = {}) {
+  console.log(`[WA/INFO/${context}]`, message, meta);
+}
+
+function logError(context, error, meta = {}) {
+  console.error(`[WA/ERROR/${context}]`, error?.message || error, {
+    ...meta,
+    status: error?.status || null,
+    waMeta: error?.meta || null,
+    raw: error?.raw || null,
+  });
+}
+
+// ======================================================
 // Signature webhook
 // ======================================================
 function verifyRequestSignature(req, res, buf) {
@@ -121,7 +137,7 @@ function buildMetaApiError(error) {
   return finalError;
 }
 
-async function postJsonMessage(payload, timeout = 15000) {
+async function postJsonMessage(payload, timeout = 15000, context = "message", meta = {}) {
   const url = graphUrl(`${PHONE_NUMBER_ID}/messages`);
 
   try {
@@ -130,12 +146,25 @@ async function postJsonMessage(payload, timeout = 15000) {
       timeout,
     });
 
-    return {
+    const result = {
+      accepted: true,
       raw: resp.data,
       messageId: extractMessageId(resp.data),
     };
+
+    if (context === "sendDocument" || context === "sendTemplate") {
+      logInfo(context, "accepted_by_meta", {
+        ...meta,
+        messageId: result.messageId,
+      });
+    }
+
+    return result;
   } catch (error) {
-    throw buildMetaApiError(error);
+    const finalError = buildMetaApiError(error);
+
+    logError(context, finalError, meta);
+    throw finalError;
   }
 }
 
@@ -219,38 +248,32 @@ async function sendText(to, text) {
     },
   };
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendText", {
+    to: String(to),
+    kind: "text",
+  });
 }
 
 async function sendTemplate({ to, name, language = "fr", components = [] }) {
-  try {
-    const resp = await axios.post(
-      graphUrl(`${PHONE_NUMBER_ID}/messages`),
-      {
-        messaging_product: "whatsapp",
-        to: String(to),
-        type: "template",
-        template: {
-          name,
-          language: {
-            code: language,
-          },
-          components,
-        },
+  const payload = {
+    messaging_product: "whatsapp",
+    to: String(to),
+    type: "template",
+    template: {
+      name,
+      language: {
+        code: language,
       },
-      {
-        headers: waHeadersJson(),
-        timeout: 15000,
-      }
-    );
+      components,
+    },
+  };
 
-    return {
-      raw: resp.data,
-      messageId: extractMessageId(resp.data),
-    };
-  } catch (error) {
-    throw buildMetaApiError(error);
-  }
+  return postJsonMessage(payload, 15000, "sendTemplate", {
+    to: String(to),
+    name,
+    language,
+    componentsCount: Array.isArray(components) ? components.length : 0,
+  });
 }
 
 async function sendButtons(to, bodyText, buttons) {
@@ -280,7 +303,10 @@ async function sendButtons(to, bodyText, buttons) {
     },
   };
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendButtons", {
+    to: String(to),
+    buttonsCount: safeButtons.length,
+  });
 }
 
 // ======================================================
@@ -322,7 +348,10 @@ async function sendList(to, opts = {}) {
     };
   }
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendList", {
+    to: String(to),
+    sectionsCount: safeSections.length,
+  });
 }
 
 // ======================================================
@@ -380,13 +409,28 @@ async function uploadMediaBuffer({ buffer, filename, mimeType }) {
       timeout: 60000,
     });
 
+    logInfo("uploadMediaBuffer", "uploaded", {
+      filename: filename || "document.pdf",
+      mimeType: mimeType || "application/pdf",
+      mediaId: resp?.data?.id || null,
+    });
+
     return resp.data;
   } catch (error) {
-    throw buildMetaApiError(error);
+    const finalError = buildMetaApiError(error);
+    logError("uploadMediaBuffer", finalError, {
+      filename: filename || "document.pdf",
+      mimeType: mimeType || "application/pdf",
+    });
+    throw finalError;
   }
 }
 
 async function sendDocument({ to, mediaId, filename, caption }) {
+  if (!mediaId) {
+    throw new Error("sendDocument: mediaId requis");
+  }
+
   const payload = {
     messaging_product: "whatsapp",
     to: String(to),
@@ -398,7 +442,12 @@ async function sendDocument({ to, mediaId, filename, caption }) {
     },
   };
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendDocument", {
+    to: String(to),
+    mediaId: String(mediaId),
+    filename: filename || "document.pdf",
+    hasCaption: !!caption,
+  });
 }
 
 async function sendImage({ to, mediaId, caption }) {
@@ -412,7 +461,11 @@ async function sendImage({ to, mediaId, caption }) {
     },
   };
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendImage", {
+    to: String(to),
+    mediaId: String(mediaId),
+    hasCaption: !!caption,
+  });
 }
 
 async function sendImageByLink({ to, imageLink, caption }) {
@@ -426,7 +479,10 @@ async function sendImageByLink({ to, imageLink, caption }) {
     },
   };
 
-  return postJsonMessage(payload);
+  return postJsonMessage(payload, 15000, "sendImageByLink", {
+    to: String(to),
+    hasCaption: !!caption,
+  });
 }
 
 // ======================================================

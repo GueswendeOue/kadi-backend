@@ -933,10 +933,20 @@ function makeKadiInteractiveFlow(deps) {
 
       s.step = "doc_already_generated";
 
-      await sendText(
-        from,
-        `✅ PDF envoyé au client.\n📱 Numéro : +${clientWaId}`
-      );
+      const delivery = await sendDocument({
+  to: clientWaId,
+  mediaId: draft.savedPdfMediaId,
+  filename:
+    draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+  caption: clientCaption,
+});
+
+await sendText(
+  from,
+  `✅ Envoi lancé au client.\n` +
+    `📱 Numéro : +${clientWaId}\n` +
+    `🆔 Référence : ${delivery?.messageId || "-"}`
+);
 
       await sendAlreadyGeneratedMenu(from);
       return;
