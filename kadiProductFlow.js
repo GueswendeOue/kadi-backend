@@ -1,510 +1,541 @@
 "use strict";
 
-function makeKadiPdfFlow(deps) {
+const {
+  detectVagueRequest,
+  buildSmartGuidanceMessage,
+} = require("./kadiNaturalGuidance");
+
+function makeKadiProductFlow(deps) {
   const {
     getSession,
     sendText,
     sendButtons,
-    sendDocument,
-
-    // storage / media
-    uploadMediaBuffer,
-    getSignedLogoUrl,
-    downloadSignedUrlToBuffer,
-
-    // profile / repo
-    getOrCreateProfile,
-    saveDocument,
-    nextDocNumber,
-    createDevisFollowup,
-
-    // credits
-    consumeCredit,
-    addCredits,
-
-    // pdf + stamp/sign
-    buildPdfBuffer,
-    kadiStamp,
-    kadiSignature,
-
-    // helpers
-    safe,
+    LIMITS,
     formatDateISO,
-    money,
     makeDraftMeta,
     computeFinance,
+    makeItem,
+    parseNumberSmart,
+    buildPreviewMessage,
     computeBasePdfCost,
-    getDocTitle,
-    validateDraft,
+    formatBaseCostLine,
+    sendPreviewMenu,
+    sendAfterProductMenu,
+    sendReceiptFormatMenu,
+    detectDechargeType,
+    buildDechargePreviewMessage,
+    initDechargeDraft,
+    money,
+    safe,
     normalizeAndValidateDraft,
-    resetStampChoice,
-    buildDechargeText,
   } = deps;
 
-  async function applyStampAndSignatureIfAny(
-    pdfBuffer,
-    profile,
-    logoBuffer = null
-  ) {
-    let buf = pdfBuffer;
+  function clonePlainDraft(draft) {
+    if (!draft || typeof draft !== "object") return null;
 
-    const canStamp = profile?.stamp_enabled === true;
+    return {
+      ...draft,
+      items: Array.isArray(draft.items)
+        ? draft.items.map((it) => ({ ...it }))
+        : [],
+      finance: draft.finance ? { ...draft.finance } : null,
+      meta: draft.meta ? { ...draft.meta } : null,
+      confirmation: draft.confirmation ? { ...draft.confirmation } : null,
+    };
+  }
 
-    if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
-      try {
-        buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
-          pages: "last",
-          logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
-        });
-      } catch (e) {
-        console.warn("[STAMP ERROR]", e?.message);
-      }
+  function validateDraftForUi(draft) {
+    if (typeof normalizeAndValidateDraft !== "function") {
+      return {
+        ok: true,
+        draft: clonePlainDraft(draft),
+        issues: [],
+      };
     }
 
-    if (kadiSignature?.applySignatureToPdfBuffer) {
-      try {
-        buf = await kadiSignature.applySignatureToPdfBuffer(buf, profile);
-      } catch (e) {
-        console.warn("[SIGNATURE ERROR]", e?.message);
-      }
-    }
-
-    return buf;
+    return normalizeAndValidateDraft(clonePlainDraft(draft));
   }
 
-  async function saveDocumentWithRetry({ waId, draft, maxAttempts = 3 }) {
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const saved = await saveDocument({ waId, doc: draft });
-        return saved;
-      } catch (e) {
-        const msg = String(e?.message || e || "");
-        lastError = e;
-
-        if (!msg.startsWith("DOC_NUMBER_ALREADY_EXISTS")) {
-          throw e;
-        }
-
-        draft.docNumber = await nextDocNumber({
-          waId,
-          mode: draft.type,
-          factureKind: draft.factureKind,
-          dateISO: draft.date,
-        });
-      }
-    }
-
-    throw lastError || new Error("SAVE_DOCUMENT_FAILED_AFTER_RETRY");
+  function resetItemCaptureState(session) {
+    if (!session) return;
+    session.itemDraft = null;
   }
 
-  function buildGeneratedSuccessMessage(draft = null) {
-    return (
-      `✅ ${draft?.type === "devis" ? "Devis" : "Document"} généré avec succès.\n\n` +
-      "Que voulez-vous faire maintenant ?"
-    );
-  }
-
-  function buildAlreadyGeneratedMessage(draft = null) {
-    return (
-      `📄 ${draft?.type === "devis" ? "Ce devis" : "Ce document"} a déjà été généré.\n\n` +
-      "Que voulez-vous faire ?"
-    );
-  }
-
-  async function sendLowCreditWarning(from, balance) {
-    if (Number(balance) !== 1) return;
-
+  async function sendBlockedDraft(from, issues = []) {
     await sendText(
       from,
-      "⚠️ Il vous reste *1 crédit*.\n\n" +
-        "Après ce document, vous devrez recharger pour continuer avec KADI.\n" +
-        "💳 2000 FCFA = 25 crédits."
-    );
-  }
-
-  async function sendNoCreditsBlock(from, balance, totalCost) {
-    await sendText(
-      from,
-      "🚫 Vous n’avez pas assez de crédits.\n\n" +
-        `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
-        `💳 Votre solde : *${balance || 0} crédit(s)*\n\n` +
-        "🔥 Pack conseillé pour continuer maintenant : *1000F = 10 crédits*"
+      "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
+        (issues.length ? `Détail: ${issues.join(", ")}` : "")
     );
 
-    await sendButtons(from, "Choisissez une option 👇", [
-      { id: "CREDITS_RECHARGE", title: "� Recharger 1000F+" },
+    await sendButtons(from, "Que voulez-vous faire ?", [
+      { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+      { id: "DOC_RESTART", title: "🔁 Recommencer" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }
 
-  async function createAndSendPdf(from) {
+  async function sendSafePreview(from, draft) {
+    const checked = validateDraftForUi(draft);
+
+    if (!checked.ok) {
+      const s = getSession(from);
+      s.lastDocDraft = checked.draft;
+      await sendBlockedDraft(from, checked.issues);
+      return true;
+    }
+
     const s = getSession(from);
-    const draft = s?.lastDocDraft;
+    s.lastDocDraft = checked.draft;
 
-    if (!draft) {
-      await sendText(from, "❌ Aucun document en cours. Tapez MENU.");
-      return;
+    const finalDraft = s.lastDocDraft;
+
+    const preview =
+      finalDraft.type === "decharge"
+        ? buildDechargePreviewMessage({ doc: finalDraft, money })
+        : buildPreviewMessage({ doc: finalDraft });
+
+    await sendText(from, preview);
+
+    const cost = computeBasePdfCost(finalDraft);
+    await sendText(from, formatBaseCostLine(cost));
+
+    await sendPreviewMenu(from, finalDraft);
+    return true;
+  }
+
+  function sanitizeClientName(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxClientNameLength);
+  }
+
+  function sanitizeItemLabel(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizeSubject(value = "") {
+    return String(value || "").trim().slice(0, LIMITS.maxItemLabelLength);
+  }
+
+  function sanitizePhone(value = "") {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits || null;
+  }
+
+  function isSkipValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return t === "0";
+  }
+
+  function isCancelValue(value = "") {
+    const t = String(value || "").trim().toLowerCase();
+    return (
+      t === "annuler" ||
+      t === "cancel" ||
+      t === "retour" ||
+      t === "stop" ||
+      t === "abandonner"
+    );
+  }
+
+  async function continueAfterSubjectInput(from, s) {
+    const target = s.subjectReturnTarget || "ask_item";
+    s.subjectReturnTarget = null;
+
+    if (target === "after_product_menu") {
+      s.step = "doc_after_item_choice";
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
     }
 
-    if (s.isGeneratingPdf) {
-      await sendText(from, "⏳ Génération déjà en cours... veuillez patienter.");
-      return;
+    s.clientPhoneReturnTarget = target;
+    s.step = "client_phone_input";
+    await sendText(
+      from,
+      "📱 Numéro du client ?\nExemple : 70000000\n\nTapez 0 pour ignorer."
+    );
+    return true;
+  }
+
+  async function continueAfterClientPhoneInput(from, s) {
+    const target = s.clientPhoneReturnTarget || "ask_item";
+    s.clientPhoneReturnTarget = null;
+
+    if (target === "after_product_menu") {
+      s.step = "doc_after_item_choice";
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
     }
 
-    if (draft.savedDocumentId || draft.savedPdfMediaId) {
-      s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from);
-      return;
+    if (target === "finish_preview") {
+      s.step = "doc_review";
+      return sendSafePreview(from, s.lastDocDraft);
     }
 
-    if (!safe(draft.client)) {
-      s.step = "missing_client_pdf";
-      await sendText(from, "⚠️ Client manquant.\nTapez le nom du client :");
-      return;
+    await askItemLabel(from);
+    return true;
+  }
+
+  async function startDocFlow(from, mode, factureKind = null) {
+    const s = getSession(from);
+    const type = String(mode || "").toLowerCase();
+
+    resetItemCaptureState(s);
+    s.subjectReturnTarget = null;
+    s.clientPhoneReturnTarget = null;
+
+    if (type === "decharge") {
+      s.lastDocDraft = initDechargeDraft({
+        dateISO: formatDateISO(),
+        makeDraftMeta,
+      });
+
+      s.step = "decharge_client";
+      await sendText(from, "📄 Décharge\n\n👤 Nom de la personne ?");
+      return true;
     }
 
-    if (typeof normalizeAndValidateDraft !== "function") {
+    s.lastDocDraft = {
+      type,
+      factureKind,
+      date: formatDateISO(),
+      client: null,
+      clientPhone: null,
+      subject: null,
+      items: [],
+      finance: null,
+      meta: makeDraftMeta(),
+    };
+
+    if (type === "recu") {
+      s.step = "receipt_format";
+      await sendReceiptFormatMenu(from);
+      return true;
+    }
+
+    s.step = "doc_client";
+    await sendText(from, "👤 Nom du client ?");
+    return true;
+  }
+
+  async function askItemLabel(from) {
+    const s = getSession(from);
+
+    if (!s?.lastDocDraft) {
       await sendText(
         from,
-        "❌ Vérification interne indisponible.\nMerci de réessayer après mise à jour."
+        "📄 Je ne vois pas encore de document en cours.\nTapez MENU pour commencer."
       );
-      return;
+      return true;
     }
 
-    let finalDraft = null;
-    let baseCost = 0;
-    let failedRollbackOperationKey = null;
+    resetItemCaptureState(s);
+    s.step = "item_label";
 
-    const checkedDraft = normalizeAndValidateDraft(draft);
+    await sendText(
+      from,
+      `🧾 Produit ${(s.lastDocDraft.items.length || 0) + 1}\nNom ?`
+    );
 
-    if (!checkedDraft?.ok) {
-      await sendText(
-        from,
-        "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
-          `Détail: ${
-            Array.isArray(checkedDraft?.issues)
-              ? checkedDraft.issues.join(", ")
-              : "données incohérentes"
-          }`
-      );
-      return;
+    return true;
+  }
+
+  async function handleProductFlowText(from, text) {
+    const s = getSession(from);
+    if (!s?.lastDocDraft) return false;
+
+    const t = String(text || "").trim();
+    if (!t) return false;
+
+    // ===== CLIENT =====
+    if (s.step === "doc_client") {
+      const client = sanitizeClientName(t);
+
+      if (!client) {
+        await sendText(from, "❌ Nom client invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
+      await askItemLabel(from);
+      return true;
     }
 
-    s.lastDocDraft = checkedDraft.draft;
-    finalDraft = s.lastDocDraft;
+    // ===== SUBJECT INPUT =====
+    if (s.step === "doc_subject_input") {
+      resetItemCaptureState(s);
 
-    try {
-      validateDraft(finalDraft);
-    } catch (err) {
-      await sendText(from, `❌ Erreur dans le document: ${err.message}`);
-      return;
-    }
+      if (isSkipValue(t)) {
+        s.lastDocDraft.subject = null;
+      } else if (isCancelValue(t)) {
+        return continueAfterSubjectInput(from, s);
+      } else {
+        const subject = sanitizeSubject(t);
 
-    baseCost = computeBasePdfCost(finalDraft);
-
-    const baseReason =
-      finalDraft.source === "ocr"
-        ? "ocr_pdf"
-        : finalDraft.type === "decharge"
-        ? "decharge_pdf"
-        : "pdf";
-
-    finalDraft.requestId =
-      finalDraft.requestId ||
-      `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-    const consumeOperationKey = `pdf:consume:${finalDraft.requestId}`;
-    failedRollbackOperationKey = `pdf:rollback:${finalDraft.requestId}`;
-
-    s.isGeneratingPdf = true;
-
-    let debited = false;
-    let successAfterDebit = false;
-    let finalBalance = 0;
-
-    try {
-      const profile = await getOrCreateProfile(from);
-
-      const useStampForThisDoc =
-        s.addStampForNextDoc === true && s.stampMode === "one_time";
-
-      const stampExtraCost = useStampForThisDoc ? 1 : 0;
-      const totalCost = baseCost + stampExtraCost;
-
-      const finalReason = useStampForThisDoc
-        ? `${baseReason}_stamp_once`
-        : baseReason;
-
-      const cons = await consumeCredit(
-        { waId: from },
-        totalCost,
-        finalReason,
-        consumeOperationKey,
-        {
-          requestId: finalDraft.requestId,
-          docType: finalDraft.type || null,
-          docNumber: finalDraft.docNumber || null,
-          factureKind: finalDraft.factureKind || null,
-          source: finalDraft.source || null,
-          baseCost,
-          stampExtraCost,
-          useStampForThisDoc,
-        }
-      );
-
-      if (!cons?.ok) {
-        await sendNoCreditsBlock(from, cons?.balance || 0, totalCost);
-        return;
-      }
-
-      debited = true;
-      finalBalance = cons.balance || 0;
-
-      await sendLowCreditWarning(from, finalBalance);
-
-      finalDraft.finance = computeFinance(finalDraft);
-
-      if (!finalDraft.docNumber) {
-        finalDraft.docNumber = await nextDocNumber({
-          waId: from,
-          mode: finalDraft.type,
-          factureKind: finalDraft.factureKind,
-          dateISO: finalDraft.date,
-        });
-      }
-
-      let logoBuf = null;
-      if (profile?.logo_path) {
-        try {
-          const signed = await getSignedLogoUrl(profile.logo_path);
-          logoBuf = await downloadSignedUrlToBuffer(signed);
-        } catch (e) {
-          console.warn("[LOGO DOWNLOAD ERROR]", e?.message);
-        }
-      }
-
-      const title = getDocTitle(finalDraft);
-      const total = Number(finalDraft.finance?.gross || 0);
-
-      if (
-        total <= 0 &&
-        Array.isArray(finalDraft.items) &&
-        finalDraft.items.length > 0
-      ) {
-        throw new Error("TOTAL_INVALIDE_AVANT_PDF");
-      }
-
-      let pdfBuf = await buildPdfBuffer({
-        docData: {
-          type: title,
-          docNumber: finalDraft.docNumber,
-          date: finalDraft.date,
-          client: finalDraft.client,
-          clientPhone: finalDraft.clientPhone || null,
-          subject: finalDraft.subject || null,
-          motif: finalDraft.motif || null,
-          dechargeType: finalDraft.dechargeType || null,
-          dechargeText:
-            finalDraft.type === "decharge"
-              ? buildDechargeText({
-                  client: finalDraft.client,
-                  businessName: safe(profile?.business_name),
-                  motif: finalDraft.motif,
-                  total,
-                  dechargeType: finalDraft.dechargeType,
-                })
-              : null,
-          items: finalDraft.items || [],
-          total,
-          receiptFormat: finalDraft.receiptFormat || "a4",
-        },
-        businessProfile: profile,
-        logoBuffer: logoBuf,
-      });
-
-      const stampProfile = useStampForThisDoc
-        ? {
-            ...profile,
-            stamp_enabled: true,
-          }
-        : {
-            ...profile,
-            stamp_enabled: false,
-          };
-
-      pdfBuf = await applyStampAndSignatureIfAny(
-        pdfBuf,
-        stampProfile,
-        logoBuf
-      );
-
-      finalDraft.meta = makeDraftMeta({
-        ...(finalDraft.meta || {}),
-        creditsConsumed: totalCost,
-        usedStamp: !!useStampForThisDoc,
-        usedGeminiParse: !!finalDraft?.meta?.usedGeminiParse,
-        businessSector: finalDraft?.meta?.businessSector || null,
-        requestId: finalDraft.requestId,
-        stampMode: useStampForThisDoc ? "one_time" : "none",
-      });
-
-      finalDraft.status = "generated";
-
-      const fileName = `${finalDraft.docNumber}-${formatDateISO()}.pdf`;
-
-      const up = await uploadMediaBuffer({
-        buffer: pdfBuf,
-        filename: fileName,
-        mimeType: "application/pdf",
-      });
-
-      if (!up?.id) {
-        throw new Error("UPLOAD_PDF_ECHOUE");
-      }
-
-      const saved = await saveDocumentWithRetry({
-        waId: from,
-        draft: finalDraft,
-        maxAttempts: 3,
-      });
-
-      finalDraft.savedDocumentId = saved?.id || "generated";
-      successAfterDebit = true;
-
-      finalDraft.savedPdfMediaId = up.id;
-      finalDraft.savedPdfFilename = fileName;
-      finalDraft.savedPdfCaption =
-        `✅ ${title} ${finalDraft.docNumber}\n` +
-        `Total: ${money(total)} FCFA\n` +
-        `Coût: ${totalCost} crédit(s)\n` +
-        `Solde: ${finalBalance} crédit(s)`;
-
-      await sendDocument({
-        to: from,
-        mediaId: finalDraft.savedPdfMediaId,
-        filename: finalDraft.savedPdfFilename,
-        caption: finalDraft.savedPdfCaption,
-      });
-
-      if (finalDraft.type === "devis") {
-        try {
-          await createDevisFollowup({
-            waId: from,
-            documentId: finalDraft.savedDocumentId,
-            docNumber: finalDraft.docNumber,
-            sourceDoc: {
-              client: finalDraft.client || null,
-              clientPhone: finalDraft.clientPhone || null,
-              subject: finalDraft.subject || null,
-              items: finalDraft.items || [],
-              finance: finalDraft.finance || null,
-              date: finalDraft.date || null,
-              source: finalDraft.source || null,
-            },
-            dueAt: Date.now() + 24 * 60 * 60 * 1000,
-          });
-        } catch (e) {
-          console.warn("[FOLLOWUP CREATE ERROR]", e?.message);
-        }
-      }
-
-      resetStampChoice(s);
-
-      s.step = "doc_generated";
-      await sendGeneratedSuccessMenu(from);
-    } catch (e) {
-      console.error("createAndSendPdf error:", e?.message);
-
-      if (debited && !successAfterDebit) {
-        try {
-          const stampExtraCost =
-            s.addStampForNextDoc === true && s.stampMode === "one_time"
-              ? 1
-              : 0;
-
-          const totalCost = baseCost + stampExtraCost;
-
-          await addCredits(
-            { waId: from },
-            totalCost,
-            "rollback_pdf_failed",
-            failedRollbackOperationKey,
-            {
-              requestId: finalDraft?.requestId || null,
-              docType: finalDraft?.type || null,
-              docNumber: finalDraft?.docNumber || null,
-              factureKind: finalDraft?.factureKind || null,
-            }
+        if (!subject) {
+          await sendText(
+            from,
+            "❌ Objet invalide.\nExemple : Réparation voiture"
           );
-        } catch (rb) {
-          console.error("rollback credits failed:", rb?.message);
+          return true;
         }
+
+        s.lastDocDraft.subject = subject;
       }
 
-      if (String(e?.message || "") === "TOTAL_INVALIDE_AVANT_PDF") {
+      return continueAfterSubjectInput(from, s);
+    }
+
+    // ===== CLIENT PHONE INPUT =====
+    if (s.step === "client_phone_input") {
+      resetItemCaptureState(s);
+
+      if (isCancelValue(t)) {
+        return continueAfterClientPhoneInput(from, s);
+      }
+
+      if (isSkipValue(t)) {
+        s.lastDocDraft.clientPhone = null;
+        return continueAfterClientPhoneInput(from, s);
+      }
+
+      const phone = sanitizePhone(t);
+
+      if (!phone || phone.length < 8) {
         await sendText(
           from,
-          "⚠️ Le total de votre document est invalide.\nMerci de corriger les lignes avant de générer le PDF."
+          "❌ Numéro invalide.\nExemple : 70000000"
         );
-        return;
+        return true;
       }
 
-      await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
-    } finally {
-      s.isGeneratingPdf = false;
-      if (finalDraft) finalDraft._saving = false;
+      s.lastDocDraft.clientPhone = phone;
+      return continueAfterClientPhoneInput(from, s);
     }
-  }
 
-  async function sendGeneratedSuccessMenu(to) {
-    const s = getSession(to);
-    const draft = s?.lastDocDraft || null;
-    const text = buildGeneratedSuccessMessage(draft);
+    // ===== ITEM LABEL =====
+    if (s.step === "item_label") {
+      if (isCancelValue(t) || isSkipValue(t)) {
+        resetItemCaptureState(s);
 
-    const hasClientPhone = !!String(draft?.clientPhone || "").trim();
-    const hasGeneratedPdf = !!String(draft?.savedPdfMediaId || "").trim();
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
 
-    const buttons =
-      hasClientPhone && hasGeneratedPdf
-        ? [
-            { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
-            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-            { id: "DOC_CANCEL", title: "🏠 Menu" },
-          ]
-        : [
-            { id: "DOC_RESTART", title: "📤 Nouveau doc" },
-            { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-            { id: "DOC_CANCEL", title: "🏠 Menu" },
-          ];
+        await sendText(
+          from,
+          "⚠️ Entrez un nom de ligne.\nExemple : Loyer du mois de mai"
+        );
+        return true;
+      }
 
-    await sendButtons(to, text, buttons);
-  }
+      const label = sanitizeItemLabel(t);
 
-  async function sendAlreadyGeneratedMenu(to) {
-    const s = getSession(to);
-    const draft = s?.lastDocDraft || null;
-    const text = buildAlreadyGeneratedMessage(draft);
+      if (!label) {
+        await sendText(from, "❌ Nom du produit invalide.");
+        return true;
+      }
 
-    await sendButtons(to, text, [
-      { id: "DOC_RESTART", title: "📤 Nouveau doc" },
-      { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
-      { id: "DOC_CANCEL", title: "🏠 Menu" },
-    ]);
+      s.itemDraft = { label, qty: 1 };
+      s.step = "item_qty";
+
+      await sendText(from, `🔢 Quantité pour *${label}* ?\nExemple : 1`);
+      return true;
+    }
+
+    // ===== ITEM QTY =====
+    if (s.step === "item_qty") {
+      if (isCancelValue(t) || isSkipValue(t)) {
+        resetItemCaptureState(s);
+
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
+
+        await askItemLabel(from);
+        return true;
+      }
+
+      const qty = parseNumberSmart(t);
+
+      if (qty == null || qty <= 0) {
+        await sendText(from, "❌ Quantité invalide.\nExemple : 1");
+        return true;
+      }
+
+      s.itemDraft = {
+        ...(s.itemDraft || {}),
+        label: sanitizeItemLabel(s.itemDraft?.label || "Produit"),
+        qty,
+      };
+
+      s.step = "item_price";
+      await sendText(
+        from,
+        `💰 Prix unitaire pour *${s.itemDraft.label}* ?`
+      );
+      return true;
+    }
+
+    // ===== ITEM PRICE =====
+    if (s.step === "item_price") {
+      if (isCancelValue(t) || isSkipValue(t)) {
+        resetItemCaptureState(s);
+
+        if (
+          Array.isArray(s.lastDocDraft.items) &&
+          s.lastDocDraft.items.length > 0
+        ) {
+          s.step = "doc_after_item_choice";
+          await sendAfterProductMenu(from, s.lastDocDraft);
+          return true;
+        }
+
+        await askItemLabel(from);
+        return true;
+      }
+
+      const n = parseNumberSmart(t);
+
+      if (n == null || n <= 0) {
+        const vagueCheck = detectVagueRequest(t);
+
+        if (vagueCheck.isVague) {
+          await sendText(
+            from,
+            "⚠️ On était en train d’ajouter un prix.\n\n" +
+              buildSmartGuidanceMessage(t)
+          );
+          return true;
+        }
+
+        if (t.length > 12) {
+          await sendButtons(
+            from,
+            "⚠️ J’attends un prix ici.\n\nQue voulez-vous faire ?",
+            [
+              { id: "DOC_ADD_MORE", title: "✏️ Corriger" },
+              { id: "DOC_RESTART", title: "🔁 Recommencer" },
+              { id: "DOC_CANCEL", title: "🏠 Menu" },
+            ]
+          );
+          return true;
+        }
+
+        await sendText(from, "❌ Prix invalide.\nExemple : 5000");
+        return true;
+      }
+
+      const label = sanitizeItemLabel(s.itemDraft?.label || "Produit");
+      const qty = Number(s.itemDraft?.qty || 1);
+      const item = makeItem(label, qty, n);
+
+      s.lastDocDraft.items.push(item);
+
+      const checked = validateDraftForUi(s.lastDocDraft);
+
+      if (!checked.ok) {
+        s.lastDocDraft = checked.draft;
+        resetItemCaptureState(s);
+        await sendBlockedDraft(from, checked.issues);
+        return true;
+      }
+
+      s.lastDocDraft = checked.draft;
+      resetItemCaptureState(s);
+      s.step = "doc_after_item_choice";
+
+      await sendText(
+        from,
+        `✅ Produit ajouté\nQté: ${qty} • PU: ${Math.round(n).toLocaleString("fr-FR")} F`
+      );
+      await sendAfterProductMenu(from, s.lastDocDraft);
+      return true;
+    }
+
+    // ===== DECHARGE =====
+    if (s.step === "decharge_client") {
+      const client = sanitizeClientName(t);
+
+      if (!client) {
+        await sendText(from, "❌ Nom invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
+      s.step = "decharge_motif";
+      await sendText(from, "📝 Motif ?");
+      return true;
+    }
+
+    if (s.step === "decharge_motif") {
+      const motif = sanitizeItemLabel(t);
+
+      if (!motif) {
+        await sendText(from, "❌ Motif invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.motif = motif;
+      s.lastDocDraft.dechargeType = detectDechargeType(t);
+
+      s.step = "decharge_amount";
+      await sendText(from, "💰 Montant ?");
+      return true;
+    }
+
+    if (s.step === "decharge_amount") {
+      const n = parseNumberSmart(t);
+
+      if (n == null || n < 0) {
+        await sendText(from, "❌ Montant invalide");
+        return true;
+      }
+
+      s.lastDocDraft.items = [
+        makeItem(s.lastDocDraft.motif || "Décharge", 1, n),
+      ];
+
+      s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
+      s.step = "doc_review";
+
+      return sendSafePreview(from, s.lastDocDraft);
+    }
+
+    // ===== CLIENT MANQUANT =====
+    if (s.step === "missing_client_pdf") {
+      const client = sanitizeClientName(t);
+
+      if (!client) {
+        await sendText(from, "❌ Nom client invalide.");
+        return true;
+      }
+
+      s.lastDocDraft.client = client;
+      s.step = "doc_review";
+
+      return sendSafePreview(from, s.lastDocDraft);
+    }
+
+    return false;
   }
 
   return {
-    applyStampAndSignatureIfAny,
-    saveDocumentWithRetry,
-    createAndSendPdf,
-    buildGeneratedSuccessMessage,
-    buildAlreadyGeneratedMessage,
-    sendGeneratedSuccessMenu,
-    sendAlreadyGeneratedMenu,
+    startDocFlow,
+    askItemLabel,
+    handleProductFlowText,
   };
 }
 
 module.exports = {
-  makeKadiPdfFlow,
+  makeKadiProductFlow,
 };
