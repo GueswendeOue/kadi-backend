@@ -39,27 +39,51 @@ function makeKadiPdfFlow(deps) {
     normalizeAndValidateDraft,
     resetStampChoice,
     buildDechargeText,
+
+    // optional analytics
+    trackConversionEvent = null,
   } = deps;
 
-  function clearPendingPdfCreditBlock(session) {
-    if (!session) return;
-    session.pendingPdfCreditBlock = false;
-    session.pendingPdfRequiredCredits = null;
-    session.pendingPdfBalance = null;
-    session.pendingPdfMissingCredits = null;
+  function safeText(v, def = null) {
+    const s = String(v ?? "").trim();
+    return s || def;
   }
 
-  function setPendingPdfCreditBlock(session, balance, totalCost) {
-    if (!session) return;
+  function getDocLabel(draft = null) {
+    if (draft?.type === "devis") return "Devis";
+    if (draft?.type === "facture") return "Facture";
+    if (draft?.type === "recu") return "Reçu";
+    if (draft?.type === "decharge") return "Décharge";
+    return "Document";
+  }
 
-    const safeBalance = Number(balance || 0);
-    const safeTotalCost = Number(totalCost || 0);
-    const missing = Math.max(0, safeTotalCost - safeBalance);
+  function clearGeneratedArtifacts(draft) {
+    if (!draft || typeof draft !== "object") return;
 
-    session.pendingPdfCreditBlock = true;
-    session.pendingPdfRequiredCredits = safeTotalCost;
-    session.pendingPdfBalance = safeBalance;
-    session.pendingPdfMissingCredits = missing;
+    draft.savedDocumentId = null;
+    draft.savedPdfMediaId = null;
+    draft.savedPdfFilename = null;
+    draft.savedPdfCaption = null;
+    draft.status = "draft";
+  }
+
+  async function track(from, eventKey, draft = null, meta = {}) {
+    if (typeof trackConversionEvent !== "function") return;
+
+    try {
+      await trackConversionEvent({
+        waId: from,
+        eventKey,
+        requestId: safeText(draft?.requestId, null),
+        docType: safeText(draft?.type, null),
+        docNumber: safeText(draft?.docNumber, null),
+        source: safeText(draft?.source, null),
+        meta:
+          meta && typeof meta === "object" && !Array.isArray(meta) ? meta : {},
+      });
+    } catch (err) {
+      console.warn("[KADI/CONVERSION] track failed:", err?.message || err);
+    }
   }
 
   async function applyStampAndSignatureIfAny(
@@ -78,7 +102,7 @@ function makeKadiPdfFlow(deps) {
           logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
         });
       } catch (e) {
-        console.warn("[STAMP ERROR]", e?.message);
+        console.warn("[STAMP ERROR]", e?.message || e);
       }
     }
 
@@ -86,18 +110,44 @@ function makeKadiPdfFlow(deps) {
       try {
         buf = await kadiSignature.applySignatureToPdfBuffer(buf, profile);
       } catch (e) {
-        console.warn("[SIGNATURE ERROR]", e?.message);
+        console.warn("[SIGNATURE ERROR]", e?.message || e);
       }
     }
 
     return buf;
   }
 
-  async function saveDocumentWithRetry({ waId, draft, maxAttempts = 3 }) {
+  function refreshSavedPdfPresentation({
+    draft,
+    title,
+    total,
+    totalCost,
+    balance,
+  }) {
+    if (!draft) return;
+
+    draft.savedPdfFilename = `${draft.docNumber}-${formatDateISO()}.pdf`;
+    draft.savedPdfCaption =
+      `✅ ${title} ${draft.docNumber}\n` +
+      `Total: ${money(total)} FCFA\n` +
+      `Coût: ${totalCost} crédit(s)\n` +
+      `Solde: ${balance} crédit(s)`;
+  }
+
+  async function saveDocumentWithRetry({
+    waId,
+    draft,
+    maxAttempts = 3,
+    beforeEachSave = null,
+  }) {
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        if (typeof beforeEachSave === "function") {
+          await beforeEachSave();
+        }
+
         const saved = await saveDocument({ waId, doc: draft });
         return saved;
       } catch (e) {
@@ -121,52 +171,68 @@ function makeKadiPdfFlow(deps) {
   }
 
   function buildGeneratedSuccessMessage(draft = null) {
-    return (
-      `✅ ${draft?.type === "devis" ? "Devis" : "Document"} généré avec succès.\n\n` +
-      "Que voulez-vous faire maintenant ?"
-    );
+    return `✅ ${getDocLabel(draft)} généré avec succès.\n\nQue voulez-vous faire maintenant ?`;
   }
 
   function buildAlreadyGeneratedMessage(draft = null) {
-    return (
-      `📄 ${draft?.type === "devis" ? "Ce devis" : "Ce document"} a déjà été généré.\n\n` +
-      "Que voulez-vous faire ?"
-    );
+    const label =
+      draft?.type === "devis"
+        ? "Ce devis"
+        : draft?.type === "facture"
+        ? "Cette facture"
+        : draft?.type === "recu"
+        ? "Ce reçu"
+        : draft?.type === "decharge"
+        ? "Cette décharge"
+        : "Ce document";
+
+    return `📄 ${label} a déjà été généré.\n\nQue voulez-vous faire ?`;
   }
 
-  async function sendLowCreditWarning(from, balance) {
+  async function sendLowCreditWarning(from, balance, draft = null) {
     if (Number(balance) !== 1) return;
+
+    await track(from, "low_credit_warning_shown", draft, {
+      balance,
+    });
 
     await sendText(
       from,
       "⚠️ Il vous reste *1 crédit*.\n\n" +
-        "Vous pouvez encore générer un document simple, mais pensez à recharger pour éviter le blocage au prochain PDF."
+        "Après ce document, vous devrez recharger pour continuer avec KADI."
     );
   }
 
-  async function sendNoCreditsBlock(from, balance, totalCost) {
-    const s = getSession(from);
-    const safeBalance = Number(balance || 0);
-    const safeTotalCost = Number(totalCost || 0);
-    const missing = Math.max(0, safeTotalCost - safeBalance);
-
-    setPendingPdfCreditBlock(s, safeBalance, safeTotalCost);
+  async function sendNoCreditsBlock(from, balance, totalCost, draft = null) {
+    await track(from, "pdf_blocked_no_credits", draft, {
+      balance: Number(balance || 0),
+      totalCost: Number(totalCost || 0),
+    });
 
     await sendText(
       from,
-      "📄 *Votre document est prêt.*\n\n" +
-        `💳 Coût du PDF : *${safeTotalCost} crédit(s)*\n` +
-        `📦 Votre solde : *${safeBalance} crédit(s)*\n` +
-        `⚠️ Il vous manque : *${missing} crédit(s)*\n\n` +
-        "Rechargez maintenant pour recevoir votre document.\n" +
-        "✅ Votre document est déjà conservé."
+      "🚫 Vous n’avez pas assez de crédits.\n\n" +
+        `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
+        `💳 Votre solde : *${balance || 0} crédit(s)*\n\n` +
+        "Choisissez un pack pour continuer maintenant 👇"
     );
 
-    await sendButtons(from, "Choisissez un pack 👇", [
+    await sendButtons(from, "Recharge rapide", [
       { id: "RECHARGE_1000", title: "1000F" },
       { id: "RECHARGE_2000", title: "2000F" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
+  }
+
+  async function sendDeliveryFailureRecovery(from, draft = null) {
+    await sendText(
+      from,
+      "⚠️ Votre document a bien été généré et sauvegardé, " +
+        "mais je n’ai pas pu vous le renvoyer tout de suite.\n\n" +
+        "Vous pouvez le renvoyer maintenant ou le retrouver dans l’historique."
+    );
+
+    await sendAlreadyGeneratedMenu(from, draft);
   }
 
   async function createAndSendPdf(from) {
@@ -185,7 +251,7 @@ function makeKadiPdfFlow(deps) {
 
     if (draft.savedDocumentId || draft.savedPdfMediaId) {
       s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from);
+      await sendAlreadyGeneratedMenu(from, draft);
       return;
     }
 
@@ -205,11 +271,17 @@ function makeKadiPdfFlow(deps) {
 
     let finalDraft = null;
     let baseCost = 0;
+    let totalCost = 0;
     let failedRollbackOperationKey = null;
+    let documentPersisted = false;
 
     const checkedDraft = normalizeAndValidateDraft(draft);
 
     if (!checkedDraft?.ok) {
+      await track(from, "pdf_blocked_invalid_draft", draft, {
+        issues: Array.isArray(checkedDraft?.issues) ? checkedDraft.issues : [],
+      });
+
       await sendText(
         from,
         "⚠️ Je préfère bloquer ce document pour éviter une erreur de calcul.\n\n" +
@@ -251,7 +323,6 @@ function makeKadiPdfFlow(deps) {
     s.isGeneratingPdf = true;
 
     let debited = false;
-    let successAfterDebit = false;
     let finalBalance = 0;
 
     try {
@@ -261,11 +332,18 @@ function makeKadiPdfFlow(deps) {
         s.addStampForNextDoc === true && s.stampMode === "one_time";
 
       const stampExtraCost = useStampForThisDoc ? 1 : 0;
-      const totalCost = baseCost + stampExtraCost;
+      totalCost = baseCost + stampExtraCost;
 
       const finalReason = useStampForThisDoc
         ? `${baseReason}_stamp_once`
         : baseReason;
+
+      await track(from, "pdf_generation_started", finalDraft, {
+        totalCost,
+        baseCost,
+        stampExtraCost,
+        useStampForThisDoc,
+      });
 
       const cons = await consumeCredit(
         { waId: from },
@@ -285,14 +363,14 @@ function makeKadiPdfFlow(deps) {
       );
 
       if (!cons?.ok) {
-        await sendNoCreditsBlock(from, cons?.balance || 0, totalCost);
+        await sendNoCreditsBlock(from, cons?.balance || 0, totalCost, finalDraft);
         return;
       }
 
       debited = true;
-      finalBalance = cons.balance || 0;
+      finalBalance = Number(cons.balance || 0);
 
-      await sendLowCreditWarning(from, finalBalance);
+      await sendLowCreditWarning(from, finalBalance, finalDraft);
 
       finalDraft.finance = computeFinance(finalDraft);
 
@@ -311,7 +389,7 @@ function makeKadiPdfFlow(deps) {
           const signed = await getSignedLogoUrl(profile.logo_path);
           logoBuf = await downloadSignedUrlToBuffer(signed);
         } catch (e) {
-          console.warn("[LOGO DOWNLOAD ERROR]", e?.message);
+          console.warn("[LOGO DOWNLOAD ERROR]", e?.message || e);
         }
       }
 
@@ -355,14 +433,8 @@ function makeKadiPdfFlow(deps) {
       });
 
       const stampProfile = useStampForThisDoc
-        ? {
-            ...profile,
-            stamp_enabled: true,
-          }
-        : {
-            ...profile,
-            stamp_enabled: false,
-          };
+        ? { ...profile, stamp_enabled: true }
+        : { ...profile, stamp_enabled: false };
 
       pdfBuf = await applyStampAndSignatureIfAny(
         pdfBuf,
@@ -382,11 +454,11 @@ function makeKadiPdfFlow(deps) {
 
       finalDraft.status = "generated";
 
-      const fileName = `${finalDraft.docNumber}-${formatDateISO()}.pdf`;
+      const uploadFilename = `kadi-${finalDraft.requestId}.pdf`;
 
       const up = await uploadMediaBuffer({
         buffer: pdfBuf,
-        filename: fileName,
+        filename: uploadFilename,
         mimeType: "application/pdf",
       });
 
@@ -394,30 +466,54 @@ function makeKadiPdfFlow(deps) {
         throw new Error("UPLOAD_PDF_ECHOUE");
       }
 
+      finalDraft.savedPdfMediaId = up.id;
+
       const saved = await saveDocumentWithRetry({
         waId: from,
         draft: finalDraft,
         maxAttempts: 3,
+        beforeEachSave: async () => {
+          refreshSavedPdfPresentation({
+            draft: finalDraft,
+            title,
+            total,
+            totalCost,
+            balance: finalBalance,
+          });
+        },
       });
 
       finalDraft.savedDocumentId = saved?.id || "generated";
-      finalDraft.savedPdfMediaId = up.id;
-      finalDraft.savedPdfFilename = fileName;
-      finalDraft.savedPdfCaption =
-        `✅ ${title} ${finalDraft.docNumber}\n` +
-        `Total: ${money(total)} FCFA\n` +
-        `Coût: ${totalCost} crédit(s)\n` +
-        `Solde: ${finalBalance} crédit(s)`;
+      documentPersisted = true;
 
-      await sendDocument({
-        to: from,
-        mediaId: finalDraft.savedPdfMediaId,
-        filename: finalDraft.savedPdfFilename,
-        caption: finalDraft.savedPdfCaption,
+      try {
+        await sendDocument({
+          to: from,
+          mediaId: finalDraft.savedPdfMediaId,
+          filename: finalDraft.savedPdfFilename,
+          caption: finalDraft.savedPdfCaption,
+        });
+      } catch (deliveryErr) {
+        console.error(
+          "sendDocument after generation failed:",
+          deliveryErr?.message || deliveryErr
+        );
+
+        await track(from, "pdf_delivery_failed_after_generation", finalDraft, {
+          error: String(deliveryErr?.message || deliveryErr || "delivery_error"),
+        });
+
+        s.step = "doc_already_generated";
+        await sendDeliveryFailureRecovery(from, finalDraft);
+        return;
+      }
+
+      await track(from, "pdf_generated_success", finalDraft, {
+        totalCost,
+        balanceAfter: finalBalance,
+        useStampForThisDoc,
+        totalFcfa: total,
       });
-
-      successAfterDebit = true;
-      clearPendingPdfCreditBlock(s);
 
       if (finalDraft.type === "devis") {
         try {
@@ -437,26 +533,19 @@ function makeKadiPdfFlow(deps) {
             dueAt: Date.now() + 24 * 60 * 60 * 1000,
           });
         } catch (e) {
-          console.warn("[FOLLOWUP CREATE ERROR]", e?.message);
+          console.warn("[FOLLOWUP CREATE ERROR]", e?.message || e);
         }
       }
 
       resetStampChoice(s);
-
       s.step = "doc_generated";
-      await sendGeneratedSuccessMenu(from);
+
+      await sendGeneratedSuccessMenu(from, finalDraft);
     } catch (e) {
-      console.error("createAndSendPdf error:", e?.message);
+      console.error("createAndSendPdf error:", e?.message || e);
 
-      if (debited && !successAfterDebit) {
+      if (debited && !documentPersisted) {
         try {
-          const stampExtraCost =
-            s.addStampForNextDoc === true && s.stampMode === "one_time"
-              ? 1
-              : 0;
-
-          const totalCost = baseCost + stampExtraCost;
-
           await addCredits(
             { waId: from },
             totalCost,
@@ -470,9 +559,16 @@ function makeKadiPdfFlow(deps) {
             }
           );
         } catch (rb) {
-          console.error("rollback credits failed:", rb?.message);
+          console.error("rollback credits failed:", rb?.message || rb);
         }
+
+        clearGeneratedArtifacts(finalDraft);
       }
+
+      await track(from, "pdf_generation_failed", finalDraft, {
+        error: String(e?.message || e || "unknown_error"),
+        documentPersisted,
+      });
 
       if (String(e?.message || "") === "TOTAL_INVALIDE_AVANT_PDF") {
         await sendText(
@@ -482,16 +578,25 @@ function makeKadiPdfFlow(deps) {
         return;
       }
 
-      await sendText(from, "❌ Erreur lors de la création du PDF. Réessayez.");
+      if (documentPersisted) {
+        s.step = "doc_already_generated";
+        await sendDeliveryFailureRecovery(from, finalDraft);
+        return;
+      }
+
+      await sendText(
+        from,
+        "❌ Erreur lors de la création du PDF.\nRéessayez."
+      );
     } finally {
       s.isGeneratingPdf = false;
       if (finalDraft) finalDraft._saving = false;
     }
   }
 
-  async function sendGeneratedSuccessMenu(to) {
+  async function sendGeneratedSuccessMenu(to, draftOverride = null) {
     const s = getSession(to);
-    const draft = s?.lastDocDraft || null;
+    const draft = draftOverride || s?.lastDocDraft || null;
     const text = buildGeneratedSuccessMessage(draft);
 
     const hasClientPhone = !!String(draft?.clientPhone || "").trim();
@@ -505,7 +610,7 @@ function makeKadiPdfFlow(deps) {
             { id: "DOC_CANCEL", title: "🏠 Menu" },
           ]
         : [
-            { id: "DOC_RESTART", title: "📤 Nouveau" },
+            { id: "DOC_RESTART", title: "📄 Nouveau" },
             { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
             { id: "DOC_CANCEL", title: "🏠 Menu" },
           ];
@@ -513,9 +618,9 @@ function makeKadiPdfFlow(deps) {
     await sendButtons(to, text, buttons);
   }
 
-  async function sendAlreadyGeneratedMenu(to) {
+  async function sendAlreadyGeneratedMenu(to, draftOverride = null) {
     const s = getSession(to);
-    const draft = s?.lastDocDraft || null;
+    const draft = draftOverride || s?.lastDocDraft || null;
     const text = buildAlreadyGeneratedMessage(draft);
 
     const hasClientPhone = !!String(draft?.clientPhone || "").trim();

@@ -14,6 +14,10 @@ const {
 const {
   ensureWelcomeCredits,
   maybeSendOnboarding,
+  tryHandleProfessionIntro,
+  handleOnboardingReply,
+  sendZeroDocReOnboarding,
+  sendReactivationNudge,
 } = require("./kadiOnboarding");
 
 // ===============================
@@ -41,6 +45,7 @@ const {
   guessExtFromMime,
   resetAdminBroadcastState,
 } = require("./kadiUtils");
+
 const {
   money,
   ensureAdmin,
@@ -110,7 +115,7 @@ const {
 } = require("./kadiCertified/kadiCertifiedFlow");
 
 // ===============================
-// Existing business modules
+// Recharge / payments
 // ===============================
 const {
   getRechargeOffers,
@@ -155,6 +160,7 @@ const {
 } = require("./kadiCreditsRepo");
 
 const { getStats } = require("./kadiStatsRepo");
+
 const {
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
@@ -232,15 +238,9 @@ const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 // ===============================
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
-let sendZeroDocReOnboarding = null;
-let sendReactivationNudge = null;
 
 try {
   ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
-} catch (_) {}
-
-try {
-  ({ sendZeroDocReOnboarding, sendReactivationNudge } = require("./kadiReengagementMessaging"));
 } catch (_) {}
 
 // ===============================
@@ -351,6 +351,122 @@ function isStructuredCaptureStep(step = "") {
   );
 }
 
+function looksLikeProfessionIntroText(text = "") {
+  const t = norm(text).toLowerCase().trim();
+  if (!t) return false;
+
+  const introPatterns = [
+    /^je suis\s+/,
+    /^j suis\s+/,
+    /^je fais\s+/,
+    /^nous faisons\s+/,
+    /^mon metier c est\s+/,
+    /^mon métier c est\s+/,
+    /^mon metier est\s+/,
+    /^mon métier est\s+/,
+    /^je travaille comme\s+/,
+  ];
+
+  if (introPatterns.some((re) => re.test(t))) return true;
+
+  const shortProfessionOnly = [
+    "soudeur",
+    "macon",
+    "maçon",
+    "btp",
+    "chantier",
+    "plombier",
+    "electricien",
+    "électricien",
+    "menuisier",
+    "boutique",
+    "commerce",
+    "vendeur",
+    "restaurant",
+    "restauration",
+    "maquis",
+    "mecanicien",
+    "mécanicien",
+    "coiffeur",
+    "coiffeuse",
+    "couturier",
+    "couturiere",
+    "couturière",
+    "services",
+  ];
+
+  if (shortProfessionOnly.includes(t)) return true;
+
+  return false;
+}
+
+async function handleRechargeProofText(from, text) {
+  const s = getSession(from);
+  const proofText = String(text || "").trim();
+
+  if (!proofText) return false;
+  if (s?.step !== "recharge_proof") return false;
+
+  let topup = null;
+
+  try {
+    if (s?.pendingTopupId) {
+      topup = await readTopup(s.pendingTopupId);
+    }
+
+    if (!topup && typeof getPendingTopupByWaId === "function") {
+      topup = await getPendingTopupByWaId(from);
+    }
+
+    if (!topup?.id) {
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas retrouvé votre demande de recharge en attente.\n\nTapez RECHARGE pour recommencer."
+      );
+      return true;
+    }
+
+    const updated = await markTopupProofTextReceived(topup.id, proofText);
+
+    s.pendingTopupId = updated?.id || topup.id;
+    s.pendingTopupReference = updated?.reference || topup.reference || null;
+    s.step = null;
+
+    await notifyAdminTopupReview(from, updated, "text");
+
+    await sendText(
+      from,
+      "✅ Preuve reçue.\n\nVotre paiement est maintenant en attente de validation.\nVous recevrez vos crédits dès confirmation."
+    );
+
+    if (s?.lastDocDraft) {
+      await sendButtons(
+        from,
+        "Après validation, vous pourrez reprendre directement votre document 👇",
+        [
+          { id: "DOC_FINISH", title: "📄 Aperçu" },
+          { id: "BACK_HOME", title: "🏠 Menu" },
+        ]
+      );
+    } else {
+      await sendButtons(from, "Que voulez-vous faire maintenant ?", [
+        { id: "HOME_DOCS", title: "📄 Créer doc" },
+        { id: "BACK_HOME", title: "🏠 Menu" },
+      ]);
+    }
+
+    return true;
+  } catch (e) {
+    logger.error("recharge_proof_text", e, { from });
+
+    await sendText(
+      from,
+      "⚠️ Je n’ai pas pu enregistrer votre preuve pour le moment.\nRéessayez dans quelques instants."
+    );
+    return true;
+  }
+}
+
 // ===============================
 // Draft helpers
 // ===============================
@@ -358,9 +474,7 @@ const {
   makeDraftMeta,
   computeFinance,
   makeItem,
-  normalizeItem,
   normalizeAndValidateDraft,
-  getDraftValidationIssues,
   getDocTitle,
   computeBasePdfCost,
   formatBaseCostLine,
@@ -405,6 +519,7 @@ const {
 
 const { replyBalance, replyRechargeInfo } = makeKadiCreditsUi({
   sendText,
+  sendButtons,
   getBalance,
   sendRechargePacksMenu,
 });
@@ -430,7 +545,7 @@ const {
 const {
   hasStampProfileReady,
   resetStampChoice,
-  sendPreGenerateStampMenu,
+  sendPreGenerateStampMenu: _sendPreGenerateStampMenuFromStampFlow,
   sendStampMenu: _sendStampMenuFromStampFlow,
   sendStampMoreMenu: _sendStampMoreMenuFromStampFlow,
   sendStampPositionMenu: _sendStampPositionMenuFromStampFlow,
@@ -522,12 +637,6 @@ const {
   safe,
   isValidWhatsAppId,
   normalizeAndValidateDraft,
-
-  // recharge
-  markTopupProofTextReceived,
-  getPendingTopupByWaId,
-  readTopup,
-  notifyAdminTopupReview,
 });
 
 // ===============================
@@ -615,12 +724,10 @@ const {
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
   uploadMediaBuffer,
-
   createCertifiedInvoiceDraft,
   markCertifiedInvoiceCertified,
   attachCertifiedInvoicePdf,
   getCertifiedInvoiceById,
-
   buildCertifiedInvoicePdfBuffer,
 });
 
@@ -669,7 +776,7 @@ const { handleIncomingImage } = makeKadiImageFlow({
 
       if (s.lastDocDraft) {
         await sendButtons(from, "📄 On reprend votre document 👇", [
-          { id: "DOC_CONFIRM", title: "📤 Envoyer le PDF" },
+          { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
           { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
         ]);
         return true;
@@ -712,13 +819,10 @@ const {
   sendText,
   sendButtons,
   sendDocument,
-
   getOrCreateProfile,
-
   createCertifiedInvoiceFromDraft,
   listRecentCertifiedInvoices,
   rebuildCertifiedInvoicePdf,
-
   money,
 });
 
@@ -735,16 +839,13 @@ const {
   sendButtons,
   sendList,
   sendDocument,
-
   listRecentDocumentsByWaId,
   getLatestResendableDocumentByWaId,
   getDocumentById,
   getDocumentByIdForWaId,
   searchDocumentsByWaId,
-
   sendRecentCertifiedInvoices,
   sendHomeMenu,
-
   money,
 });
 
@@ -758,7 +859,6 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   money,
 
   sendHomeMenu,
-  sendHistoryHome,
   sendDocsMenu,
   sendCreditsMenu,
   sendProfileMenu,
@@ -771,11 +871,12 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   sendStampPositionMenu2: _sendStampPositionMenu2FromStampFlow,
   sendStampSizeMenu: _sendStampSizeMenuFromStampFlow,
   sendAlreadyGeneratedMenu,
-  sendPreGenerateStampMenu,
+  sendPreGenerateStampMenu: _sendPreGenerateStampMenuFromStampFlow,
   sendRechargePacksMenu,
   sendRechargePaymentMethodMenu,
   sendOrangeMoneyInstructions,
   sendPispiInstructions,
+  sendHistoryHome,
 
   makeDraftMeta,
   cloneDraftToNewDocType,
@@ -788,7 +889,6 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   startDocFlow,
   askItemLabel,
   tryHandleNaturalMessage,
-  handleSmartItemsBlockText,
 
   processOcrImageToDraft,
   createAndSendPdf,
@@ -797,8 +897,6 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   updateProfile,
   hasStampProfileReady,
   resetStampChoice,
-  consumeFeature,
-  STAMP_ONE_TIME_COST,
 
   buildDechargeConfirmationMessage,
   buildDechargePreviewMessage,
@@ -914,6 +1012,7 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
   sendAlreadyGeneratedMenu,
   startCertifiedInvoiceFlow,
   sendRecentCertifiedInvoices,
+  sendHistoryHome,
 });
 
 // ===============================
@@ -940,7 +1039,7 @@ async function handleTextMessage(from, text, msg) {
     hasIntent: !!s?.intent,
   });
 
-  // 2) Historique en priorité si actif
+  // 2) Historique actif
   if (inHistoryFlow && !wantsGlobalInterrupt) {
     if (await handleHistoryText(from, text)) return true;
 
@@ -951,8 +1050,13 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 3) Flows structurés actifs
+  // 3) Flow structuré actif
   if (inStructuredFlow && !wantsGlobalInterrupt) {
+    if (s?.step === "recharge_proof") {
+      const handledRechargeProof = await handleRechargeProofText(from, text);
+      if (handledRechargeProof) return true;
+    }
+
     if (isIntentFixStep(s?.step)) {
       const handledIntentFix = await handleIntentFixText(from, text);
       if (handledIntentFix) return true;
@@ -997,7 +1101,13 @@ async function handleTextMessage(from, text, msg) {
   // 7) Small talk
   if (await handleSmallTalk(from, text)) return true;
 
-  // 8) Correction guidée d’intent
+  // 8) Intro métier stricte
+  if (looksLikeProfessionIntroText(text)) {
+    const handledProfessionIntro = await tryHandleProfessionIntro(from, text);
+    if (handledProfessionIntro) return true;
+  }
+
+  // 9) Correction guidée d’intent
   if (isIntentFixStep(s?.step)) {
     const handledIntentFix = await handleIntentFixText(from, text);
     if (handledIntentFix) return true;
@@ -1009,23 +1119,24 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 9) Flow FEC si session ouverte
+  // 10) Flow FEC si session ouverte
   if (await handleCertifiedInvoiceText(from, text)) return true;
 
-  // 10) Flows structurés hors contexte
+  // 11) Flows structurés
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
-  // 11) Onboarding si aucune réponse avant
-  await maybeSendOnboarding(from);
-
   // 12) Compréhension naturelle
   if (await tryHandleNaturalMessage(from, text)) return true;
   if (await handleSmartItemsBlockText(from, text)) return true;
 
-  // 13) Fallback
+  // 13) Onboarding seulement si rien d’autre n’a répondu
+  const sentOnboarding = await maybeSendOnboarding(from);
+  if (sentOnboarding) return true;
+
+  // 14) Fallback
   await sendText(
     from,
     "🤔 Je n’ai pas bien compris.\n\n" +
@@ -1039,38 +1150,38 @@ async function handleTextMessage(from, text, msg) {
 async function handleInteractiveMessage(from, msg) {
   const replyId = getInteractiveReplyId(msg);
 
-  if (replyId) {
-    const handledProfileReply = await handleProfileReply(from, replyId);
-    if (handledProfileReply) return true;
-
-    const handledHistoryReply = await handleHistoryInteractiveReply(
+  if (!replyId) {
+    await sendText(
       from,
-      replyId
+      "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
     );
-    if (handledHistoryReply) return true;
-
-    if (
-      replyId === "DOC_FEC" ||
-      replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE"
-    ) {
-      await startCertifiedInvoiceFlow(from);
-      return true;
-    }
-
-    const handledCertifiedReply = await handleCertifiedInvoiceInteractiveReply(
-      from,
-      replyId
-    );
-    if (handledCertifiedReply) return true;
-
-    await handleInteractiveReply(from, replyId);
     return true;
   }
 
-  await sendText(
+  const handledOnboarding = await handleOnboardingReply(from, replyId);
+  if (handledOnboarding) return true;
+
+  const handledProfileReply = await handleProfileReply(from, replyId);
+  if (handledProfileReply) return true;
+
+  const handledHistoryReply = await handleHistoryInteractiveReply(from, replyId);
+  if (handledHistoryReply) return true;
+
+  if (
+    replyId === "DOC_FEC" ||
+    replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE"
+  ) {
+    await startCertifiedInvoiceFlow(from);
+    return true;
+  }
+
+  const handledCertifiedReply = await handleCertifiedInvoiceInteractiveReply(
     from,
-    "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
+    replyId
   );
+  if (handledCertifiedReply) return true;
+
+  await handleInteractiveReply(from, replyId);
   return true;
 }
 
@@ -1084,6 +1195,7 @@ async function handleIncomingMessage(value) {
   for (const msg of messages) {
     const from = msg?.from;
     if (!from) continue;
+
     await safeRecordActivity(from);
 
     await withUserLock(from, async () => {
@@ -1093,10 +1205,6 @@ async function handleIncomingMessage(value) {
         resolveOwnerKey(identity);
 
         await ensureWelcomeCredits(from);
-
-        if (msg.type !== "text") {
-          await maybeSendOnboarding(from);
-        }
 
         if (msg.type === "audio") {
           await handleIncomingAudioMessage(msg, value, {

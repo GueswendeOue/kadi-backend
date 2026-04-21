@@ -78,6 +78,7 @@ function makeKadiInteractiveFlow(deps) {
     startProfileFlow,
     replyBalance,
     replyRechargeInfo,
+    trackConversionEvent = null,
   } = deps;
 
   const KNOWN_WA_COUNTRY_CODES = [
@@ -110,6 +111,11 @@ function makeKadiInteractiveFlow(deps) {
     "20",
     "1",
   ];
+
+  function safeText(v, def = null) {
+    const s = String(v ?? "").trim();
+    return s || def;
+  }
 
   function noDraftMessage() {
     return "📄 Je ne vois pas encore de document en cours.\nTapez MENU pour commencer.";
@@ -291,6 +297,58 @@ function makeKadiInteractiveFlow(deps) {
     );
   }
 
+  function resolveRechargeOffer(replyId) {
+    const directOffer = getRechargeOfferById?.(replyId);
+    if (directOffer) return directOffer;
+
+    if (
+      replyId === "RECHARGE_1000" ||
+      replyId === "RECHARGE_2000" ||
+      replyId === "RECHARGE_5000"
+    ) {
+      const amount = Number(String(replyId).replace("RECHARGE_", ""));
+      return findRechargeOfferByAmount(amount);
+    }
+
+    return null;
+  }
+
+  async function trackForWaId(waId, eventKey, draft = null, meta = {}) {
+    if (typeof trackConversionEvent !== "function") return;
+
+    try {
+      await trackConversionEvent({
+        waId,
+        eventKey,
+        requestId: safeText(draft?.requestId, null),
+        docType: safeText(draft?.type, null),
+        docNumber: safeText(draft?.docNumber, null),
+        source: safeText(draft?.source, null),
+        meta:
+          meta && typeof meta === "object" && !Array.isArray(meta) ? meta : {},
+      });
+    } catch (err) {
+      console.warn("[KADI/CONVERSION] track failed:", err?.message || err);
+    }
+  }
+
+  async function track(from, eventKey, meta = {}) {
+    const session = getSession(from);
+    return trackForWaId(from, eventKey, session?.lastDocDraft || null, meta);
+  }
+
+  function setPendingRechargeState(session, offer, method = null, topup = null) {
+    if (!session || !offer) return;
+
+    session.pendingRechargePack = offer.id;
+    session.pendingRechargeAmount = offer.amountFcfa;
+    session.pendingRechargeCredits = offer.credits;
+    session.pendingRechargeIncludesStamp = false;
+    session.pendingTopupId = topup?.id || null;
+    session.pendingTopupReference = topup?.reference || null;
+    session.pendingTopupMethod = method;
+  }
+
   async function sendDraftBlockedMessage(from, checked) {
     const s = getSession(from);
     if (s) s.step = "doc_review";
@@ -421,6 +479,11 @@ function makeKadiInteractiveFlow(deps) {
     const userSession = getSession(to);
     const draft = userSession?.lastDocDraft || null;
 
+    await trackForWaId(to, "resume_after_topup_prompt", draft, {
+      hasDraft: !!draft,
+      hasGeneratedPdf: !!(draft?.savedPdfMediaId || draft?.savedDocumentId),
+    });
+
     if (!draft) {
       return sendButtons(
         to,
@@ -493,6 +556,285 @@ function makeKadiInteractiveFlow(deps) {
       { id: "DOC_ADD_CLIENT_PHONE", title: "Ajouter" },
       { id: "DOC_SKIP_CLIENT_PHONE", title: "Ignorer" },
     ]);
+  }
+
+  async function hydrateDraftFromFollowup(row, targetDocType) {
+    return cloneDraftToNewDocType(
+      {
+        type: "devis",
+        factureKind: null,
+        docNumber: row.doc_number,
+        date: row.source_doc?.date || formatDateISO(),
+        client: row.source_doc?.client || null,
+        clientPhone: row.source_doc?.clientPhone || null,
+        subject: row.source_doc?.subject || row.source_doc?.motif || null,
+        items: row.source_doc?.items || [],
+        finance: row.source_doc?.finance || null,
+        source: row.source_doc?.source || "product",
+        meta: makeDraftMeta(),
+      },
+      targetDocType
+    );
+  }
+
+  async function openFollowupConversion(from, s, followupId, targetDocType) {
+    const row = await getDevisFollowupById(followupId);
+
+    if (!row || !row.source_doc) {
+      await sendText(
+        from,
+        "📄 Je n’ai pas retrouvé ce devis.\nRevenez au MENU pour recommencer."
+      );
+      return;
+    }
+
+    s.lastDocDraft = await hydrateDraftFromFollowup(row, targetDocType);
+
+    resetStampChoice(s);
+    resetTransientProductState(s);
+    resetFieldReturnTargets(s);
+
+    const checked = validateDraftForUi(s.lastDocDraft);
+    s.lastDocDraft = checked.draft;
+
+    if (!checked.ok) {
+      await sendText(
+        from,
+        "⚠️ J’ai repris le devis, mais il faut une petite vérification avant de continuer."
+      );
+      return sendDraftBlockedMessage(from, checked);
+    }
+
+    s.step = "doc_review";
+
+    await markDevisFollowupConverted(followupId, targetDocType);
+
+    await sendText(
+      from,
+      targetDocType === "facture"
+        ? "✅ J’ai repris votre devis pour créer une facture."
+        : "✅ J’ai repris votre devis pour créer un reçu."
+    );
+
+    return sendCurrentDraftPreview(from, s.lastDocDraft);
+  }
+
+  async function sendDocumentToClient(from, s) {
+    const draft = s?.lastDocDraft;
+
+    if (!draft) {
+      await sendText(from, noDraftMessage());
+      return;
+    }
+
+    const clientWaId = normalizeClientWaId(draft.clientPhone || "", from);
+
+    if (!clientWaId) {
+      await sendText(
+        from,
+        "⚠️ Le numéro du client est manquant ou invalide.\n" +
+          "Ajoutez un numéro local ou international.\n" +
+          "Exemple : 70000000"
+      );
+      return;
+    }
+
+    if (!draft.savedPdfMediaId) {
+      await sendText(
+        from,
+        "📄 Générez d’abord le PDF, puis utilisez *Envoyer au client*."
+      );
+      return;
+    }
+
+    const profile = await getOrCreateProfile(from);
+    const clientCaption = buildClientDocumentCaption({
+      draft,
+      businessName: profile?.business_name,
+    });
+
+    try {
+      await sendDocument({
+        to: clientWaId,
+        mediaId: draft.savedPdfMediaId,
+        filename:
+          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+        caption: clientCaption,
+      });
+    } catch (err) {
+      await track(from, "pdf_send_to_client_failed", {
+        clientWaId,
+        error: String(err?.message || err || "send_failed"),
+      });
+
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas pu envoyer le document au client pour le moment.\n" +
+          "Vous pouvez réessayer maintenant."
+      );
+
+      s.step = "doc_already_generated";
+      await sendAlreadyGeneratedMenu(from, draft);
+      return;
+    }
+
+    await track(from, "pdf_sent_to_client", {
+      clientWaId,
+    });
+
+    s.step = "doc_already_generated";
+
+    await sendText(
+      from,
+      `✅ Document envoyé au client.\n📱 Numéro : +${clientWaId}`
+    );
+
+    await sendAlreadyGeneratedMenu(from, draft);
+  }
+
+  async function resendLastPdfToOwner(from, s) {
+    const draft = s?.lastDocDraft;
+
+    if (!draft?.savedPdfMediaId) {
+      await sendText(
+        from,
+        "📄 Je n’ai pas retrouvé le dernier PDF.\nTapez MENU pour continuer."
+      );
+      return;
+    }
+
+    try {
+      await sendDocument({
+        to: from,
+        mediaId: draft.savedPdfMediaId,
+        filename:
+          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
+        caption:
+          draft.savedPdfCaption ||
+          "📄 Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
+      });
+    } catch (err) {
+      await track(from, "pdf_resend_failed", {
+        error: String(err?.message || err || "send_failed"),
+      });
+
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas pu renvoyer le PDF pour le moment.\nRéessayez dans un instant."
+      );
+      return;
+    }
+
+    await track(from, "pdf_resend_success");
+    s.step = "doc_already_generated";
+    await sendAlreadyGeneratedMenu(from, draft);
+  }
+
+  async function approveTopupFlow(adminWaId, topupId) {
+    const topup = await readTopup(topupId);
+
+    if (!topup) {
+      await sendText(adminWaId, "⚠️ Je n’ai pas retrouvé cette recharge.");
+      return;
+    }
+
+    if (topup.status === "approved") {
+      await sendText(adminWaId, "ℹ️ Cette recharge est déjà validée.");
+      return;
+    }
+
+    if (topup.status === "rejected") {
+      await sendText(adminWaId, "⚠️ Cette recharge a déjà été refusée.");
+      return;
+    }
+
+    await addCredits(
+      { waId: topup.wa_id },
+      topup.credits,
+      "manual_om_topup",
+      `topup:${topup.id}`,
+      {
+        topupId: topup.id,
+        reference: topup.reference,
+        amountFcfa: topup.amount_fcfa,
+      }
+    );
+
+    await approveTopup(topup.id);
+
+    await trackForWaId(topup.wa_id, "topup_approved", null, {
+      topupId: topup.id,
+      reference: topup.reference,
+      amountFcfa: topup.amount_fcfa,
+      credits: topup.credits,
+      method: topup.payment_method || null,
+    });
+
+    try {
+      await sendText(
+        adminWaId,
+        `✅ Recharge validée.\n\nRéférence : ${topup.reference || "-"}`
+      );
+    } catch (err) {
+      console.warn("[TOPUP] admin confirmation failed:", err?.message || err);
+    }
+
+    try {
+      await sendText(
+        topup.wa_id,
+        `✅ Paiement validé !\n\n🎉 ${topup.credits} crédits ajoutés à votre compte.`
+      );
+      await sendResumeAfterRecharge(topup.wa_id);
+    } catch (err) {
+      console.warn("[TOPUP] user success notification failed:", err?.message || err);
+    }
+  }
+
+  async function rejectTopupFlow(adminWaId, topupId) {
+    const topup = await readTopup(topupId);
+
+    if (!topup) {
+      await sendText(adminWaId, "⚠️ Je n’ai pas retrouvé cette recharge.");
+      return;
+    }
+
+    if (topup.status === "approved") {
+      await sendText(adminWaId, "⚠️ Cette recharge a déjà été validée.");
+      return;
+    }
+
+    if (topup.status === "rejected") {
+      await sendText(adminWaId, "ℹ️ Cette recharge est déjà refusée.");
+      return;
+    }
+
+    await rejectTopup(topup.id, "rejected_by_admin");
+
+    await trackForWaId(topup.wa_id, "topup_rejected", null, {
+      topupId: topup.id,
+      reference: topup.reference,
+      amountFcfa: topup.amount_fcfa,
+      credits: topup.credits,
+      method: topup.payment_method || null,
+    });
+
+    try {
+      await sendText(
+        adminWaId,
+        `❌ Recharge refusée.\n\nRéférence : ${topup.reference || "-"}`
+      );
+    } catch (err) {
+      console.warn("[TOPUP] admin rejection notification failed:", err?.message || err);
+    }
+
+    try {
+      await sendText(
+        topup.wa_id,
+        "❌ Votre recharge n’a pas été validée.\n\nVérifiez la preuve envoyée ou réessayez."
+      );
+    } catch (err) {
+      console.warn("[TOPUP] user rejection notification failed:", err?.message || err);
+    }
   }
 
   async function handleInteractiveReply(from, replyId) {
@@ -648,14 +990,18 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "HOME_TUTORIAL") {
+      await track(from, "tutorial_opened");
       return sendTutorialQuickActions(from);
     }
 
     if (replyId === "HOME_HELP") {
+      await track(from, "help_opened");
       return sendHelpQuickActions(from);
     }
 
     if (replyId === "HOME_HISTORY") {
+      await track(from, "history_opened");
+
       if (typeof sendHistoryHome === "function") {
         return sendHistoryHome(from);
       }
@@ -664,26 +1010,29 @@ function makeKadiInteractiveFlow(deps) {
       return;
     }
 
+    // ===============================
+    // QUICK RECHARGE ENTRY
+    // ===============================
     if (
       replyId === "RECHARGE_1000" ||
       replyId === "RECHARGE_2000" ||
       replyId === "RECHARGE_5000"
     ) {
-      const amount = Number(replyId.replace("RECHARGE_", ""));
-      const offer = findRechargeOfferByAmount(amount);
+      const offer = resolveRechargeOffer(replyId);
 
       if (!offer) {
         return sendRechargePacksMenu(from);
       }
 
       resetTransientProductState(s);
-      s.pendingRechargePack = offer.id;
-      s.pendingRechargeAmount = offer.amountFcfa;
-      s.pendingRechargeCredits = offer.credits;
-      s.pendingRechargeIncludesStamp = false;
-      s.pendingTopupId = null;
-      s.pendingTopupReference = null;
-      s.pendingTopupMethod = null;
+      setPendingRechargeState(s, offer, null, null);
+
+      await track(from, "recharge_pack_selected", {
+        amountFcfa: offer.amountFcfa,
+        credits: offer.credits,
+        packId: offer.id,
+        entry: "quick_reply",
+      });
 
       return sendRechargePaymentMethodMenu(from, offer);
     }
@@ -728,114 +1077,17 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     const followupFacture = replyId.match(/^FOLLOWUP_FACTURE_(.+)$/);
     if (followupFacture) {
-      const followupId = followupFacture[1];
-      const row = await getDevisFollowupById(followupId);
-
-      if (!row || !row.source_doc) {
-        await sendText(
-          from,
-          "📄 Je n’ai pas retrouvé ce devis.\nRevenez au MENU pour recommencer."
-        );
-        return;
-      }
-
-      s.lastDocDraft = cloneDraftToNewDocType(
-        {
-          type: "devis",
-          factureKind: null,
-          docNumber: row.doc_number,
-          date: row.source_doc?.date || formatDateISO(),
-          client: row.source_doc?.client || null,
-          clientPhone: row.source_doc?.clientPhone || null,
-          subject: row.source_doc?.subject || row.source_doc?.motif || null,
-          items: row.source_doc?.items || [],
-          finance: row.source_doc?.finance || null,
-          source: row.source_doc?.source || "product",
-          meta: makeDraftMeta(),
-        },
-        "facture"
-      );
-
-      resetStampChoice(s);
-      resetTransientProductState(s);
-      resetFieldReturnTargets(s);
-
-      const checked = validateDraftForUi(s.lastDocDraft);
-      s.lastDocDraft = checked.draft;
-
-      if (!checked.ok) {
-        await sendText(
-          from,
-          "⚠️ J’ai repris le devis, mais il faut une petite vérification avant de continuer."
-        );
-        return sendDraftBlockedMessage(from, checked);
-      }
-
-      s.step = "doc_review";
-
-      await markDevisFollowupConverted(followupId, "facture");
-      await sendText(from, "✅ J’ai repris votre devis pour créer une facture.");
-
-      return sendCurrentDraftPreview(from, s.lastDocDraft);
+      return openFollowupConversion(from, s, followupFacture[1], "facture");
     }
 
     const followupRecu = replyId.match(/^FOLLOWUP_RECU_(.+)$/);
     if (followupRecu) {
-      const followupId = followupRecu[1];
-      const row = await getDevisFollowupById(followupId);
-
-      if (!row || !row.source_doc) {
-        await sendText(
-          from,
-          "📄 Je n’ai pas retrouvé ce devis.\nRevenez au MENU pour recommencer."
-        );
-        return;
-      }
-
-      s.lastDocDraft = cloneDraftToNewDocType(
-        {
-          type: "devis",
-          factureKind: null,
-          docNumber: row.doc_number,
-          date: row.source_doc?.date || formatDateISO(),
-          client: row.source_doc?.client || null,
-          clientPhone: row.source_doc?.clientPhone || null,
-          subject: row.source_doc?.subject || row.source_doc?.motif || null,
-          items: row.source_doc?.items || [],
-          finance: row.source_doc?.finance || null,
-          source: row.source_doc?.source || "product",
-          meta: makeDraftMeta(),
-        },
-        "recu"
-      );
-
-      resetStampChoice(s);
-      resetTransientProductState(s);
-      resetFieldReturnTargets(s);
-
-      const checked = validateDraftForUi(s.lastDocDraft);
-      s.lastDocDraft = checked.draft;
-
-      if (!checked.ok) {
-        await sendText(
-          from,
-          "⚠️ J’ai repris le devis, mais il faut une petite vérification avant de continuer."
-        );
-        return sendDraftBlockedMessage(from, checked);
-      }
-
-      s.step = "doc_review";
-
-      await markDevisFollowupConverted(followupId, "recu");
-      await sendText(from, "✅ J’ai repris votre devis pour créer un reçu.");
-
-      return sendCurrentDraftPreview(from, s.lastDocDraft);
+      return openFollowupConversion(from, s, followupRecu[1], "recu");
     }
 
     const followupLater = replyId.match(/^FOLLOWUP_LATER_(.+)$/);
     if (followupLater) {
-      const followupId = followupLater[1];
-      await postponeDevisFollowup(followupId, 48);
+      await postponeDevisFollowup(followupLater[1], 48);
       await sendText(
         from,
         "⏳ D’accord, je vous le rappellerai une dernière fois plus tard."
@@ -845,10 +1097,8 @@ function makeKadiInteractiveFlow(deps) {
 
     const followupDone = replyId.match(/^FOLLOWUP_DONE_(.+)$/);
     if (followupDone) {
-      const followupId = followupDone[1];
-
       if (typeof markDevisFollowupDone === "function") {
-        await markDevisFollowupDone(followupId);
+        await markDevisFollowupDone(followupDone[1]);
       }
 
       await sendText(from, "✅ Parfait. Je ferme ce rappel.");
@@ -857,10 +1107,8 @@ function makeKadiInteractiveFlow(deps) {
 
     const followupCancel = replyId.match(/^FOLLOWUP_CANCEL_(.+)$/);
     if (followupCancel) {
-      const followupId = followupCancel[1];
-
       if (typeof cancelDevisFollowup === "function") {
-        await cancelDevisFollowup(followupId);
+        await cancelDevisFollowup(followupCancel[1]);
       }
 
       await sendText(
@@ -934,56 +1182,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_SEND_TO_CLIENT") {
-      const draft = s.lastDocDraft;
-
-      if (!draft) {
-        await sendText(from, noDraftMessage());
-        return;
-      }
-
-      const clientWaId = normalizeClientWaId(draft.clientPhone || "", from);
-
-      if (!clientWaId) {
-        await sendText(
-          from,
-          "⚠️ Le numéro du client est manquant ou invalide.\n" +
-            "Ajoutez un numéro local ou international.\n" +
-            "Exemple : 70000000"
-        );
-        return;
-      }
-
-      if (!draft.savedPdfMediaId) {
-        await sendText(
-          from,
-          "📄 Générez d’abord le PDF, puis utilisez *Envoyer au client*."
-        );
-        return;
-      }
-
-      const profile = await getOrCreateProfile(from);
-      const clientCaption = buildClientDocumentCaption({
-        draft,
-        businessName: profile?.business_name,
-      });
-
-      await sendDocument({
-        to: clientWaId,
-        mediaId: draft.savedPdfMediaId,
-        filename:
-          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
-        caption: clientCaption,
-      });
-
-      s.step = "doc_already_generated";
-
-      await sendText(
-        from,
-        `✅ Document envoyé au client.\n📱 Numéro : +${clientWaId}`
-      );
-
-      await sendAlreadyGeneratedMenu(from, s.lastDocDraft);
-      return;
+      return sendDocumentToClient(from, s);
     }
 
     if (replyId === "DOC_SKIP_SEND_TO_CLIENT") {
@@ -1251,16 +1450,17 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "CREDITS_SOLDE") return replyBalance(from);
     if (replyId === "CREDITS_RECHARGE") return replyRechargeInfo(from);
 
-    const selectedOffer = getRechargeOfferById(replyId);
+    const selectedOffer = resolveRechargeOffer(replyId);
     if (selectedOffer) {
       resetTransientProductState(s);
-      s.pendingRechargePack = selectedOffer.id;
-      s.pendingRechargeAmount = selectedOffer.amountFcfa;
-      s.pendingRechargeCredits = selectedOffer.credits;
-      s.pendingRechargeIncludesStamp = false;
-      s.pendingTopupId = null;
-      s.pendingTopupReference = null;
-      s.pendingTopupMethod = null;
+      setPendingRechargeState(s, selectedOffer, null, null);
+
+      await track(from, "recharge_pack_selected", {
+        amountFcfa: selectedOffer.amountFcfa,
+        credits: selectedOffer.credits,
+        packId: selectedOffer.id,
+        entry: "pack_menu",
+      });
 
       return sendRechargePaymentMethodMenu(from, selectedOffer);
     }
@@ -1285,14 +1485,17 @@ function makeKadiInteractiveFlow(deps) {
       });
 
       resetTransientProductState(s);
-      s.pendingRechargePack = offer.id;
-      s.pendingRechargeAmount = offer.amountFcfa;
-      s.pendingRechargeCredits = offer.credits;
-      s.pendingRechargeIncludesStamp = false;
-      s.pendingTopupId = topup.id;
-      s.pendingTopupReference = topup.reference;
-      s.pendingTopupMethod = "orange_money";
+      setPendingRechargeState(s, offer, "orange_money", topup);
       s.step = "recharge_proof";
+
+      await track(from, "recharge_payment_method_selected", {
+        method: "orange_money",
+        amountFcfa: offer.amountFcfa,
+        credits: offer.credits,
+        packId: offer.id,
+        topupId: topup.id,
+        reference: topup.reference,
+      });
 
       return sendOrangeMoneyInstructions(from, offer);
     }
@@ -1310,14 +1513,15 @@ function makeKadiInteractiveFlow(deps) {
       }
 
       resetTransientProductState(s);
-      s.pendingRechargePack = offer.id;
-      s.pendingRechargeAmount = offer.amountFcfa;
-      s.pendingRechargeCredits = offer.credits;
-      s.pendingRechargeIncludesStamp = false;
-      s.pendingTopupId = null;
-      s.pendingTopupReference = null;
-      s.pendingTopupMethod = "pispi";
+      setPendingRechargeState(s, offer, "pispi", null);
       s.step = "pispi_pending";
+
+      await track(from, "recharge_payment_method_selected", {
+        method: "pispi",
+        amountFcfa: offer.amountFcfa,
+        credits: offer.credits,
+        packId: offer.id,
+      });
 
       return sendPispiInstructions(from, offer);
     }
@@ -1325,6 +1529,12 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId.startsWith("OM_PAID_")) {
       resetTransientProductState(s);
       s.step = "recharge_proof";
+
+      await track(from, "topup_declared_paid", {
+        method: "orange_money",
+        amountFcfa: Number(replyId.replace("OM_PAID_", "")),
+      });
+
       await sendText(
         from,
         "⏳ D’accord.\n\nEnvoyez maintenant :\n• le message de transaction\nOU\n• une capture d’écran du paiement\n\n✅ Après validation, vous reprendrez votre document."
@@ -1335,6 +1545,12 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId.startsWith("OM_SEND_PROOF_")) {
       resetTransientProductState(s);
       s.step = "recharge_proof";
+
+      await track(from, "topup_proof_prompt_opened", {
+        method: "orange_money",
+        amountFcfa: Number(replyId.replace("OM_SEND_PROOF_", "")),
+      });
+
       await sendText(
         from,
         "📎 Envoyez la preuve ici :\n• capture d’écran\nOU\n• message de confirmation Orange Money"
@@ -1353,84 +1569,12 @@ function makeKadiInteractiveFlow(deps) {
 
     const approveTopupMatch = replyId.match(/^TOPUP_APPROVE_(.+)$/);
     if (approveTopupMatch) {
-      const topupId = approveTopupMatch[1];
-      const topup = await readTopup(topupId);
-
-      if (!topup) {
-        await sendText(from, "⚠️ Je n’ai pas retrouvé cette recharge.");
-        return;
-      }
-
-      if (topup.status === "approved") {
-        await sendText(from, "ℹ️ Cette recharge est déjà validée.");
-        return;
-      }
-
-      if (topup.status === "rejected") {
-        await sendText(from, "⚠️ Cette recharge a déjà été refusée.");
-        return;
-      }
-
-      await addCredits(
-        { waId: topup.wa_id },
-        topup.credits,
-        "manual_om_topup",
-        `topup:${topup.id}`,
-        {
-          topupId: topup.id,
-          reference: topup.reference,
-          amountFcfa: topup.amount_fcfa,
-        }
-      );
-
-      await approveTopup(topup.id);
-
-      await sendText(
-        from,
-        `✅ Recharge validée.\n\nRéférence : ${topup.reference || "-"}`
-      );
-
-      await sendText(
-        topup.wa_id,
-        `✅ Paiement validé !\n\n🎉 ${topup.credits} crédits ajoutés à votre compte.`
-      );
-
-      await sendResumeAfterRecharge(topup.wa_id);
-      return;
+      return approveTopupFlow(from, approveTopupMatch[1]);
     }
 
     const rejectTopupMatch = replyId.match(/^TOPUP_REJECT_(.+)$/);
     if (rejectTopupMatch) {
-      const topupId = rejectTopupMatch[1];
-      const topup = await readTopup(topupId);
-
-      if (!topup) {
-        await sendText(from, "⚠️ Je n’ai pas retrouvé cette recharge.");
-        return;
-      }
-
-      if (topup.status === "approved") {
-        await sendText(from, "⚠️ Cette recharge a déjà été validée.");
-        return;
-      }
-
-      if (topup.status === "rejected") {
-        await sendText(from, "ℹ️ Cette recharge est déjà refusée.");
-        return;
-      }
-
-      await rejectTopup(topup.id, "rejected_by_admin");
-
-      await sendText(
-        from,
-        `❌ Recharge refusée.\n\nRéférence : ${topup.reference || "-"}`
-      );
-
-      await sendText(
-        topup.wa_id,
-        "❌ Votre recharge n’a pas été validée.\n\nVérifiez la preuve envoyée ou réessayez."
-      );
-      return;
+      return rejectTopupFlow(from, rejectTopupMatch[1]);
     }
 
     // ===============================
@@ -1554,6 +1698,10 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "DOC_CONFIRM") {
       const draft = s.lastDocDraft;
 
+      await track(from, "pdf_confirm_clicked", {
+        step: s.step || null,
+      });
+
       if (!draft) {
         await sendText(from, noDraftMessage());
         return;
@@ -1604,6 +1752,10 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "PRESTAMP_SKIP") {
+      await track(from, "stamp_upsell_skipped", {
+        step: s.step || null,
+      });
+
       resetStampChoice(s);
       resetTransientProductState(s);
 
@@ -1631,6 +1783,10 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "PRESTAMP_ADD_ONCE") {
+      await track(from, "stamp_upsell_accepted", {
+        mode: "one_time",
+      });
+
       const p = await getOrCreateProfile(from);
 
       if (!hasStampProfileReady(p)) {
@@ -1688,29 +1844,7 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "DOC_RESEND_LAST_PDF") {
-      const draft = s.lastDocDraft;
-
-      if (!draft?.savedPdfMediaId) {
-        await sendText(
-          from,
-          "📄 Je n’ai pas retrouvé le dernier PDF.\nTapez MENU pour continuer."
-        );
-        return;
-      }
-
-      await sendDocument({
-        to: from,
-        mediaId: draft.savedPdfMediaId,
-        filename:
-          draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
-        caption:
-          draft.savedPdfCaption ||
-          "📄 Voici à nouveau votre document.\nAucun crédit supplémentaire n’a été consommé.",
-      });
-
-      s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from, s.lastDocDraft);
-      return;
+      return resendLastPdfToOwner(from, s);
     }
 
     if (replyId === "DOC_EDIT_AFTER_GENERATED") {

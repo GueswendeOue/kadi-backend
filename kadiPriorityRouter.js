@@ -5,7 +5,6 @@ function makeKadiPriorityRouter(deps) {
     norm,
     logger,
     sendText,
-    sendButtons = null,
     sendHomeMenu,
     sendDocsMenu,
     startProfileFlow,
@@ -14,13 +13,6 @@ function makeKadiPriorityRouter(deps) {
     sendStampMenu,
     sendProfileMenu,
     sendCreditsMenu,
-
-    // docs
-    startDocFlow = null,
-    sendFactureCatalogMenu = null,
-    sendFactureKindMenu = null,
-
-    // history
     sendHistoryHome = null,
 
     // FEC
@@ -95,9 +87,8 @@ function makeKadiPriorityRouter(deps) {
     const t = normalizeText(rawText);
     if (!t) return null;
 
-    // Très important :
-    // si ça ressemble déjà à une vraie demande métier,
-    // on laisse le parseur naturel travailler.
+    // Si cela ressemble à une vraie demande métier,
+    // on laisse la main au parseur naturel.
     if (looksLikeNaturalDocumentRequest(t)) {
       return null;
     }
@@ -107,7 +98,14 @@ function makeKadiPriorityRouter(deps) {
     // ===============================
     // MENU / NAV
     // ===============================
-    if (isExactMatch(t, ["menu", "accueil", "home", "retour"])) {
+    if (
+      isExactMatch(t, [
+        "menu",
+        "accueil",
+        "home",
+        "retour",
+      ])
+    ) {
       return "menu";
     }
 
@@ -152,27 +150,22 @@ function makeKadiPriorityRouter(deps) {
     }
 
     // ===============================
-    // DOCS DIRECTS
+    // DOCS / NAV DOCS
     // ===============================
-    if (words <= 2 && isExactMatch(t, ["devis"])) {
-      return "doc_devis";
-    }
-
-    if (words <= 2 && isExactMatch(t, ["recu", "reçu"])) {
-      return "doc_recu";
-    }
-
-    if (words <= 2 && isExactMatch(t, ["decharge", "décharge"])) {
-      return "doc_decharge";
-    }
-
-    if (words <= 2 && isExactMatch(t, ["facture"])) {
-      return "doc_facture";
-    }
-
     if (
       words <= 2 &&
-      isExactMatch(t, ["doc", "docs", "document", "documents"])
+      isExactMatch(t, [
+        "doc",
+        "docs",
+        "document",
+        "documents",
+        "devis",
+        "facture",
+        "recu",
+        "reçu",
+        "decharge",
+        "décharge",
+      ])
     ) {
       return "docs";
     }
@@ -275,12 +268,14 @@ function makeKadiPriorityRouter(deps) {
     if (
       isExactMatch(t, [
         "historique",
+        "history",
+        "mes documents",
+        "mes docs",
         "dernier document",
         "dernier pdf",
         "renvoyer pdf",
         "renvoie pdf",
         "renvoyer document",
-        "mes documents",
       ])
     ) {
       return "history";
@@ -329,51 +324,7 @@ function makeKadiPriorityRouter(deps) {
     return null;
   }
 
-  async function sendOcrQuickHelp(from) {
-    await sendText(
-      from,
-      "📷 Envoyez simplement une photo claire de votre facture, devis ou reçu.\n\nKADI va lire la photo et préparer un document propre."
-    );
-
-    if (typeof sendButtons === "function") {
-      await sendButtons(from, "Que voulez-vous faire maintenant ?", [
-        { id: "HOME_OCR", title: "📷 Envoyer photo" },
-        { id: "HOME_DOCS", title: "📄 Créer doc" },
-        { id: "BACK_HOME", title: "🏠 Menu" },
-      ]);
-    }
-  }
-
-  async function sendHelpQuickActions(from) {
-    await sendText(
-      from,
-      `❓ *Aide rapide KADI*\n\n` +
-        `KADI peut créer :\n` +
-        `• Devis\n` +
-        `• Factures\n` +
-        `• Reçus\n` +
-        `• Décharges\n` +
-        `• FEC\n\n` +
-        `Vous pouvez aussi envoyer :\n` +
-        `• un vocal\n` +
-        `• une photo\n\n` +
-        `Exemples :\n` +
-        `• Devis pour Moussa, 2 portes à 25000\n` +
-        `• Facture pour Awa, 5 pagnes à 3000\n` +
-        `• Reçu pour Ouedraogo, loyer avril 100000`
-    );
-
-    if (typeof sendButtons === "function") {
-      await sendButtons(from, "Choisissez une action 👇", [
-        { id: "DOC_DEVIS", title: "📋 Créer devis" },
-        { id: "HOME_OCR", title: "📷 Envoyer photo" },
-        { id: "BACK_HOME", title: "🏠 Menu" },
-      ]);
-    }
-  }
-
   async function handleUltraPriorityText(from, rawText) {
-    const normalized = normalizeText(rawText);
     const intent = detectPriorityIntent(rawText);
     if (!intent) return false;
 
@@ -403,44 +354,6 @@ function makeKadiPriorityRouter(deps) {
           await sendRecentCertifiedInvoices(from);
         } else {
           await sendText(from, "📚 L’historique FEC arrive bientôt.");
-        }
-        return true;
-      }
-
-      if (intent === "doc_devis") {
-        if (typeof startDocFlow === "function") {
-          await startDocFlow(from, "devis");
-        } else {
-          await sendDocsMenu(from);
-        }
-        return true;
-      }
-
-      if (intent === "doc_recu") {
-        if (typeof startDocFlow === "function") {
-          await startDocFlow(from, "recu");
-        } else {
-          await sendDocsMenu(from);
-        }
-        return true;
-      }
-
-      if (intent === "doc_decharge") {
-        if (typeof startDocFlow === "function") {
-          await startDocFlow(from, "decharge");
-        } else {
-          await sendDocsMenu(from);
-        }
-        return true;
-      }
-
-      if (intent === "doc_facture") {
-        if (typeof sendFactureCatalogMenu === "function") {
-          await sendFactureCatalogMenu(from);
-        } else if (typeof sendFactureKindMenu === "function") {
-          await sendFactureKindMenu(from);
-        } else {
-          await sendDocsMenu(from);
         }
         return true;
       }
@@ -488,7 +401,10 @@ function makeKadiPriorityRouter(deps) {
       }
 
       if (intent === "ocr_help") {
-        await sendOcrQuickHelp(from);
+        await sendText(
+          from,
+          "📷 Envoyez simplement une photo claire de votre facture, devis ou reçu.\n\nKADI peut extraire les informations et générer un document propre."
+        );
         return true;
       }
 
@@ -508,13 +424,34 @@ function makeKadiPriorityRouter(deps) {
         if (typeof sendHistoryHome === "function") {
           await sendHistoryHome(from);
         } else {
-          await sendText(from, "📚 Historique indisponible pour le moment.");
+          await sendText(
+            from,
+            "📚 L’historique complet n’est pas disponible pour le moment."
+          );
         }
         return true;
       }
 
       if (intent === "help") {
-        await sendHelpQuickActions(from);
+        await sendText(
+          from,
+          `❓ *Aide rapide KADI*\n\n` +
+            `KADI peut créer :\n` +
+            `• Devis\n` +
+            `• Factures\n` +
+            `• Reçus\n` +
+            `• Décharges\n` +
+            `• FEC\n\n` +
+            `Vous pouvez :\n` +
+            `• écrire naturellement\n` +
+            `• envoyer un vocal\n` +
+            `• envoyer une photo\n\n` +
+            `Exemples :\n` +
+            `• Devis pour Moussa, 2 portes à 25000\n` +
+            `• Facture pour Awa, 5 pagnes à 3000\n` +
+            `• Reçu pour Ouedraogo, loyer avril 100000\n\n` +
+            `Tapez aussi : MENU, SOLDE, RECHARGE, PROFIL, HISTORIQUE`
+        );
         return true;
       }
 
@@ -523,27 +460,13 @@ function makeKadiPriorityRouter(deps) {
           from,
           "⚠️ D’accord. Décrivez-moi le problème en une phrase.\n\nExemple :\nLe PDF ne se génère pas\nou\nJe n’arrive pas à recharger."
         );
-
-        if (typeof sendButtons === "function") {
-          await sendButtons(from, "Que voulez-vous faire ?", [
-            { id: "HOME_HELP", title: "❓ Aide" },
-            { id: "CREDITS_RECHARGE", title: "💳 Recharger" },
-            { id: "BACK_HOME", title: "🏠 Menu" },
-          ]);
-        }
-
         return true;
       }
 
       return false;
     } catch (e) {
       if (logger?.error) {
-        logger.error("priority_router", e, {
-          from,
-          rawText,
-          normalized,
-          intent,
-        });
+        logger.error("priority_router", e, { from, rawText, intent });
       }
 
       await sendText(

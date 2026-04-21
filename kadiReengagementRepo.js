@@ -5,58 +5,58 @@ const { supabase } = require("./supabaseClient");
 // ===============================
 // UTILS
 // ===============================
-function uniqWaRows(rows = []) {
-  const map = new Map();
-
-  for (const row of rows || []) {
-    const waId = String(row?.wa_id || "").trim();
-    if (!waId) continue;
-
-    if (!map.has(waId)) {
-      map.set(waId, {
-        wa_id: waId,
-        owner_name: row?.owner_name || null,
-        created_at: row?.created_at || null,
-      });
-    }
-  }
-
-  return Array.from(map.values());
+function safeText(v, def = "") {
+  const s = String(v || "").trim();
+  return s || def;
 }
 
-function splitAB(waId, variant = "A") {
-  const digits = String(waId || "").replace(/\D/g, "");
-  const last = digits ? Number(digits[digits.length - 1]) : 0;
-
-  if (String(variant).toUpperCase() === "B") {
-    return last % 2 === 1;
-  }
-
-  if (String(variant).toUpperCase() === "C") {
-    return last % 3 === 0;
-  }
-
-  return last % 2 === 0;
+function uniq(arr = []) {
+  return Array.from(new Set(arr));
 }
 
-function daysSince(date) {
-  if (!date) return 9999;
+function toDateMs(value) {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) && ts > 0 ? ts : null;
+}
 
-  const ts = new Date(date).getTime();
-  if (!Number.isFinite(ts) || ts <= 0) return 9999;
+function minIso(a, b) {
+  const ta = toDateMs(a);
+  const tb = toDateMs(b);
 
-  return Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
+  if (ta == null && tb == null) return null;
+  if (ta == null) return b || null;
+  if (tb == null) return a || null;
+
+  return ta <= tb ? a : b;
+}
+
+function maxIso(a, b) {
+  const ta = toDateMs(a);
+  const tb = toDateMs(b);
+
+  if (ta == null && tb == null) return null;
+  if (ta == null) return b || null;
+  if (tb == null) return a || null;
+
+  return ta >= tb ? a : b;
 }
 
 function compareIsoAsc(a, b) {
-  const ta = a ? new Date(a).getTime() : null;
-  const tb = b ? new Date(b).getTime() : null;
+  const ta = toDateMs(a);
+  const tb = toDateMs(b);
 
   if (ta == null && tb == null) return 0;
   if (ta == null) return -1;
   if (tb == null) return 1;
 
   return ta - tb;
+}
+
+function daysSince(date) {
+  const ts = toDateMs(date);
+  if (ts == null) return 9999;
+  return Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
 }
 
 function chunkArray(arr = [], size = 200) {
@@ -70,21 +70,228 @@ function chunkArray(arr = [], size = 200) {
 function normalizeExcludeSet(excludeWaIds = []) {
   return new Set(
     (Array.isArray(excludeWaIds) ? excludeWaIds : [])
-      .map((v) => String(v || "").trim())
+      .map((v) => safeText(v))
       .filter(Boolean)
   );
+}
+
+function splitAB(waId, variant = "A") {
+  const digits = String(waId || "").replace(/\D/g, "");
+  const last = digits ? Number(digits[digits.length - 1]) : 0;
+  const v = String(variant || "A").toUpperCase();
+
+  if (v === "B") return last % 2 === 1;
+  if (v === "C") return last % 3 === 0;
+  return last % 2 === 0;
+}
+
+function isSentLikeStatus(status) {
+  const s = safeText(status).toLowerCase();
+  return s === "sent" || s === "template_sent" || s === "success";
+}
+
+async function safeSelectRows(builders = []) {
+  for (const build of builders) {
+    try {
+      const { data, error } = await build();
+      if (error) throw error;
+      return Array.isArray(data) ? data : [];
+    } catch (_) {}
+  }
+  return [];
+}
+
+// ===============================
+// CANDIDATE SOURCES
+// ===============================
+async function fetchBusinessProfiles(fetchLimit = 1000) {
+  return safeSelectRows([
+    () =>
+      supabase
+        .from("business_profiles")
+        .select("wa_id, owner_name, onboarding_done, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("business_profiles")
+        .select("wa_id, owner_name, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("business_profiles")
+        .select("wa_id, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("business_profiles")
+        .select("wa_id")
+        .not("wa_id", "is", null)
+        .limit(fetchLimit),
+  ]);
+}
+
+async function fetchKnownUsers(fetchLimit = 1000) {
+  return safeSelectRows([
+    () =>
+      supabase
+        .from("kadi_all_known_users")
+        .select("wa_id, owner_name, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("kadi_all_known_users")
+        .select("wa_id, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("kadi_all_known_users")
+        .select("wa_id")
+        .not("wa_id", "is", null)
+        .limit(fetchLimit),
+  ]);
+}
+
+async function fetchActivityRows(fetchLimit = 1000) {
+  return safeSelectRows([
+    () =>
+      supabase
+        .from("kadi_activity")
+        .select("wa_id, last_seen, created_at")
+        .not("wa_id", "is", null)
+        .order("last_seen", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("kadi_activity")
+        .select("wa_id, created_at")
+        .not("wa_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit),
+    () =>
+      supabase
+        .from("kadi_activity")
+        .select("wa_id")
+        .not("wa_id", "is", null)
+        .limit(fetchLimit),
+  ]);
+}
+
+function mergeCandidateRow(target, row = {}, source = "unknown") {
+  const waId = safeText(row?.wa_id);
+  if (!waId) return target;
+
+  const current = target.get(waId) || {
+    wa_id: waId,
+    owner_name: null,
+    created_at: null,
+    last_seen: null,
+    onboarding_done: false,
+    source_flags: {
+      business_profile: false,
+      known_user: false,
+      activity: false,
+    },
+  };
+
+  const ownerName = safeText(row?.owner_name, null);
+  const createdAt = row?.created_at || null;
+  const lastSeen = row?.last_seen || row?.created_at || null;
+
+  if (!current.owner_name && ownerName) {
+    current.owner_name = ownerName;
+  }
+
+  current.created_at = minIso(current.created_at, createdAt) || current.created_at;
+  current.last_seen = maxIso(current.last_seen, lastSeen) || current.last_seen;
+  current.onboarding_done =
+    current.onboarding_done || row?.onboarding_done === true;
+
+  if (source === "business_profile") {
+    current.source_flags.business_profile = true;
+  }
+  if (source === "known_user") {
+    current.source_flags.known_user = true;
+  }
+  if (source === "activity") {
+    current.source_flags.activity = true;
+  }
+
+  target.set(waId, current);
+  return target;
+}
+
+async function buildCandidatePool(fetchLimit = 1000) {
+  const [profiles, knownUsers, activityRows] = await Promise.all([
+    fetchBusinessProfiles(fetchLimit),
+    fetchKnownUsers(fetchLimit),
+    fetchActivityRows(fetchLimit),
+  ]);
+
+  const map = new Map();
+
+  for (const row of profiles || []) {
+    mergeCandidateRow(map, row, "business_profile");
+  }
+
+  for (const row of knownUsers || []) {
+    mergeCandidateRow(map, row, "known_user");
+  }
+
+  for (const row of activityRows || []) {
+    mergeCandidateRow(map, row, "activity");
+  }
+
+  return Array.from(map.values());
+}
+
+// ===============================
+// DOC LOOKUP
+// ===============================
+async function getDocumentUsersSet(waIds = []) {
+  const ids = uniq(
+    (Array.isArray(waIds) ? waIds : [])
+      .map((v) => safeText(v))
+      .filter(Boolean)
+  );
+
+  const set = new Set();
+  if (!ids.length) return set;
+
+  for (const batch of chunkArray(ids, 200)) {
+    const { data, error } = await supabase
+      .from("kadi_documents")
+      .select("wa_id")
+      .in("wa_id", batch);
+
+    if (error) throw error;
+
+    for (const row of data || []) {
+      const waId = safeText(row?.wa_id);
+      if (waId) set.add(waId);
+    }
+  }
+
+  return set;
 }
 
 // ===============================
 // RE-ENGAGEMENT MEMORY
 // ===============================
 async function getReengagementStatsByWaIds(waIds = []) {
-  const ids = Array.from(
-    new Set(
-      (Array.isArray(waIds) ? waIds : [])
-        .map((v) => String(v || "").trim())
-        .filter(Boolean)
-    )
+  const ids = uniq(
+    (Array.isArray(waIds) ? waIds : [])
+      .map((v) => safeText(v))
+      .filter(Boolean)
   );
 
   const map = new Map();
@@ -100,9 +307,12 @@ async function getReengagementStatsByWaIds(waIds = []) {
     if (error) throw error;
 
     for (const row of data || []) {
-      const waId = String(row?.wa_id || "").trim();
+      const waId = safeText(row?.wa_id);
       const sentAt = row?.sent_at || row?.created_at || null;
+      const status = row?.status || null;
+
       if (!waId || !sentAt) continue;
+      if (!isSentLikeStatus(status)) continue;
 
       const current = map.get(waId) || {
         last_reengagement_at: null,
@@ -113,7 +323,7 @@ async function getReengagementStatsByWaIds(waIds = []) {
 
       if (
         !current.last_reengagement_at ||
-        new Date(sentAt).getTime() > new Date(current.last_reengagement_at).getTime()
+        toDateMs(sentAt) > toDateMs(current.last_reengagement_at)
       ) {
         current.last_reengagement_at = sentAt;
       }
@@ -147,7 +357,7 @@ function applyRotationFilters(
   const safeCooldown = Math.max(0, Number(cooldownDays) || 0);
 
   return (Array.isArray(users) ? users : []).filter((u) => {
-    const waId = String(u?.wa_id || "").trim();
+    const waId = safeText(u?.wa_id);
     if (!waId) return false;
     if (excluded.has(waId)) return false;
 
@@ -158,6 +368,9 @@ function applyRotationFilters(
   });
 }
 
+// ===============================
+// RANKING
+// ===============================
 function rankZeroDocUsers(users = []) {
   return [...(Array.isArray(users) ? users : [])].sort((a, b) => {
     const aNever = !a.last_reengagement_at;
@@ -171,9 +384,9 @@ function rankZeroDocUsers(users = []) {
     );
     if (byOldestReengagement !== 0) return byOldestReengagement;
 
-    const bySignupFreshness =
+    const byRecentSignup =
       Number(a.days_since_signup || 9999) - Number(b.days_since_signup || 9999);
-    if (bySignupFreshness !== 0) return bySignupFreshness;
+    if (byRecentSignup !== 0) return byRecentSignup;
 
     return String(a.wa_id).localeCompare(String(b.wa_id));
   });
@@ -192,14 +405,17 @@ function rankInactiveUsers(users = []) {
     );
     if (byOldestReengagement !== 0) return byOldestReengagement;
 
-    const byRecentlyLost =
+    const byMoreRecentlyInactive =
       Number(a.days_inactive || 9999) - Number(b.days_inactive || 9999);
-    if (byRecentlyLost !== 0) return byRecentlyLost;
+    if (byMoreRecentlyInactive !== 0) return byMoreRecentlyInactive;
 
     return String(a.wa_id).localeCompare(String(b.wa_id));
   });
 }
 
+// ===============================
+// LOGGING
+// ===============================
 async function logReengagementSend({
   waId,
   campaignType,
@@ -209,17 +425,17 @@ async function logReengagementSend({
   cycleKey = null,
   meta = {},
 }) {
-  const safeWaId = String(waId || "").trim();
+  const safeWaId = safeText(waId);
   if (!safeWaId) throw new Error("REENGAGEMENT_WA_ID_REQUIRED");
 
   const { error } = await supabase.from("kadi_reengagement_log").insert([
     {
       wa_id: safeWaId,
-      campaign_type: String(campaignType || "").trim() || "unknown",
-      template_name: templateName ? String(templateName).trim() : null,
-      message_mode: messageMode ? String(messageMode).trim() : null,
-      status: String(status || "sent").trim(),
-      cycle_key: cycleKey ? String(cycleKey).trim() : null,
+      campaign_type: safeText(campaignType, "unknown"),
+      template_name: templateName ? safeText(templateName) : null,
+      message_mode: messageMode ? safeText(messageMode) : null,
+      status: safeText(status, "sent"),
+      cycle_key: cycleKey ? safeText(cycleKey) : null,
       sent_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
       meta: meta && typeof meta === "object" ? meta : {},
@@ -243,35 +459,14 @@ async function getZeroDocUsersBySegment(
   const excludeWaIds = Array.isArray(options?.excludeWaIds)
     ? options.excludeWaIds
     : [];
-  const fetchLimit = Math.min(Math.max(safeLimit * 20, 200), 5000);
+  const fetchLimit = Math.min(Math.max(safeLimit * 25, 300), 5000);
 
-  const { data: profiles, error: profilesError } = await supabase
-    .from("business_profiles")
-    .select("wa_id, owner_name, onboarding_done, created_at")
-    .not("wa_id", "is", null)
-    .eq("onboarding_done", true)
-    .order("created_at", { ascending: false })
-    .limit(fetchLimit);
+  const candidates = await buildCandidatePool(fetchLimit);
+  if (!candidates.length) return [];
 
-  if (profilesError) throw profilesError;
+  const docUsers = await getDocumentUsersSet(candidates.map((u) => u.wa_id));
 
-  const users = uniqWaRows(profiles || []);
-  if (!users.length) return [];
-
-  const waIds = users.map((u) => u.wa_id);
-
-  const { data: docs, error: docsError } = await supabase
-    .from("kadi_documents")
-    .select("wa_id")
-    .in("wa_id", waIds);
-
-  if (docsError) throw docsError;
-
-  const docUsers = new Set(
-    (docs || []).map((d) => String(d?.wa_id || "").trim()).filter(Boolean)
-  );
-
-  const filtered = users
+  const filtered = candidates
     .filter((u) => !docUsers.has(u.wa_id))
     .filter((u) => splitAB(u.wa_id, variant))
     .map((u) => ({
@@ -304,62 +499,31 @@ async function getInactiveUsers(days = 7, limit = 50, options = {}) {
   const excludeWaIds = Array.isArray(options?.excludeWaIds)
     ? options.excludeWaIds
     : [];
-  const fetchLimit = Math.min(Math.max(safeLimit * 20, 200), 5000);
+  const fetchLimit = Math.min(Math.max(safeLimit * 25, 300), 5000);
 
-  const cutoff = new Date(
-    Date.now() - safeDays * 24 * 60 * 60 * 1000
-  ).toISOString();
+  const cutoffMs = Date.now() - safeDays * 24 * 60 * 60 * 1000;
 
-  const { data: profiles, error: profilesError } = await supabase
-    .from("business_profiles")
-    .select("wa_id, owner_name, onboarding_done, created_at")
-    .not("wa_id", "is", null)
-    .eq("onboarding_done", true)
-    .order("created_at", { ascending: false })
-    .limit(fetchLimit);
+  const candidates = await buildCandidatePool(fetchLimit);
+  if (!candidates.length) return [];
 
-  if (profilesError) throw profilesError;
-
-  const users = uniqWaRows(profiles || []);
-  if (!users.length) return [];
-
-  const waIds = users.map((u) => u.wa_id);
-
-  const { data: activity, error: activityError } = await supabase
-    .from("kadi_activity")
-    .select("wa_id, created_at")
-    .in("wa_id", waIds)
-    .order("created_at", { ascending: false });
-
-  if (activityError) throw activityError;
-
-  const lastActivityByWa = new Map();
-
-  for (const row of activity || []) {
-    const waId = String(row?.wa_id || "").trim();
-    const createdAt = row?.created_at || null;
-
-    if (!waId || !createdAt) continue;
-    if (!lastActivityByWa.has(waId)) {
-      lastActivityByWa.set(waId, createdAt);
-    }
-  }
-
-  const inactive = users
+  const inactive = candidates
     .map((u) => {
-      const last = lastActivityByWa.get(u.wa_id) || null;
+      const lastActivityAt = u.last_seen || u.created_at || null;
+      const lastActivityMs = toDateMs(lastActivityAt);
 
       return {
         wa_id: u.wa_id,
-        owner_name: u.owner_name,
+        owner_name: u.owner_name || null,
         created_at: u.created_at || null,
-        last_activity_at: last,
-        days_inactive: last ? daysSince(last) : 9999,
+        onboarding_done: u.onboarding_done === true,
+        last_activity_at: lastActivityAt,
+        days_inactive: lastActivityAt ? daysSince(lastActivityAt) : 9999,
       };
     })
     .filter((u) => {
-      if (!u.last_activity_at) return true;
-      return String(u.last_activity_at) < cutoff;
+      const ts = toDateMs(u.last_activity_at);
+      if (ts == null) return true;
+      return ts < cutoffMs;
     });
 
   if (!inactive.length) return [];

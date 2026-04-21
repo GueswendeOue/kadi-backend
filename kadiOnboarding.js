@@ -15,14 +15,12 @@ const REONBOARDING_BONUS_CREDITS = Number(
   process.env.REONBOARDING_BONUS_CREDITS || 0
 );
 
-const KADI_DEMO_VIDEO_URL =
-  process.env.KADI_DEMO_VIDEO_URL || "https://www.tiktok.com/@kadi/video/DEMO";
+const KADI_DEMO_VIDEO_URL = String(
+  process.env.KADI_DEMO_VIDEO_URL || ""
+).trim();
 
 const WELCOME_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const ONBOARDING_PROMPT_TTL_MS = 12 * 60 * 60 * 1000;
-
 const _WELCOME_CACHE = new Map();
-const _ONBOARDING_PROMPT_CACHE = new Map();
 
 const PROFESSION_EXAMPLES = {
   btp: `_"Devis pour Moussa, 2 portes à 25 000F"_`,
@@ -36,51 +34,32 @@ function isValidWhatsAppId(id) {
   return /^\d+$/.test(String(id || "")) && String(id || "").length >= 8;
 }
 
-function nowMs() {
-  return Date.now();
+function toNum(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
 }
 
-function isFreshCache(cache, key, ttlMs) {
-  const value = cache.get(String(key || ""));
-  return Number.isFinite(value) && nowMs() - value < ttlMs;
-}
-
-function touchCache(cache, key) {
-  cache.set(String(key || ""), nowMs());
-}
-
-function parseBalanceResult(res) {
-  const balance =
+function resolveBalanceValue(res) {
+  return toNum(
     res?.balance ??
-    res?.data?.balance ??
-    res?.credits ??
-    res?.data?.credits ??
-    null;
-
-  const n = Number(balance);
-  return Number.isFinite(n) ? n : null;
+      res?.data?.balance ??
+      res?.credits ??
+      res?.wallet?.balance ??
+      0,
+    0
+  );
 }
 
-async function readSafeBalance(waId) {
-  try {
-    const res = await getBalance({ waId });
-    const n = parseBalanceResult(res);
-    if (n != null) return n;
-  } catch (_) {}
-
-  try {
-    const res = await getBalance(waId);
-    const n = parseBalanceResult(res);
-    if (n != null) return n;
-  } catch (_) {}
-
-  return 0;
+function isDemoUrlUsable(url = "") {
+  const value = String(url || "").trim();
+  if (!value) return false;
+  if (value.includes("/DEMO")) return false;
+  return true;
 }
 
-async function safeMarkOnboardingDone(waId) {
-  try {
-    await markOnboardingDone(waId, 1);
-  } catch (_) {}
+function getDemoLine() {
+  if (!isDemoUrlUsable(KADI_DEMO_VIDEO_URL)) return "";
+  return `\n\n📹 Démo rapide : ${KADI_DEMO_VIDEO_URL}`;
 }
 
 function pickExample(waId = "") {
@@ -90,7 +69,7 @@ function pickExample(waId = "") {
       .split("")
       .reduce((acc, c) => acc + c.charCodeAt(0), 0) % examples.length;
 
-  return examples[idx];
+  return examples[idx] || PROFESSION_EXAMPLES.default;
 }
 
 function detectProfessionCategory(text = "") {
@@ -98,13 +77,13 @@ function detectProfessionCategory(text = "") {
 
   if (
     t.includes("soudeur") ||
-    t.includes("macon") ||
     t.includes("maçon") ||
+    t.includes("macon") ||
     t.includes("btp") ||
     t.includes("chantier") ||
     t.includes("plombier") ||
-    t.includes("electricien") ||
     t.includes("électricien") ||
+    t.includes("electricien") ||
     t.includes("menuisier")
   ) {
     return "btp";
@@ -115,8 +94,8 @@ function detectProfessionCategory(text = "") {
     t.includes("commerce") ||
     t.includes("vendeur") ||
     t.includes("vente") ||
-    t.includes("epicerie") ||
-    t.includes("épicerie")
+    t.includes("épicerie") ||
+    t.includes("epicerie")
   ) {
     return "commerce";
   }
@@ -132,15 +111,15 @@ function detectProfessionCategory(text = "") {
   }
 
   if (
-    t.includes("mecanicien") ||
     t.includes("mécanicien") ||
+    t.includes("mecanicien") ||
     t.includes("coiffeur") ||
     t.includes("coiffeuse") ||
     t.includes("couturier") ||
     t.includes("couturiere") ||
     t.includes("couturière") ||
-    t.includes("reparation") ||
     t.includes("réparation") ||
+    t.includes("reparation") ||
     t.includes("services")
   ) {
     return "services";
@@ -153,12 +132,6 @@ function buildProfessionExample(category) {
   return PROFESSION_EXAMPLES[category] || PROFESSION_EXAMPLES.default;
 }
 
-function buildBestExample(profile = null, waId = "") {
-  const category = String(profile?.profession_category || "").trim();
-  if (category) return buildProfessionExample(category);
-  return pickExample(waId);
-}
-
 function getZeroDocSegment(daysSinceSignup = 0) {
   const d = Number(daysSinceSignup || 0);
 
@@ -167,12 +140,55 @@ function getZeroDocSegment(daysSinceSignup = 0) {
   return "C";
 }
 
-async function sendActionFirstButtons(to) {
-  await sendButtons(to, "Choisissez comment commencer 👇", [
-    { id: "DOC_DEVIS", title: "📋 Créer devis" },
-    { id: "DOC_FACTURE_MENU", title: "📄 Créer facture" },
-    { id: "HOME_OCR", title: "📷 Envoyer photo" },
-  ]);
+function getWelcomeCacheTs(waId) {
+  return _WELCOME_CACHE.get(String(waId || "").trim()) || 0;
+}
+
+function setWelcomeCacheTs(waId) {
+  _WELCOME_CACHE.set(String(waId || "").trim(), Date.now());
+}
+
+function isWelcomeRecentlyChecked(waId) {
+  const ts = getWelcomeCacheTs(waId);
+  return !!ts && Date.now() - ts < WELCOME_CACHE_TTL_MS;
+}
+
+async function safeUpdateProfile(waId, patch = {}) {
+  try {
+    await updateProfile(waId, patch);
+  } catch (e) {
+    console.warn("⚠️ updateProfile:", e?.message || e);
+  }
+}
+
+async function safeMarkOnboardingDone(waId) {
+  try {
+    await markOnboardingDone(waId, 1);
+    return;
+  } catch (_) {}
+
+  await safeUpdateProfile(waId, { onboarding_done: true });
+}
+
+async function sendPrimaryDocActions(from, options = {}) {
+  const includeOcr = options.includeOcr !== false;
+  const includeProfile = options.includeProfile === true;
+
+  const buttons = [{ id: "HOME_DOCS", title: "📄 Créer doc" }];
+
+  if (includeOcr) {
+    buttons.push({ id: "HOME_OCR", title: "📷 Envoyer photo" });
+  } else if (includeProfile) {
+    buttons.push({ id: "HOME_PROFILE", title: "👤 Profil" });
+  } else {
+    buttons.push({ id: "BACK_HOME", title: "🏠 Menu" });
+  }
+
+  if (includeOcr) {
+    buttons.push({ id: "BACK_HOME", title: "🏠 Menu" });
+  }
+
+  await sendButtons(from, "Choisissez une action 👇", buttons);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -180,50 +196,59 @@ async function sendActionFirstButtons(to) {
 // ─────────────────────────────────────────────────────────────
 async function ensureWelcomeCredits(waId) {
   try {
-    if (!isValidWhatsAppId(waId)) return;
+    if (!isValidWhatsAppId(waId)) return false;
+    if (isWelcomeRecentlyChecked(waId)) return false;
 
-    if (isFreshCache(_WELCOME_CACHE, waId, WELCOME_CACHE_TTL_MS)) {
-      return;
+    const profile = await getOrCreateProfile(waId);
+
+    if (profile?.welcome_credits_granted === true) {
+      setWelcomeCacheTs(waId);
+      return false;
     }
 
-    const p = await getOrCreateProfile(waId);
-
-    if (p?.welcome_credits_granted === true) {
-      touchCache(_WELCOME_CACHE, waId);
-      return;
-    }
-
-    const balance = await readSafeBalance(waId);
+    const balanceRes = await getBalance({ waId });
+    const balance = resolveBalanceValue(balanceRes);
 
     if (balance > 0) {
-      touchCache(_WELCOME_CACHE, waId);
-      return;
-    }
-
-    await addCredits(waId, WELCOME_CREDITS, "welcome");
-
-    try {
-      await updateProfile(waId, {
+      await safeUpdateProfile(waId, {
         welcome_credits_granted: true,
       });
-    } catch (profileErr) {
-      console.warn(
-        "⚠️ ensureWelcomeCredits:updateProfile:",
-        profileErr?.message || profileErr
-      );
+      setWelcomeCacheTs(waId);
+      return false;
     }
 
-    touchCache(_WELCOME_CACHE, waId);
+    const opKey = `welcome:${waId}`;
+    const addRes = await addCredits(
+      { waId },
+      WELCOME_CREDITS,
+      "welcome",
+      opKey,
+      {
+        welcomeCredits: WELCOME_CREDITS,
+      }
+    );
+
+    await safeUpdateProfile(waId, {
+      welcome_credits_granted: true,
+    });
+
+    setWelcomeCacheTs(waId);
+
+    if (addRes?.idempotent) {
+      return false;
+    }
 
     await sendText(
       waId,
-      `🎁 Bienvenue sur *KADI*\n\n` +
+      `🎁 Bienvenue sur *KADI*\n` +
         `Vous recevez *${WELCOME_CREDITS} crédits gratuits* pour commencer.\n` +
-        `📄 1 PDF = ${PDF_SIMPLE_CREDITS} crédit.\n\n` +
-        `Vous pouvez déjà créer votre premier document maintenant.`
+        `📄 1 PDF simple = ${PDF_SIMPLE_CREDITS} crédit.`
     );
+
+    return true;
   } catch (e) {
     console.warn("⚠️ ensureWelcomeCredits:", e?.message || e);
+    return false;
   }
 }
 
@@ -232,39 +257,39 @@ async function ensureWelcomeCredits(waId) {
 // ─────────────────────────────────────────────────────────────
 async function maybeSendOnboarding(from) {
   try {
-    const p = await getOrCreateProfile(from);
+    if (!isValidWhatsAppId(from)) return false;
 
+    const p = await getOrCreateProfile(from);
     if (p?.onboarding_done === true) return false;
 
-    if (
-      isFreshCache(_ONBOARDING_PROMPT_CACHE, from, ONBOARDING_PROMPT_TTL_MS)
-    ) {
-      return false;
-    }
-
-    const example = buildBestExample(p, from);
+    const example =
+      buildProfessionExample(p?.profession_category) || pickExample(from);
 
     await sendText(
       from,
       `👋 Bienvenue sur *KADI*\n\n` +
-        `Créez vos *devis, factures, reçus et décharges* directement sur WhatsApp.\n\n` +
+        `Je crée vos *devis, factures, reçus et décharges* directement sur WhatsApp.\n\n` +
+        `✍️ Écrivez simplement comme vous parlez.\n` +
         `Exemple :\n${example}`
     );
 
     await sendText(
       from,
-      `🎤 Vous pouvez aussi envoyer un *vocal*.\n` +
-        `📷 Vous pouvez aussi envoyer une *photo*.\n\n` +
-        `Écrivez aussi votre métier pour recevoir un exemple adapté.\n` +
-        `Exemples :\n• "Je suis soudeur"\n• "Je suis mécanicien"\n• "Je fais commerce"`
+      `🎤 Vous pouvez aussi envoyer un *message vocal*.\n` +
+        `📷 Ou envoyer une *photo* pour transformer un document existant.` +
+        getDemoLine()
     );
 
-    await sendActionFirstButtons(from);
-    touchCache(_ONBOARDING_PROMPT_CACHE, from);
+    await sendButtons(from, "Choisissez votre activité 👇", [
+      { id: "ONBOARDING_PRO_BTP", title: "🔧 BTP" },
+      { id: "ONBOARDING_PRO_COMMERCE", title: "🛒 Commerce" },
+      { id: "ONBOARDING_PRO_RESTO", title: "🍽️ Resto" },
+    ]);
 
+    await safeMarkOnboardingDone(from);
     return true;
   } catch (e) {
-    console.warn("⚠️ onboarding:", e?.message || e);
+    console.warn("⚠️ maybeSendOnboarding:", e?.message || e);
     return false;
   }
 }
@@ -277,13 +302,10 @@ async function tryHandleProfessionIntro(from, text) {
     const category = detectProfessionCategory(text);
     if (!category) return false;
 
-    await updateProfile(from, {
+    await safeUpdateProfile(from, {
       profession_text: String(text || "").trim().slice(0, 80),
       profession_category: category,
     });
-
-    await safeMarkOnboardingDone(from);
-    touchCache(_ONBOARDING_PROMPT_CACHE, from);
 
     const example = buildProfessionExample(category);
 
@@ -291,10 +313,10 @@ async function tryHandleProfessionIntro(from, text) {
       from,
       `Parfait 👌\n\n` +
         `Essayez maintenant en écrivant :\n\n${example}\n\n` +
-        `Ou envoyez le même besoin en vocal 🎤`
+        `Ou envoyez la même demande en vocal 🎤`
     );
 
-    await sendActionFirstButtons(from);
+    await sendPrimaryDocActions(from, { includeOcr: true });
     return true;
   } catch (e) {
     console.warn("⚠️ tryHandleProfessionIntro:", e?.message || e);
@@ -303,7 +325,7 @@ async function tryHandleProfessionIntro(from, text) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔘 RÉPONSES BOUTONS ONBOARDING MÉTIER
+// 🔘 RÉPONSES BOUTONS ONBOARDING
 // ─────────────────────────────────────────────────────────────
 async function handleOnboardingReply(from, replyId) {
   try {
@@ -316,12 +338,9 @@ async function handleOnboardingReply(from, replyId) {
 
     if (!category) return false;
 
-    await updateProfile(from, {
+    await safeUpdateProfile(from, {
       profession_category: category,
     });
-
-    await safeMarkOnboardingDone(from);
-    touchCache(_ONBOARDING_PROMPT_CACHE, from);
 
     const example = buildProfessionExample(category);
 
@@ -329,10 +348,10 @@ async function handleOnboardingReply(from, replyId) {
       from,
       `Parfait 👌\n\n` +
         `Essayez maintenant en écrivant :\n\n${example}\n\n` +
-        `Ou envoyez le même besoin en vocal 🎤`
+        `Ou envoyez votre besoin en vocal 🎤`
     );
 
-    await sendActionFirstButtons(from);
+    await sendPrimaryDocActions(from, { includeOcr: true });
     return true;
   } catch (e) {
     console.warn("⚠️ handleOnboardingReply:", e?.message || e);
@@ -354,41 +373,32 @@ async function sendZeroDocReOnboarding(from, options = {}) {
     if (segment === "A") {
       await sendText(
         from,
-        `👋 Vous avez rejoint *KADI* il y a quelques jours mais vous n’avez pas encore créé de document.\n\n` +
-          `Essayez simplement ceci :\n\n${example}\n\n` +
-          `Ou envoyez le même besoin en vocal 🎤`
+        `👋 Vous avez rejoint *KADI* récemment mais vous n’avez pas encore créé de document.\n\n` +
+          `Essayez simplement :\n\n${example}\n\n` +
+          `Ou envoyez-le en vocal 🎤`
       );
-
-      await sendActionFirstButtons(from);
-      return true;
-    }
-
-    if (segment === "B") {
+    } else if (segment === "B") {
       let bonusLine = "";
       if (REONBOARDING_BONUS_CREDITS > 0) {
         bonusLine =
-          `\n🎁 Bonus retour : *${REONBOARDING_BONUS_CREDITS} crédit(s)* quand vous créez votre premier document.`;
+          `\n🎁 Bonus retour : *${REONBOARDING_BONUS_CREDITS} crédit(s)* après votre premier document.`;
       }
 
       await sendText(
         from,
-        `👋 Beaucoup d’utilisateurs créent déjà leurs documents avec *KADI* sur WhatsApp.\n\n` +
-          `Vous aussi vous pouvez commencer en quelques secondes :\n\n${example}${bonusLine}`
+        `👋 Beaucoup d’utilisateurs créent déjà leurs documents avec *KADI*.\n\n` +
+          `Vous pouvez commencer en quelques secondes :\n\n${example}${bonusLine}`
       );
-
-      await sendActionFirstButtons(from);
-      return true;
+    } else {
+      await sendText(
+        from,
+        `👋 *KADI* s’est amélioré depuis votre inscription.\n\n` +
+          `Nouveau : vocal, OCR photo, décharges.\n\n` +
+          `Essayez maintenant :\n\n${example}${getDemoLine()}`
+      );
     }
 
-    await sendText(
-      from,
-      `👋 *KADI* s’est amélioré depuis votre inscription.\n\n` +
-        `Nouveau : décharges, vocal et lecture de photo.\n\n` +
-        `Essayez maintenant :\n\n${example}\n\n` +
-        `📹 Démo rapide : ${KADI_DEMO_VIDEO_URL}`
-    );
-
-    await sendActionFirstButtons(from);
+    await sendPrimaryDocActions(from, { includeOcr: true });
     return true;
   } catch (e) {
     console.warn("⚠️ sendZeroDocReOnboarding:", e?.message || e);
@@ -402,18 +412,19 @@ async function sendZeroDocReOnboarding(from, options = {}) {
 async function sendActivationJ1(from) {
   try {
     const p = await getOrCreateProfile(from);
-    const example = buildBestExample(p, from);
+    const example =
+      buildProfessionExample(p?.profession_category) || pickExample(from);
 
     await sendText(
       from,
       `👋 Vous n’avez pas encore créé votre premier document sur *KADI*.\n\n` +
-        `Essayez simplement ceci :\n\n${example}\n\n` +
+        `Essayez simplement :\n\n${example}\n\n` +
         `Ou envoyez votre demande en vocal 🎤`
     );
 
-    await sendActionFirstButtons(from);
+    await sendPrimaryDocActions(from, { includeOcr: false });
   } catch (e) {
-    console.warn("⚠️ activationJ1:", e?.message || e);
+    console.warn("⚠️ sendActivationJ1:", e?.message || e);
   }
 }
 
@@ -424,16 +435,16 @@ async function sendActivationJ7(from) {
       `👋 Vous pouvez aussi utiliser *KADI* pour :\n\n` +
         `📷 Transformer une photo en document\n` +
         `🎤 Envoyer un vocal\n` +
-        `👤 Compléter votre profil pour des documents plus pros\n\n` +
+        `👤 Compléter votre profil\n\n` +
         `Choisissez une action 👇`,
       [
-        { id: "HOME_OCR", title: "📷 Envoyer photo" },
-        { id: "DOC_DEVIS", title: "📋 Créer devis" },
-        { id: "HOME_PROFILE", title: "👤 Mon profil" },
+        { id: "HOME_OCR", title: "📷 Photo" },
+        { id: "HOME_DOCS", title: "📄 Créer doc" },
+        { id: "HOME_PROFILE", title: "👤 Profil" },
       ]
     );
   } catch (e) {
-    console.warn("⚠️ activationJ7:", e?.message || e);
+    console.warn("⚠️ sendActivationJ7:", e?.message || e);
   }
 }
 
@@ -444,20 +455,20 @@ async function sendReactivationNudge(from, options = {}) {
     const example =
       buildProfessionExample(professionCategory) || pickExample(from);
 
-    let intro = `👋 Cela fait un moment.\n\n`;
-    if (daysInactive >= 30) {
-      intro = `👋 Cela fait quelque temps que vous n’avez pas utilisé *KADI*.\n\n`;
-    }
+    const intro =
+      daysInactive >= 30
+        ? "👋 Cela fait quelque temps que vous n’avez pas utilisé *KADI*.\n\n"
+        : "👋 Cela fait un moment.\n\n";
 
     await sendText(
       from,
       intro +
         `Essayez simplement :\n\n${example}\n\n` +
-        `Ou envoyez votre demande en vocal 🎤\n` +
-        `📹 Démo : ${KADI_DEMO_VIDEO_URL}`
+        `Ou envoyez votre besoin en vocal 🎤` +
+        getDemoLine()
     );
 
-    await sendActionFirstButtons(from);
+    await sendPrimaryDocActions(from, { includeOcr: true });
     return true;
   } catch (e) {
     console.warn("⚠️ sendReactivationNudge:", e?.message || e);
@@ -473,15 +484,15 @@ async function sendLowCreditsAlert(from, balance = 0) {
     await sendButtons(
       from,
       `⚠️ Il vous reste *${balance} crédit${balance > 1 ? "s" : ""}*.\n\n` +
-        `Rechargez maintenant pour continuer sans interruption 👇`,
+        `Rechargez maintenant pour continuer 👇`,
       [
-        { id: "RECHARGE_1000", title: "1 000F" },
-        { id: "RECHARGE_2000", title: "2 000F" },
-        { id: "HOME_CREDITS", title: "💳 Voir packs" },
+        { id: "RECHARGE_1000", title: "1000F" },
+        { id: "RECHARGE_2000", title: "2000F" },
+        { id: "HOME_CREDITS", title: "💳 Packs" },
       ]
     );
   } catch (e) {
-    console.warn("⚠️ lowCreditsAlert:", e?.message || e);
+    console.warn("⚠️ sendLowCreditsAlert:", e?.message || e);
   }
 }
 
@@ -493,15 +504,15 @@ async function sendZeroCreditsBlock(from) {
     await sendButtons(
       from,
       `🔴 *Crédits épuisés.*\n\n` +
-        `Rechargez maintenant pour continuer à générer vos documents 👇`,
+        `Rechargez pour continuer à générer vos documents 👇`,
       [
-        { id: "RECHARGE_1000", title: "1 000F" },
-        { id: "RECHARGE_2000", title: "2 000F" },
-        { id: "HOME_CREDITS", title: "💳 Voir packs" },
+        { id: "RECHARGE_1000", title: "1000F" },
+        { id: "RECHARGE_2000", title: "2000F" },
+        { id: "HOME_CREDITS", title: "💳 Packs" },
       ]
     );
   } catch (e) {
-    console.warn("⚠️ zeroCreditsBlock:", e?.message || e);
+    console.warn("⚠️ sendZeroCreditsBlock:", e?.message || e);
   }
 }
 

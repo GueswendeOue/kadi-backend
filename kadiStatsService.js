@@ -4,360 +4,296 @@ function makeKadiStatsService(deps) {
   const {
     sendText,
     getStats,
+    packCredits = 25,
+    packPriceFcfa = 2000,
     money,
-    buildInsights,
-    exportKadiExcel,
   } = deps;
 
-  function n(v, def = 0) {
-    const x = Number(v);
-    return Number.isFinite(x) ? x : def;
+  function safeText(v, def = "") {
+    const s = String(v ?? "").trim();
+    return s || def;
   }
 
-  function txt(v, def = "") {
-    const t = String(v ?? "").trim();
-    return t || def;
+  function toNum(v, def = 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
   }
 
-  function arr(v) {
-    return Array.isArray(v) ? v : [];
+  function pct(v, def = 0) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return def;
+    return Math.max(0, Math.round(n));
   }
 
-  function safeMoney(formatter, value) {
+  function formatMoney(value) {
     try {
-      if (typeof formatter === "function") return formatter(value || 0);
+      if (typeof money === "function") return `${money(value)} FCFA`;
     } catch (_) {}
-    return String(n(value, 0));
+    return `${Math.round(toNum(value, 0)).toLocaleString("fr-FR")} FCFA`;
   }
 
-  function pickNumber(...values) {
-    for (const v of values) {
-      const x = Number(v);
-      if (Number.isFinite(x)) return x;
-    }
-    return 0;
+  function normalizeText(text = "") {
+    return String(text || "")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, " ");
   }
 
-  function normalizeYcStats(raw) {
-    const src = raw && typeof raw === "object" ? raw : {};
+  function isStatsCommand(text = "") {
+    const t = normalizeText(text);
 
-    const growth = src.growth && typeof src.growth === "object" ? src.growth : {};
-    const usage = src.usage && typeof src.usage === "object" ? src.usage : {};
-    const monetization =
-      src.monetization && typeof src.monetization === "object"
-        ? src.monetization
-        : {};
-    const funnel = src.funnel && typeof src.funnel === "object" ? src.funnel : {};
-    const retention =
-      src.retention && typeof src.retention === "object" ? src.retention : {};
-
-    return {
-      growth: {
-        totalUsers: pickNumber(
-          growth.totalUsers,
-          src.users?.totalUsers,
-          src.users?.total
-        ),
-        active30: pickNumber(
-          growth.active30,
-          src.users?.active30
-        ),
-        active30Rate: pickNumber(growth.active30Rate),
-        active7: pickNumber(
-          growth.active7,
-          src.users?.active7
-        ),
-        active7Rate: pickNumber(growth.active7Rate),
-        estimatedNewUsers30: pickNumber(
-          growth.estimatedNewUsers30,
-          growth.newUsers30,
-          src.users?.newUsers30
-        ),
-      },
-
-      usage: {
-        docsTotal: pickNumber(
-          usage.docsTotal,
-          src.docs?.total,
-          src.docs?.generated,
-          src.docs?.created
-        ),
-        docs30d: pickNumber(
-          usage.docs30d,
-          src.docs?.last30,
-          src.docs?.docs30
-        ),
-        docs7d: pickNumber(
-          usage.docs7d,
-          src.docs?.last7,
-          src.docs?.docs7
-        ),
-        docsPerActive30User: pickNumber(usage.docsPerActive30User),
-      },
-
-      monetization: {
-        revenue30d: pickNumber(
-          monetization.revenue30d,
-          src.revenue?.month,
-          src.revenue?.est30
-        ),
-        payingUsers: pickNumber(
-          monetization.payingUsers,
-          src.users?.paid,
-          src.users?.usersRecharged
-        ),
-        usersZeroCredits: pickNumber(
-          monetization.usersZeroCredits,
-          src.conversion?.usersZeroCredits
-        ),
-        usersLowCredits: pickNumber(
-          monetization.usersLowCredits,
-          src.conversion?.usersLowCredits
-        ),
-      },
-
-      funnel: {
-        signupToActive30Rate: pickNumber(
-          funnel.signupToActive30Rate,
-          src.funnel?.signupToActive30Rate
-        ),
-        activeToCreatedRate: pickNumber(
-          funnel.activeToCreatedRate,
-          src.funnel?.activeToCreatedRate
-        ),
-        generatedToPaidRate: pickNumber(
-          funnel.generatedToPaidRate,
-          src.funnel?.generatedToPaidRate
-        ),
-      },
-
-      retention: {
-        retention7Approx: pickNumber(retention.retention7Approx),
-      },
-
-      topClients: arr(src.topClients),
-      topUsers: arr(src.topUsers),
-      alerts: arr(src.alerts),
-      insights: arr(src.insights),
-      priorityAction: txt(src.priorityAction),
-      summary: txt(src.summary),
-    };
-  }
-
-  function buildDashboardMessage(s) {
     return (
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 *KADI — DASHBOARD*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-
-      `📈 *TRACTION*\n` +
-      `Users total       ${n(s.growth.totalUsers)}\n` +
-      `Actifs 30j        ${n(s.growth.active30)} (${n(s.growth.active30Rate)}%)\n` +
-      `Actifs 7j         ${n(s.growth.active7)} (${n(s.growth.active7Rate)}%)\n` +
-      `Nouveaux ~30j     ${n(s.growth.estimatedNewUsers30)}\n\n` +
-
-      `⚡ *ACTIVATION / USAGE*\n` +
-      `Docs total        ${n(s.usage.docsTotal)}\n` +
-      `Docs 30j          ${n(s.usage.docs30d)}\n` +
-      `Docs 7j           ${n(s.usage.docs7d)}\n` +
-      `Docs/actif 30j    ${n(s.usage.docsPerActive30User)}\n\n` +
-
-      `💰 *MONÉTISATION*\n` +
-      `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
-      `Payants           ${n(s.monetization.payingUsers)}\n` +
-      `0 crédit          ${n(s.monetization.usersZeroCredits)}\n` +
-      `Crédits faibles   ${n(s.monetization.usersLowCredits)}\n\n` +
-
-      `🎯 *FUNNEL*\n` +
-      `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
-      `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
-      `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
-
-      `🔁 *RÉTENTION*\n` +
-      `Retour 7j/30j     ${n(s.retention.retention7Approx)}%\n\n` +
-
-      (s.alerts.length
-        ? `🚨 *ALERTES*\n${s.alerts.join("\n")}\n\n`
-        : "") +
-
-      `🧠 *INSIGHT*\n` +
-      `${txt(s.summary, "Aucun insight pour le moment.")}\n\n` +
-
-      `✅ *ACTION PRIORITAIRE*\n` +
-      `${txt(s.priorityAction, "Continuer à observer les métriques.")}\n\n` +
-
-      `━━━━━━━━━━━━━━━━━━━━`
+      t === "/stats" ||
+      t === "stats" ||
+      t === "dashboard" ||
+      t === "/dashboard" ||
+      t === "kpi" ||
+      t === "kpis" ||
+      t.startsWith("/stats ") ||
+      t.startsWith("stats ") ||
+      t.startsWith("dashboard ") ||
+      t.startsWith("/dashboard ")
     );
   }
 
-  function buildWeeklyReportMessage(s, analysis) {
-    const alerts = arr(analysis?.alerts);
-    const insights = arr(analysis?.insights);
+  function buildDashboard(stats = {}) {
+    const totalUsers =
+      toNum(stats?.growth?.totalUsers, null) ??
+      toNum(stats?.users?.totalUsers, 0);
+
+    const active30 =
+      toNum(stats?.growth?.active30, null) ??
+      toNum(stats?.users?.active30, 0);
+
+    const active7 =
+      toNum(stats?.growth?.active7, null) ??
+      toNum(stats?.users?.active7, 0);
+
+    const active30Rate =
+      pct(stats?.growth?.active30Rate, null) ??
+      pct(stats?.growth?.active30Rate, 0);
+
+    const active7Rate =
+      pct(stats?.growth?.active7Rate, null) ??
+      pct(stats?.growth?.active7Rate, 0);
+
+    const estimatedNewUsers30 =
+      toNum(stats?.growth?.estimatedNewUsers30, 0);
+
+    const docsTotal =
+      toNum(stats?.usage?.docsTotal, null) ??
+      toNum(stats?.docs?.total, 0);
+
+    const docs30 =
+      toNum(stats?.usage?.docs30d, null) ??
+      toNum(stats?.docs?.last30, 0);
+
+    const docs7 =
+      toNum(stats?.usage?.docs7d, null) ??
+      toNum(stats?.docs?.last7, 0);
+
+    const docsPerActive30 =
+      Number(stats?.usage?.docsPerActive30User ?? 0);
+
+    const revenue30 =
+      toNum(stats?.monetization?.revenue30d, null) ??
+      toNum(stats?.revenue?.month, 0);
+
+    const payingUsers =
+      toNum(stats?.monetization?.payingUsers, null) ??
+      toNum(stats?.users?.paid, 0);
+
+    const usersZeroCredits =
+      toNum(stats?.monetization?.usersZeroCredits, null) ??
+      toNum(stats?.conversion?.usersZeroCredits, 0);
+
+    const usersLowCredits =
+      toNum(stats?.monetization?.usersLowCredits, null) ??
+      toNum(stats?.conversion?.usersLowCredits, 0);
+
+    const signupToActive30Rate =
+      pct(stats?.funnel?.signupToActive30Rate, 0);
+
+    const activeToCreatedRate =
+      pct(stats?.funnel?.activeToCreatedRate, 0);
+
+    const generatedToPaidRate =
+      pct(stats?.funnel?.generatedToPaidRate, 0);
+
+    const retention7Approx =
+      pct(stats?.retention?.retention7Approx, 0);
+
+    const alerts = Array.isArray(stats?.alerts) ? stats.alerts : [];
+    const insights = Array.isArray(stats?.insights) ? stats.insights : [];
+    const priorityAction = safeText(
+      stats?.priorityAction,
+      "Continuer à améliorer la conversion vers le premier document."
+    );
+
+    let text = "";
+    text += "━━━━━━━━━━━━━━━━━━━━\n";
+    text += "📊 *KADI — DASHBOARD*\n";
+    text += "━━━━━━━━━━━━━━━━━━━━\n\n";
+
+    text += "📈 *TRACTION*\n";
+    text += `Users total       ${totalUsers}\n`;
+    text += `Actifs 30j        ${active30} (${active30Rate}%)\n`;
+    text += `Actifs 7j         ${active7} (${active7Rate}%)\n`;
+    text += `Nouveaux ~30j     ${estimatedNewUsers30}\n\n`;
+
+    text += "⚡ *ACTIVATION / USAGE*\n";
+    text += `Docs total        ${docsTotal}\n`;
+    text += `Docs 30j          ${docs30}\n`;
+    text += `Docs 7j           ${docs7}\n`;
+    text += `Docs/actif 30j    ${docsPerActive30.toFixed(2)}\n\n`;
+
+    text += "💰 *MONÉTISATION*\n";
+    text += `CA 30j            ${formatMoney(revenue30)}\n`;
+    text += `Payants           ${payingUsers}\n`;
+    text += `0 crédit          ${usersZeroCredits}\n`;
+    text += `Crédits faibles   ${usersLowCredits}\n\n`;
+
+    text += "🎯 *FUNNEL*\n";
+    text += `Signup→Actif      ${signupToActive30Rate}%\n`;
+    text += `Actif→Doc         ${activeToCreatedRate}%\n`;
+    text += `Doc→Payé          ${generatedToPaidRate}%\n\n`;
+
+    text += "🔁 *RÉTENTION*\n";
+    text += `Retour 7j/30j     ${retention7Approx}%\n\n`;
+
+    text += "🚨 *ALERTES*\n";
+    if (alerts.length) {
+      text += `${alerts.join("\n")}\n\n`;
+    } else {
+      text += "• Aucune alerte majeure\n\n";
+    }
+
+    text += "🧠 *INSIGHT*\n";
+    text += `${safeText(insights[0], safeText(stats?.summary, "Pas encore d’insight majeur."))}\n\n`;
+
+    text += "✅ *ACTION PRIORITAIRE*\n";
+    text += `${priorityAction}\n\n`;
+
+    text += "━━━━━━━━━━━━━━━━━━━━";
+
+    return text;
+  }
+
+  function buildTopClientsText(stats = {}) {
+    const rows = Array.isArray(stats?.topClients) ? stats.topClients : [];
+
+    if (!rows.length) {
+      return "🏆 *Top clients (30j)*\n\nAucune donnée disponible.";
+    }
 
     return (
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 *KADI — WEEKLY REPORT*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      "🏆 *Top clients (30j)*\n\n" +
+      rows
+        .slice(0, 5)
+        .map((row, idx) => {
+          const client = safeText(row?.client, "-");
+          const docs = toNum(row?.docs ?? row?.doc_count, 0);
+          const total = toNum(row?.total_fcfa ?? row?.total_sum, 0);
 
-      `📈 *TRACTION*\n` +
-      `Users total       ${n(s.growth.totalUsers)}\n` +
-      `Actifs 30j        ${n(s.growth.active30)}\n` +
-      `Actifs 7j         ${n(s.growth.active7)}\n\n` +
-
-      `⚡ *USAGE*\n` +
-      `Docs total        ${n(s.usage.docsTotal)}\n` +
-      `Docs 30j          ${n(s.usage.docs30d)}\n` +
-      `Docs 7j           ${n(s.usage.docs7d)}\n\n` +
-
-      `💰 *MONÉTISATION*\n` +
-      `CA 30j            ${safeMoney(money, s.monetization.revenue30d)} FCFA\n` +
-      `Payants           ${n(s.monetization.payingUsers)}\n` +
-      `0 crédit          ${n(s.monetization.usersZeroCredits)}\n\n` +
-
-      `🎯 *FUNNEL*\n` +
-      `Signup→Actif      ${n(s.funnel.signupToActive30Rate)}%\n` +
-      `Actif→Doc         ${n(s.funnel.activeToCreatedRate)}%\n` +
-      `Doc→Payé          ${n(s.funnel.generatedToPaidRate)}%\n\n` +
-
-      (alerts.length
-        ? `🚨 *ALERTES*\n${alerts.join("\n")}\n\n`
-        : "") +
-
-      `🧠 *INSIGHT*\n` +
-      `${txt(insights[0] || s.summary, "Rien de critique cette semaine.")}\n\n` +
-
-      `✅ *ACTION PRIORITAIRE*\n` +
-      `${txt(
-        analysis?.priorityAction || s.priorityAction,
-        "Continuer à observer les métriques."
-      )}\n\n` +
-
-      `━━━━━━━━━━━━━━━━━━━━`
+          return (
+            `${idx + 1}. ${client}\n` +
+            `   Docs: ${docs}\n` +
+            `   Total: ${formatMoney(total)}`
+          );
+        })
+        .join("\n\n")
     );
   }
 
-  async function handleStatsCommand(from) {
-    try {
-      const raw = await getStats();
-      const s = normalizeYcStats(raw);
-      const msg = buildDashboardMessage(s);
+  function buildTopUsersText(stats = {}) {
+    const rows = Array.isArray(stats?.topUsers) ? stats.topUsers : [];
 
-      await sendText(from, msg);
-      return true;
-    } catch (e) {
-      console.error("[KADI/STATS] error:", e);
-      await sendText(from, "⚠️ Impossible de charger les stats YC.");
-      return true;
+    if (!rows.length) {
+      return "👥 *Top utilisateurs (30j)*\n\nAucune donnée disponible.";
     }
+
+    return (
+      "👥 *Top utilisateurs (30j)*\n\n" +
+      rows
+        .slice(0, 5)
+        .map((row, idx) => {
+          const waId = safeText(row?.wa_id, "-");
+          const docs = toNum(row?.docs, 0);
+          const total = toNum(row?.total_fcfa, 0);
+
+          return (
+            `${idx + 1}. ${waId}\n` +
+            `   Docs: ${docs}\n` +
+            `   Total: ${formatMoney(total)}`
+          );
+        })
+        .join("\n\n")
+    );
   }
 
-  async function handleTopClientsCommand(from) {
-    try {
-      const raw = await getStats();
-      const s = normalizeYcStats(raw);
-      const rows = s.topClients;
+  function buildDetailsText(stats = {}) {
+    const ocrDocs30 = toNum(stats?.usage?.ocrDocs30d ?? stats?.docs?.ocrDocs30, 0);
+    const stampedDocs30 = toNum(
+      stats?.usage?.stampedDocs30d ?? stats?.docs?.stampedDocs30,
+      0
+    );
+    const totalValue30 = toNum(
+      stats?.usage?.totalDocumentValue30d ?? stats?.docs?.sum30,
+      0
+    );
+    const revenueGrowth30d = toNum(stats?.comparisons?.revenue30Growth, 0);
+    const docs7Growth = toNum(stats?.comparisons?.docs7Growth, 0);
+    const user30Growth = toNum(stats?.comparisons?.user30Growth, 0);
 
-      if (!rows.length) {
-        await sendText(from, "📭 Aucun client trouvé.");
-        return true;
-      }
-
-      let msg = "⭐ *TOP CLIENTS (30j)*\n\n";
-
-      rows.forEach((r, i) => {
-        msg += `${i + 1}. ${txt(r.client, "-")}\n`;
-        msg += `   Docs: ${n(r.docs || r.doc_count, 0)}\n`;
-        msg += `   Total: ${safeMoney(money, r.total_fcfa || r.total_sum)} FCFA\n\n`;
-      });
-
-      await sendText(from, msg.trim());
-      return true;
-    } catch (e) {
-      console.error("[KADI/TOP_CLIENTS] error:", e);
-      await sendText(from, "⚠️ Impossible de charger les top clients.");
-      return true;
-    }
+    return (
+      "📎 *Détails complémentaires*\n\n" +
+      `OCR 30j            ${ocrDocs30}\n` +
+      `Tampon 30j         ${stampedDocs30}\n` +
+      `Valeur docs 30j    ${formatMoney(totalValue30)}\n` +
+      `Croissance CA      ${revenueGrowth30d}%\n` +
+      `Croissance docs 7j ${docs7Growth}%\n` +
+      `Croissance users   ${user30Growth}%`
+    );
   }
 
-  async function handleTopUsersCommand(from) {
-    try {
-      const raw = await getStats();
-      const s = normalizeYcStats(raw);
-      const rows = s.topUsers;
+  async function handleStatsCommand(from, text) {
+    if (!isStatsCommand(text)) return false;
 
-      if (!rows.length) {
-        await sendText(from, "📭 Aucun utilisateur trouvé.");
-        return true;
-      }
+    const t = normalizeText(text);
 
-      let msg = "🔥 *TOP USERS*\n\n";
+    const stats = await getStats({
+      packCredits,
+      packPriceFcfa,
+    });
 
-      rows.forEach((r, i) => {
-        msg += `${i + 1}. ${txt(r.wa_id, "-")}\n`;
-        msg += `   Docs: ${n(r.docs || r.doc_count, 0)}\n`;
-        msg += `   Total: ${safeMoney(money, r.total_fcfa || r.total_sum)} FCFA\n\n`;
-      });
-
-      await sendText(from, msg.trim());
-      return true;
-    } catch (e) {
-      console.error("[KADI/TOP_USERS] error:", e);
-      await sendText(from, "⚠️ Impossible de charger les top users.");
+    if (t.includes("clients")) {
+      await sendText(from, buildTopClientsText(stats));
       return true;
     }
-  }
 
-  async function handleWeeklyReportCommand(from) {
-    try {
-      const raw = await getStats();
-      const s = normalizeYcStats(raw);
-
-      const fallbackAnalysis = {
-        alerts: s.alerts,
-        insights: s.insights,
-        priorityAction:
-          s.priorityAction || "Continuer à observer les métriques.",
-      };
-
-      const analysis =
-        typeof buildInsights === "function"
-          ? buildInsights(raw || s)
-          : fallbackAnalysis;
-
-      const msg = buildWeeklyReportMessage(s, analysis);
-
-      await sendText(from, msg);
-      return true;
-    } catch (e) {
-      console.error("[KADI/WEEKLY_REPORT] error:", e);
-      await sendText(from, "⚠️ Impossible de générer le weekly report.");
+    if (t.includes("users") || t.includes("utilisateurs")) {
+      await sendText(from, buildTopUsersText(stats));
       return true;
     }
-  }
 
-  async function handleExportExcelCommand(from) {
-    try {
-      if (typeof exportKadiExcel !== "function") {
-        await sendText(from, "⚠️ Export Excel non disponible.");
-        return true;
-      }
-
-      const filePath = await exportKadiExcel();
-      await sendText(from, `✅ Export Excel généré.\nFichier: ${filePath}`);
-      return true;
-    } catch (e) {
-      console.error("[KADI/EXPORT_EXCEL] error:", e);
-      await sendText(from, "⚠️ Impossible de générer l’export Excel.");
+    if (t.includes("details") || t.includes("détails")) {
+      await sendText(from, buildDashboard(stats));
+      await sendText(from, buildDetailsText(stats));
       return true;
     }
+
+    await sendText(from, buildDashboard(stats));
+
+    const topClients = buildTopClientsText(stats);
+    if (!topClients.includes("Aucune donnée disponible")) {
+      await sendText(from, topClients);
+    }
+
+    return true;
   }
 
   return {
     handleStatsCommand,
-    handleTopClientsCommand,
-    handleTopUsersCommand,
-    handleWeeklyReportCommand,
-    handleExportExcelCommand,
   };
 }
 
