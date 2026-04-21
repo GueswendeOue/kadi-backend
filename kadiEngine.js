@@ -126,6 +126,7 @@ const {
 
 const {
   createManualOrangeMoneyTopup,
+  markTopupProofTextReceived,
   markTopupProofImageReceived,
   approveTopup,
   rejectTopup,
@@ -521,6 +522,12 @@ const {
   safe,
   isValidWhatsAppId,
   normalizeAndValidateDraft,
+
+  // recharge
+  markTopupProofTextReceived,
+  getPendingTopupByWaId,
+  readTopup,
+  notifyAdminTopupReview,
 });
 
 // ===============================
@@ -916,7 +923,7 @@ async function handleTextMessage(from, text, msg) {
   const normalizedText = norm(text).toLowerCase().trim();
   console.log("[KADI/TEXT] raw:", text, "| norm:", normalizedText);
 
-  // 1) Commandes explicites d'abord (admin + user)
+  // 1) Commandes explicites d'abord
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
   const s = getSession(from);
@@ -933,7 +940,7 @@ async function handleTextMessage(from, text, msg) {
     hasIntent: !!s?.intent,
   });
 
-  // 2) Si on est dans un flow historique, on le laisse gérer d'abord
+  // 2) Historique en priorité si actif
   if (inHistoryFlow && !wantsGlobalInterrupt) {
     if (await handleHistoryText(from, text)) return true;
 
@@ -944,8 +951,7 @@ async function handleTextMessage(from, text, msg) {
     return true;
   }
 
-  // 3) Si un flow structuré est actif, il garde la priorité
-  // sauf si l'utilisateur tape une interruption globale explicite
+  // 3) Flows structurés actifs
   if (inStructuredFlow && !wantsGlobalInterrupt) {
     if (isIntentFixStep(s?.step)) {
       const handledIntentFix = await handleIntentFixText(from, text);
@@ -974,7 +980,7 @@ async function handleTextMessage(from, text, msg) {
   // 4) Historique libre
   if (await handleHistoryText(from, text)) return true;
 
-  // 5) Entrée directe flow FEC
+  // 5) Entrée directe FEC
   if (
     normalizedText.includes("facture electronique certifiee") ||
     normalizedText.includes("facture électronique certifiée") ||
@@ -985,10 +991,10 @@ async function handleTextMessage(from, text, msg) {
     return startCertifiedInvoiceFlow(from);
   }
 
-  // 6) Intentions produit prioritaires
+  // 6) Intentions prioritaires
   if (await handleUltraPriorityText(from, text)) return true;
 
-  // 7) Petit small talk
+  // 7) Small talk
   if (await handleSmallTalk(from, text)) return true;
 
   // 8) Correction guidée d’intent
@@ -1006,13 +1012,13 @@ async function handleTextMessage(from, text, msg) {
   // 9) Flow FEC si session ouverte
   if (await handleCertifiedInvoiceText(from, text)) return true;
 
-  // 10) Flows structurés
+  // 10) Flows structurés hors contexte
   if (await tryHandleDechargeConfirmation(from, text)) return true;
   if (await handleProfileText(from, text, msg)) return true;
   if (await handleStampFlow(from, text)) return true;
   if (await handleProductFlowText(from, text)) return true;
 
-  // 11) Onboarding seulement si on n’a pas déjà répondu
+  // 11) Onboarding si aucune réponse avant
   await maybeSendOnboarding(from);
 
   // 12) Compréhension naturelle
@@ -1043,7 +1049,6 @@ async function handleInteractiveMessage(from, msg) {
     );
     if (handledHistoryReply) return true;
 
-    // Compat: ancien ID + nouvel ID
     if (
       replyId === "DOC_FEC" ||
       replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE"

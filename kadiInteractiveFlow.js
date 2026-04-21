@@ -26,6 +26,7 @@ function makeKadiInteractiveFlow(deps) {
     sendRechargePaymentMethodMenu,
     sendOrangeMoneyInstructions,
     sendPispiInstructions,
+    sendHistoryHome = null,
 
     // draft helpers
     makeDraftMeta,
@@ -40,7 +41,6 @@ function makeKadiInteractiveFlow(deps) {
     startDocFlow,
     askItemLabel,
     tryHandleNaturalMessage,
-    handleSmartItemsBlockText,
 
     // OCR / PDF
     processOcrImageToDraft,
@@ -151,11 +151,6 @@ function makeKadiInteractiveFlow(deps) {
     if (!session) return;
     session.subjectReturnTarget = null;
     session.clientPhoneReturnTarget = null;
-  }
-
-  function sanitizePhone(value = "") {
-    const digits = String(value || "").replace(/\D/g, "");
-    return digits || null;
   }
 
   function resolveFieldReturnTarget(session, fallback = "after_product_menu") {
@@ -286,6 +281,16 @@ function makeKadiInteractiveFlow(deps) {
     return draft;
   }
 
+  function findRechargeOfferByAmount(amountFcfa) {
+    const amount = Number(amountFcfa);
+    if (!Number.isFinite(amount)) return null;
+
+    const offers = Object.values(getRechargeOffers?.() || {});
+    return (
+      offers.find((offer) => Number(offer?.amountFcfa) === amount) || null
+    );
+  }
+
   async function sendDraftBlockedMessage(from, checked) {
     const s = getSession(from);
     if (s) s.step = "doc_review";
@@ -301,8 +306,8 @@ function makeKadiInteractiveFlow(deps) {
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
-      { id: "DOC_RESTART", title: "🔁 Recommencer" },
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+      { id: "DOC_RESTART", title: "🔁 Refaire" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }
@@ -341,13 +346,12 @@ function makeKadiInteractiveFlow(deps) {
   async function sendEditModeHub(from) {
     await sendText(
       from,
-      "✏️ *Mode modification activé.*\n\n" +
-        "Choisissez comment vous voulez modifier ce document."
+      "✏️ *Mode modification activé.*\n\nChoisissez comment vous voulez modifier ce document."
     );
 
     await sendButtons(from, "Que voulez-vous faire ?", [
-      { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
-      { id: "DOC_EDIT_TEXT", title: "✍️ Corriger texte" },
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+      { id: "DOC_EDIT_TEXT", title: "✍️ Corriger" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }
@@ -375,6 +379,73 @@ function makeKadiInteractiveFlow(deps) {
     );
 
     await sendText(from, buildEditableDraftText(s.lastDocDraft));
+  }
+
+  async function sendHelpQuickActions(from) {
+    await sendText(
+      from,
+      `❓ *Aide rapide*\n\n` +
+        `Exemples :\n` +
+        `• Devis pour Moussa, 2 portes à 25000\n` +
+        `• Facture pour Awa, 5 pagnes à 3000\n` +
+        `• Reçu loyer 100000 pour Adama\n` +
+        `• Décharge pour prêt de 50000 à Issa`
+    );
+
+    await sendButtons(from, "Que voulez-vous faire maintenant ?", [
+      { id: "HOME_DOCS", title: "📄 Créer doc" },
+      { id: "HOME_OCR", title: "📷 Envoyer photo" },
+      { id: "BACK_HOME", title: "🏠 Menu" },
+    ]);
+  }
+
+  async function sendTutorialQuickActions(from) {
+    await sendText(
+      from,
+      `📚 *Exemples KADI*\n\n` +
+        `• Devis pour Moussa, 2 portes à 25000\n` +
+        `• Facture pour Awa, 5 pagnes à 3000\n` +
+        `• Reçu loyer avril 100000 pour Adama\n` +
+        `• Décharge pour prêt de 50000 à Issa\n\n` +
+        `Vous pouvez aussi envoyer un vocal ou une photo.`
+    );
+
+    await sendButtons(from, "Que voulez-vous faire maintenant ?", [
+      { id: "HOME_DOCS", title: "📄 Créer doc" },
+      { id: "HOME_OCR", title: "📷 Envoyer photo" },
+      { id: "BACK_HOME", title: "🏠 Menu" },
+    ]);
+  }
+
+  async function sendResumeAfterRecharge(to) {
+    const userSession = getSession(to);
+    const draft = userSession?.lastDocDraft || null;
+
+    if (!draft) {
+      return sendButtons(
+        to,
+        "✅ Vos crédits sont disponibles.\n\nQue voulez-vous faire maintenant ?",
+        [
+          { id: "HOME_DOCS", title: "📄 Créer doc" },
+          { id: "CREDITS_SOLDE", title: "💳 Solde" },
+          { id: "BACK_HOME", title: "🏠 Menu" },
+        ]
+      );
+    }
+
+    if (draft?.savedPdfMediaId || draft?.savedDocumentId) {
+      return sendAlreadyGeneratedMenu(to, draft);
+    }
+
+    return sendButtons(
+      to,
+      "✅ Vos crédits sont disponibles.\n\nVous pouvez reprendre votre document maintenant 👇",
+      [
+        { id: "DOC_FINISH", title: "📄 Aperçu" },
+        { id: "DOC_CONFIRM", title: "📤 PDF" },
+        { id: "BACK_HOME", title: "🏠 Menu" },
+      ]
+    );
   }
 
   function buildDraftFromIntent(intent) {
@@ -407,27 +478,6 @@ function makeKadiInteractiveFlow(deps) {
     };
   }
 
-  async function askSubjectQuestion(from, returnTarget = "finish_preview") {
-    const s = getSession(from);
-    if (!s?.lastDocDraft) {
-      await sendText(from, noDraftMessage());
-      return;
-    }
-
-    resetTransientProductState(s);
-    s.subjectReturnTarget = returnTarget;
-    s.step = "doc_subject_choice";
-
-    await sendButtons(
-      from,
-      "📝 Voulez-vous ajouter un objet au document ?\n\nExemple : Réparation voiture / Installation électrique",
-      [
-        { id: "DOC_ADD_SUBJECT", title: "Ajouter" },
-        { id: "DOC_SKIP_SUBJECT", title: "Ignorer" },
-      ]
-    );
-  }
-
   async function askClientPhoneQuestion(from, returnTarget = "finish_preview") {
     const s = getSession(from);
     if (!s?.lastDocDraft) {
@@ -439,14 +489,10 @@ function makeKadiInteractiveFlow(deps) {
     s.clientPhoneReturnTarget = returnTarget;
     s.step = "doc_client_phone_choice";
 
-    await sendButtons(
-      from,
-      "📱 Voulez-vous ajouter le numéro du client ?",
-      [
-        { id: "DOC_ADD_CLIENT_PHONE", title: "Ajouter" },
-        { id: "DOC_SKIP_CLIENT_PHONE", title: "Ignorer" },
-      ]
-    );
+    await sendButtons(from, "📱 Voulez-vous ajouter le numéro du client ?", [
+      { id: "DOC_ADD_CLIENT_PHONE", title: "Ajouter" },
+      { id: "DOC_SKIP_CLIENT_PHONE", title: "Ignorer" },
+    ]);
   }
 
   async function handleInteractiveReply(from, replyId) {
@@ -602,37 +648,19 @@ function makeKadiInteractiveFlow(deps) {
     }
 
     if (replyId === "HOME_TUTORIAL") {
-      await sendText(
-        from,
-        `📚 *Exemples KADI*\n\n` +
-          `• Devis pour Moussa, 2 portes à 25000\n` +
-          `• Facture pour Awa, 5 pagnes à 3000\n` +
-          `• Reçu loyer avril 100000 pour Adama\n` +
-          `• Décharge pour prêt de 50000 à Issa\n\n` +
-          `Vous pouvez aussi envoyer un vocal ou une photo.`
-      );
-      return;
+      return sendTutorialQuickActions(from);
     }
 
     if (replyId === "HOME_HELP") {
-      await sendText(
-        from,
-        `❓ *Aide rapide*\n\n` +
-          `Vous pouvez écrire naturellement :\n\n` +
-          `• Devis pour Moussa, 2 portes à 25000\n` +
-          `• Facture pour Awa, 5 pagnes à 3000\n` +
-          `• Reçu loyer 100000 pour Adama\n` +
-          `• Décharge pour prêt de 50000 à Issa\n\n` +
-          `Commandes utiles : MENU, PROFIL, SOLDE, RECHARGE`
-      );
-      return;
+      return sendHelpQuickActions(from);
     }
 
     if (replyId === "HOME_HISTORY") {
-      await sendText(
-        from,
-        "📚 L’historique arrive bientôt.\nTapez MENU pour continuer."
-      );
+      if (typeof sendHistoryHome === "function") {
+        return sendHistoryHome(from);
+      }
+
+      await sendText(from, "📚 Historique indisponible pour le moment.");
       return;
     }
 
@@ -641,7 +669,23 @@ function makeKadiInteractiveFlow(deps) {
       replyId === "RECHARGE_2000" ||
       replyId === "RECHARGE_5000"
     ) {
-      return sendRechargePacksMenu(from);
+      const amount = Number(replyId.replace("RECHARGE_", ""));
+      const offer = findRechargeOfferByAmount(amount);
+
+      if (!offer) {
+        return sendRechargePacksMenu(from);
+      }
+
+      resetTransientProductState(s);
+      s.pendingRechargePack = offer.id;
+      s.pendingRechargeAmount = offer.amountFcfa;
+      s.pendingRechargeCredits = offer.credits;
+      s.pendingRechargeIncludesStamp = false;
+      s.pendingTopupId = null;
+      s.pendingTopupReference = null;
+      s.pendingTopupMethod = null;
+
+      return sendRechargePaymentMethodMenu(from, offer);
     }
 
     // ===============================
@@ -885,7 +929,7 @@ function makeKadiInteractiveFlow(deps) {
       return sendButtons(from, "Que voulez-vous faire maintenant ?", [
         { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
         { id: "DOC_ADD_CLIENT_PHONE", title: "📱 Client" },
-        { id: "DOC_FINISH", title: "✅ Terminer" },
+        { id: "DOC_FINISH", title: "📄 Aperçu" },
       ]);
     }
 
@@ -933,22 +977,12 @@ function makeKadiInteractiveFlow(deps) {
 
       s.step = "doc_already_generated";
 
-      const delivery = await sendDocument({
-  to: clientWaId,
-  mediaId: draft.savedPdfMediaId,
-  filename:
-    draft.savedPdfFilename || `${draft.docNumber || "document"}.pdf`,
-  caption: clientCaption,
-});
+      await sendText(
+        from,
+        `✅ Document envoyé au client.\n📱 Numéro : +${clientWaId}`
+      );
 
-await sendText(
-  from,
-  `✅ Envoi lancé au client.\n` +
-    `📱 Numéro : +${clientWaId}\n` +
-    `🆔 Référence : ${delivery?.messageId || "-"}`
-);
-
-      await sendAlreadyGeneratedMenu(from);
+      await sendAlreadyGeneratedMenu(from, s.lastDocDraft);
       return;
     }
 
@@ -1233,9 +1267,7 @@ await sendText(
 
     if (replyId.startsWith("PAY_OM_")) {
       const amount = Number(replyId.replace("PAY_OM_", ""));
-      const offer = Object.values(getRechargeOffers()).find(
-        (x) => x.amountFcfa === amount
-      );
+      const offer = findRechargeOfferByAmount(amount);
 
       if (!offer) {
         await sendText(
@@ -1267,9 +1299,7 @@ await sendText(
 
     if (replyId.startsWith("PAY_PISPI_")) {
       const amount = Number(replyId.replace("PAY_PISPI_", ""));
-      const offer = Object.values(getRechargeOffers()).find(
-        (x) => x.amountFcfa === amount
-      );
+      const offer = findRechargeOfferByAmount(amount);
 
       if (!offer) {
         await sendText(
@@ -1297,7 +1327,7 @@ await sendText(
       s.step = "recharge_proof";
       await sendText(
         from,
-        "⏳ D’accord.\n\nEnvoyez maintenant :\n• le message de transaction\nOU\n• une capture d’écran du paiement."
+        "⏳ D’accord.\n\nEnvoyez maintenant :\n• le message de transaction\nOU\n• une capture d’écran du paiement\n\n✅ Après validation, vous reprendrez votre document."
       );
       return;
     }
@@ -1364,6 +1394,8 @@ await sendText(
         topup.wa_id,
         `✅ Paiement validé !\n\n🎉 ${topup.credits} crédits ajoutés à votre compte.`
       );
+
+      await sendResumeAfterRecharge(topup.wa_id);
       return;
     }
 
@@ -1543,7 +1575,7 @@ await sendText(
 
       if (finalDraft.savedDocumentId || finalDraft.savedPdfMediaId) {
         s.step = "doc_already_generated";
-        await sendAlreadyGeneratedMenu(from);
+        await sendAlreadyGeneratedMenu(from, finalDraft);
         return;
       }
 
@@ -1677,7 +1709,7 @@ await sendText(
       });
 
       s.step = "doc_already_generated";
-      await sendAlreadyGeneratedMenu(from);
+      await sendAlreadyGeneratedMenu(from, s.lastDocDraft);
       return;
     }
 

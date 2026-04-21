@@ -28,6 +28,12 @@ function makeKadiProductFlow(deps) {
     money,
     safe,
     normalizeAndValidateDraft,
+
+    // recharge
+    markTopupProofTextReceived,
+    getPendingTopupByWaId,
+    readTopup,
+    notifyAdminTopupReview,
   } = deps;
 
   function clonePlainDraft(draft) {
@@ -297,10 +303,17 @@ function makeKadiProductFlow(deps) {
 
         if (!label) issues.push("line_label_required");
         if (qty == null || qty <= 0) issues.push("line_qty_invalid");
-        if (unitPrice == null || unitPrice < 0)
+        if (unitPrice == null || unitPrice < 0) {
           issues.push("line_unit_price_invalid");
+        }
 
-        if (label && qty != null && qty > 0 && unitPrice != null && unitPrice >= 0) {
+        if (
+          label &&
+          qty != null &&
+          qty > 0 &&
+          unitPrice != null &&
+          unitPrice >= 0
+        ) {
           parsedItems.push(makeItem(label, Number(qty), Number(unitPrice)));
         }
 
@@ -364,7 +377,6 @@ function makeKadiProductFlow(deps) {
     s.lastDocDraft = checked.draft;
 
     const finalDraft = s.lastDocDraft;
-
     const preview =
       finalDraft.type === "decharge"
         ? buildDechargePreviewMessage({ doc: finalDraft, money })
@@ -536,12 +548,87 @@ function makeKadiProductFlow(deps) {
     return sendSafePreview(from, s.lastDocDraft);
   }
 
+  async function handleRechargeProofText(from, text) {
+    const s = getSession(from);
+    const rawText = String(text || "").trim();
+
+    if (s?.step !== "recharge_proof") return false;
+    if (!rawText) return true;
+
+    if (isCancelValue(rawText)) {
+      s.step = null;
+      await sendText(from, "✅ Recharge annulée.");
+      return true;
+    }
+
+    if (rawText.length < 6) {
+      await sendText(
+        from,
+        "⚠️ Preuve trop courte.\n\nEnvoyez le message complet de transaction Orange Money."
+      );
+      return true;
+    }
+
+    try {
+      let topup = null;
+
+      if (s?.pendingTopupId && typeof readTopup === "function") {
+        topup = await readTopup(s.pendingTopupId);
+      }
+
+      if (!topup && typeof getPendingTopupByWaId === "function") {
+        topup = await getPendingTopupByWaId(from);
+      }
+
+      if (!topup?.id) {
+        s.step = null;
+        await sendText(
+          from,
+          "❌ Je n’ai pas retrouvé de recharge en attente.\n\nTapez RECHARGE pour recommencer."
+        );
+        return true;
+      }
+
+      const updated = await markTopupProofTextReceived(topup.id, rawText);
+
+      s.pendingTopupId = updated?.id || topup.id;
+      s.pendingTopupReference = updated?.reference || topup.reference || null;
+      s.step = null;
+
+      await sendText(
+        from,
+        "⏳ Preuve reçue.\n\n" +
+          "Votre recharge est maintenant en attente de validation.\n" +
+          "Vous recevrez un message dès que ce sera validé."
+      );
+
+      if (typeof notifyAdminTopupReview === "function") {
+        await notifyAdminTopupReview(from, updated || topup, "text");
+      }
+
+      return true;
+    } catch (e) {
+      console.error("[KADI/RECHARGE/text_proof]", e);
+
+      await sendText(
+        from,
+        "⚠️ Je n’ai pas pu enregistrer votre preuve pour le moment.\n" +
+          "Réessayez en renvoyant le message de transaction."
+      );
+      return true;
+    }
+  }
+
   async function handleProductFlowText(from, text) {
     const s = getSession(from);
-    if (!s?.lastDocDraft) return false;
-
     const t = String(text || "").trim();
     if (!t) return false;
+
+    // ===== RECHARGE PROOF TEXT =====
+    const handledRechargeProof = await handleRechargeProofText(from, t);
+    if (handledRechargeProof) return true;
+
+    if (!s?.lastDocDraft) return false;
 
     // ===== STRUCTURED TEXT EDIT =====
     if (s.step === "doc_edit_text_waiting") {
