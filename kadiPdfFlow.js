@@ -41,6 +41,27 @@ function makeKadiPdfFlow(deps) {
     buildDechargeText,
   } = deps;
 
+  function clearPendingPdfCreditBlock(session) {
+    if (!session) return;
+    session.pendingPdfCreditBlock = false;
+    session.pendingPdfRequiredCredits = null;
+    session.pendingPdfBalance = null;
+    session.pendingPdfMissingCredits = null;
+  }
+
+  function setPendingPdfCreditBlock(session, balance, totalCost) {
+    if (!session) return;
+
+    const safeBalance = Number(balance || 0);
+    const safeTotalCost = Number(totalCost || 0);
+    const missing = Math.max(0, safeTotalCost - safeBalance);
+
+    session.pendingPdfCreditBlock = true;
+    session.pendingPdfRequiredCredits = safeTotalCost;
+    session.pendingPdfBalance = safeBalance;
+    session.pendingPdfMissingCredits = missing;
+  }
+
   async function applyStampAndSignatureIfAny(
     pdfBuffer,
     profile,
@@ -119,22 +140,31 @@ function makeKadiPdfFlow(deps) {
     await sendText(
       from,
       "⚠️ Il vous reste *1 crédit*.\n\n" +
-        "Après ce document, vous devrez recharger pour continuer avec KADI.\n" +
-        "💳 2000 FCFA = 25 crédits."
+        "Vous pouvez encore générer un document simple, mais pensez à recharger pour éviter le blocage au prochain PDF."
     );
   }
 
   async function sendNoCreditsBlock(from, balance, totalCost) {
+    const s = getSession(from);
+    const safeBalance = Number(balance || 0);
+    const safeTotalCost = Number(totalCost || 0);
+    const missing = Math.max(0, safeTotalCost - safeBalance);
+
+    setPendingPdfCreditBlock(s, safeBalance, safeTotalCost);
+
     await sendText(
       from,
-      "🚫 Vous n’avez pas assez de crédits.\n\n" +
-        `📄 Ce document coûte *${totalCost} crédit(s)*\n` +
-        `💳 Votre solde : *${balance || 0} crédit(s)*\n\n` +
-        "🔥 Pack conseillé pour continuer maintenant : *1000F = 10 crédits*"
+      "📄 *Votre document est prêt.*\n\n" +
+        `💳 Coût du PDF : *${safeTotalCost} crédit(s)*\n` +
+        `📦 Votre solde : *${safeBalance} crédit(s)*\n` +
+        `⚠️ Il vous manque : *${missing} crédit(s)*\n\n` +
+        "Rechargez maintenant pour recevoir votre document.\n" +
+        "✅ Votre document est déjà conservé."
     );
 
-    await sendButtons(from, "Choisissez une option 👇", [
-      { id: "CREDITS_RECHARGE", title: "🔄 Recharger" },
+    await sendButtons(from, "Choisissez un pack 👇", [
+      { id: "RECHARGE_1000", title: "1000F" },
+      { id: "RECHARGE_2000", title: "2000F" },
       { id: "DOC_CANCEL", title: "🏠 Menu" },
     ]);
   }
@@ -371,8 +401,6 @@ function makeKadiPdfFlow(deps) {
       });
 
       finalDraft.savedDocumentId = saved?.id || "generated";
-      successAfterDebit = true;
-
       finalDraft.savedPdfMediaId = up.id;
       finalDraft.savedPdfFilename = fileName;
       finalDraft.savedPdfCaption =
@@ -387,6 +415,9 @@ function makeKadiPdfFlow(deps) {
         filename: finalDraft.savedPdfFilename,
         caption: finalDraft.savedPdfCaption,
       });
+
+      successAfterDebit = true;
+      clearPendingPdfCreditBlock(s);
 
       if (finalDraft.type === "devis") {
         try {
@@ -474,7 +505,7 @@ function makeKadiPdfFlow(deps) {
             { id: "DOC_CANCEL", title: "🏠 Menu" },
           ]
         : [
-            { id: "DOC_RESTART", title: "📤 Nouveau doc" },
+            { id: "DOC_RESTART", title: "📤 Nouveau" },
             { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
             { id: "DOC_CANCEL", title: "🏠 Menu" },
           ];
