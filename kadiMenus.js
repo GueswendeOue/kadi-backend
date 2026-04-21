@@ -20,29 +20,25 @@ function makeKadiMenus(deps) {
     return !!String(draft?.savedPdfMediaId || "").trim();
   }
 
-  // ======================================================
-  // HOME MENU
-  // ======================================================
+  function clip(value = "", max = 24) {
+    return String(value || "").trim().slice(0, max);
+  }
+
   async function sendHomeMenu(to) {
     return sendList(to, {
       body:
-        "👋 Bienvenue dans le menu KADI\n\n" +
-        "Choisissez simplement ce que vous voulez faire",
-      buttonText: "Ouvrir le menu",
-      footer: "Appuyez sur un élément pour continuer",
+        "👋 Bienvenue sur KADI\n\n" +
+        "Choisissez l’action la plus simple pour commencer.",
+      buttonText: "Ouvrir",
+      footer: "Créez un document ou envoyez une photo",
       sections: [
         {
-          title: "Documents",
+          title: "Commencer",
           rows: [
             {
               id: "DOC_FACTURE_MENU",
               title: "📄 Facture",
               description: "Créer une facture",
-            },
-            {
-              id: "DOC_FEC",
-              title: "⚡ FEC",
-              description: "Facture Électronique Certifiée",
             },
             {
               id: "DOC_DEVIS",
@@ -55,9 +51,14 @@ function makeKadiMenus(deps) {
               description: "Créer un reçu",
             },
             {
-              id: "DOC_DECHARGE",
-              title: "📝 Décharge",
-              description: "Créer une décharge officielle",
+              id: "HOME_OCR",
+              title: "📷 Photo / OCR",
+              description: "Transformer une photo en document",
+            },
+            {
+              id: "HOME_HISTORY",
+              title: "📚 Historique",
+              description: "Voir vos documents récents",
             },
           ],
         },
@@ -67,7 +68,7 @@ function makeKadiMenus(deps) {
             {
               id: "CREDITS_SOLDE",
               title: "💳 Crédits",
-              description: "Voir mon solde",
+              description: "Voir votre solde",
             },
             {
               id: "CREDITS_RECHARGE",
@@ -77,22 +78,22 @@ function makeKadiMenus(deps) {
             {
               id: "HOME_PROFILE",
               title: "🏢 Profil",
-              description: "Voir ou modifier mon profil",
-            },
-            {
-              id: "HOME_HISTORY",
-              title: "📚 Historique",
-              description: "Voir mes documents récents",
+              description: "Voir ou modifier votre profil",
             },
           ],
         },
         {
-          title: "Assistance",
+          title: "Plus",
           rows: [
             {
+              id: "DOC_DECHARGE",
+              title: "📝 Décharge",
+              description: "Créer une décharge",
+            },
+            {
               id: "HOME_HELP",
-              title: "❓ Aide & tuto",
-              description: "Guide, exemples et aide rapide",
+              title: "❓ Aide",
+              description: "Exemples et aide rapide",
             },
           ],
         },
@@ -100,16 +101,13 @@ function makeKadiMenus(deps) {
     });
   }
 
-  // ======================================================
-  // DOCS MENU
-  // ======================================================
   async function sendDocsMenu(to) {
     return sendList(to, {
       body:
-        "📄 Choisissez le type de document à créer\n\n" +
-        "Vous pouvez aussi écrire votre demande directement à KADI.",
+        "📄 Choisissez le type de document à créer.\n\n" +
+        "Vous pouvez aussi envoyer directement une photo ou écrire votre demande.",
       buttonText: "Choisir",
-      footer: "Sélectionnez un document",
+      footer: "Sélectionnez une option",
       sections: [
         {
           title: "Documents",
@@ -118,11 +116,6 @@ function makeKadiMenus(deps) {
               id: "DOC_FACTURE_MENU",
               title: "📄 Facture",
               description: "Définitive ou proforma",
-            },
-            {
-              id: "DOC_FEC",
-              title: "⚡ FEC",
-              description: "Facture Électronique Certifiée",
             },
             {
               id: "DOC_DEVIS",
@@ -135,9 +128,19 @@ function makeKadiMenus(deps) {
               description: "Confirmer un paiement",
             },
             {
+              id: "HOME_OCR",
+              title: "📷 Photo / OCR",
+              description: "Lire une photo et préparer un document",
+            },
+            {
               id: "DOC_DECHARGE",
               title: "📝 Décharge",
               description: "Créer une décharge",
+            },
+            {
+              id: "DOC_FEC",
+              title: "⚡ FEC",
+              description: "Facture Électronique Certifiée",
             },
           ],
         },
@@ -145,16 +148,13 @@ function makeKadiMenus(deps) {
     });
   }
 
-  // ======================================================
-  // FACTURE CATALOG MENU
-  // ======================================================
   async function sendFactureCatalogMenu(to) {
     return sendList(to, {
       body:
-        "📄 Choisissez le type de facture\n\n" +
+        "📄 Choisissez le type de facture.\n\n" +
         "Sélectionnez l’option qui correspond à votre besoin.",
       buttonText: "Choisir",
-      footer: "Sélectionnez une option",
+      footer: "Facture définitive ou proforma",
       sections: [
         {
           title: "Factures",
@@ -180,25 +180,18 @@ function makeKadiMenus(deps) {
     });
   }
 
-  // ======================================================
-  // CREDITS MENU
-  // ======================================================
   async function sendCreditsMenu(to) {
     return sendButtons(
       to,
-      `💳 *Crédits KADI*\n\n` +
-        `Consultez votre solde ou rechargez votre compte 👇`,
+      "💳 *Crédits KADI*\n\nConsultez votre solde ou rechargez votre compte 👇",
       [
-        { id: "CREDITS_SOLDE", title: "💰 Mon solde" },
+        { id: "CREDITS_SOLDE", title: "💰 Solde" },
         { id: "CREDITS_RECHARGE", title: "🔄 Recharger" },
         { id: "BACK_HOME", title: "🏠 Menu" },
       ]
     );
   }
 
-  // ======================================================
-  // PROFILE MENU
-  // ======================================================
   async function sendProfileMenu(to) {
     const p = await getOrCreateProfile(to);
 
@@ -211,9 +204,7 @@ function makeKadiMenus(deps) {
 
     return sendButtons(
       to,
-      `👤 *Profil entreprise*\n\n` +
-        `${stampStatus}\n\n` +
-        `Gérez vos informations ci-dessous 👇`,
+      `👤 *Profil entreprise*\n\n${stampStatus}\n\nGérez vos informations ci-dessous 👇`,
       [
         { id: "PROFILE_EDIT", title: "✏️ Modifier" },
         { id: "PROFILE_STAMP", title: "🟦 Tampon" },
@@ -222,14 +213,10 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ======================================================
-  // FACTURE KIND MENU
-  // ======================================================
   async function sendFactureKindMenu(to) {
     return sendButtons(
       to,
-      `📄 *Type de facture*\n\n` +
-        `Choisissez une option 👇`,
+      "📄 *Type de facture*\n\nChoisissez une option 👇",
       [
         { id: "FAC_DEFINITIVE", title: "✅ Définitive" },
         { id: "FAC_PROFORMA", title: "📄 Proforma" },
@@ -238,9 +225,6 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ======================================================
-  // PREVIEW MENU
-  // ======================================================
   async function sendPreviewMenu(to, draft = null) {
     const subjectExists = hasSubject(draft);
     const phoneExists = hasClientPhone(draft);
@@ -249,11 +233,10 @@ function makeKadiMenus(deps) {
     if (typeof sendList !== "function") {
       return sendButtons(
         to,
-        `📄 *Vérifiez votre document*\n\n` +
-          `Tout est correct ?`,
+        "📄 *Vérifiez votre document*\n\nVous pouvez générer le PDF ou ajouter un détail.",
         [
-          { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
-          { id: "DOC_ADD_MORE", title: "➕ Ajouter ligne" },
+          { id: "DOC_CONFIRM", title: "📤 PDF" },
+          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
           { id: "DOC_CANCEL", title: "🏠 Menu" },
         ]
       );
@@ -282,29 +265,29 @@ function makeKadiMenus(deps) {
             {
               id: "DOC_SEND_TO_CLIENT",
               title: "📨 Envoyer au client",
-              description: "Envoyer le document au numéro du client",
+              description: "Envoyer ce PDF au numéro du client",
             },
           ]
         : [];
 
     const sections = [
       {
-        title: "Actions principales",
+        title: "Actions",
         rows: [
           {
             id: "DOC_CONFIRM",
-            title: "📤 Envoyer PDF",
+            title: "📤 Générer PDF",
             description: "Générer et envoyer le PDF maintenant",
           },
           {
             id: "DOC_ADD_MORE",
             title: "➕ Ajouter ligne",
-            description: "Ajouter une nouvelle ligne au document",
+            description: "Ajouter une nouvelle ligne",
           },
           {
             id: "DOC_EDIT_TEXT",
             title: "✍️ Corriger texte",
-            description: "Recevoir le document en texte puis le corriger",
+            description: "Recevoir le document en texte puis corriger",
           },
         ],
       },
@@ -335,38 +318,27 @@ function makeKadiMenus(deps) {
     return sendList(to, {
       body:
         "📄 Vérifiez votre document\n\n" +
-        "Tout est correct ? Vous pouvez envoyer le PDF ou enrichir le document.",
-      buttonText: "Choisir une action",
-      footer: "Envoyez le PDF ou ajoutez des détails optionnels",
+        "S’il est correct, générez le PDF maintenant.",
+      buttonText: "Choisir",
+      footer: "Vous pouvez aussi enrichir le document avant génération",
       sections,
     });
   }
 
-  // ======================================================
-  // AFTER PRODUCT MENU
-  // ======================================================
   async function sendAfterProductMenu(to, draft = null) {
     void draft;
 
-    return sendButtons(
-      to,
-      "Que voulez-vous faire maintenant ?",
-      [
-        { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
-        { id: "DOC_FINISH", title: "✅ Terminer" },
-        { id: "DOC_CANCEL", title: "🏠 Menu" },
-      ]
-    );
+    return sendButtons(to, "Que voulez-vous faire maintenant ?", [
+      { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+      { id: "DOC_FINISH", title: "📄 Aperçu" },
+      { id: "DOC_CANCEL", title: "🏠 Menu" },
+    ]);
   }
 
-  // ======================================================
-  // RECEIPT FORMAT MENU
-  // ======================================================
   async function sendReceiptFormatMenu(to) {
     return sendButtons(
       to,
-      `🧾 *Format du reçu*\n\n` +
-        `Choisissez une option 👇`,
+      "🧾 *Format du reçu*\n\nChoisissez une option 👇",
       [
         { id: "RECEIPT_FORMAT_COMPACT", title: "🎫 Ticket" },
         { id: "RECEIPT_FORMAT_A4", title: "📄 A4" },
@@ -375,16 +347,20 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ======================================================
-  // STAMP MENUS
-  // ======================================================
   async function sendStampMenu(to) {
+    const p = await getOrCreateProfile(to);
+    const isEnabled = p?.stamp_enabled === true;
+
     return sendButtons(
       to,
       `🟦 *Tampon officiel*\n\n` +
+        `${isEnabled ? "Statut : activé" : "Statut : désactivé"}\n\n` +
         `Le tampon peut être ajouté sur vos documents PDF.`,
       [
-        { id: "STAMP_TOGGLE", title: "✅ Activer" },
+        {
+          id: "STAMP_TOGGLE",
+          title: isEnabled ? "⛔ Désactiver" : "✅ Activer",
+        },
         { id: "STAMP_MORE", title: "⚙️ Options" },
         { id: "BACK_HOME", title: "🏠 Menu" },
       ]
@@ -394,8 +370,7 @@ function makeKadiMenus(deps) {
   async function sendStampMoreMenu(to) {
     return sendButtons(
       to,
-      `⚙️ *Options du tampon*\n\n` +
-        `Choisissez ce que vous voulez modifier.`,
+      "⚙️ *Options du tampon*\n\nChoisissez ce que vous voulez modifier.",
       [
         { id: "STAMP_EDIT_TITLE", title: "✏️ Titre" },
         { id: "STAMP_POS", title: "📍 Position" },
@@ -407,8 +382,7 @@ function makeKadiMenus(deps) {
   async function sendStampPositionMenu(to) {
     return sendButtons(
       to,
-      `📍 *Position du tampon*\n\n` +
-        `Choisissez une position.`,
+      "📍 *Position du tampon*\n\nChoisissez une position.",
       [
         { id: "STAMP_POS_BR", title: "↘️ Bas droite" },
         { id: "STAMP_POS_BL", title: "↙️ Bas gauche" },
@@ -420,8 +394,7 @@ function makeKadiMenus(deps) {
   async function sendStampPositionMenu2(to) {
     return sendButtons(
       to,
-      `📍 *Autre position*\n\n` +
-        `Choisissez une autre position.`,
+      "📍 *Autre position*\n\nChoisissez une autre position.",
       [
         { id: "STAMP_POS_TL", title: "↖️ Haut gauche" },
         { id: "PROFILE_STAMP", title: "🟦 Retour" },
@@ -433,8 +406,7 @@ function makeKadiMenus(deps) {
   async function sendStampSizeMenu(to) {
     return sendButtons(
       to,
-      `📏 *Taille du tampon*\n\n` +
-        `Choisissez la taille.`,
+      "📏 *Taille du tampon*\n\nChoisissez la taille.",
       [
         { id: "STAMP_SIZE_S", title: "S — Petit" },
         { id: "STAMP_SIZE_M", title: "M — Moyen" },
@@ -443,14 +415,10 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ======================================================
-  // PRE-GENERATE STAMP
-  // ======================================================
   async function sendPreGenerateStampMenu(to) {
     return sendButtons(
       to,
-      `🟦 *Ajouter le tampon ?*\n\n` +
-        `Le tampon rend votre document plus crédible.`,
+      "🟦 *Ajouter le tampon ?*\n\nLe tampon rend votre document plus crédible.",
       [
         { id: "PRESTAMP_ADD_ONCE", title: "🟦 Oui" },
         { id: "PRESTAMP_SKIP", title: "⏭️ Ignorer" },
@@ -459,9 +427,6 @@ function makeKadiMenus(deps) {
     );
   }
 
-  // ======================================================
-  // ALREADY GENERATED
-  // ======================================================
   async function sendAlreadyGeneratedMenu(to, draft = null) {
     const hasPhone = hasClientPhone(draft);
     const hasPdf = hasGeneratedPdf(draft);
@@ -469,8 +434,7 @@ function makeKadiMenus(deps) {
     if (hasPhone && hasPdf) {
       return sendButtons(
         to,
-        `📄 *Ce document existe déjà.*\n\n` +
-          `Que voulez-vous faire ?`,
+        "📄 *Ce document existe déjà.*\n\nQue voulez-vous faire ?",
         [
           { id: "DOC_SEND_TO_CLIENT", title: "📨 Client" },
           { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
@@ -481,8 +445,7 @@ function makeKadiMenus(deps) {
 
     return sendButtons(
       to,
-      `📄 *Ce document existe déjà.*\n\n` +
-        `Que voulez-vous faire ?`,
+      "📄 *Ce document existe déjà.*\n\nQue voulez-vous faire ?",
       [
         { id: "DOC_RESEND_LAST_PDF", title: "📩 Renvoyer" },
         { id: "DOC_EDIT_AFTER_GENERATED", title: "✏️ Modifier" },
