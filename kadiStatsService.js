@@ -169,7 +169,10 @@ function makeKadiStatsService(deps) {
     }
 
     text += "🧠 *INSIGHT*\n";
-    text += `${safeText(insights[0], safeText(stats?.summary, "Pas encore d’insight majeur."))}\n\n`;
+    text += `${safeText(
+      insights[0],
+      safeText(stats?.summary, "Pas encore d’insight majeur.")
+    )}\n\n`;
 
     text += "✅ *ACTION PRIORITAIRE*\n";
     text += `${priorityAction}\n\n`;
@@ -179,15 +182,47 @@ function makeKadiStatsService(deps) {
     return text;
   }
 
+  function buildTopUsersText(stats = {}) {
+    const rows = Array.isArray(stats?.topUsers) ? stats.topUsers : [];
+
+    if (!rows.length) {
+      return "🏆 *Top users (30j)*\n\nAucune donnée disponible.";
+    }
+
+    return (
+      "🏆 *Top users (30j)*\n\n" +
+      rows
+        .slice(0, 5)
+        .map((row, idx) => {
+          const userLabel = safeText(
+            row?.user,
+            safeText(
+              row?.business_name,
+              safeText(row?.owner_name, safeText(row?.wa_id, "-"))
+            )
+          );
+          const docs = toNum(row?.docs, 0);
+          const total = toNum(row?.total_fcfa, 0);
+
+          return (
+            `${idx + 1}. ${userLabel}\n` +
+            `   Docs: ${docs}\n` +
+            `   Total: ${formatMoney(total)}`
+          );
+        })
+        .join("\n\n")
+    );
+  }
+
   function buildTopClientsText(stats = {}) {
     const rows = Array.isArray(stats?.topClients) ? stats.topClients : [];
 
     if (!rows.length) {
-      return "🏆 *Top clients (30j)*\n\nAucune donnée disponible.";
+      return "📄 *Top clients des docs (30j)*\n\nAucune donnée disponible.";
     }
 
     return (
-      "🏆 *Top clients (30j)*\n\n" +
+      "📄 *Top clients des docs (30j)*\n\n" +
       rows
         .slice(0, 5)
         .map((row, idx) => {
@@ -205,34 +240,11 @@ function makeKadiStatsService(deps) {
     );
   }
 
-  function buildTopUsersText(stats = {}) {
-    const rows = Array.isArray(stats?.topUsers) ? stats.topUsers : [];
-
-    if (!rows.length) {
-      return "👥 *Top utilisateurs (30j)*\n\nAucune donnée disponible.";
-    }
-
-    return (
-      "👥 *Top utilisateurs (30j)*\n\n" +
-      rows
-        .slice(0, 5)
-        .map((row, idx) => {
-          const waId = safeText(row?.wa_id, "-");
-          const docs = toNum(row?.docs, 0);
-          const total = toNum(row?.total_fcfa, 0);
-
-          return (
-            `${idx + 1}. ${waId}\n` +
-            `   Docs: ${docs}\n` +
-            `   Total: ${formatMoney(total)}`
-          );
-        })
-        .join("\n\n")
-    );
-  }
-
   function buildDetailsText(stats = {}) {
-    const ocrDocs30 = toNum(stats?.usage?.ocrDocs30d ?? stats?.docs?.ocrDocs30, 0);
+    const ocrDocs30 = toNum(
+      stats?.usage?.ocrDocs30d ?? stats?.docs?.ocrDocs30,
+      0
+    );
     const stampedDocs30 = toNum(
       stats?.usage?.stampedDocs30d ?? stats?.docs?.stampedDocs30,
       0
@@ -279,14 +291,20 @@ function makeKadiStatsService(deps) {
     if (t.includes("details") || t.includes("détails")) {
       await sendText(from, buildDashboard(stats));
       await sendText(from, buildDetailsText(stats));
+
+      const topUsers = buildTopUsersText(stats);
+      if (!topUsers.includes("Aucune donnée disponible")) {
+        await sendText(from, topUsers);
+      }
+
       return true;
     }
 
     await sendText(from, buildDashboard(stats));
 
-    const topClients = buildTopClientsText(stats);
-    if (!topClients.includes("Aucune donnée disponible")) {
-      await sendText(from, topClients);
+    const topUsers = buildTopUsersText(stats);
+    if (!topUsers.includes("Aucune donnée disponible")) {
+      await sendText(from, topUsers);
     }
 
     return true;

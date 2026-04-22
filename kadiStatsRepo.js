@@ -64,6 +64,49 @@ function lowerReason(row) {
   return safeStr(row?.reason, "").toLowerCase();
 }
 
+function uniqStrings(values = []) {
+  return Array.from(
+    new Set(
+      ensureArray(values)
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function chunkArray(arr = [], size = 200) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
+  }
+  return out;
+}
+
+function maskWaId(waId = "") {
+  const digits = String(waId || "").replace(/\D/g, "");
+
+  if (!digits) return "inconnu";
+  if (digits.length <= 4) return digits;
+  if (digits.length <= 8) {
+    return `${digits.slice(0, 2)}****${digits.slice(-2)}`;
+  }
+
+  return `${digits.slice(0, 4)}****${digits.slice(-3)}`;
+}
+
+function buildUserDisplayName(profile = null, waId = "") {
+  const businessName = safeStr(profile?.business_name, "");
+  if (businessName) return businessName;
+
+  const ownerName = safeStr(profile?.owner_name, "");
+  if (ownerName) return ownerName;
+
+  const profileName = safeStr(profile?.profile_name, "");
+  if (profileName) return profileName;
+
+  return `User ${maskWaId(waId)}`;
+}
+
 // ===============================
 // Supabase helpers with pagination
 // ===============================
@@ -135,6 +178,38 @@ async function safeTableExistsFetch(fn, fallback = null) {
   } catch (_) {
     return fallback;
   }
+}
+
+async function fetchBusinessProfilesByWaIds(waIds = []) {
+  const ids = uniqStrings(waIds);
+  const map = new Map();
+
+  if (!ids.length) return map;
+
+  for (const batch of chunkArray(ids, 200)) {
+    const rows = await safeTableExistsFetch(
+      () =>
+        fetchRows(
+          "business_profiles",
+          "*",
+          [{ op: "in", column: "wa_id", value: batch }],
+          "created_at",
+          false
+        ),
+      []
+    );
+
+    for (const row of ensureArray(rows)) {
+      const waId = safeStr(row?.wa_id, "");
+      if (!waId) continue;
+
+      if (!map.has(waId)) {
+        map.set(waId, row);
+      }
+    }
+  }
+
+  return map;
 }
 
 // ===============================
@@ -245,6 +320,77 @@ function isPaidCreditTx(row) {
     reason.includes("topup") ||
     reason.includes("recharge")
   );
+}
+
+// ===============================
+// Ranking helpers
+// ===============================
+function buildTopClientsFromRows(rows = [], limit = 5) {
+  const topClientsMap = new Map();
+
+  for (const row of ensureArray(rows)) {
+    const { key, display } = normalizeClientName(row?.client);
+    if (key === "-") continue;
+
+    const cur = topClientsMap.get(key) || {
+      client: display,
+      docs: 0,
+      total_fcfa: 0,
+    };
+
+    cur.docs += 1;
+    cur.total_fcfa += toNum(row?.total, 0);
+    topClientsMap.set(key, cur);
+  }
+
+  return Array.from(topClientsMap.values())
+    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
+    .slice(0, limit)
+    .map((row) => ({
+      client: row.client,
+      docs: row.docs,
+      total_fcfa: Math.round(row.total_fcfa),
+    }));
+}
+
+async function buildTopUsersFromRows(rows = [], limit = 5) {
+  const topUsersMap = new Map();
+
+  for (const row of ensureArray(rows)) {
+    const waId = safeStr(row?.wa_id, "");
+    if (!waId) continue;
+
+    const cur = topUsersMap.get(waId) || {
+      wa_id: waId,
+      docs: 0,
+      total_fcfa: 0,
+    };
+
+    cur.docs += 1;
+    cur.total_fcfa += toNum(row?.total, 0);
+    topUsersMap.set(waId, cur);
+  }
+
+  const ranked = Array.from(topUsersMap.values())
+    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
+    .slice(0, limit);
+
+  const profileMap = await fetchBusinessProfilesByWaIds(
+    ranked.map((row) => row.wa_id)
+  );
+
+  return ranked.map((row) => {
+    const profile = profileMap.get(row.wa_id) || null;
+
+    return {
+      wa_id: row.wa_id,
+      user: buildUserDisplayName(profile, row.wa_id),
+      business_name: safeStr(profile?.business_name, "") || null,
+      owner_name: safeStr(profile?.owner_name, "") || null,
+      docs: row.docs,
+      total_fcfa: Math.round(row.total_fcfa),
+    };
+  });
 }
 
 // ===============================
@@ -455,52 +601,10 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   );
 
   // ===============================
-  // TOP CLIENTS
+  // TOPS
   // ===============================
-  const topClientsMap = new Map();
-
-  for (const row of docsRows30) {
-    const { key, display } = normalizeClientName(row?.client);
-    if (key === "-") continue;
-
-    const cur = topClientsMap.get(key) || {
-      client: display,
-      docs: 0,
-      total_fcfa: 0,
-    };
-
-    cur.docs += 1;
-    cur.total_fcfa += toNum(row?.total, 0);
-    topClientsMap.set(key, cur);
-  }
-
-  const topClients = Array.from(topClientsMap.values())
-    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
-    .slice(0, 5);
-
-  // ===============================
-  // TOP USERS
-  // ===============================
-  const topUsersMap = new Map();
-
-  for (const row of docsRows30) {
-    const waId = safeStr(row?.wa_id, "");
-    if (!waId) continue;
-
-    const cur = topUsersMap.get(waId) || {
-      wa_id: waId,
-      docs: 0,
-      total_fcfa: 0,
-    };
-
-    cur.docs += 1;
-    cur.total_fcfa += toNum(row?.total, 0);
-    topUsersMap.set(waId, cur);
-  }
-
-  const topUsers = Array.from(topUsersMap.values())
-    .sort((a, b) => b.docs - a.docs || b.total_fcfa - a.total_fcfa)
-    .slice(0, 5);
+  const topUsers = await buildTopUsersFromRows(docsRows30, 5);
+  const topClients = buildTopClientsFromRows(docsRows30, 5);
 
   // ===============================
   // REVENUE / PAYING USERS
@@ -684,8 +788,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       user30Growth,
     },
 
-    topClients,
     topUsers,
+    topClients,
 
     alerts: insights.alerts,
     insights: insights.insights,
@@ -746,6 +850,21 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
 }
 
 // ===============================
+// Top users
+// ===============================
+async function getTopUsers({ days = 30, limit = 5 } = {}) {
+  const fromISO = isoDaysAgo(days);
+
+  const rows = await fetchRows(
+    "kadi_documents",
+    "wa_id,total,created_at",
+    [{ op: "gte", column: "created_at", value: fromISO }]
+  );
+
+  return buildTopUsersFromRows(rows, limit);
+}
+
+// ===============================
 // Top clients
 // ===============================
 async function getTopClients({ days = 30, limit = 5 } = {}) {
@@ -757,31 +876,13 @@ async function getTopClients({ days = 30, limit = 5 } = {}) {
     [{ op: "gte", column: "created_at", value: fromISO }]
   );
 
-  const map = new Map();
+  const ranked = buildTopClientsFromRows(rows, limit);
 
-  for (const r of ensureArray(rows)) {
-    const { key, display } = normalizeClientName(r?.client);
-    const total = toNum(r?.total, 0);
-
-    const cur = map.get(key) || {
-      client: display,
-      doc_count: 0,
-      total_sum: 0,
-    };
-
-    cur.doc_count += 1;
-    cur.total_sum += total;
-    map.set(key, cur);
-  }
-
-  return Array.from(map.values())
-    .sort((a, b) => b.doc_count - a.doc_count || b.total_sum - a.total_sum)
-    .slice(0, limit)
-    .map((r) => ({
-      client: r.client,
-      doc_count: r.doc_count,
-      total_sum: Math.round(r.total_sum),
-    }));
+  return ranked.map((row) => ({
+    client: row.client,
+    doc_count: row.docs,
+    total_sum: Math.round(row.total_fcfa),
+  }));
 }
 
 // ===============================
@@ -839,6 +940,7 @@ async function getDocsForExport({ days = 30 } = {}) {
 
 module.exports = {
   getStats,
+  getTopUsers,
   getTopClients,
   getDocsForExport,
   money,
