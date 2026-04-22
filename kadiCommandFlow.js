@@ -30,6 +30,10 @@ function makeKadiCommandFlow(deps) {
     return String(norm ? norm(text) : text || "").trim();
   }
 
+  function lowerText(text = "") {
+    return normalizeText(text).toLowerCase();
+  }
+
   function splitArgs(text = "") {
     return String(text || "")
       .trim()
@@ -40,6 +44,29 @@ function makeKadiCommandFlow(deps) {
   function isOneOf(value, allowed = []) {
     const v = String(value || "").trim().toLowerCase();
     return allowed.includes(v);
+  }
+
+  function startsWithCommand(text = "", command = "") {
+    const t = lowerText(text);
+    const c = String(command || "").trim().toLowerCase();
+    return t === c || t.startsWith(`${c} `);
+  }
+
+  function isStatsLikeCommand(text = "") {
+    const t = lowerText(text);
+
+    return (
+      t === "/stats" ||
+      t === "stats" ||
+      t === "/dashboard" ||
+      t === "dashboard" ||
+      t === "kpi" ||
+      t === "kpis" ||
+      t.startsWith("/stats ") ||
+      t.startsWith("stats ") ||
+      t.startsWith("/dashboard ") ||
+      t.startsWith("dashboard ")
+    );
   }
 
   async function sendUnavailable(from, label) {
@@ -58,7 +85,7 @@ function makeKadiCommandFlow(deps) {
   // USER COMMANDS
   // ===============================
   async function handleUserCommand(from, text) {
-    const t = normalizeText(text);
+    const t = lowerText(text);
     if (!t) return false;
 
     if (isOneOf(t, ["menu", "home", "accueil"])) {
@@ -103,14 +130,14 @@ function makeKadiCommandFlow(deps) {
   async function handleAdmin(identity, text) {
     const from = identity?.wa_id || identity?.from || identity?.id;
     const raw = String(text || "");
-    const t = normalizeText(text);
+    const t = lowerText(text);
 
     if (!from) return false;
     if (!t) return false;
     if (!ensureAdmin(identity)) return false;
 
     // broadcast
-    if (t.startsWith("/broadcast ")) {
+    if (startsWithCommand(t, "/broadcast")) {
       return runIfExists(
         from,
         handleBroadcastCommand,
@@ -120,20 +147,33 @@ function makeKadiCommandFlow(deps) {
       );
     }
 
-    // stats
-    if (t === "/stats") {
+    // stats family
+    if (isStatsLikeCommand(t)) {
       return runIfExists(from, handleStatsCommand, "Stats", from, raw);
     }
 
-    if (t === "/top_users") {
-      return runIfExists(from, handleTopUsersCommand, "Top users", from, raw);
+    // optional legacy dedicated stats commands
+    if (startsWithCommand(t, "/top_users")) {
+      return runIfExists(
+        from,
+        handleTopUsersCommand,
+        "Top users",
+        from,
+        raw
+      );
     }
 
-    if (t === "/top_clients") {
-      return runIfExists(from, handleTopClientsCommand, "Top clients", from, raw);
+    if (startsWithCommand(t, "/top_clients")) {
+      return runIfExists(
+        from,
+        handleTopClientsCommand,
+        "Top clients",
+        from,
+        raw
+      );
     }
 
-    if (t === "/weekly_report") {
+    if (startsWithCommand(t, "/weekly_report")) {
       return runIfExists(
         from,
         handleWeeklyReportCommand,
@@ -143,7 +183,7 @@ function makeKadiCommandFlow(deps) {
       );
     }
 
-    if (t === "/export_excel") {
+    if (startsWithCommand(t, "/export_excel")) {
       return runIfExists(
         from,
         handleExportExcelCommand,
@@ -154,7 +194,7 @@ function makeKadiCommandFlow(deps) {
     }
 
     // manual credit command placeholder
-    if (t.startsWith("/credit ")) {
+    if (startsWithCommand(t, "/credit")) {
       const parts = splitArgs(raw);
 
       if (parts.length < 3) {
@@ -178,7 +218,7 @@ function makeKadiCommandFlow(deps) {
     }
 
     // re-engagement
-    if (t.startsWith("/reengage_zero_docs")) {
+    if (startsWithCommand(t, "/reengage_zero_docs")) {
       return runIfExists(
         from,
         handleReengageZeroDocsCommand,
@@ -188,7 +228,7 @@ function makeKadiCommandFlow(deps) {
       );
     }
 
-    if (t.startsWith("/reengage_inactive")) {
+    if (startsWithCommand(t, "/reengage_inactive")) {
       return runIfExists(
         from,
         handleReengageInactiveCommand,
