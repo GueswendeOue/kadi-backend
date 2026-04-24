@@ -52,7 +52,7 @@ function makeKadiCreditsUi(deps) {
       await sendButtons(from, message, [
         { id: "RECHARGE_1000", title: "1000F" },
         { id: "RECHARGE_2000", title: "2000F" },
-        { id: "BACK_HOME", title: "🏠 Menu" },
+        { id: "RECHARGE_5000", title: "5000F" },
       ]);
       return;
     }
@@ -84,7 +84,7 @@ function makeKadiCreditsUi(deps) {
         await sendRechargeShortcut(
           from,
           "🔴 *Vous n’avez plus de crédits.*\n\n" +
-            "Rechargez maintenant pour continuer à créer vos documents avec KADI."
+            "Rechargez maintenant pour créer ou envoyer vos documents en PDF."
         );
         return true;
       }
@@ -95,8 +95,8 @@ function makeKadiCreditsUi(deps) {
         await sendRechargeShortcut(
           from,
           "⚠️ *Il vous reste 1 crédit.*\n\n" +
-            "Vous pouvez encore générer un document simple, " +
-            "mais il vaut mieux recharger maintenant."
+            "Vous pouvez encore envoyer 1 PDF simple.\n" +
+            "Rechargez maintenant pour éviter d’être bloqué."
         );
         return true;
       }
@@ -107,7 +107,7 @@ function makeKadiCreditsUi(deps) {
         await sendRechargeShortcut(
           from,
           `⚠️ *Solde faible : ${formatCredits(balance)}.*\n\n` +
-            "Rechargez maintenant pour éviter une interruption pendant la génération."
+            "Rechargez maintenant pour continuer sans interruption."
         );
         return true;
       }

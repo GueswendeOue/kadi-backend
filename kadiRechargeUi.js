@@ -36,13 +36,14 @@ function normalizeOffer(offer) {
 function buildRechargePacksText() {
   return (
     "💳 *Recharger vos crédits KADI*\n\n" +
-    "Continuez à créer vos documents sans interruption.\n\n" +
+    "Choisissez un pack pour continuer à créer et envoyer vos documents en PDF.\n\n" +
     "📦 *Packs disponibles*\n" +
     "• 1000F = 10 crédits\n" +
     "• 2000F = 25 crédits\n" +
     "• 5000F = 70 crédits\n\n" +
     "📄 *Repère simple*\n" +
-    "• 1 PDF simple = 1 crédit\n\n" +
+    "• 1 PDF simple = 1 crédit\n" +
+    "• OCR/photo ou décharge = 2 crédits\n\n" +
     "Choisissez un pack 👇"
   );
 }
@@ -75,6 +76,8 @@ async function sendRechargePaymentMethodMenu(to, offer) {
     "💳 *Pack sélectionné*\n\n" +
     `Montant : *${money(normalized.amountFcfa)} FCFA*\n` +
     `Crédits : *${normalized.credits}*\n\n` +
+    "Après validation, vos crédits seront ajoutés à votre compte.\n" +
+    "Si vous avez un document en cours, KADI pourra le reprendre.\n\n" +
     "Choisissez un mode de paiement 👇";
 
   await sendButtons(to, text, [
@@ -113,7 +116,8 @@ async function sendOrangeMoneyInstructions(to, offer) {
     "• le message de confirmation\n" +
     "ou\n" +
     "• une capture d’écran\n\n" +
-    "✅ Après validation, vos crédits sont ajoutés.";
+    "✅ Après validation, vos crédits sont ajoutés.\n" +
+    "📄 Si vous aviez un document en cours, KADI pourra le reprendre.";
 
   await sendButtons(to, text, [
     { id: `OM_PAID_${normalized.amountFcfa}`, title: "J’ai payé" },
@@ -136,7 +140,7 @@ async function sendPispiInstructions(to, offer) {
     "⚠️ Mode test pour le moment.\n\n" +
     "1️⃣ Lancez le paiement dans l’application compatible\n" +
     "2️⃣ Revenez ici pour vérifier\n\n" +
-    "✅ Dès confirmation, vous pourrez reprendre votre document.";
+    "✅ Dès confirmation, vous pourrez continuer avec KADI.";
 
   await sendButtons(to, text, [
     { id: `PISPI_CHECK_${normalized.amountFcfa}`, title: "Vérifier paiement" },
