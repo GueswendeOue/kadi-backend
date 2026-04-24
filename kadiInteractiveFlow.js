@@ -275,17 +275,41 @@ function makeKadiInteractiveFlow(deps) {
   }
 
   function prepareDraftForEdition(draft = null) {
-    if (!draft || typeof draft !== "object") return draft;
+  if (!draft || typeof draft !== "object") return draft;
 
-    draft.savedDocumentId = null;
-    draft.savedPdfMediaId = null;
-    draft.savedPdfFilename = null;
-    draft.savedPdfCaption = null;
-    draft.status = "draft";
-    draft.requestId = null;
+  const previousDocNumber = safeText(draft.docNumber, null);
+  const previousDocumentId = safeText(draft.savedDocumentId, null);
 
-    return draft;
-  }
+  // Le document déjà généré reste en historique.
+  // La modification devient un nouveau draft dérivé.
+  draft.docNumber = null;
+
+  draft.savedDocumentId = null;
+  draft.savedPdfMediaId = null;
+  draft.savedPdfFilename = null;
+  draft.savedPdfCaption = null;
+
+  // Compatibilité avec éventuelles variantes anciennes.
+  draft.pdf_media_id = null;
+  draft.pdfMediaId = null;
+  draft.pdf_filename = null;
+  draft.pdfFilename = null;
+  draft.pdf_caption = null;
+  draft.pdfCaption = null;
+
+  draft.status = "draft";
+  draft.requestId = null;
+  draft._saving = false;
+
+  draft.meta = makeDraftMeta({
+    ...(draft.meta || {}),
+    editedFromDocNumber: previousDocNumber,
+    editedFromDocumentId: previousDocumentId,
+    editMode: "derived_from_generated",
+  });
+
+  return draft;
+}
 
   function findRechargeOfferByAmount(amountFcfa) {
     const amount = Number(amountFcfa);

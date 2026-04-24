@@ -58,14 +58,27 @@ function makeKadiPdfFlow(deps) {
   }
 
   function clearGeneratedArtifacts(draft) {
-    if (!draft || typeof draft !== "object") return;
+  if (!draft || typeof draft !== "object") return;
 
-    draft.savedDocumentId = null;
-    draft.savedPdfMediaId = null;
-    draft.savedPdfFilename = null;
-    draft.savedPdfCaption = null;
-    draft.status = "draft";
-  }
+  draft.docNumber = null;
+
+  draft.savedDocumentId = null;
+  draft.savedPdfMediaId = null;
+  draft.savedPdfFilename = null;
+  draft.savedPdfCaption = null;
+
+  // Compatibilité avec variantes anciennes.
+  draft.pdf_media_id = null;
+  draft.pdfMediaId = null;
+  draft.pdf_filename = null;
+  draft.pdfFilename = null;
+  draft.pdf_caption = null;
+  draft.pdfCaption = null;
+
+  draft.status = "draft";
+  draft.requestId = null;
+  draft._saving = false;
+}
 
   async function track(from, eventKey, draft = null, meta = {}) {
     if (typeof trackConversionEvent !== "function") return;
@@ -135,40 +148,50 @@ function makeKadiPdfFlow(deps) {
   }
 
   async function saveDocumentWithRetry({
-    waId,
-    draft,
-    maxAttempts = 3,
-    beforeEachSave = null,
-  }) {
-    let lastError = null;
+  waId,
+  draft,
+  maxAttempts = 3,
+  beforeEachSave = null,
+}) {
+  let lastError = null;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        if (typeof beforeEachSave === "function") {
-          await beforeEachSave();
-        }
-
-        const saved = await saveDocument({ waId, doc: draft });
-        return saved;
-      } catch (e) {
-        const msg = String(e?.message || e || "");
-        lastError = e;
-
-        if (!msg.startsWith("DOC_NUMBER_ALREADY_EXISTS")) {
-          throw e;
-        }
-
-        draft.docNumber = await nextDocNumber({
-          waId,
-          mode: draft.type,
-          factureKind: draft.factureKind,
-          dateISO: draft.date,
-        });
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (typeof beforeEachSave === "function") {
+        await beforeEachSave();
       }
-    }
 
-    throw lastError || new Error("SAVE_DOCUMENT_FAILED_AFTER_RETRY");
+      const saved = await saveDocument({ waId, doc: draft });
+      return saved;
+    } catch (e) {
+      lastError = e;
+
+      if (!isDocNumberConflictError(e)) {
+        throw e;
+      }
+
+      draft.docNumber = await nextDocNumber({
+        waId,
+        mode: draft.type,
+        factureKind: draft.factureKind,
+        dateISO: draft.date,
+      });
+    }
   }
+
+  throw lastError || new Error("SAVE_DOCUMENT_FAILED_AFTER_RETRY");
+}
+
+  function isDocNumberConflictError(err) {
+  const msg = String(err?.message || err || "");
+
+  return (
+    msg.startsWith("DOC_NUMBER_ALREADY_EXISTS") ||
+    msg.includes("kadi_documents_wa_id_doc_number_uniq") ||
+    msg.includes("kadi_documents_doc_number_uniq") ||
+    (msg.includes("duplicate key value") && msg.includes("doc_number"))
+  );
+}
 
   function buildGeneratedSuccessMessage(draft = null) {
     return `✅ ${getDocLabel(draft)} généré avec succès.\n\nQue voulez-vous faire maintenant ?`;

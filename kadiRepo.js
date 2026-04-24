@@ -135,9 +135,22 @@ pdf_caption: pdfCaption,
     .single();
 
   if (error) {
-    if (String(error.message || "").includes("kadi_documents_doc_number_uniq")) {
-      throw new Error(`DOC_NUMBER_ALREADY_EXISTS:${payload.doc_number}`);
-    }
+   const errorMessage = String(error?.message || "");
+const errorDetails = String(error?.details || "");
+const errorCode = String(error?.code || "");
+
+const isDocNumberConflict =
+  errorCode === "23505" &&
+  (
+    errorMessage.includes("kadi_documents_wa_id_doc_number_uniq") ||
+    errorDetails.includes("kadi_documents_wa_id_doc_number_uniq") ||
+    errorMessage.includes("kadi_documents_doc_number_uniq") ||
+    errorDetails.includes("kadi_documents_doc_number_uniq")
+  );
+
+if (isDocNumberConflict) {
+  throw new Error(`DOC_NUMBER_ALREADY_EXISTS:${payload.doc_number}`);
+}
     throw error;
   }
 
