@@ -117,12 +117,15 @@ async function getOrCreateProfile(waId, meta = {}) {
 
   if (waId && profile.wa_id !== waId) patch.wa_id = waId;
   if (bsuid && profile.bsuid !== bsuid) patch.bsuid = bsuid;
+
   if (parentBsuid && profile.parent_bsuid !== parentBsuid) {
     patch.parent_bsuid = parentBsuid;
   }
+
   if (whatsappUsername && profile.whatsapp_username !== whatsappUsername) {
     patch.whatsapp_username = whatsappUsername;
   }
+
   if (ownerName && !profile.owner_name) {
     patch.owner_name = ownerName;
   }
@@ -136,6 +139,11 @@ async function getOrCreateProfile(waId, meta = {}) {
 
 async function updateProfileById(profileId, patch) {
   const cleanPatch = cleanPatchObject(patch);
+
+  if (!profileId) throw new Error("updateProfileById requires profileId");
+  if (!Object.keys(cleanPatch).length) {
+    throw new Error("updateProfileById requires non-empty patch");
+  }
 
   const { data, error } = await supabase
     .from("business_profiles")
@@ -151,6 +159,11 @@ async function updateProfileById(profileId, patch) {
 async function updateProfile(waId, patch) {
   const cleanPatch = cleanPatchObject(patch);
 
+  if (!waId) throw new Error("updateProfile requires waId");
+  if (!Object.keys(cleanPatch).length) {
+    throw new Error("updateProfile requires non-empty patch");
+  }
+
   const { data, error } = await supabase
     .from("business_profiles")
     .update(cleanPatch)
@@ -164,6 +177,10 @@ async function updateProfile(waId, patch) {
 
 async function updateProfileByIdentity({ waId = null, bsuid = null }, patch) {
   const cleanPatch = cleanPatchObject(patch);
+
+  if (!Object.keys(cleanPatch).length) {
+    throw new Error("updateProfileByIdentity requires non-empty patch");
+  }
 
   if (bsuid) {
     const { data, error } = await supabase
@@ -200,13 +217,13 @@ async function uploadLogoBuffer({
   upsert = true,
 }) {
   if (!waId) throw new Error("uploadLogoBuffer requires waId");
+
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error("uploadLogoBuffer requires a non-empty buffer");
   }
 
   const ext = guessLogoExtension(mimeType);
-  const finalName =
-    safeText(fileName) || `logo-${Date.now()}.${ext}`;
+  const finalName = safeText(fileName) || `logo-${Date.now()}.${ext}`;
   const filePath = `${waId}/${finalName}`;
 
   const { error } = await supabase.storage
@@ -249,14 +266,18 @@ async function downloadSignedUrlToBuffer(url) {
   }
 
   const response = await fetch(url);
+
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(
-      `SIGNED_URL_DOWNLOAD_FAILED (${response.status}): ${body || response.statusText}`
+      `SIGNED_URL_DOWNLOAD_FAILED (${response.status}): ${
+        body || response.statusText
+      }`
     );
   }
 
   const arrayBuffer = await safeReadArrayBuffer(response);
+
   if (!arrayBuffer) {
     throw new Error("SIGNED_URL_BUFFER_READ_FAILED");
   }
@@ -285,6 +306,10 @@ async function saveProfileLogoFromBuffer({
 
   const existing = await getProfileByWaId(waId);
 
+  if (!existing) {
+    await createProfile({ waId });
+  }
+
   const upload = await uploadLogoBuffer({
     waId,
     buffer,
@@ -295,14 +320,14 @@ async function saveProfileLogoFromBuffer({
 
   const updated = await updateProfile(waId, {
     logo_path: upload.filePath,
-    logo_media_id: null,
-    no_logo: false,
   });
 
   if (existing?.logo_path && existing.logo_path !== upload.filePath) {
     try {
       await deleteLogo(existing.logo_path);
-    } catch (_) {}
+    } catch (e) {
+      console.warn("[STORE/LOGO] old logo cleanup failed:", e?.message || e);
+    }
   }
 
   return updated;
