@@ -22,6 +22,9 @@ function makeKadiCommandFlow(deps) {
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
 
+    // credits
+    addCredits = null,
+
     // helpers
     norm,
   } = deps;
@@ -69,6 +72,62 @@ function makeKadiCommandFlow(deps) {
     );
   }
 
+  function toInt(value, def = 0) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return def;
+    return Math.trunc(n);
+  }
+
+  function normalizeWaId(value = "") {
+    let digits = String(value || "").replace(/\D/g, "");
+
+    if (!digits) return null;
+
+    if (digits.startsWith("00")) {
+      digits = digits.slice(2);
+    }
+
+    if (digits.length === 8) {
+      digits = `226${digits}`;
+    }
+
+    if (digits.length < 8 || digits.length > 15) {
+      return null;
+    }
+
+    return digits;
+  }
+
+  function todayKey() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function safeReference(value = "") {
+    return String(value || "")
+      .trim()
+      .replace(/[^a-zA-Z0-9._:-]/g, "_")
+      .slice(0, 80);
+  }
+
+  function buildManualTopupOperationKey({
+    waId,
+    credits,
+    amountFcfa,
+    reference,
+  }) {
+    const ref = safeReference(reference);
+
+    if (ref) {
+      return `manual_om_topup:${waId}:${credits}:${amountFcfa}:${ref}`;
+    }
+
+    return `manual_om_topup:${waId}:${credits}:${amountFcfa}:${Date.now()}`;
+  }
+
+  function formatMoney(value) {
+    return `${Math.round(toInt(value, 0)).toLocaleString("fr-FR")} FCFA`;
+  }
+
   async function sendUnavailable(from, label) {
     await sendText(from, `❌ ${label} non disponible.`);
     return true;
@@ -78,7 +137,142 @@ function makeKadiCommandFlow(deps) {
     if (typeof handler !== "function") {
       return sendUnavailable(from, label);
     }
+
     return handler(...args);
+  }
+
+  async function handleManualCreditCommand(from, raw) {
+    if (typeof addCredits !== "function") {
+      await sendText(
+        from,
+        "❌ Recharge admin indisponible.\n\nLe service addCredits n’est pas branché dans kadiEngine.js."
+      );
+      return true;
+    }
+
+    const parts = splitArgs(raw);
+
+    if (parts.length < 4) {
+      await sendText(
+        from,
+        "❌ Format invalide.\n\n" +
+          "Format attendu :\n" +
+          "/credit numero credits montant [reference]\n\n" +
+          "Exemple :\n" +
+          "/credit 22671630608 10 1000\n\n" +
+          "Avec référence :\n" +
+          "/credit 22671630608 10 1000 OM12345"
+      );
+      return true;
+    }
+
+    const targetWaId = normalizeWaId(parts[1]);
+    const credits = toInt(parts[2], 0);
+    const amountFcfa = toInt(parts[3], 0);
+    const reference = safeReference(parts[4] || "");
+
+    if (!targetWaId) {
+      await sendText(
+        from,
+        "❌ Numéro invalide.\n\nExemple : /credit 22671630608 10 1000"
+      );
+      return true;
+    }
+
+    if (credits <= 0 || credits > 10000) {
+      await sendText(
+        from,
+        "❌ Nombre de crédits invalide.\n\nExemple : /credit 22671630608 10 1000"
+      );
+      return true;
+    }
+
+    if (amountFcfa <= 0 || amountFcfa > 10000000) {
+      await sendText(
+        from,
+        "❌ Montant invalide.\n\nExemple : /credit 22671630608 10 1000"
+      );
+      return true;
+    }
+
+    const operationKey = buildManualTopupOperationKey({
+      waId: targetWaId,
+      credits,
+      amountFcfa,
+      reference,
+    });
+
+    let result = null;
+
+    try {
+      result = await addCredits(
+        { waId: targetWaId },
+        credits,
+        "manual_om_topup",
+        operationKey,
+        {
+          amountFcfa,
+          credits,
+          paymentMethod: "orange_money_manual",
+          source: "admin_command",
+          adminWaId: from,
+          waId: targetWaId,
+          reference: reference || null,
+          date: todayKey(),
+          note: `Recharge admin ${formatMoney(amountFcfa)} pour ${credits} crédits`,
+        }
+      );
+    } catch (err) {
+      await sendText(
+        from,
+        "❌ Recharge non effectuée.\n\n" +
+          `Erreur : ${String(err?.message || err || "unknown_error")}`
+      );
+      return true;
+    }
+
+    const balance = toInt(result?.balance, 0);
+    const idempotent = result?.idempotent === true;
+
+    let clientNotified = false;
+    let notifyError = null;
+
+    try {
+      await sendText(
+        targetWaId,
+        "✅ Votre recharge KADI a été validée.\n\n" +
+          `🎉 ${credits} crédits ont été ajoutés à votre compte.\n` +
+          `Votre solde actuel est de ${balance} crédit(s).\n\n` +
+          "Vous pouvez maintenant créer vos devis, factures ou reçus sur WhatsApp.\n\n" +
+          "Tapez “solde” pour vérifier vos crédits."
+      );
+
+      clientNotified = true;
+    } catch (err) {
+      notifyError = String(err?.message || err || "notification_failed");
+    }
+
+    let adminMessage = "";
+    adminMessage += idempotent
+      ? "ℹ️ Recharge déjà enregistrée.\n\n"
+      : "✅ Recharge validée.\n\n";
+
+    adminMessage += `👤 Client : +${targetWaId}\n`;
+    adminMessage += `💳 Crédits ajoutés : ${credits}\n`;
+    adminMessage += `💰 Montant : ${formatMoney(amountFcfa)}\n`;
+    adminMessage += `📊 Nouveau solde : ${balance} crédit(s)\n`;
+    adminMessage += `🔑 Opération : ${operationKey}\n`;
+
+    if (reference) {
+      adminMessage += `🧾 Référence : ${reference}\n`;
+    }
+
+    adminMessage += clientNotified
+      ? "\n📩 Client notifié automatiquement."
+      : `\n⚠️ Crédit ajouté, mais notification client non envoyée.\nRaison : ${notifyError}`;
+
+    await sendText(from, adminMessage);
+    return true;
   }
 
   // ===============================
@@ -152,6 +346,11 @@ function makeKadiCommandFlow(deps) {
       return runIfExists(from, handleStatsCommand, "Stats", from, raw);
     }
 
+    // manual paid credit topup
+    if (startsWithCommand(t, "/credit")) {
+      return handleManualCreditCommand(from, raw);
+    }
+
     // optional legacy dedicated stats commands
     if (startsWithCommand(t, "/top_users")) {
       return runIfExists(
@@ -191,30 +390,6 @@ function makeKadiCommandFlow(deps) {
         from,
         raw
       );
-    }
-
-    // manual credit command placeholder
-    if (startsWithCommand(t, "/credit")) {
-      const parts = splitArgs(raw);
-
-      if (parts.length < 3) {
-        await sendText(from, "❌ Format: /credit numero montant");
-        return true;
-      }
-
-      const target = String(parts[1] || "").trim();
-      const amount = Number(parts[2]);
-
-      if (!target || !Number.isFinite(amount) || amount <= 0) {
-        await sendText(from, "❌ Données invalides.");
-        return true;
-      }
-
-      await sendText(
-        from,
-        `✅ Commande reçue.\nNuméro: ${target}\nMontant: ${amount}`
-      );
-      return true;
     }
 
     // re-engagement

@@ -960,16 +960,25 @@ const {
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
   sendText,
+
+  // user actions
   startProfileFlow,
   sendHomeMenu,
   sendCreditsMenu,
   sendRechargePacksMenu,
   sendDocsMenu,
+
+  // admin / services
   ensureAdmin,
   handleStatsCommand,
   handleBroadcastCommand,
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
+
+  // credits
+  addCredits,
+
+  // helpers
   norm,
 });
 
