@@ -275,50 +275,45 @@ function makeKadiInteractiveFlow(deps) {
   }
 
   function prepareDraftForEdition(draft = null) {
-  if (!draft || typeof draft !== "object") return draft;
+    if (!draft || typeof draft !== "object") return draft;
 
-  const previousDocNumber = safeText(draft.docNumber, null);
-  const previousDocumentId = safeText(draft.savedDocumentId, null);
+    const previousDocNumber = safeText(draft.docNumber, null);
+    const previousDocumentId = safeText(draft.savedDocumentId, null);
 
-  // Le document déjà généré reste en historique.
-  // La modification devient un nouveau draft dérivé.
-  draft.docNumber = null;
+    draft.docNumber = null;
 
-  draft.savedDocumentId = null;
-  draft.savedPdfMediaId = null;
-  draft.savedPdfFilename = null;
-  draft.savedPdfCaption = null;
+    draft.savedDocumentId = null;
+    draft.savedPdfMediaId = null;
+    draft.savedPdfFilename = null;
+    draft.savedPdfCaption = null;
 
-  // Compatibilité avec éventuelles variantes anciennes.
-  draft.pdf_media_id = null;
-  draft.pdfMediaId = null;
-  draft.pdf_filename = null;
-  draft.pdfFilename = null;
-  draft.pdf_caption = null;
-  draft.pdfCaption = null;
+    draft.pdf_media_id = null;
+    draft.pdfMediaId = null;
+    draft.pdf_filename = null;
+    draft.pdfFilename = null;
+    draft.pdf_caption = null;
+    draft.pdfCaption = null;
 
-  draft.status = "draft";
-  draft.requestId = null;
-  draft._saving = false;
+    draft.status = "draft";
+    draft.requestId = null;
+    draft._saving = false;
 
-  draft.meta = makeDraftMeta({
-    ...(draft.meta || {}),
-    editedFromDocNumber: previousDocNumber,
-    editedFromDocumentId: previousDocumentId,
-    editMode: "derived_from_generated",
-  });
+    draft.meta = makeDraftMeta({
+      ...(draft.meta || {}),
+      editedFromDocNumber: previousDocNumber,
+      editedFromDocumentId: previousDocumentId,
+      editMode: "derived_from_generated",
+    });
 
-  return draft;
-}
+    return draft;
+  }
 
   function findRechargeOfferByAmount(amountFcfa) {
     const amount = Number(amountFcfa);
     if (!Number.isFinite(amount)) return null;
 
     const offers = Object.values(getRechargeOffers?.() || {});
-    return (
-      offers.find((offer) => Number(offer?.amountFcfa) === amount) || null
-    );
+    return offers.find((offer) => Number(offer?.amountFcfa) === amount) || null;
   }
 
   function resolveRechargeOffer(replyId) {
@@ -502,16 +497,18 @@ function makeKadiInteractiveFlow(deps) {
   async function sendResumeAfterRecharge(to) {
     const userSession = getSession(to);
     const draft = userSession?.lastDocDraft || null;
+    const pendingPdfAfterRecharge = userSession?.pendingPdfAfterRecharge === true;
 
     await trackForWaId(to, "resume_after_topup_prompt", draft, {
       hasDraft: !!draft,
+      pendingPdfAfterRecharge,
       hasGeneratedPdf: !!(draft?.savedPdfMediaId || draft?.savedDocumentId),
     });
 
     if (!draft) {
       return sendButtons(
         to,
-        "✅ Vos crédits sont disponibles.\n\nQue voulez-vous faire maintenant ?",
+        "✅ *Recharge validée.*\n\nVos crédits sont disponibles.\n\nQue voulez-vous faire maintenant ?",
         [
           { id: "HOME_DOCS", title: "📄 Créer doc" },
           { id: "CREDITS_SOLDE", title: "💳 Solde" },
@@ -524,15 +521,19 @@ function makeKadiInteractiveFlow(deps) {
       return sendAlreadyGeneratedMenu(to, draft);
     }
 
-    return sendButtons(
-      to,
-      "✅ Vos crédits sont disponibles.\n\nVous pouvez reprendre votre document maintenant 👇",
-      [
-        { id: "DOC_FINISH", title: "📄 Aperçu" },
-        { id: "DOC_CONFIRM", title: "📤 PDF" },
-        { id: "BACK_HOME", title: "🏠 Menu" },
-      ]
-    );
+    userSession.step = "doc_review";
+
+    const docLabel = getDraftDocLabel(draft).toLowerCase();
+
+    const text = pendingPdfAfterRecharge
+      ? `✅ *Recharge validée.*\n\n📄 Votre ${docLabel} est toujours prêt.\n\nVous pouvez maintenant l’envoyer en PDF.`
+      : `✅ *Vos crédits sont disponibles.*\n\n📄 Vous pouvez reprendre votre ${docLabel}.`;
+
+    return sendButtons(to, text, [
+      { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
+      { id: "DOC_FINISH", title: "📄 Aperçu" },
+      { id: "BACK_HOME", title: "🏠 Menu" },
+    ]);
   }
 
   function buildDraftFromIntent(intent) {
@@ -781,6 +782,9 @@ function makeKadiInteractiveFlow(deps) {
         topupId: topup.id,
         reference: topup.reference,
         amountFcfa: topup.amount_fcfa,
+        credits: topup.credits,
+        paymentMethod: topup.payment_method || "orange_money_manual",
+        source: "manual_topup_approval",
       }
     );
 
@@ -1048,6 +1052,9 @@ function makeKadiInteractiveFlow(deps) {
         return sendRechargePacksMenu(from);
       }
 
+      const entry =
+        s.pendingPdfAfterRecharge === true ? "blocked_pdf" : "quick_reply";
+
       resetTransientProductState(s);
       setPendingRechargeState(s, offer, null, null);
 
@@ -1055,7 +1062,8 @@ function makeKadiInteractiveFlow(deps) {
         amountFcfa: offer.amountFcfa,
         credits: offer.credits,
         packId: offer.id,
-        entry: "quick_reply",
+        entry,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       return sendRechargePaymentMethodMenu(from, offer);
@@ -1476,6 +1484,9 @@ function makeKadiInteractiveFlow(deps) {
 
     const selectedOffer = resolveRechargeOffer(replyId);
     if (selectedOffer) {
+      const entry =
+        s.pendingPdfAfterRecharge === true ? "blocked_pdf" : "pack_menu";
+
       resetTransientProductState(s);
       setPendingRechargeState(s, selectedOffer, null, null);
 
@@ -1483,7 +1494,8 @@ function makeKadiInteractiveFlow(deps) {
         amountFcfa: selectedOffer.amountFcfa,
         credits: selectedOffer.credits,
         packId: selectedOffer.id,
-        entry: "pack_menu",
+        entry,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       return sendRechargePaymentMethodMenu(from, selectedOffer);
@@ -1519,6 +1531,7 @@ function makeKadiInteractiveFlow(deps) {
         packId: offer.id,
         topupId: topup.id,
         reference: topup.reference,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       return sendOrangeMoneyInstructions(from, offer);
@@ -1545,6 +1558,7 @@ function makeKadiInteractiveFlow(deps) {
         amountFcfa: offer.amountFcfa,
         credits: offer.credits,
         packId: offer.id,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       return sendPispiInstructions(from, offer);
@@ -1557,11 +1571,22 @@ function makeKadiInteractiveFlow(deps) {
       await track(from, "topup_declared_paid", {
         method: "orange_money",
         amountFcfa: Number(replyId.replace("OM_PAID_", "")),
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
+
+      const resumeLine =
+        s.pendingPdfAfterRecharge === true
+          ? "\n\n📄 Votre document reste prêt. Après validation, vous pourrez l’envoyer en PDF."
+          : "\n\n✅ Après validation, vos crédits seront ajoutés.";
 
       await sendText(
         from,
-        "⏳ D’accord.\n\nEnvoyez maintenant :\n• le message de transaction\nOU\n• une capture d’écran du paiement\n\n✅ Après validation, vous reprendrez votre document."
+        "⏳ D’accord.\n\n" +
+          "Envoyez maintenant :\n" +
+          "• le message de transaction\n" +
+          "OU\n" +
+          "• une capture d’écran du paiement" +
+          resumeLine
       );
       return;
     }
@@ -1573,11 +1598,21 @@ function makeKadiInteractiveFlow(deps) {
       await track(from, "topup_proof_prompt_opened", {
         method: "orange_money",
         amountFcfa: Number(replyId.replace("OM_SEND_PROOF_", "")),
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
+
+      const resumeLine =
+        s.pendingPdfAfterRecharge === true
+          ? "\n\n📄 Votre document reste prêt. Après validation, vous pourrez l’envoyer en PDF."
+          : "";
 
       await sendText(
         from,
-        "📎 Envoyez la preuve ici :\n• capture d’écran\nOU\n• message de confirmation Orange Money"
+        "📎 Envoyez la preuve ici :\n" +
+          "• capture d’écran\n" +
+          "OU\n" +
+          "• message de confirmation Orange Money" +
+          resumeLine
       );
       return;
     }
@@ -1724,6 +1759,7 @@ function makeKadiInteractiveFlow(deps) {
 
       await track(from, "pdf_confirm_clicked", {
         step: s.step || null,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       if (!draft) {
@@ -1778,6 +1814,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "PRESTAMP_SKIP") {
       await track(from, "stamp_upsell_skipped", {
         step: s.step || null,
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       resetStampChoice(s);
@@ -1809,6 +1846,7 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "PRESTAMP_ADD_ONCE") {
       await track(from, "stamp_upsell_accepted", {
         mode: "one_time",
+        pendingPdfAfterRecharge: s.pendingPdfAfterRecharge === true,
       });
 
       const p = await getOrCreateProfile(from);
