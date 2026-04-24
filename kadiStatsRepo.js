@@ -33,6 +33,7 @@ function safeStr(v, def = "unknown") {
 function normalizeClientName(raw) {
   const t = String(raw || "").trim();
   if (!t) return { key: "-", display: "-" };
+
   return {
     key: t.toLowerCase(),
     display: t,
@@ -212,11 +213,32 @@ async function fetchBusinessProfilesByWaIds(waIds = []) {
   return map;
 }
 
+async function fetchBusinessProfileMaps() {
+  const rows = await safeTableExistsFetch(
+    () => fetchRows("business_profiles", "*", [], "created_at", false),
+    []
+  );
+
+  const byId = new Map();
+  const byWaId = new Map();
+
+  for (const row of ensureArray(rows)) {
+    const id = safeStr(row?.id, "");
+    const waId = safeStr(row?.wa_id, "");
+
+    if (id && !byId.has(id)) byId.set(id, row);
+    if (waId && !byWaId.has(waId)) byWaId.set(waId, row);
+  }
+
+  return { byId, byWaId };
+}
+
 // ===============================
 // Unified credit events
+// Source réelle temporaire : legacy + ledger
 // ===============================
 async function getUnifiedCreditEvents() {
-  const [legacyTx, ledgerTx] = await Promise.all([
+  const [legacyTx, ledgerTx, profileMaps] = await Promise.all([
     safeTableExistsFetch(
       () =>
         fetchRows(
@@ -232,13 +254,14 @@ async function getUnifiedCreditEvents() {
       () =>
         fetchRows(
           "kadi_credit_ledger",
-          "profile_id, delta, reason, created_at, meta",
+          "profile_id, delta, reason, created_at, meta, operation_key",
           [],
           "created_at",
           false
         ),
       []
     ),
+    fetchBusinessProfileMaps(),
   ]);
 
   const normalizedLegacy = ensureArray(legacyTx).map((row) => ({
@@ -249,17 +272,24 @@ async function getUnifiedCreditEvents() {
     reason: safeStr(row?.reason, ""),
     created_at: row?.created_at || null,
     meta: null,
+    operation_key: null,
   }));
 
-  const normalizedLedger = ensureArray(ledgerTx).map((row) => ({
-    source_table: "ledger",
-    wa_id: "",
-    profile_id: row?.profile_id || null,
-    delta: toNum(row?.delta, 0),
-    reason: safeStr(row?.reason, ""),
-    created_at: row?.created_at || null,
-    meta: row?.meta || null,
-  }));
+  const normalizedLedger = ensureArray(ledgerTx).map((row) => {
+    const profileId = safeStr(row?.profile_id, "");
+    const profile = profileMaps.byId.get(profileId) || null;
+
+    return {
+      source_table: "ledger",
+      wa_id: safeStr(profile?.wa_id, ""),
+      profile_id: profileId || null,
+      delta: toNum(row?.delta, 0),
+      reason: safeStr(row?.reason, ""),
+      created_at: row?.created_at || null,
+      meta: row?.meta || null,
+      operation_key: row?.operation_key || null,
+    };
+  });
 
   return [...normalizedLegacy, ...normalizedLedger].sort((a, b) =>
     String(b.created_at || "").localeCompare(String(a.created_at || ""))
@@ -294,6 +324,7 @@ function isOcrTx(row) {
   const delta = toNum(row?.delta, 0);
 
   if (!(delta < 0)) return false;
+
   return (
     reason === "ocr_pdf" ||
     reason.startsWith("ocr_pdf_") ||
@@ -306,6 +337,7 @@ function isStampTx(row) {
   const delta = toNum(row?.delta, 0);
 
   if (!(delta < 0)) return false;
+
   return reason.includes("stamp");
 }
 
@@ -320,6 +352,55 @@ function isPaidCreditTx(row) {
     reason.includes("topup") ||
     reason.includes("recharge")
   );
+}
+
+function getPaidAmountFcfa(row, { packCredits = 25, packPriceFcfa = 2000 } = {}) {
+  const meta = row?.meta || {};
+
+  const amountFromMeta = toNum(
+    meta?.amountFcfa ??
+      meta?.amount_fcfa ??
+      meta?.amount ??
+      meta?.priceFcfa ??
+      meta?.price_fcfa,
+    null
+  );
+
+  if (amountFromMeta != null && amountFromMeta > 0) {
+    return Math.round(amountFromMeta);
+  }
+
+  const credits = toNum(row?.delta, 0);
+  if (credits <= 0) return 0;
+
+  return Math.round((credits / Math.max(1, packCredits)) * packPriceFcfa);
+}
+
+function buildWalletStatsFromEvents(events = []) {
+  const balanceByWaId = new Map();
+
+  for (const row of ensureArray(events)) {
+    const waId = safeStr(row?.wa_id, "");
+    if (!waId) continue;
+
+    const cur = balanceByWaId.get(waId) || 0;
+    balanceByWaId.set(waId, cur + toNum(row?.delta, 0));
+  }
+
+  let usersZeroCredits = 0;
+  let usersLowCredits = 0;
+
+  for (const balance of balanceByWaId.values()) {
+    if (balance <= 0) usersZeroCredits += 1;
+    else if (balance > 0 && balance <= 2) usersLowCredits += 1;
+  }
+
+  return {
+    balanceByWaId,
+    usersZeroCredits,
+    usersLowCredits,
+    usersWithWallet: balanceByWaId.size,
+  };
 }
 
 // ===============================
@@ -405,7 +486,6 @@ function buildYcInsights({
   docsGenerated,
   usersWithDocs,
   paidUsers,
-  revenueMonth,
   usersZeroCredits,
   docs7Growth,
   signupToActive30Rate,
@@ -441,7 +521,7 @@ function buildYcInsights({
 
   if (usersZeroCredits > 0) {
     insights.push(
-      `${usersZeroCredits} utilisateur(s) ont épuisé leurs crédits: pipeline chaud de conversion.`
+      `${usersZeroCredits} utilisateur(s) ont réellement épuisé leurs crédits: pipeline chaud de conversion.`
     );
   }
 
@@ -557,7 +637,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   });
 
   // ===============================
-  // DOCS / OCR / STAMP FROM UNIFIED EVENTS
+  // DOCS / OCR / STAMP FROM CREDIT EVENTS
   // ===============================
   const docsGenerated = creditEventsAll.filter(isPdfTx).length;
   const docsCreated = docsGenerated;
@@ -610,33 +690,36 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   // REVENUE / PAYING USERS
   // ===============================
   let creditsPaid30 = 0;
-  const paidProfileUsersSet = new Set();
+  let revenueMonth = 0;
+  const paidUsersSet = new Set();
 
   for (const row of tx30) {
     if (isPaidCreditTx(row)) {
       creditsPaid30 += toNum(row.delta, 0);
+      revenueMonth += getPaidAmountFcfa(row, { packCredits, packPriceFcfa });
 
-      const profileId = safeStr(row?.profile_id, "");
-      if (profileId) paidProfileUsersSet.add(profileId);
+      const waId = safeStr(row?.wa_id, "");
+      if (waId) paidUsersSet.add(waId);
     }
   }
 
-  const paidUsers = paidProfileUsersSet.size;
+  const paidUsers = paidUsersSet.size;
 
   let creditsPaidPrev30 = 0;
+  let revenuePrev30 = 0;
+
   for (const row of txPrev30) {
     if (isPaidCreditTx(row)) {
       creditsPaidPrev30 += toNum(row.delta, 0);
+      revenuePrev30 += getPaidAmountFcfa(row, {
+        packCredits,
+        packPriceFcfa,
+      });
     }
   }
 
-  const revenueMonth = Math.round(
-    (creditsPaid30 / Math.max(1, packCredits)) * packPriceFcfa
-  );
-
-  const revenuePrev30 = Math.round(
-    (creditsPaidPrev30 / Math.max(1, packCredits)) * packPriceFcfa
-  );
+  revenueMonth = Math.round(revenueMonth);
+  revenuePrev30 = Math.round(revenuePrev30);
 
   // ===============================
   // FUNNEL
@@ -659,38 +742,14 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   const user30Growth = growthPct(active30, activePrev30);
 
   // ===============================
-  // WALLET / PIPELINE (ledger only)
+  // WALLET / PIPELINE
+  // Source combinée : kadi_credit_tx + kadi_credit_ledger
   // ===============================
-  const ledgerRows = await safeTableExistsFetch(
-    () =>
-      fetchRows(
-        "kadi_credit_ledger",
-        "profile_id, delta, reason, created_at",
-        [],
-        "created_at",
-        false
-      ),
-    []
-  );
+  const walletStats = buildWalletStatsFromEvents(creditEventsAll);
 
-  const balanceByProfile = new Map();
-  for (const row of ledgerRows) {
-    const profileId = safeStr(row?.profile_id, "");
-    if (!profileId) continue;
-
-    const cur = balanceByProfile.get(profileId) || 0;
-    balanceByProfile.set(profileId, cur + toNum(row?.delta, 0));
-  }
-
-  let usersZeroCredits = 0;
-  let usersLowCredits = 0;
-
-  for (const balance of balanceByProfile.values()) {
-    if (balance <= 0) usersZeroCredits += 1;
-    else if (balance > 0 && balance <= 2) usersLowCredits += 1;
-  }
-
-  const usersWithWallet = balanceByProfile.size;
+  const usersZeroCredits = walletStats.usersZeroCredits;
+  const usersLowCredits = walletStats.usersLowCredits;
+  const usersWithWallet = walletStats.usersWithWallet;
 
   // ===============================
   // Derived YC metrics
@@ -720,7 +779,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     docsGenerated,
     usersWithDocs,
     paidUsers,
-    revenueMonth,
     usersZeroCredits,
     docs7Growth,
     signupToActive30Rate,
@@ -767,6 +825,7 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       usersLowCredits,
       usersWithWallet,
       arpu30d: paidUsers > 0 ? Math.round(revenueMonth / paidUsers) : 0,
+      balanceSource: "combined_legacy_tx_and_ledger",
     },
 
     funnel: {

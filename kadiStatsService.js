@@ -29,6 +29,7 @@ function makeKadiStatsService(deps) {
     try {
       if (typeof money === "function") return `${money(value)} FCFA`;
     } catch (_) {}
+
     return `${Math.round(toNum(value, 0)).toLocaleString("fr-FR")} FCFA`;
   }
 
@@ -77,8 +78,10 @@ function makeKadiStatsService(deps) {
       pct(stats?.growth?.active7Rate, null) ??
       pct(stats?.growth?.active7Rate, 0);
 
-    const estimatedNewUsers30 =
-      toNum(stats?.growth?.estimatedNewUsers30, 0);
+    const estimatedNewUsers30 = toNum(
+      stats?.growth?.estimatedNewUsers30,
+      0
+    );
 
     const docsTotal =
       toNum(stats?.usage?.docsTotal, null) ??
@@ -92,8 +95,9 @@ function makeKadiStatsService(deps) {
       toNum(stats?.usage?.docs7d, null) ??
       toNum(stats?.docs?.last7, 0);
 
-    const docsPerActive30 =
-      Number(stats?.usage?.docsPerActive30User ?? 0);
+    const docsPerActive30 = Number(
+      stats?.usage?.docsPerActive30User ?? 0
+    );
 
     const revenue30 =
       toNum(stats?.monetization?.revenue30d, null) ??
@@ -111,20 +115,44 @@ function makeKadiStatsService(deps) {
       toNum(stats?.monetization?.usersLowCredits, null) ??
       toNum(stats?.conversion?.usersLowCredits, 0);
 
-    const signupToActive30Rate =
-      pct(stats?.funnel?.signupToActive30Rate, 0);
+    const signupToActive30Rate = pct(
+      stats?.funnel?.signupToActive30Rate,
+      0
+    );
 
-    const activeToCreatedRate =
-      pct(stats?.funnel?.activeToCreatedRate, 0);
+    const activeToCreatedRate = pct(
+      stats?.funnel?.activeToCreatedRate,
+      0
+    );
 
-    const generatedToPaidRate =
-      pct(stats?.funnel?.generatedToPaidRate, 0);
+    const generatedToPaidRate = pct(
+      stats?.funnel?.generatedToPaidRate,
+      0
+    );
 
-    const retention7Approx =
-      pct(stats?.retention?.retention7Approx, 0);
+    const retention7Approx = pct(
+      stats?.retention?.retention7Approx,
+      0
+    );
+
+    const creditsPaid30d = toNum(
+      stats?.monetization?.creditsPaid30d ?? stats?.revenue?.creditsPaid,
+      0
+    );
+
+    const usersWithWallet = toNum(
+      stats?.monetization?.usersWithWallet ?? stats?.users?.usersWithWallet,
+      0
+    );
+
+    const balanceSource = safeText(
+      stats?.monetization?.balanceSource,
+      ""
+    );
 
     const alerts = Array.isArray(stats?.alerts) ? stats.alerts : [];
     const insights = Array.isArray(stats?.insights) ? stats.insights : [];
+
     const priorityAction = safeText(
       stats?.priorityAction,
       "Continuer à améliorer la conversion vers le premier document."
@@ -150,8 +178,16 @@ function makeKadiStatsService(deps) {
     text += "💰 *MONÉTISATION*\n";
     text += `CA 30j            ${formatMoney(revenue30)}\n`;
     text += `Payants           ${payingUsers}\n`;
-    text += `0 crédit          ${usersZeroCredits}\n`;
-    text += `Crédits faibles   ${usersLowCredits}\n\n`;
+    text += `Crédits payés     ${creditsPaid30d}\n`;
+    text += `Wallets suivis    ${usersWithWallet}\n`;
+    text += `0 crédit réel     ${usersZeroCredits}\n`;
+    text += `Crédits faibles   ${usersLowCredits}\n`;
+
+    if (balanceSource) {
+      text += `Source soldes     ${balanceSource}\n`;
+    }
+
+    text += "\n";
 
     text += "🎯 *FUNNEL*\n";
     text += `Signup→Actif      ${signupToActive30Rate}%\n`;
@@ -186,11 +222,11 @@ function makeKadiStatsService(deps) {
     const rows = Array.isArray(stats?.topUsers) ? stats.topUsers : [];
 
     if (!rows.length) {
-      return "🏆 *Top users (30j)*\n\nAucune donnée disponible.";
+      return "🏆 *Top utilisateurs (30j)*\n\nAucune donnée disponible.";
     }
 
     return (
-      "🏆 *Top users (30j)*\n\n" +
+      "🏆 *Top utilisateurs (30j)*\n\n" +
       rows
         .slice(0, 5)
         .map((row, idx) => {
@@ -201,14 +237,21 @@ function makeKadiStatsService(deps) {
               safeText(row?.owner_name, safeText(row?.wa_id, "-"))
             )
           );
+
+          const waId = safeText(row?.wa_id, "");
           const docs = toNum(row?.docs, 0);
           const total = toNum(row?.total_fcfa, 0);
 
-          return (
-            `${idx + 1}. ${userLabel}\n` +
-            `   Docs: ${docs}\n` +
-            `   Total: ${formatMoney(total)}`
-          );
+          let line = `${idx + 1}. ${userLabel}\n`;
+
+          if (waId) {
+            line += `   ID: ${waId}\n`;
+          }
+
+          line += `   Docs: ${docs}\n`;
+          line += `   Total: ${formatMoney(total)}`;
+
+          return line;
         })
         .join("\n\n")
     );
@@ -218,11 +261,11 @@ function makeKadiStatsService(deps) {
     const rows = Array.isArray(stats?.topClients) ? stats.topClients : [];
 
     if (!rows.length) {
-      return "📄 *Top clients des docs (30j)*\n\nAucune donnée disponible.";
+      return "📄 *Top clients des documents (30j)*\n\nAucune donnée disponible.";
     }
 
     return (
-      "📄 *Top clients des docs (30j)*\n\n" +
+      "📄 *Top clients des documents (30j)*\n\n" +
       rows
         .slice(0, 5)
         .map((row, idx) => {
@@ -245,26 +288,56 @@ function makeKadiStatsService(deps) {
       stats?.usage?.ocrDocs30d ?? stats?.docs?.ocrDocs30,
       0
     );
+
     const stampedDocs30 = toNum(
       stats?.usage?.stampedDocs30d ?? stats?.docs?.stampedDocs30,
       0
     );
+
     const totalValue30 = toNum(
       stats?.usage?.totalDocumentValue30d ?? stats?.docs?.sum30,
       0
     );
-    const revenueGrowth30d = toNum(stats?.comparisons?.revenue30Growth, 0);
-    const docs7Growth = toNum(stats?.comparisons?.docs7Growth, 0);
-    const user30Growth = toNum(stats?.comparisons?.user30Growth, 0);
+
+    const totalValueAll = toNum(
+      stats?.usage?.totalDocumentValueAll ?? stats?.docs?.sumAll,
+      0
+    );
+
+    const revenueGrowth30d = toNum(
+      stats?.comparisons?.revenue30Growth,
+      0
+    );
+
+    const docs7Growth = toNum(
+      stats?.comparisons?.docs7Growth,
+      0
+    );
+
+    const user30Growth = toNum(
+      stats?.comparisons?.user30Growth,
+      0
+    );
+
+    const docsPerTotalUser = Number(
+      stats?.usage?.docsPerTotalUser ?? 0
+    );
+
+    const docsPerActive7User = Number(
+      stats?.usage?.docsPerActive7User ?? 0
+    );
 
     return (
       "📎 *Détails complémentaires*\n\n" +
-      `OCR 30j            ${ocrDocs30}\n` +
-      `Tampon 30j         ${stampedDocs30}\n` +
-      `Valeur docs 30j    ${formatMoney(totalValue30)}\n` +
-      `Croissance CA      ${revenueGrowth30d}%\n` +
-      `Croissance docs 7j ${docs7Growth}%\n` +
-      `Croissance users   ${user30Growth}%`
+      `OCR 30j              ${ocrDocs30}\n` +
+      `Tampon 30j           ${stampedDocs30}\n` +
+      `Valeur docs 30j      ${formatMoney(totalValue30)}\n` +
+      `Valeur docs totale   ${formatMoney(totalValueAll)}\n` +
+      `Docs/user total      ${docsPerTotalUser.toFixed(2)}\n` +
+      `Docs/actif 7j        ${docsPerActive7User.toFixed(2)}\n` +
+      `Croissance CA        ${revenueGrowth30d}%\n` +
+      `Croissance docs 7j   ${docs7Growth}%\n` +
+      `Croissance users     ${user30Growth}%`
     );
   }
 
@@ -278,35 +351,32 @@ function makeKadiStatsService(deps) {
       packPriceFcfa,
     });
 
+    // /stats clients
+    // stats clients
+    // dashboard clients
     if (t.includes("clients")) {
       await sendText(from, buildTopClientsText(stats));
       return true;
     }
 
+    // /stats users
+    // /stats utilisateurs
+    // stats users
     if (t.includes("users") || t.includes("utilisateurs")) {
       await sendText(from, buildTopUsersText(stats));
       return true;
     }
 
+    // /stats details
+    // /stats détails
     if (t.includes("details") || t.includes("détails")) {
       await sendText(from, buildDashboard(stats));
       await sendText(from, buildDetailsText(stats));
-
-      const topUsers = buildTopUsersText(stats);
-      if (!topUsers.includes("Aucune donnée disponible")) {
-        await sendText(from, topUsers);
-      }
-
       return true;
     }
 
+    // /stats simple = dashboard uniquement
     await sendText(from, buildDashboard(stats));
-
-    const topUsers = buildTopUsersText(stats);
-    if (!topUsers.includes("Aucune donnée disponible")) {
-      await sendText(from, topUsers);
-    }
-
     return true;
   }
 
