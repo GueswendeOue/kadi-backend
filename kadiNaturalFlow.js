@@ -44,6 +44,7 @@ function makeKadiNaturalFlow(deps) {
 
   function getNluSource(parsed) {
     if (!parsed || typeof parsed !== "object") return "unknown";
+
     if (
       parsed.reasoningShort ||
       parsed.correctedText ||
@@ -51,6 +52,7 @@ function makeKadiNaturalFlow(deps) {
     ) {
       return "openai";
     }
+
     return "local";
   }
 
@@ -214,10 +216,12 @@ function makeKadiNaturalFlow(deps) {
 
     if (!session.lastDocDraft) {
       const draft = makeEmptyDraftForDocType(parsedDocType || "devis");
+
       draft.meta = makeDraftMeta({
         ...(draft.meta || {}),
         nluSource: getNluSource(parsed),
       });
+
       session.lastDocDraft = draft;
       return session.lastDocDraft;
     }
@@ -299,6 +303,7 @@ function makeKadiNaturalFlow(deps) {
 
   function clearSessionForFreshDraft(session) {
     if (!session) return;
+
     session.lastDocDraft = null;
     session.itemDraft = null;
     session.pendingSmartBlockText = null;
@@ -391,6 +396,7 @@ function makeKadiNaturalFlow(deps) {
   async function tryHandleNaturalMessage(from, text) {
     const s = getSession(from);
     const rawText = String(text || "").trim();
+
     if (!rawText) return false;
 
     const vagueCheck = detectVagueRequest(rawText);
@@ -405,10 +411,13 @@ function makeKadiNaturalFlow(deps) {
       });
 
       await sendText(from, buildSmartGuidanceMessage(rawText));
-      await sendButtons(from, "Que voulez-vous faire ?", [
-        { id: "HOME_DOCS", title: "Créer un document" },
+
+      await sendButtons(from, "Choisissez une option 👇", [
+        { id: "HOME_DOCS", title: "Créer guidé" },
+        { id: "HOME_OCR", title: "Photo" },
         { id: "BACK_HOME", title: "Menu" },
       ]);
+
       return true;
     }
 
@@ -486,11 +495,13 @@ function makeKadiNaturalFlow(deps) {
         s.pendingSmartBlockText = rawText;
 
         await sendText(from, buildSmartGuidanceMessage(rawText));
+
         await sendButtons(from, "Quel document voulez-vous créer ?", [
           { id: "SMARTBLOCK_DEVIS", title: "Devis" },
           { id: "SMARTBLOCK_FACTURE", title: "Facture" },
           { id: "SMARTBLOCK_RECU", title: "Reçu" },
         ]);
+
         return true;
       }
 
@@ -512,6 +523,7 @@ function makeKadiNaturalFlow(deps) {
 
     const draft = ensureDraftForParsedDocType(s, parsed);
     applyCommonParsedFields(draft, parsed);
+
     if (parsed.kind === "simple_payment") {
       if (!draft.type) {
         draft.type = parsed.docType || "recu";
@@ -697,6 +709,7 @@ function makeKadiNaturalFlow(deps) {
     const parsedItems = items.map((it) =>
       makeItem(it.label, it.qty, it.unitPrice)
     );
+
     draft.items = parsedItems;
     computeDraftFinance(draft);
 
@@ -749,6 +762,7 @@ function makeKadiNaturalFlow(deps) {
     }
 
     const validation = validateDraftForPreview(draft);
+
     if (!validation.ok) {
       await logLearningEvent({
         waId: from,
@@ -767,6 +781,7 @@ function makeKadiNaturalFlow(deps) {
         { id: "SMARTBLOCK_FIX", title: "Corriger" },
         { id: "DOC_RESTART", title: "Recommencer" },
       ]);
+
       return true;
     }
 
