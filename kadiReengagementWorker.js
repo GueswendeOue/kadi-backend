@@ -25,7 +25,7 @@ function normalizeUsers(rows = []) {
     .filter((row) => !!row.wa_id);
 }
 
-// ✅ Burkina = UTC+0, on verrouille en UTC
+// Burkina = UTC+0
 function isReasonableSendHour(date = new Date()) {
   const h = date.getUTCHours();
   return h >= 8 && h <= 19;
@@ -51,6 +51,36 @@ function diffCount(beforeSet, afterSet) {
   return Math.max(0, afterSet.size - beforeSet.size);
 }
 
+function toSafeDelayMs(value, fallback = 1500) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(Math.trunc(n), 10000));
+}
+
+function sleep(ms) {
+  const delay = toSafeDelayMs(ms, 0);
+  if (delay <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+function buildStats() {
+  return {
+    targeted: 0,
+    sent: 0,
+    template: 0,
+    blocked: 0,
+    failed: 0,
+  };
+}
+
+async function safeLogReengagementSend(payload) {
+  try {
+    await logReengagementSend(payload);
+  } catch (err) {
+    console.warn("[KADI/REENGAGEMENT] log failed:", err?.message || err);
+  }
+}
+
 // ===============================
 // Batch sender
 // ===============================
@@ -63,20 +93,20 @@ async function runBatch({
   campaignType,
   cycleKey,
   alreadyTargetedSet,
+  sendDelayMs = Number(process.env.KADI_REENGAGEMENT_SEND_DELAY_MS || 1500),
 }) {
   const cleanUsers = dedupeUsers(users).filter(
     (u) => !alreadyTargetedSet.has(u.wa_id)
   );
 
-  const stats = {
-    targeted: cleanUsers.length,
-    sent: 0,
-    template: 0,
-    blocked: 0,
-    failed: 0,
-  };
+  const stats = buildStats();
+  stats.targeted = cleanUsers.length;
 
-  for (const user of cleanUsers) {
+  const delayMs = toSafeDelayMs(sendDelayMs, 1500);
+
+  for (let i = 0; i < cleanUsers.length; i += 1) {
+    const user = cleanUsers[i];
+
     try {
       const res = await sendSmartReengagement({
         waId: user.wa_id,
@@ -102,7 +132,7 @@ async function runBatch({
         stats.sent += 1;
         alreadyTargetedSet.add(user.wa_id);
 
-        await logReengagementSend({
+        await safeLogReengagementSend({
           waId: user.wa_id,
           campaignType,
           templateName: null,
@@ -112,31 +142,66 @@ async function runBatch({
           meta: {
             owner_name: user.owner_name || null,
             last_activity_at: user.last_activity_at || null,
+            sendDelayMs: delayMs,
           },
         });
       } else if (res?.ok && res?.mode === "template") {
         stats.template += 1;
         alreadyTargetedSet.add(user.wa_id);
 
-        await logReengagementSend({
+        await safeLogReengagementSend({
           waId: user.wa_id,
           campaignType,
           templateName,
           messageMode: "template",
-          status: "sent",
+          status: "template_sent",
           cycleKey,
           meta: {
             owner_name: user.owner_name || null,
             last_activity_at: user.last_activity_at || null,
+            sendDelayMs: delayMs,
           },
         });
       } else if (res?.reason === "blocked_24h") {
         stats.blocked += 1;
       } else {
         stats.failed += 1;
+
+        await safeLogReengagementSend({
+          waId: user.wa_id,
+          campaignType,
+          templateName,
+          messageMode: templateName ? "template" : "free",
+          status: "failed",
+          cycleKey,
+          meta: {
+            owner_name: user.owner_name || null,
+            last_activity_at: user.last_activity_at || null,
+            reason: res?.reason || "unknown",
+            error: res?.error || null,
+          },
+        });
       }
-    } catch (_) {
+    } catch (err) {
       stats.failed += 1;
+
+      await safeLogReengagementSend({
+        waId: user.wa_id,
+        campaignType,
+        templateName,
+        messageMode: templateName ? "template" : "free",
+        status: "failed",
+        cycleKey,
+        meta: {
+          owner_name: user.owner_name || null,
+          last_activity_at: user.last_activity_at || null,
+          error: String(err?.message || err || "send_error"),
+        },
+      });
+    }
+
+    if (i < cleanUsers.length - 1 && delayMs > 0) {
+      await sleep(delayMs);
     }
   }
 
@@ -158,6 +223,7 @@ async function runReengagementCycle({
   reengagementCooldownDays = Number(
     process.env.KADI_REENGAGEMENT_COOLDOWN_DAYS || 7
   ),
+  sendDelayMs = Number(process.env.KADI_REENGAGEMENT_SEND_DELAY_MS || 1500),
 }) {
   if (typeof sendText !== "function") {
     throw new Error("sendText manquant");
@@ -181,10 +247,12 @@ async function runReengagementCycle({
 
   const cycleKey = buildCycleKey();
   const alreadyTargetedSet = new Set();
+  const safeDelayMs = toSafeDelayMs(sendDelayMs, 1500);
 
   console.log("[KADI/REENGAGEMENT] cycle start", {
     cycleKey,
     cooldownDays: reengagementCooldownDays,
+    sendDelayMs: safeDelayMs,
   });
 
   // ===============================
@@ -210,6 +278,7 @@ async function runReengagementCycle({
     campaignType: "zero_docs_a",
     cycleKey,
     alreadyTargetedSet,
+    sendDelayMs: safeDelayMs,
   });
 
   const zeroUniqueTouched = diffCount(zeroBeforeSend, alreadyTargetedSet);
@@ -223,6 +292,7 @@ async function runReengagementCycle({
       meta: {
         cycleKey,
         cooldownDays: reengagementCooldownDays,
+        sendDelayMs: safeDelayMs,
         uniqueTouched: zeroUniqueTouched,
         excludedThisSegment: zeroExcludedBefore,
         alreadyTargetedInCycle: zeroExcludedBefore,
@@ -254,6 +324,7 @@ async function runReengagementCycle({
     campaignType: `inactive_${inactiveDays}d`,
     cycleKey,
     alreadyTargetedSet,
+    sendDelayMs: safeDelayMs,
   });
 
   const inactiveUniqueTouched = diffCount(
@@ -270,6 +341,7 @@ async function runReengagementCycle({
       meta: {
         cycleKey,
         cooldownDays: reengagementCooldownDays,
+        sendDelayMs: safeDelayMs,
         uniqueTouched: inactiveUniqueTouched,
         excludedThisSegment: inactiveExcludedBefore,
         alreadyTargetedInCycle: inactiveExcludedBefore,
@@ -296,6 +368,7 @@ async function runReengagementCycle({
   console.log("[KADI/REENGAGEMENT] cycle done", {
     cycleKey,
     cooldownDays: reengagementCooldownDays,
+    sendDelayMs: safeDelayMs,
     targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
@@ -304,6 +377,7 @@ async function runReengagementCycle({
   return {
     cycleKey,
     cooldownDays: reengagementCooldownDays,
+    sendDelayMs: safeDelayMs,
     targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
