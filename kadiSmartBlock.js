@@ -51,6 +51,7 @@ function sanitizeOcrLabel(line) {
     .replace(/\b(fcfa|cfa)\b/gi, " ")
     .replace(/[|:]/g, " ")
     .replace(/\s+/g, " ")
+    .replace(/\s+(a|à|x)$/i, "")
     .trim();
 }
 
@@ -140,10 +141,26 @@ function detectQtyIndex(line, matches) {
 
   if (matches.length === 2) {
     const first = matches[0];
+    const price = matches[1];
     const beforeFirst = text.slice(0, first.start).trim();
+    const betweenFirstAndPrice = text.slice(first.end, price.start).trim();
     const tentativeLabel = sanitizeOcrLabel(
       removeRangesFromText(text, [matches[1]])
     );
+
+    if (
+      first.start === 0 &&
+      Number.isInteger(first.value) &&
+      first.value > 0 &&
+      first.value <= 1000 &&
+      /[a-zA-ZÀ-ÿ]/.test(betweenFirstAndPrice) &&
+      /(^|\s)(a|à|x)\s*$/i.test(betweenFirstAndPrice) &&
+      !/^(mm|cm|m|kg|g|l|litre|litres|ampere|ampère)\b/i.test(
+        betweenFirstAndPrice
+      )
+    ) {
+      return 0;
+    }
 
     if (
       first.start === 0 &&

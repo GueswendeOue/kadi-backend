@@ -23,12 +23,47 @@ test("parses simple item lines and extracts the grand total", () => {
   assert.deepEqual(parsed.ignored, ["Total 100000"]);
   assert.equal(parsed.items.length, 2);
   assert.match(parsed.items[0].label, /porte/i);
-  assert.equal(parsed.items[0].qty, 1);
+  assert.doesNotMatch(parsed.items[0].label, /\b2\b/);
+  assert.equal(parsed.items[0].qty, 2);
   assert.equal(parsed.items[0].unitPrice, 25000);
   assert.match(parsed.items[1].label, /main d'oeuvre/i);
   assert.equal(parsed.items[1].qty, 1);
   assert.equal(parsed.items[1].unitPrice, 50000);
   assert.equal(totals.grandTotal, 100000);
+});
+
+test("detects leading quantities in common field item lines", () => {
+  const parsed = parseItemsBlockSmart(
+    [
+      "5 sacs de ciment à 5000",
+      "10 prises à 2500",
+      "main d’œuvre à 50000",
+      "pose 60000",
+      "tube PVC 20 à 5000",
+    ].join("\n")
+  );
+
+  assert.equal(parsed.items.length, 5);
+
+  assert.equal(parsed.items[0].qty, 5);
+  assert.match(parsed.items[0].label, /ciment/i);
+  assert.equal(parsed.items[0].unitPrice, 5000);
+
+  assert.equal(parsed.items[1].qty, 10);
+  assert.match(parsed.items[1].label, /prise/i);
+  assert.equal(parsed.items[1].unitPrice, 2500);
+
+  assert.equal(parsed.items[2].qty, 1);
+  assert.match(parsed.items[2].label, /main d’œuvre/i);
+  assert.equal(parsed.items[2].unitPrice, 50000);
+
+  assert.equal(parsed.items[3].qty, 1);
+  assert.match(parsed.items[3].label, /pose/i);
+  assert.equal(parsed.items[3].unitPrice, 60000);
+
+  assert.equal(parsed.items[4].qty, 1);
+  assert.match(parsed.items[4].label, /tube pvc 20/i);
+  assert.equal(parsed.items[4].unitPrice, 5000);
 });
 
 test("reports no severe mismatch when computed total matches extracted total", () => {
