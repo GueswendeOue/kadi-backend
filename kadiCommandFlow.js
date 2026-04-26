@@ -3,6 +3,7 @@
 function makeKadiCommandFlow(deps) {
   const {
     sendText,
+    sendButtons = null,
 
     // user actions
     startProfileFlow,
@@ -47,6 +48,42 @@ function makeKadiCommandFlow(deps) {
   function isOneOf(value, allowed = []) {
     const v = String(value || "").trim().toLowerCase();
     return allowed.includes(v);
+  }
+
+  function looksLikeStampIntent(text = "") {
+    const t = lowerText(text);
+    if (!t) return false;
+
+    if (isOneOf(t, ["tampon", "cachet", "signature"])) return true;
+
+    return (
+      /\b(tampon|cachet|signature)\b/i.test(t) &&
+      /\b(ajouter|ajoute|mettre|met|configurer|modifier|activer|desactiver|désactiver|envoyer|photo|image|mon|ma)\b/i.test(
+        t
+      )
+    );
+  }
+
+  async function sendStampGuidance(from) {
+    const message =
+      "🟦 *Tampon KADI*\n\n" +
+      "Le tampon se configure dans *Profil → Tampon*.\n\n" +
+      "Une fois activé, KADI proposera avant chaque PDF :\n" +
+      "• *Avec tampon* : 2 crédits\n" +
+      "• *Sans tampon* : 1 crédit\n\n" +
+      "📷 L’envoi direct d’une photo de tampon n’est pas encore disponible.";
+
+    if (typeof sendButtons === "function") {
+      await sendButtons(from, message, [
+        { id: "PROFILE_STAMP", title: "Profil/Tampon" },
+        { id: "HOME_DOCS", title: "Créer document" },
+        { id: "BACK_HOME", title: "Menu" },
+      ]);
+      return true;
+    }
+
+    await sendText(from, message);
+    return true;
   }
 
   function startsWithCommand(text = "", command = "") {
@@ -290,6 +327,10 @@ function makeKadiCommandFlow(deps) {
     if (isOneOf(t, ["profil", "profile"])) {
       await startProfileFlow(from);
       return true;
+    }
+
+    if (looksLikeStampIntent(text)) {
+      return sendStampGuidance(from);
     }
 
     if (

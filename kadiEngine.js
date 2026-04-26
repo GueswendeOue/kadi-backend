@@ -961,6 +961,7 @@ const {
 // ===============================
 const { handleCommand } = makeKadiCommandFlow({
   sendText,
+  sendButtons,
 
   // user actions
   startProfileFlow,
