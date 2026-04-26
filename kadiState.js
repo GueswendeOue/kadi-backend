@@ -65,4 +65,32 @@ function resetSession(userId) {
   sessions.delete(String(userId || "").trim());
 }
 
-module.exports = { getSession, touchSession, resetSession };
+function clearCurrentFlowSession(session) {
+  if (!session || typeof session !== "object") return session;
+
+  session.step = "idle";
+  session.mode = null;
+  session.factureKind = null;
+  session.lastDocDraft = null;
+  session.itemDraft = null;
+  session.pendingSmartBlockText = null;
+  session.pendingPdfAfterRecharge = null;
+  session.pendingOcrMediaId = null;
+  session.intentPendingItemLabel = null;
+  session.pendingImage = null;
+  session.lastImagePurpose = null;
+  session.dechargeStep = null;
+  session.dechargeDraft = null;
+  session.subjectReturnTarget = null;
+  session.clientPhoneReturnTarget = null;
+  session.lastUpdated = Date.now();
+
+  return session;
+}
+
+module.exports = {
+  getSession,
+  touchSession,
+  resetSession,
+  clearCurrentFlowSession,
+};

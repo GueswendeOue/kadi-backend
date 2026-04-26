@@ -4,7 +4,7 @@
 // Core / infra
 // ===============================
 const { supabase } = require("./supabaseClient");
-const { getSession } = require("./kadiState");
+const { getSession, clearCurrentFlowSession } = require("./kadiState");
 const { withUserLock } = require("./kadiLocks");
 const {
   extractMetaIdentity,
@@ -908,6 +908,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   rejectTopup,
   readTopup,
   addCredits,
+  clearCurrentFlowSession,
 
   getDevisFollowupById,
   markDevisFollowupConverted,
@@ -1030,6 +1031,12 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 async function handleTextMessage(from, text, msg) {
   const normalizedText = norm(text).toLowerCase().trim();
   console.log("[KADI/TEXT] raw:", text, "| norm:", normalizedText);
+
+  if (isHardGlobalInterrupt(text)) {
+    clearCurrentFlowSession(getSession(from));
+    await sendHomeMenu(from);
+    return true;
+  }
 
   // 1) Commandes explicites d'abord
   if (await handleCommand(from, text, { wa_id: from })) return true;

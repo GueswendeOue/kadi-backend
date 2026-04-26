@@ -78,6 +78,7 @@ function makeKadiInteractiveFlow(deps) {
     startProfileFlow,
     replyBalance,
     replyRechargeInfo,
+    clearCurrentFlowSession = null,
     trackConversionEvent = null,
   } = deps;
 
@@ -996,7 +997,12 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     // NAVIGATION
     // ===============================
-    if (replyId === "BACK_HOME") return sendHomeMenu(from);
+    if (replyId === "BACK_HOME") {
+      if (typeof clearCurrentFlowSession === "function") {
+        clearCurrentFlowSession(s);
+      }
+      return sendHomeMenu(from);
+    }
     if (replyId === "BACK_DOCS") return sendDocsMenu(from);
 
     // ===============================
