@@ -23,25 +23,27 @@ function makeKadiStampFlow(deps) {
     session.stampMode = null;
   }
 
-  function buildPreGenerateStampMessage() {
-  return (
-    "📄 *Votre document est prêt.*\n\n" +
-    "🟦 *Ajoutez un tampon professionnel pour seulement +1 crédit.*\n\n" +
-    "✅ Document plus crédible\n" +
-    "✅ Image plus professionnelle\n" +
-    "✅ Meilleure impression chez le client\n\n" +
-    "💳 *Supplément : 1 crédit sur ce document*"
-  );
-}
+  function buildPreGenerateStampMessage({ baseCost = 1 } = {}) {
+    const base = Math.max(1, Number(baseCost) || 1);
+    const withStamp = base + 1;
 
-  async function sendPreGenerateStampMenu(to) {
-    const text = buildPreGenerateStampMessage();
+    return (
+      "📄 *Votre document est prêt.*\n\n" +
+      "🟦 Votre tampon est activé dans le profil.\n\n" +
+      `• Générer *avec tampon* : *${withStamp} crédits*\n` +
+      `• Générer *sans tampon* : *${base} crédit(s)*\n\n` +
+      "Le tampon ajoute *+1 crédit* sur ce PDF."
+    );
+  }
+
+  async function sendPreGenerateStampMenu(to, opts = {}) {
+    const text = buildPreGenerateStampMessage(opts);
 
     return sendButtons(to, text, [
-  { id: "PRESTAMP_ADD_ONCE", title: "🟦 Oui +1 crédit" },
-  { id: "PRESTAMP_SKIP", title: "⚪ Non merci" },
-  { id: "PROFILE_STAMP", title: "⚙️ Réglages" },
-]);
+      { id: "PRESTAMP_ADD_ONCE", title: "Avec tampon" },
+      { id: "PRESTAMP_SKIP", title: "Sans tampon" },
+      { id: "PROFILE_STAMP", title: "Modifier" },
+    ]);
   }
 
   function stampPosLabel(pos) {

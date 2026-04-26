@@ -1796,12 +1796,9 @@ function makeKadiInteractiveFlow(deps) {
       const p = await getOrCreateProfile(from);
 
       if (p?.stamp_enabled === true && hasStampProfileReady(p)) {
-        await sendText(
-          from,
-          "💡 *Ajoutez un tampon professionnel ?*\n\n" +
-            "Pour seulement *+1 crédit*, votre document paraît plus crédible et plus pro."
-        );
-        await sendPreGenerateStampMenu(from);
+        await sendPreGenerateStampMenu(from, {
+          baseCost: computeBasePdfCost(finalDraft),
+        });
         return;
       }
 
