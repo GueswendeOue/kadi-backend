@@ -27,7 +27,7 @@ function diffDays(fromDate) {
 }
 
 function normalizeProfessionCategory(profile = {}) {
-  return profile?.profession_category || profile?.business_sector || null;
+  return profile?.business_sector || null;
 }
 
 function growthPct(current, previous) {
@@ -261,7 +261,6 @@ async function getZeroDocUsersBySegment(segment = "A", limit = 20) {
         "wa_id",
         "created_at",
         "onboarding_done",
-        "profession_category",
         "business_sector",
         "owner_name",
         "business_name",
@@ -367,7 +366,7 @@ async function getInactiveUsers(minDaysInactive = 30, limit = 20) {
   const { data: profiles, error: profilesError } = await supabase
     .from("business_profiles")
     .select(
-      "wa_id, profession_category, business_sector, business_name, owner_name"
+      "wa_id, business_sector, business_name, owner_name"
     )
     .in("wa_id", waIds);
 

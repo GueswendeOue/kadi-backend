@@ -263,7 +263,7 @@ async function maybeSendOnboarding(from) {
     if (p?.onboarding_done === true) return false;
 
     const example =
-      buildProfessionExample(p?.profession_category) || pickExample(from);
+      buildProfessionExample(p?.business_sector) || pickExample(from);
 
     await sendText(
       from,
@@ -304,7 +304,7 @@ async function tryHandleProfessionIntro(from, text) {
 
     await safeUpdateProfile(from, {
       profession_text: String(text || "").trim().slice(0, 80),
-      profession_category: category,
+      business_sector: category,
     });
 
     const example = buildProfessionExample(category);
@@ -339,7 +339,7 @@ async function handleOnboardingReply(from, replyId) {
     if (!category) return false;
 
     await safeUpdateProfile(from, {
-      profession_category: category,
+      business_sector: category,
     });
 
     const example = buildProfessionExample(category);
@@ -413,7 +413,7 @@ async function sendActivationJ1(from) {
   try {
     const p = await getOrCreateProfile(from);
     const example =
-      buildProfessionExample(p?.profession_category) || pickExample(from);
+      buildProfessionExample(p?.business_sector) || pickExample(from);
 
     await sendText(
       from,
