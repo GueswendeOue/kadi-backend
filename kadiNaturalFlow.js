@@ -147,6 +147,23 @@ function makeKadiNaturalFlow(deps) {
     let aiParsed = null;
     let localParsed = null;
 
+    try {
+      localParsed = parseNaturalWhatsAppMessage(rawText);
+
+      if (
+        localParsed?.docType === "decharge" &&
+        isParsedResultUsable(localParsed)
+      ) {
+        console.log("[KADI/NATURAL] using local decharge parse", {
+          kind: localParsed?.kind || null,
+          docType: localParsed?.docType || null,
+        });
+        return localParsed;
+      }
+    } catch (e) {
+      console.warn("[KADI/NATURAL] local decharge parser failed:", e?.message);
+    }
+
     if (typeof parseNaturalWithOpenAI === "function") {
       try {
         aiParsed = await parseNaturalWithOpenAI(rawText);
@@ -165,7 +182,7 @@ function makeKadiNaturalFlow(deps) {
     }
 
     try {
-      localParsed = parseNaturalWhatsAppMessage(rawText);
+      localParsed = localParsed || parseNaturalWhatsAppMessage(rawText);
 
       if (isParsedResultUsable(localParsed)) {
         console.log("[KADI/NATURAL] using local parse", {

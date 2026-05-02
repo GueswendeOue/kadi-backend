@@ -6,11 +6,15 @@ const assert = require("node:assert/strict");
 const {
   buildDechargePreviewMessage,
   buildDechargeText,
+  detectDechargeType,
+  initDechargeDraft,
   normalizeDechargeFields,
 } = require("../kadiDecharge");
 const {
+  parseNaturalWhatsAppMessage,
   parseNaturalDechargeMessage,
 } = require("../kadiNaturalParser");
+const { makeKadiNaturalFlow } = require("../kadiNaturalFlow");
 
 const money = (value) => new Intl.NumberFormat("fr-FR").format(Number(value));
 
@@ -63,9 +67,101 @@ test("parse une decharge mixte objet et somme", () => {
   );
 
   assert.equal(parsed.client, "Ali");
+  assert.equal(parsed.cni_number, "B1234567");
+  assert.equal(parsed.receiver_phone, "70112233");
   assert.equal(parsed.object_label, "perceuse");
   assert.equal(parsed.amount_received, 35000);
   assert.equal(parsed.discharge_purpose, "travaux");
+});
+
+test("flow decharge prefere le parseur local au NLU OpenAI degradé", async () => {
+  const session = {};
+  const sentTexts = [];
+  let openAiCalls = 0;
+
+  const flow = makeKadiNaturalFlow({
+    getSession: () => session,
+    sendText: async (_to, text) => sentTexts.push(text),
+    sendButtons: async () => {},
+    money,
+    LIMITS: {
+      maxClientNameLength: 80,
+      maxItemLabelLength: 120,
+    },
+    formatDateISO: () => "2026-05-02",
+    makeDraftMeta: (overrides = {}) => ({ ...overrides }),
+    makeItem: (label, qty, unitPrice) => ({
+      label,
+      qty,
+      unitPrice,
+      amount: Math.round(Number(qty || 0) * Number(unitPrice || 0)),
+    }),
+    computeFinance: (draft) => {
+      const gross = (draft.items || []).reduce(
+        (sum, item) => sum + Number(item.amount || 0),
+        0
+      );
+      draft.finance = { gross, total: gross, subtotal: gross };
+      return draft.finance;
+    },
+    computeBasePdfCost: () => 2,
+    formatBaseCostLine: (cost) => `Coût: ${cost}`,
+    buildPreviewMessage: () => "",
+    sendPreviewMenu: async () => {},
+    askItemLabel: async () => {},
+    parseNaturalWhatsAppMessage,
+    parseNaturalWithOpenAI: async () => {
+      openAiCalls += 1;
+      return {
+        kind: "intent_only",
+        docType: "decharge",
+        client: "Ali",
+        subject: "Perceuse et paiement pour travaux",
+        motif: "travaux",
+        confidence: 0.9,
+      };
+    },
+    analyzeSmartBlock: () => ({
+      businessType: null,
+      gapInfo: { gap: 0, severity: "none" },
+      hint: null,
+    }),
+    logLearningEvent: async () => {},
+    detectDechargeType,
+    buildDechargePreviewMessage,
+    initDechargeDraft,
+    buildPostConfirmationMessage: () => "",
+    parseItemsBlockSmart: () => ({ items: [], ignored: [] }),
+    extractBlockTotals: () => ({}),
+    buildSmartMismatchMessage: () => ({ warning: false, text: "" }),
+    safe: (value) => String(value || "").trim(),
+    getOrCreateProfile: async () => ({}),
+  });
+
+  const handled = await flow.tryHandleNaturalMessage(
+    "22670000000",
+    [
+      "Décharge pour Ali",
+      "CNI B1234567",
+      "WhatsApp 70112233",
+      "Il a reçu une perceuse et 35000 pour travaux",
+    ].join("\n")
+  );
+
+  assert.equal(handled, true);
+  assert.equal(openAiCalls, 0);
+  assert.equal(session.step, "doc_review");
+  assert.equal(session.lastDocDraft.cni_number, "B1234567");
+  assert.equal(session.lastDocDraft.receiver_phone, "70112233");
+  assert.equal(session.lastDocDraft.object_label, "perceuse");
+  assert.equal(session.lastDocDraft.amount_received, 35000);
+  assert.equal(session.lastDocDraft.discharge_purpose, "travaux");
+  assert.equal(session.lastDocDraft.finance.gross, 35000);
+  assert.match(sentTexts[0], /CNI \/ Pièce: B1234567/);
+  assert.match(sentTexts[0], /Téléphone \/ WhatsApp: 70112233/);
+  assert.match(sentTexts[0], /Objet reçu: perceuse/);
+  assert.match(sentTexts[0], /Somme reçue: \*35 000 FCFA\*/);
+  assert.match(sentTexts[0], /Motif: travaux/);
 });
 
 test("construit un aperçu avec seulement les champs disponibles", () => {
