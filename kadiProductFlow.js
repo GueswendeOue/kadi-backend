@@ -859,7 +859,7 @@ function makeKadiProductFlow(deps) {
 
       s.lastDocDraft.client = client;
       s.step = "decharge_motif";
-      await sendText(from, "📝 Motif ?");
+      await sendText(from, "📝 Objet, somme ou motif ?");
       return true;
     }
 
@@ -874,8 +874,18 @@ function makeKadiProductFlow(deps) {
       s.lastDocDraft.motif = motif;
       s.lastDocDraft.dechargeType = detectDechargeType(t);
 
+      if (s.lastDocDraft.dechargeType === "argent") {
+        s.lastDocDraft.discharge_purpose = motif;
+      } else {
+        s.lastDocDraft.object_label = motif;
+        s.lastDocDraft.subject = motif;
+      }
+
       s.step = "decharge_amount";
-      await sendText(from, "💰 Montant ?");
+      await sendText(
+        from,
+        "💰 Montant ou valeur ?\nSi pas de montant, tapez *0*."
+      );
       return true;
     }
 
@@ -887,9 +897,15 @@ function makeKadiProductFlow(deps) {
         return true;
       }
 
-      s.lastDocDraft.items = [
-        makeItem(s.lastDocDraft.motif || "Décharge", 1, n),
-      ];
+      if (s.lastDocDraft.dechargeType === "argent") {
+        s.lastDocDraft.amount_received = n;
+        s.lastDocDraft.items = [makeItem("Somme reçue", 1, n)];
+      } else if (n > 0) {
+        s.lastDocDraft.object_value = n;
+        s.lastDocDraft.items = [];
+      } else {
+        s.lastDocDraft.items = [];
+      }
 
       s.lastDocDraft.finance = computeFinance(s.lastDocDraft);
       s.step = "doc_review";

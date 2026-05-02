@@ -444,17 +444,35 @@ function makeKadiPdfFlow(deps) {
           docNumber: finalDraft.docNumber,
           date: finalDraft.date,
           client: finalDraft.client,
-          clientPhone: finalDraft.clientPhone || null,
-          subject: finalDraft.subject || null,
+          clientPhone:
+            finalDraft.receiver_phone || finalDraft.clientPhone || null,
+          subject: finalDraft.object_label || finalDraft.subject || null,
           motif: finalDraft.motif || null,
           dechargeType: finalDraft.dechargeType || null,
+          cni_number: finalDraft.cni_number || null,
+          receiver_phone: finalDraft.receiver_phone || null,
+          object_label: finalDraft.object_label || null,
+          amount_received: finalDraft.amount_received || null,
+          object_value: finalDraft.object_value || null,
+          discharge_purpose: finalDraft.discharge_purpose || null,
           dechargeText:
             finalDraft.type === "decharge"
               ? buildDechargeText({
                   client: finalDraft.client,
                   businessName: safe(profile?.business_name),
-                  motif: finalDraft.motif,
-                  total,
+                  cni_number: finalDraft.cni_number,
+                  receiver_phone:
+                    finalDraft.receiver_phone || finalDraft.clientPhone,
+                  object_label: finalDraft.object_label,
+                  amount_received:
+                    finalDraft.amount_received ||
+                    (finalDraft.dechargeType === "argent" ||
+                    finalDraft.dechargeType === "mixte"
+                      ? total
+                      : 0),
+                  object_value: finalDraft.object_value,
+                  discharge_purpose:
+                    finalDraft.discharge_purpose || finalDraft.motif,
                   dechargeType: finalDraft.dechargeType,
                 })
               : null,

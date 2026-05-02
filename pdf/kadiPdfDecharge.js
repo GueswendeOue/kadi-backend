@@ -9,6 +9,10 @@ const {
   drawPartyBox,
 } = require("./kadiPdfLayoutCommon");
 const { fmtNumber, numberToFrench, safe } = require("./kadiPdfCommon");
+const {
+  buildDechargeText,
+  normalizeDechargeFields,
+} = require("../kadiDecharge");
 
 async function buildDechargePdf(args = {}) {
   const { docData = {}, businessProfile = null, logoBuffer = null, qr = null, kadiE164 = "" } = args;
@@ -34,11 +38,13 @@ async function buildDechargePdf(args = {}) {
 
   pdf.font("Helvetica").fontSize(11).fillColor("#000");
 
+  const fields = normalizeDechargeFields(docData);
   const body =
     docData.dechargeText ||
-    `Je soussigné(e), ${docData.client || "—"}, reconnais avoir reçu : ${
-      safe(docData.motif) || "objet non précisé"
-    }. La présente décharge est établie pour servir et valoir ce que de droit.`;
+    buildDechargeText({
+      ...docData,
+      businessName: safe(businessProfile?.business_name),
+    });
 
   pdf.text(body, ctx.left, pdf.y, {
     width: ctx.right - ctx.left,
@@ -46,7 +52,7 @@ async function buildDechargePdf(args = {}) {
     lineGap: 4,
   });
 
-  const total = Number(docData.total || 0);
+  const total = Number(fields.amount_received || 0);
 
   if (total > 0) {
     pdf.y += 20;

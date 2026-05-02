@@ -271,9 +271,64 @@ function makeKadiNaturalFlow(deps) {
     }
 
     if (draft.type === "decharge") {
-      const base = draft.motif || parsed.motif || "";
+      if (parsed.cni_number) {
+        draft.cni_number = sanitizeText(parsed.cni_number, 40);
+      }
+
+      if (parsed.receiver_phone) {
+        draft.receiver_phone = sanitizeText(parsed.receiver_phone, 30);
+        draft.clientPhone = draft.receiver_phone;
+      }
+
+      if (parsed.object_label) {
+        draft.object_label = sanitizeText(
+          parsed.object_label,
+          LIMITS.maxItemLabelLength
+        );
+        draft.subject = draft.object_label;
+      }
+
+      if (Number(parsed.amount_received || 0) > 0) {
+        draft.amount_received = Number(parsed.amount_received || 0);
+      }
+
+      if (Number(parsed.object_value || 0) > 0) {
+        draft.object_value = Number(parsed.object_value || 0);
+      }
+
+      if (parsed.discharge_purpose) {
+        draft.discharge_purpose = sanitizeText(
+          parsed.discharge_purpose,
+          LIMITS.maxItemLabelLength
+        );
+        draft.motif = draft.discharge_purpose;
+      }
+
+      const base = [
+        draft.object_label,
+        draft.amount_received,
+        draft.discharge_purpose,
+        draft.motif,
+      ]
+        .filter(Boolean)
+        .join(" ");
       draft.dechargeType = detectDechargeType(base);
     }
+  }
+
+  function refreshDechargeItemsAndFinance(draft) {
+    if (!draft || draft.type !== "decharge") return;
+
+    const amountReceived = Number(draft.amount_received || 0);
+
+    if (amountReceived > 0) {
+      draft.items = [makeItem("Somme reçue", 1, amountReceived)];
+      computeDraftFinance(draft);
+      return;
+    }
+
+    draft.items = [];
+    draft.finance = computeFinance(draft);
   }
 
   function isExplicitNewDocumentRequest(parsed, rawText) {
@@ -536,6 +591,13 @@ function makeKadiNaturalFlow(deps) {
         ) || "Paiement";
 
       draft.items = [makeItem(itemLabel, 1, Number(parsed.total || 0))];
+      if (draft.type === "decharge") {
+        draft.amount_received = Number(parsed.total || 0);
+        draft.discharge_purpose = itemLabel;
+        draft.motif = itemLabel;
+        draft.subject = null;
+        draft.dechargeType = "argent";
+      }
       computeDraftFinance(draft);
 
       if (!safe(draft.client)) {
@@ -556,24 +618,22 @@ function makeKadiNaturalFlow(deps) {
 
     if (parsed.kind === "intent_only") {
       if (draft.type === "decharge") {
+        refreshDechargeItemsAndFinance(draft);
+
         if (!safe(draft.client)) {
           s.step = "decharge_client";
           await sendText(from, "👤 Quel est le nom de la personne concernée ?");
           return true;
         }
 
-        if (!safe(draft.motif)) {
+        if (!safe(draft.object_label) && Number(draft.amount_received || 0) <= 0) {
           s.step = "decharge_motif";
-          await sendText(from, "📝 Quel est le motif de la décharge ?");
+          await sendText(from, "📝 Quel objet ou quelle somme a été reçu ?");
           return true;
         }
 
-        s.step = "decharge_amount";
-        await sendText(
-          from,
-          "💰 Quel est le montant ?\nSi pas de montant, tapez *0*."
-        );
-        return true;
+        s.step = "doc_review";
+        return sendDraftPreviewOrRecover(from, draft, rawText);
       }
 
       if (!safe(draft.client)) {

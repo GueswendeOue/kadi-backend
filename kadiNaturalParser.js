@@ -108,6 +108,16 @@ function findLastMoneyAmount(text = "") {
   return matches[matches.length - 1].value;
 }
 
+function stripMoneyTokens(text = "") {
+  return String(text || "")
+    .replace(
+      /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeLabel(label = "") {
   const t = String(label || "").trim();
   if (!t) return "Produit";
@@ -228,10 +238,10 @@ function stripClientClauseFromText(text = "", client = null) {
 function detectDocTypeFromText(text = "") {
   const t = cleanText(text);
 
+  if (/\bdecharge\b|\bdécharge\b/.test(t)) return "decharge";
   if (/\brecu\b|\breçu\b/.test(t)) return "recu";
   if (/\bfacture\b/.test(t)) return "facture";
   if (/\bdevis\b/.test(t)) return "devis";
-  if (/\bdecharge\b|\bdécharge\b/.test(t)) return "decharge";
 
   return null;
 }
@@ -322,6 +332,106 @@ function parseNaturalSimplePaymentMessage(text = "") {
     motif,
     total,
   };
+}
+
+// ===============================
+// DECHARGE MESSAGE
+// ===============================
+function cleanReceivedObjectLabel(value = "") {
+  let label = stripMoneyTokens(value)
+    .replace(/\b(il|elle)\s+a\s+re[cç]u\b/gi, " ")
+    .replace(/\b(une|un|des|du|de la|de l'|l'|la|le|les)\b/gi, " ")
+    .replace(/\bet\b/gi, " ")
+    .replace(/[.:;,-]+$/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!label) return null;
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+function extractDechargeClient(text = "") {
+  const raw = String(text || "");
+  const m = raw.match(/\bd[ée]charge\s+pour\s+([^\r\n,;]+)/i);
+  if (m) return String(m[1] || "").trim() || null;
+  return extractClientFromText(raw);
+}
+
+function extractDechargeReceivedClause(text = "") {
+  const raw = String(text || "").replace(/\r?\n/g, " ");
+  const m = raw.match(/\b(?:il|elle)\s+a\s+re[cç]u\s+(.+)$/i);
+  if (!m) return null;
+
+  return String(m[1] || "")
+    .replace(/\bvaleur\s+.+$/i, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseNaturalDechargeMessage(text = "") {
+  const docType = detectDocTypeFromText(text);
+  if (docType !== "decharge") return null;
+
+  const raw = String(text || "");
+  const receivedClause = extractDechargeReceivedClause(raw);
+  const cniMatch = raw.match(
+    /\b(?:cni|pi[eè]ce(?:\s+d['’ ]?identit[eé])?)\s*(?:n[°o]\s*)?[:#-]?\s*([a-z0-9-]+)/i
+  );
+  const phoneMatch = raw.match(
+    /\b(?:whatsapp|t[eé]l[eé]phone|tel)\s*[:#-]?\s*(\+?\d[\d .-]{5,})/i
+  );
+  const valueMatch = raw.match(/\bvaleur\s*[:#-]?\s*(.+?)(?:$|\r?\n)/i);
+  const amountInReceived = receivedClause ? findLastMoneyAmount(receivedClause) : null;
+  const objectValue = valueMatch ? findLastMoneyAmount(valueMatch[1]) : null;
+
+  let purpose = null;
+  let objectLabel = null;
+
+  if (receivedClause) {
+    const purposeMatch = receivedClause.match(
+      /\b(?:pour|motif\s*:?)\s+(.+)$/i
+    );
+    if (purposeMatch) {
+      purpose = String(purposeMatch[1] || "")
+        .replace(/\bvaleur\s+.+$/i, " ")
+        .trim();
+    }
+
+    let objectPart = receivedClause;
+    if (purposeMatch) objectPart = objectPart.slice(0, purposeMatch.index);
+    objectPart = objectPart.replace(/\bet\s+\d[\d .,-]*(?:f|fcfa)?\b/i, " ");
+    objectPart = objectPart.replace(/^\d[\d .,-]*(?:f|fcfa)?\b/i, " ");
+    objectLabel = cleanReceivedObjectLabel(objectPart);
+  }
+
+  const parsed = {
+    kind: "intent_only",
+    docType: "decharge",
+    client: extractDechargeClient(raw),
+    cni_number: cniMatch ? String(cniMatch[1] || "").trim() : null,
+    receiver_phone: phoneMatch
+      ? String(phoneMatch[1] || "").replace(/\D/g, "")
+      : null,
+    object_label: objectLabel,
+    amount_received: Number.isFinite(amountInReceived) ? amountInReceived : null,
+    object_value: Number.isFinite(objectValue) ? objectValue : null,
+    discharge_purpose: purpose || null,
+    motif: purpose || objectLabel || null,
+  };
+
+  if (
+    parsed.client ||
+    parsed.cni_number ||
+    parsed.receiver_phone ||
+    parsed.object_label ||
+    parsed.amount_received ||
+    parsed.object_value ||
+    parsed.discharge_purpose
+  ) {
+    return parsed;
+  }
+
+  return null;
 }
 
 // ===============================
@@ -492,6 +602,9 @@ function parseNaturalIntentOnlyMessage(text = "") {
 function parseNaturalWhatsAppMessage(text = "") {
   if (!text || String(text).trim().length < 3) return null;
 
+  const decharge = parseNaturalDechargeMessage(text);
+  if (decharge) return decharge;
+
   if (looksLikeSimplePaymentMessage(text)) {
     const simple = parseNaturalSimplePaymentMessage(text);
     if (simple) return simple;
@@ -509,5 +622,6 @@ function parseNaturalWhatsAppMessage(text = "") {
 module.exports = {
   detectDocTypeFromText,
   extractClientFromText,
+  parseNaturalDechargeMessage,
   parseNaturalWhatsAppMessage,
 };
