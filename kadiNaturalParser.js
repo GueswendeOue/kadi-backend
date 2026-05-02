@@ -108,6 +108,13 @@ function findLastMoneyAmount(text = "") {
   return matches[matches.length - 1].value;
 }
 
+function removeMoneyTokens(text = "") {
+  return String(text || "").replace(
+    /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
+    " "
+  );
+}
+
 function stripMoneyTokens(text = "") {
   return String(text || "")
     .replace(
@@ -122,7 +129,7 @@ function normalizeLabel(label = "") {
   const t = String(label || "").trim();
   if (!t) return "Produit";
 
-  return t
+  const normalized = t
     .replace(/^portes?$/i, "Porte")
     .replace(/^fenetres?$/i, "Fenêtre")
     .replace(/^fenêtres?$/i, "Fenêtre")
@@ -130,7 +137,9 @@ function normalizeLabel(label = "") {
     .replace(/^chaises?$/i, "Chaise")
     .replace(/^pagnes?$/i, "Pagne")
     .replace(/\s+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+    .trim();
+
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 function isLikelyHumanOrCompanySegment(segment = "") {
@@ -165,10 +174,10 @@ function extractClientCandidateSegments(text = "") {
   const raw = String(text || "").trim();
   const results = [];
 
-  const pourRegex = /\bpour\s+([^,;]+)/gi;
+  const pourRegex = /\bpour\s+([^\n,;]+)/gi;
   let m;
   while ((m = pourRegex.exec(raw)) !== null) {
-    const seg = String(m[1] || "").trim();
+    const seg = cleanClientSegment(m[1]);
     if (seg) {
       results.push({
         source: "pour",
@@ -178,9 +187,9 @@ function extractClientCandidateSegments(text = "") {
     }
   }
 
-  const chezRegex = /\bchez\s+([^,;]+)/gi;
+  const chezRegex = /\bchez\s+([^\n,;]+)/gi;
   while ((m = chezRegex.exec(raw)) !== null) {
-    const seg = String(m[1] || "").trim();
+    const seg = cleanClientSegment(m[1]);
     if (seg) {
       results.push({
         source: "chez",
@@ -190,9 +199,9 @@ function extractClientCandidateSegments(text = "") {
     }
   }
 
-  const clientRegex = /\bclient\s*:?\s*([^,;]+)/gi;
+  const clientRegex = /\bclient\s*:?\s*([^\n,;]+)/gi;
   while ((m = clientRegex.exec(raw)) !== null) {
-    const seg = String(m[1] || "").trim();
+    const seg = cleanClientSegment(m[1]);
     if (seg) {
       results.push({
         source: "client",
@@ -203,6 +212,43 @@ function extractClientCandidateSegments(text = "") {
   }
 
   return results;
+}
+
+function cleanClientSegment(segment = "") {
+  let s = String(segment || "").trim();
+  if (!s) return "";
+
+  s = s
+    .split(
+      /\b(?:avec|paiement|pay[eé]|re[çc]u|facture|devis|d[ée]charge|il\s+a\s+re[çc]u|elle\s+a\s+re[çc]u)\b/i
+    )[0]
+    .trim();
+
+  s = removeMoneyTokens(s).replace(/\s+/g, " ").trim();
+  return s;
+}
+
+function extractPaymentInfo(text = "") {
+  const t = cleanText(text);
+
+  if (/\bpay[eé]\s+en\s+esp[eè]ces\b|\besp[eè]ces\b|\bcash\b/.test(t)) {
+    return { paid: true, paymentMethod: "espèces" };
+  }
+
+  if (/\bpay[eé]\b|\br[eè]gl[eé]\b|\bregle\b/.test(t)) {
+    return { paid: true, paymentMethod: null };
+  }
+
+  return { paid: null, paymentMethod: null };
+}
+
+function isPaymentOnlySegment(text = "") {
+  const t = cleanText(text);
+  return (
+    !!t &&
+    /\bpay[eé]\b|\br[eè]gl[eé]\b|\besp[eè]ces\b|\bcash\b/.test(t) &&
+    !Number.isFinite(findLastMoneyAmount(text))
+  );
 }
 
 function removeOneOccurrenceInsensitive(text = "", chunk = "") {
@@ -229,7 +275,11 @@ function stripClientClauseFromText(text = "", client = null) {
     );
   }
 
-  return out.replace(/\s+/g, " ").trim();
+  return out
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 // ===============================
@@ -291,14 +341,21 @@ function extractSimplePaymentMotif(text = "") {
 
   let motif = raw;
 
-  motif = motif.replace(
-    /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
-    " "
+  const paymentPurposeMatch = raw.match(
+    /\bpaiement\s+de\s+(?:\d{1,3}(?:[., ]\d{3})+|\d+(?:[.,]\d+)?(?:\s*(?:f|fcfa|mil|mille|k|million|millions))?)\s+pour\s+([^\n,;]+)/i
   );
+
+  if (paymentPurposeMatch) {
+    motif = paymentPurposeMatch[1];
+  } else {
+    motif = removeMoneyTokens(motif);
+  }
 
   motif = motif
     .replace(/\bfais(?:\s+moi)?\b/gi, " ")
     .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcreer\b|\bcréer\b/gi, " ")
+    .replace(/\bpaiement\s+de\b/gi, " ")
+    .replace(/\bpay[eé]\s+en\s+esp[eè]ces\b|\besp[eè]ces\b|\bcash\b/gi, " ")
     .replace(
       /\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi,
       " "
@@ -322,6 +379,7 @@ function parseNaturalSimplePaymentMessage(text = "") {
   const client = extractClientFromText(text);
   const total = findLastMoneyAmount(text);
   const motif = extractSimplePaymentMotif(text);
+  const payment = extractPaymentInfo(text);
 
   if (!Number.isFinite(total) || total <= 0) return null;
 
@@ -331,6 +389,8 @@ function parseNaturalSimplePaymentMessage(text = "") {
     client,
     motif,
     total,
+    paid: payment.paid,
+    paymentMethod: payment.paymentMethod,
   };
 }
 
@@ -438,15 +498,18 @@ function parseNaturalDechargeMessage(text = "") {
 // ITEMS MESSAGE
 // ===============================
 function splitNaturalSegments(text = "") {
-  const raw = String(text || "")
-    .replace(/\n+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return raw
-    .split(/\s+\bet\b\s+|,/i)
-    .map((s) => s.trim())
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
     .filter(Boolean);
+
+  const source = lines.length > 1 ? lines : [String(text || "").trim()];
+
+  return source
+    .flatMap((line) => line.split(/\s+\bet\s+(?=\D*\d)|,/i))
+    .map((s) => s.replace(/^\s*avec\s+/i, "").trim())
+    .filter(Boolean)
+    .filter((s) => !isPaymentOnlySegment(s));
 }
 
 function parseStructuredItemSegment(segment = "") {
@@ -458,7 +521,6 @@ function parseStructuredItemSegment(segment = "") {
   const strongSignal = hasStrongStructuredLineSignal(raw);
 
   if (!Number.isFinite(amount) || amount <= 0) return null;
-  if (numberCount <= 1 && !strongSignal) return null;
 
   const t = cleanText(raw);
 
@@ -500,26 +562,26 @@ function parseStructuredItemSegment(segment = "") {
     if (Number.isFinite(q) && q > 0 && q <= 1000) qty = q;
   }
 
-  let label = raw
-    .replace(
-      /\d{1,3}(?:[., ]\d{3})+(?:\s*(?:f|fcfa))?|\d+(?:[.,]\d+)?\s*(?:mil|mille|k|million|millions)|\d+\s*(?:f|fcfa)?/gi,
-      " "
-    )
+  let label = removeMoneyTokens(raw)
     .replace(
       /\bdevis\b|\bfacture\b|\brecu\b|\breçu\b|\bdécharge\b|\bdecharge\b/gi,
       " "
     )
+    .replace(/\bfais(?:\s+moi)?\b|\bfaire\b|\bcree\b|\bcrée\b|\bcreer\b|\bcréer\b|\bavec\b/gi, " ")
     .replace(
       /\bqte\b|\bqt[eé]\b|\bquantit[eé]\b|\bpu\b|\bprix\b|\bmontant\b|\bmt\b/gi,
       " "
     )
     .replace(/\bpour\b|\bchez\b|\bclient\b/gi, " ")
-    .replace(/\ba\b|\bà\b/gi, " ")
+    .replace(/(^|\s)(?:a|à)(?=\s|$)/gi, " ")
     .replace(/[=:]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
   if (!label || label.length < 2) return null;
+  if (numberCount <= 1 && !strongSignal && label.split(/\s+/).length > 8) {
+    return null;
+  }
 
   label = normalizeLabel(label);
 
@@ -537,6 +599,7 @@ function parseNaturalItemsMessage(text = "") {
   const client = extractClientFromText(text);
   const itemsText = stripClientClauseFromText(text, client);
   const segments = splitNaturalSegments(itemsText);
+  const payment = extractPaymentInfo(text);
 
   const items = [];
   for (const seg of segments) {
@@ -551,6 +614,8 @@ function parseNaturalItemsMessage(text = "") {
     docType,
     client,
     items,
+    paid: payment.paid,
+    paymentMethod: payment.paymentMethod,
   };
 }
 
