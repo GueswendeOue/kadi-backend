@@ -7,6 +7,7 @@ const {
   makeKadiReengagementService,
   resolveSegmentConfig,
   runLoggedCampaign,
+  isTemplateMissingError,
 } = require("../kadiReengagementService");
 
 test("resolves recent_active_zero_doc segment config", () => {
@@ -90,17 +91,72 @@ test("logged campaign logs successful free sends", async () => {
     meta: { source: "test" },
   });
 
-  assert.deepEqual(stats, {
-    targeted: 1,
-    sent: 1,
-    template: 0,
-    blocked: 0,
-    failed: 0,
-  });
+  assert.equal(stats.targeted, 1);
+  assert.equal(stats.sent, 1);
+  assert.equal(stats.template, 0);
+  assert.equal(stats.blocked, 0);
+  assert.equal(stats.failed, 0);
+  assert.equal(stats.aborted, false);
   assert.deepEqual(sent, [{ to: "22670000001", text: "Bonjour test" }]);
   assert.equal(logs.length, 1);
   assert.equal(logs[0].waId, "22670000001");
   assert.equal(logs[0].campaignType, "recent_active_zero_doc");
   assert.equal(logs[0].messageMode, "free");
   assert.equal(logs[0].status, "sent");
+});
+
+test("template missing error is detected from Meta code and details", () => {
+  assert.equal(
+    isTemplateMissingError({
+      errorCode: 132001,
+      errorDetails: "template name (kadi_recent_active_zero_doc_v1) does not exist in fr",
+    }),
+    true
+  );
+});
+
+test("logged campaign stops immediately when template is missing", async () => {
+  const logs = [];
+  const sent = [];
+  const oldDate = "2026-01-01T10:00:00.000Z";
+
+  const stats = await runLoggedCampaign({
+    users: [
+      { wa_id: "22670000001", last_activity_at: oldDate },
+      { wa_id: "22670000002", last_activity_at: oldDate },
+    ],
+    sendText: async (to, text) => sent.push({ to, text }),
+    sendTemplateMessage: async () => {
+      const error = new Error(
+        "(#132001) Template name does not exist in the translation"
+      );
+      error.meta = {
+        code: 132001,
+        error_data: {
+          details:
+            "template name (kadi_recent_active_zero_doc_v1) does not exist in fr",
+        },
+      };
+      throw error;
+    },
+    messageText: "Bonjour test",
+    templateName: "kadi_recent_active_zero_doc_v1",
+    campaignType: "recent_active_zero_doc",
+    cycleKey: "manual_recent_active_zero_doc_test",
+    logReengagementSend: async (payload) => logs.push(payload),
+    meta: { source: "test" },
+  });
+
+  assert.equal(stats.targeted, 2);
+  assert.equal(stats.sent, 0);
+  assert.equal(stats.template, 0);
+  assert.equal(stats.failed, 1);
+  assert.equal(stats.aborted, true);
+  assert.equal(stats.abortReason, "template_missing");
+  assert.match(stats.abortMessage, /kadi_recent_active_zero_doc_v1 en fr/);
+  assert.deepEqual(sent, []);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].waId, "22670000001");
+  assert.equal(logs[0].status, "failed_template_config");
+  assert.equal(logs[0].meta.abortedBatch, true);
 });

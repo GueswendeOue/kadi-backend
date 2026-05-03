@@ -38,6 +38,9 @@ function buildStats() {
     template: 0,
     blocked: 0,
     failed: 0,
+    aborted: false,
+    abortReason: null,
+    abortMessage: null,
   };
 }
 
@@ -85,6 +88,37 @@ async function safeLogReengagementSend(logReengagementSend, payload) {
     console.warn("[KADI/REENGAGEMENT] manual log failed:", err?.message || err);
     return false;
   }
+}
+
+function getErrorSearchText(value = {}) {
+  return [
+    value?.error,
+    value?.errorMessage,
+    value?.message,
+    value?.errorDetails,
+    value?.details,
+    value?.raw?.error?.message,
+    value?.raw?.error?.error_data?.details,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function isTemplateMissingError(value = {}) {
+  const code = Number(value?.errorCode || value?.code || value?.meta?.code);
+  const text = getErrorSearchText(value);
+
+  return (
+    code === 132001 ||
+    text.includes("template name does not exist") ||
+    text.includes("template does not exist") ||
+    text.includes("does not exist in fr")
+  );
+}
+
+function buildTemplateMissingAdminMessage(templateName, language = "fr") {
+  return `Template WhatsApp manquant : ${templateName} en ${language}. Créez/approuvez ce template dans Meta avant de relancer.`;
 }
 
 async function runCampaign({
@@ -202,6 +236,35 @@ async function runLoggedCampaign({
       } else {
         stats.failed += 1;
 
+        if (isTemplateMissingError(res)) {
+          stats.aborted = true;
+          stats.abortReason = "template_missing";
+          stats.abortMessage = buildTemplateMissingAdminMessage(
+            templateName,
+            "fr"
+          );
+
+          await safeLogReengagementSend(logReengagementSend, {
+            waId: user.wa_id,
+            campaignType,
+            templateName,
+            messageMode: "template",
+            status: "failed_template_config",
+            cycleKey,
+            meta: {
+              ...meta,
+              last_activity_at: user.last_activity_at || null,
+              reason: res?.reason || "send_error",
+              error: res?.error || null,
+              errorCode: res?.errorCode || null,
+              errorDetails: res?.errorDetails || null,
+              abortedBatch: true,
+            },
+          });
+
+          break;
+        }
+
         await safeLogReengagementSend(logReengagementSend, {
           waId: user.wa_id,
           campaignType,
@@ -219,6 +282,37 @@ async function runLoggedCampaign({
       }
     } catch (err) {
       stats.failed += 1;
+
+      if (isTemplateMissingError(err)) {
+        stats.aborted = true;
+        stats.abortReason = "template_missing";
+        stats.abortMessage = buildTemplateMissingAdminMessage(
+          templateName,
+          "fr"
+        );
+
+        await safeLogReengagementSend(logReengagementSend, {
+          waId: user.wa_id,
+          campaignType,
+          templateName,
+          messageMode: "template",
+          status: "failed_template_config",
+          cycleKey,
+          meta: {
+            ...meta,
+            last_activity_at: user.last_activity_at || null,
+            error: String(err?.message || err || "send_error"),
+            errorCode: err?.meta?.code || err?.raw?.error?.code || null,
+            errorDetails:
+              err?.meta?.error_data?.details ||
+              err?.raw?.error?.error_data?.details ||
+              null,
+            abortedBatch: true,
+          },
+        });
+
+        break;
+      }
 
       await safeLogReengagementSend(logReengagementSend, {
         waId: user.wa_id,
@@ -256,7 +350,10 @@ async function sendCampaignReport({
       `Templates : ${stats.template}`,
       `Bloqués : ${stats.blocked}`,
       `Échecs : ${stats.failed}`,
-    ].join("\n")
+      stats.aborted && stats.abortMessage ? `Arrêt : ${stats.abortMessage}` : null,
+    ]
+      .filter((line) => line != null)
+      .join("\n")
   );
 }
 
@@ -553,4 +650,5 @@ module.exports = {
   makeKadiReengagementService,
   resolveSegmentConfig,
   runLoggedCampaign,
+  isTemplateMissingError,
 };

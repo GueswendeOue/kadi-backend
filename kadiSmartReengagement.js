@@ -88,10 +88,19 @@ async function sendSmartReengagement({
       reason: "blocked_24h",
     };
   } catch (error) {
+    const metaError = error?.raw?.error || {};
+
     return {
       ok: false,
       reason: "send_error",
       error: error?.message || "unknown_error",
+      errorCode: error?.meta?.code || metaError?.code || null,
+      errorSubcode: error?.meta?.subcode || metaError?.error_subcode || null,
+      errorType: error?.meta?.type || metaError?.type || null,
+      errorDetails:
+        error?.meta?.error_data?.details ||
+        metaError?.error_data?.details ||
+        null,
     };
   }
 }
