@@ -92,7 +92,7 @@ function findMoneyMatches(text = "") {
     .map((m) => {
       const value = parseMoneyToken(m);
       if (!Number.isFinite(value) || value <= 0) return null;
-      if (isLikelyYear(value)) return null;
+      if (isLikelyYear(value) && !hasServiceAmountContext(text)) return null;
 
       return {
         raw: m,
@@ -100,6 +100,14 @@ function findMoneyMatches(text = "") {
       };
     })
     .filter(Boolean);
+}
+
+function hasServiceAmountContext(text = "") {
+  const t = cleanText(text);
+
+  return /\b(reparation|réparation|pose|main\s+d\s*oeuvre|main\s+d'œuvre|accessoire|accessoires|transport|deplacement|déplacement|livraison|installation|sacs?\s+de\s+ciment|ciment)\b/.test(
+    t
+  );
 }
 
 function findLastMoneyAmount(text = "") {
@@ -222,7 +230,7 @@ function cleanClientSegment(segment = "") {
 
   s = s
     .split(
-      /\b(?:avec|paiement|pay[eé]|re[çc]u|facture|devis|d[ée]charge|il\s+a\s+re[çc]u|elle\s+a\s+re[çc]u)\b/i
+      /\b(?:avec|paiement|pay[eé]|paye|montant|re[çc]u|facture|devis|d[ée]charge|r[eé]paration|reparation|pose|main\s+d[’' ]?oeuvre|accessoires?|transport|d[eé]placement|livraison|installation|il\s+a\s+re[çc]u|elle\s+a\s+re[çc]u)\b|\d/i
     )[0]
     .trim();
 

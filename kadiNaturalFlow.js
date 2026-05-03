@@ -151,10 +151,12 @@ function makeKadiNaturalFlow(deps) {
       localParsed = parseNaturalWhatsAppMessage(rawText);
 
       if (
-        localParsed?.docType === "decharge" &&
+        (localParsed?.docType === "decharge" ||
+          localParsed?.kind === "items" ||
+          localParsed?.kind === "simple_payment") &&
         isParsedResultUsable(localParsed)
       ) {
-        console.log("[KADI/NATURAL] using local decharge parse", {
+        console.log("[KADI/NATURAL] using local priority parse", {
           kind: localParsed?.kind || null,
           docType: localParsed?.docType || null,
         });

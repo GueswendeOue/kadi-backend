@@ -46,6 +46,30 @@ test("vocal terrain: facture avec paiement en especes", () => {
   assert.equal(parsed.paymentMethod, "espèces");
 });
 
+test("vocal terrain: facture repetee garde le bon client", () => {
+  const parsed = parseVoiceTranscript(
+    "fais-moi une facture pour awa, une facture pour awa, réparation de téléphone quinze mille, accessoires cinq mille, payé en espèces"
+  );
+
+  assert.equal(parsed.docType, "facture");
+  assert.equal(parsed.client, "awa");
+  assert.equal(parsed.kind, "items");
+  assert.equal(parsed.items.length, 2);
+  assert.match(parsed.items[0].label.toLowerCase(), /reparation.*telephone/);
+  assert.equal(parsed.items[0].unitPrice, 15000);
+  assert.equal(parsed.items[1].label, "Accessoires");
+  assert.equal(parsed.items[1].unitPrice, 5000);
+  assert.equal(
+    parsed.items.reduce(
+      (sum, item) => sum + Number(item.qty || 0) * Number(item.unitPrice || 0),
+      0
+    ),
+    20000
+  );
+  assert.equal(parsed.paid, true);
+  assert.equal(parsed.paymentMethod, "espèces");
+});
+
 test("vocal terrain: recu avec montant motif et paiement", () => {
   const parsed = parseVoiceTranscript(
     "Reçu pour Ibrahim, il a payé vingt mille pour réparation moto en espèces."
