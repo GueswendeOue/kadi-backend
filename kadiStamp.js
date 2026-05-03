@@ -230,7 +230,7 @@ async function generateStampPngBuffer({ profile, logoBuffer = null }) {
   const TEXT_RADIUS = 268;
   const LOGO_SIZE = 320;
 
-  const business = safe(profile?.business_name).toUpperCase();
+  const business = safe(profile?.business_name || profile?.owner_name).toUpperCase();
   const title = safe(profile?.stamp_title).toUpperCase();
   const phone = safe(profile?.phone).replace(/\s+/g, "");
 

@@ -71,10 +71,10 @@ function makeKadiCommandFlow(deps) {
     const message =
       "🟦 *Tampon KADI*\n\n" +
       "Le tampon se configure dans *Profil → Tampon*.\n\n" +
-      "Une fois activé, KADI proposera avant chaque PDF :\n" +
+      "Une fois prêt, KADI proposera avant chaque PDF :\n" +
       "• *Avec tampon* : 2 crédits\n" +
       "• *Sans tampon* : 1 crédit\n\n" +
-      "📷 L’envoi direct d’une photo de tampon n’est pas encore disponible.";
+      "📷 L’envoi d’une photo de votre vrai tampon sera ajouté prochainement.";
 
     if (typeof sendButtons === "function") {
       await sendButtons(from, message, [

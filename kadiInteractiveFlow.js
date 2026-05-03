@@ -1802,6 +1802,21 @@ function makeKadiInteractiveFlow(deps) {
         return;
       }
 
+      if (p?.stamp_enabled === true && !hasStampProfileReady(p)) {
+        await sendButtons(
+          from,
+          "🟦 *Tampon à compléter*\n\n" +
+            "Votre document est prêt, mais le tampon KADI n’a pas encore assez d’informations pour être ajouté proprement.\n\n" +
+            "Vous pouvez compléter le tampon maintenant ou continuer sans tampon.",
+          [
+            { id: "PROFILE_STAMP", title: "Configurer" },
+            { id: "PRESTAMP_SKIP", title: "Sans tampon" },
+            { id: "DOC_CANCEL", title: "Menu" },
+          ]
+        );
+        return;
+      }
+
       resetStampChoice(s);
       resetTransientProductState(s);
 
@@ -1855,11 +1870,17 @@ function makeKadiInteractiveFlow(deps) {
       const p = await getOrCreateProfile(from);
 
       if (!hasStampProfileReady(p)) {
-        await sendText(
+        await sendButtons(
           from,
-          "⚠️ Pour un tampon propre, complétez d’abord votre profil entreprise.\n\nAllez dans Profil > Configurer, puis revenez générer votre document."
+          "🟦 *Tampon à compléter*\n\n" +
+            "Ajoutez au moins une information d’entreprise dans Profil → Tampon, ou continuez sans tampon pour ce PDF.",
+          [
+            { id: "PROFILE_STAMP", title: "Configurer" },
+            { id: "PRESTAMP_SKIP", title: "Sans tampon" },
+            { id: "DOC_CANCEL", title: "Menu" },
+          ]
         );
-        return sendProfileMenu(from);
+        return;
       }
 
       s.addStampForNextDoc = true;

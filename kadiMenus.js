@@ -197,9 +197,9 @@ function makeKadiMenus(deps) {
 
     const stampStatus =
       p?.stamp_enabled === true
-        ? "✅ Tampon activé"
+        ? "✅ Tampon prêt ou à compléter"
         : p?.stamp_paid === true
-        ? "🟨 Tampon disponible"
+        ? "🟨 Tampon à configurer"
         : `🟦 Tampon — ${STAMP_ONE_TIME_COST ?? 15} crédits`;
 
     return sendButtons(
@@ -354,12 +354,12 @@ function makeKadiMenus(deps) {
     return sendButtons(
       to,
       `🟦 *Tampon officiel*\n\n` +
-        `${isEnabled ? "Statut : activé" : "Statut : désactivé"}\n\n` +
+        `${isEnabled ? "Tampon prêt ou à compléter" : "Tampon non configuré"}\n\n` +
         `Le tampon peut être ajouté sur vos documents PDF.`,
       [
         {
           id: "STAMP_TOGGLE",
-          title: isEnabled ? "⛔ Désactiver" : "✅ Activer",
+          title: isEnabled ? "Pause" : "Préparer",
         },
         { id: "STAMP_MORE", title: "⚙️ Options" },
         { id: "BACK_HOME", title: "🏠 Menu" },

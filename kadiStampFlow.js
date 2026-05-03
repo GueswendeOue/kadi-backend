@@ -11,9 +11,10 @@ function makeKadiStampFlow(deps) {
 
   function hasStampProfileReady(profile) {
     return !!(
-      String(profile?.business_name || "").trim() &&
-      String(profile?.phone || "").trim() &&
-      String(profile?.stamp_title || "").trim()
+      profile?.stamp_enabled === true &&
+      (String(profile?.business_name || "").trim() ||
+        String(profile?.owner_name || "").trim() ||
+        String(profile?.phone || "").trim())
     );
   }
 
@@ -29,7 +30,7 @@ function makeKadiStampFlow(deps) {
 
     return (
       "📄 *Votre document est prêt.*\n\n" +
-      "🟦 Votre tampon est activé dans le profil.\n\n" +
+      "🟦 Votre tampon KADI est prêt.\n\n" +
       `• Générer *avec tampon* : *${withStamp} crédits*\n` +
       `• Générer *sans tampon* : *${base} crédit(s)*\n\n` +
       "Le tampon ajoute *+1 crédit* sur ce PDF."
@@ -63,23 +64,35 @@ function makeKadiStampFlow(deps) {
   async function sendStampMenu(to) {
     const p = await getOrCreateProfile(to);
 
-const enabled = p?.stamp_enabled === true;
+    const enabled = p?.stamp_enabled === true;
     const pos = p?.stamp_position || "bottom-right";
     const size = p?.stamp_size || 170;
-    const title = p?.stamp_title || "—";
+    const title = String(p?.stamp_title || "").trim();
     const ready = hasStampProfileReady(p);
+    const hasMinimumInfo = !!(
+      String(p?.business_name || "").trim() ||
+      String(p?.owner_name || "").trim() ||
+      String(p?.phone || "").trim()
+    );
+    const status = ready
+      ? "Tampon prêt ✅"
+      : enabled && !hasMinimumInfo
+      ? "Tampon à compléter ⚠️"
+      : "Tampon non configuré";
 
     const header =
       `🟦 *Tampon (PDF)*\n\n` +
-      `• Statut : *${enabled ? "ON ✅" : "OFF ❌"}*\n` +
-      `• Fonction : *${title}*\n` +
+      `• Statut : *${status}*\n` +
+      `• Fonction : *${title || "facultative"}*\n` +
       `• Position : *${stampPosLabel(pos)}*\n` +
       `• Taille : *${stampSizeLabel(size)}*\n` +
-      `• Profil prêt : *${ready ? "Oui ✅" : "Non ❌"}*\n\n` +
-      `💳 Le tampon est proposé avant génération à *+1 crédit par document*.`;
+      `• Profil tampon : *${ready ? "prêt" : "à compléter"}*\n\n` +
+      `💳 Avant chaque PDF, KADI vous proposera *avec tampon* ou *sans tampon*.\n` +
+      `Avec tampon = coût du PDF + *1 crédit*.\n\n` +
+      `L’envoi d’une photo de votre vrai tampon sera ajouté prochainement.`;
 
     return sendButtons(to, header + "\n\n👇 Choisissez :", [
-      { id: "STAMP_TOGGLE", title: enabled ? "Désactiver" : "Activer" },
+      { id: "STAMP_TOGGLE", title: enabled ? "Mettre en pause" : "Préparer" },
       { id: "STAMP_EDIT_TITLE", title: "Fonction" },
       { id: "STAMP_MORE", title: "Position/Taille" },
       { id: "BACK_HOME", title: "Menu" },
