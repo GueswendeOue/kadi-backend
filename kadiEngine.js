@@ -1243,6 +1243,8 @@ async function handleIncomingMessage(value) {
             sendText,
             sendButtons,
             getSession,
+            handleTranscribedText: async (audioFrom, text, textMsg) =>
+              handleTextMessage(audioFrom, text, textMsg),
           });
           return;
         }

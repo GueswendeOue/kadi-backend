@@ -285,7 +285,15 @@ async function transcribeForKadiVoice(buffer, options = {}) {
 // MAIN AUDIO HANDLER
 // ======================================================
 async function handleIncomingAudioMessage(msg, value, deps) {
-  const { sendText, sendButtons, getSession } = deps || {};
+  const {
+    sendText,
+    sendButtons,
+    getSession,
+    handleTranscribedText = null,
+    getWhatsAppMediaUrl: getMediaUrl = getWhatsAppMediaUrl,
+    downloadWhatsAppMedia: downloadMedia = downloadWhatsAppMedia,
+    transcribeForKadiVoice: transcribeVoice = transcribeForKadiVoice,
+  } = deps || {};
 
   if (msg?.type !== "audio") return false;
 
@@ -317,7 +325,7 @@ async function handleIncomingAudioMessage(msg, value, deps) {
   await sendText(from, "🎤 Analyse du vocal en cours...");
 
   try {
-    const mediaMeta = await getWhatsAppMediaUrl(mediaId);
+    const mediaMeta = await getMediaUrl(mediaId);
 
     if (mediaMeta.fileSize && mediaMeta.fileSize > KADI_AUDIO_MAX_BYTES) {
       await sendText(
@@ -327,9 +335,9 @@ async function handleIncomingAudioMessage(msg, value, deps) {
       return true;
     }
 
-    const media = await downloadWhatsAppMedia(mediaMeta.url);
+    const media = await downloadMedia(mediaMeta.url);
 
-    const transcript = await transcribeForKadiVoice(media.buffer, {
+    const transcript = await transcribeVoice(media.buffer, {
       mimeType: media.mimeType || mediaMeta.mimeType || "audio/ogg",
       localeHint: "fr-BF",
       languages: ["fr", "moore", "dioula", "fulfulde"],
@@ -363,6 +371,34 @@ async function handleIncomingAudioMessage(msg, value, deps) {
         "🎤 Je n’ai pas bien compris le vocal.\n\nExemple :\n“Fais un devis pour 2 sacs de ciment à 5000 pour Adama.”"
       );
       return true;
+    }
+
+    if (typeof handleTranscribedText === "function") {
+      try {
+        const textMsg = {
+          ...msg,
+          type: "text",
+          text: { body: businessText },
+          audioTranscript: {
+            raw: rawTranscriptText,
+            normalized: normalizedTranscriptText,
+            display: displayText,
+            parse: businessText,
+            detectedLanguages: transcript?.detectedLanguages || [],
+          },
+        };
+
+        const handled = await handleTranscribedText(from, businessText, textMsg);
+        if (handled === true) {
+          return true;
+        }
+      } catch (error) {
+        console.warn("[KADI/AUDIO] transcribed text routing failed:", {
+          from,
+          mediaId,
+          message: error?.message || error,
+        });
+      }
     }
 
     const intent = buildIntent(businessText) || null;
@@ -457,5 +493,6 @@ module.exports = {
   getWhatsAppMediaUrl,
   downloadWhatsAppMedia,
   transcribeAudioBuffer,
+  transcribeForKadiVoice,
   handleIncomingAudioMessage,
 };

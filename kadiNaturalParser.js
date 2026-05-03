@@ -130,6 +130,8 @@ function normalizeLabel(label = "") {
   if (!t) return "Produit";
 
   const normalized = t
+    .replace(/[.,;:!?]+$/g, "")
+    .trim()
     .replace(/^portes?$/i, "Porte")
     .replace(/^fenetres?$/i, "Fenêtre")
     .replace(/^fenêtres?$/i, "Fenêtre")
@@ -343,6 +345,8 @@ function extractSimplePaymentMotif(text = "") {
 
   const paymentPurposeMatch = raw.match(
     /\bpaiement\s+de\s+(?:\d{1,3}(?:[., ]\d{3})+|\d+(?:[.,]\d+)?(?:\s*(?:f|fcfa|mil|mille|k|million|millions))?)\s+pour\s+([^\n,;]+)/i
+  ) || raw.match(
+    /\b(?:pay[eé]|paye|r[eè]gl[eé]|regle)\s+(?:\d{1,3}(?:[., ]\d{3})+|\d+(?:[.,]\d+)?(?:\s*(?:f|fcfa|mil|mille|k|million|millions))?)\s+pour\s+([^\n,;]+)/i
   );
 
   if (paymentPurposeMatch) {
@@ -354,8 +358,9 @@ function extractSimplePaymentMotif(text = "") {
   motif = motif
     .replace(/\bfais(?:\s+moi)?\b/gi, " ")
     .replace(/\bcree\b|\bcrée\b|\bfaire\b|\bcreer\b|\bcréer\b/gi, " ")
+    .replace(/\b(?:il|elle)\s+a\s+(?:pay[eé]|paye)\b/gi, " ")
     .replace(/\bpaiement\s+de\b/gi, " ")
-    .replace(/\bpay[eé]\s+en\s+esp[eè]ces\b|\besp[eè]ces\b|\bcash\b/gi, " ")
+    .replace(/\bpay[eé]\s+en\s+esp[eèe]ces\b|\besp[eèe]ces\b|\bcash\b/gi, " ")
     .replace(
       /\brecu\b|\breçu\b|\bfacture\b|\bdevis\b|\bdecharge\b|\bdécharge\b/gi,
       " "
@@ -368,7 +373,11 @@ function extractSimplePaymentMotif(text = "") {
       .replace(/\bclient\b/gi, " ");
   }
 
-  motif = motif.replace(/\s+/g, " ").trim();
+  motif = motif
+    .replace(/\ben\s*[.,;:!?]*$/i, " ")
+    .replace(/[.,;:!?]+$/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
   if (!motif) return "Paiement";
   return motif;
@@ -454,6 +463,7 @@ function parseNaturalDechargeMessage(text = "") {
     if (purposeMatch) {
       purpose = String(purposeMatch[1] || "")
         .replace(/\bvaleur\s+.+$/i, " ")
+        .replace(/[.,;:!?]+$/g, " ")
         .trim();
     }
 

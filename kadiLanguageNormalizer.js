@@ -9,9 +9,29 @@ const {
   normalizeMooreBusiness,
 } = require("./normalizers/kadiNormalizeMoore");
 
-// Placeholder futur
 function normalizeFrenchBusiness(text = "") {
-  return String(text || "");
+  let out = String(text || "");
+
+  const replacements = [
+    ["trente-cinq mille", "35000"],
+    ["vingt-cinq mille", "25000"],
+    ["cinquante mille", "50000"],
+    ["vingt mille", "20000"],
+    ["quinze mille", "15000"],
+    ["dix mille", "10000"],
+    ["cinq mille", "5000"],
+  ];
+
+  for (const [from, to] of replacements) {
+    out = out.replace(new RegExp(`\\b${from}\\b`, "gi"), to);
+  }
+
+  out = out.replace(
+    /\bdeux\s+(portes?|fenetres?|fenêtres?|tables?|chaises?|pagnes?|sacs?|accessoires?)\b/gi,
+    "2 $1"
+  );
+
+  return out;
 }
 
 function uniqueList(items = []) {
@@ -53,4 +73,5 @@ function normalizeBusinessInput(text = "", options = {}) {
 
 module.exports = {
   normalizeBusinessInput,
+  normalizeFrenchBusiness,
 };
