@@ -150,6 +150,7 @@ const {
   getSignedLogoUrl,
   downloadSignedUrlToBuffer,
   saveProfileLogoFromBuffer,
+  saveProfileStampImageFromBuffer,
 } = require("./store");
 
 const {
@@ -337,6 +338,7 @@ function isStructuredCaptureStep(step = "") {
     s === "receipt_format" ||
     s === "facture_kind" ||
     s === "stamp_title" ||
+    s === "stamp_image_upload" ||
     s === "recharge_proof" ||
     s === "pispi_pending" ||
     s === "doc_review" ||
@@ -801,6 +803,8 @@ const { handleIncomingImage } = makeKadiImageFlow({
       return true;
     }
   },
+  saveProfileStampImageFromBuffer,
+  sendStampMenu: _sendStampMenuFromStampFlow,
   readTopup,
   getPendingTopupByWaId,
   markTopupProofImageReceived,

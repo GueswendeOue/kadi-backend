@@ -350,19 +350,26 @@ function makeKadiMenus(deps) {
   async function sendStampMenu(to) {
     const p = await getOrCreateProfile(to);
     const isEnabled = p?.stamp_enabled === true;
+    const hasImage = !!String(p?.stamp_image_path || "").trim();
 
     return sendButtons(
       to,
       `🟦 *Tampon officiel*\n\n` +
-        `${isEnabled ? "Tampon prêt ou à compléter" : "Tampon non configuré"}\n\n` +
+        `${
+          hasImage
+            ? "Tampon image prêt"
+            : isEnabled
+            ? "Tampon Kadi prêt ou à compléter"
+            : "Tampon non configuré"
+        }\n\n` +
         `Le tampon peut être ajouté sur vos documents PDF.`,
       [
+        { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
         {
           id: "STAMP_TOGGLE",
           title: isEnabled ? "Pause" : "Préparer",
         },
         { id: "STAMP_MORE", title: "⚙️ Options" },
-        { id: "BACK_HOME", title: "🏠 Menu" },
       ]
     );
   }

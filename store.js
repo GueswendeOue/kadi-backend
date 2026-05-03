@@ -1,6 +1,7 @@
 "use strict";
 
 const { supabase } = require("./supabaseClient");
+const sharp = require("sharp");
 
 const LOGO_BUCKET = process.env.SUPABASE_LOGO_BUCKET || "logos";
 
@@ -333,6 +334,41 @@ async function saveProfileLogoFromBuffer({
   return updated;
 }
 
+async function saveProfileStampImageFromBuffer({
+  waId,
+  buffer,
+  mimeType = "image/jpeg",
+}) {
+  if (!waId) throw new Error("saveProfileStampImageFromBuffer requires waId");
+
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error("saveProfileStampImageFromBuffer requires a non-empty buffer");
+  }
+
+  const existing = await getProfileByWaId(waId);
+
+  if (!existing) {
+    await createProfile({ waId });
+  }
+
+  const pngBuffer = await sharp(buffer).rotate().png().toBuffer();
+
+  const upload = await uploadLogoBuffer({
+    waId,
+    buffer: pngBuffer,
+    mimeType: "image/png",
+    fileName: "stamp.png",
+    upsert: true,
+  });
+
+  const updated = await updateProfile(waId, {
+    stamp_image_path: upload.filePath,
+    stamp_enabled: true,
+  });
+
+  return updated;
+}
+
 async function markOnboardingDone(waId, version = 1) {
   try {
     return await updateProfile(waId, {
@@ -357,5 +393,6 @@ module.exports = {
   downloadSignedUrlToBuffer,
   deleteLogo,
   saveProfileLogoFromBuffer,
+  saveProfileStampImageFromBuffer,
   markOnboardingDone,
 };

@@ -1407,6 +1407,18 @@ function makeKadiInteractiveFlow(deps) {
     // ===============================
     if (replyId === "PROFILE_STAMP") return sendStampMenu(from);
 
+    if (replyId === "STAMP_UPLOAD_IMAGE") {
+      resetTransientProductState(s);
+      s.step = "stamp_image_upload";
+      s.profileStep = null;
+
+      await sendText(
+        from,
+        "📷 Envoyez maintenant une photo ou une image de votre tampon/cachet.\nConseil : image nette, bien cadrée, fond clair si possible."
+      );
+      return;
+    }
+
     if (replyId === "PROFILE_EDIT") {
       resetTransientProductState(s);
       return startProfileFlow(from);

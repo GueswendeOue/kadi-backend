@@ -75,10 +75,12 @@ function makeKadiStampFlow(deps) {
       String(p?.phone || "").trim()
     );
     const status = ready
-      ? "Tampon prêt ✅"
+      ? p?.stamp_image_path
+        ? "Tampon image prêt ✅"
+        : "Tampon Kadi prêt ✅"
       : enabled && !hasMinimumInfo
-      ? "Tampon à compléter ⚠️"
-      : "Tampon non configuré";
+        ? "Tampon à compléter ⚠️"
+        : "Tampon non configuré";
 
     const header =
       `🟦 *Tampon (PDF)*\n\n` +
@@ -89,13 +91,12 @@ function makeKadiStampFlow(deps) {
       `• Profil tampon : *${ready ? "prêt" : "à compléter"}*\n\n` +
       `💳 Avant chaque PDF, KADI vous proposera *avec tampon* ou *sans tampon*.\n` +
       `Avec tampon = coût du PDF + *1 crédit*.\n\n` +
-      `L’envoi d’une photo de votre vrai tampon sera ajouté prochainement.`;
+      `Vous pouvez envoyer une photo ou une image de votre tampon/cachet depuis ce menu.`;
 
     return sendButtons(to, header + "\n\n👇 Choisissez :", [
-      { id: "STAMP_TOGGLE", title: enabled ? "Mettre en pause" : "Préparer" },
-      { id: "STAMP_EDIT_TITLE", title: "Fonction" },
-      { id: "STAMP_MORE", title: "Position/Taille" },
-      { id: "BACK_HOME", title: "Menu" },
+      { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
+      { id: "STAMP_TOGGLE", title: enabled ? "Pause" : "Préparer" },
+      { id: "STAMP_MORE", title: "Réglages" },
     ]);
   }
 
@@ -110,9 +111,9 @@ function makeKadiStampFlow(deps) {
       `• Taille : *${stampSizeLabel(size)}*`;
 
     return sendButtons(to, txt + "\n\n👇 Choisissez :", [
+      { id: "STAMP_EDIT_TITLE", title: "Fonction" },
       { id: "STAMP_POS", title: "Position" },
       { id: "STAMP_SIZE", title: "Taille" },
-      { id: "PROFILE_STAMP", title: "Retour" },
     ]);
   }
 
@@ -168,6 +169,14 @@ function makeKadiStampFlow(deps) {
       );
 
       await sendStampMenu(from);
+      return true;
+    }
+
+    if (s.step === "stamp_image_upload") {
+      await sendText(
+        from,
+        "📷 Envoyez maintenant une photo ou une image de votre tampon/cachet.\nConseil : image nette, bien cadrée, fond clair si possible."
+      );
       return true;
     }
 

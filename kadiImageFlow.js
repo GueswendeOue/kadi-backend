@@ -14,6 +14,8 @@ function makeKadiImageFlow(deps) {
 
     // profile
     handleLogoImage,
+    saveProfileStampImageFromBuffer,
+    sendStampMenu,
 
     // recharge
     readTopup,
@@ -42,6 +44,10 @@ function makeKadiImageFlow(deps) {
       session.step === "profile_logo_upload" ||
       (session.step === "profile" && session.profileStep === "logo")
     );
+  }
+
+  function isStampImageStep(session) {
+    return session?.step === "stamp_image_upload";
   }
 
   function clearRechargeProofState(session) {
@@ -240,22 +246,75 @@ function makeKadiImageFlow(deps) {
     return true;
   }
 
+  async function handleStampProfileImage(from, msg) {
+    const s = getSession(from);
+
+    if (!isStampImageStep(s)) return false;
+
+    try {
+      const image = await getImagePayload(msg);
+
+      if (!image.ok) {
+        await sendText(from, image.error);
+        return true;
+      }
+
+      await saveProfileStampImageFromBuffer({
+        waId: from,
+        buffer: image.buffer,
+        mimeType: image.mimeType,
+      });
+
+      s.step = null;
+      s.profileStep = null;
+
+      await sendText(
+        from,
+        "✅ Mon tampon est prêt. Il sera disponible avant génération PDF."
+      );
+
+      if (s.lastDocDraft) {
+        await sendButtons(from, "📄 On reprend votre document 👇", [
+          { id: "DOC_CONFIRM", title: "📤 Envoyer PDF" },
+          { id: "DOC_ADD_MORE", title: "✏️ Modifier" },
+        ]);
+        return true;
+      }
+
+      if (typeof sendStampMenu === "function") {
+        await sendStampMenu(from);
+      }
+
+      return true;
+    } catch (e) {
+      console.error("[KADI/IMAGE/stamp_upload]", e);
+      await sendText(
+        from,
+        "❌ Je n’ai pas pu enregistrer ce tampon.\nRéessayez avec une image plus nette et bien cadrée."
+      );
+      return true;
+    }
+  }
+
   async function handleIncomingImage(from, msg) {
     const s = getSession(from);
 
     // 1) Admin broadcast image
     if (await handleAdminBroadcastImage(from, msg)) return true;
 
-    // 2) Logo profil
+    // 2) Tampon image profil
+    if (await handleStampProfileImage(from, msg)) return true;
+
+    // 3) Logo profil
     if (isProfileLogoStep(s)) {
       const handled = await handleLogoImage(from, msg);
       if (handled) return true;
     }
 
-    // 3) Preuve recharge Orange Money
+    // 4) Preuve recharge Orange Money
     if (await handleRechargeProofImage(from, msg)) return true;
 
-    // 4) OCR document
+    // 5) OCR document
     const mediaId = msg?.image?.id;
     if (!mediaId) {
       await sendText(from, "❌ Image reçue mais sans media_id. Réessayez.");

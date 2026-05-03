@@ -110,9 +110,25 @@ function makeKadiPdfFlow(deps) {
 
     if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
       try {
-        buf = await kadiStamp.applyStampToPdfBuffer(buf, profile, {
+        let stampBuf = null;
+
+        if (profile?.stamp_image_path) {
+          try {
+            const signed = await getSignedLogoUrl(profile.stamp_image_path);
+            stampBuf = await downloadSignedUrlToBuffer(signed);
+          } catch (e) {
+            console.warn("[STAMP IMAGE DOWNLOAD ERROR]", e?.message || e);
+          }
+        }
+
+        const stampProfile = stampBuf
+          ? profile
+          : { ...profile, stamp_image_path: null };
+
+        buf = await kadiStamp.applyStampToPdfBuffer(buf, stampProfile, {
           pages: "last",
           logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
+          stampBuffer: Buffer.isBuffer(stampBuf) ? stampBuf : null,
         });
       } catch (e) {
         console.warn("[STAMP ERROR]", e?.message || e);
