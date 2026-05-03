@@ -238,9 +238,16 @@ const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 // ===============================
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
+let getRecentActiveZeroDocUsers = null;
+let logReengagementSend = null;
 
 try {
-  ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
+  ({
+    getZeroDocUsersBySegment,
+    getInactiveUsers,
+    getRecentActiveZeroDocUsers,
+    logReengagementSend,
+  } = require("./kadiReengagementRepo"));
 } catch (_) {}
 
 // ===============================
@@ -945,6 +952,9 @@ const { handleBroadcastCommand } = makeKadiAdminBroadcastService({
 const { sendTemplate } = require("./whatsappApi");
 
 const {
+  handleReengagePreviewCommand,
+  handleReengageTestCommand,
+  handleReengageSegmentCommand,
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
 } = makeKadiReengagementService({
@@ -952,6 +962,8 @@ const {
   sendTemplateMessage: sendTemplate,
   getZeroDocUsersBySegment,
   getInactiveUsers,
+  getRecentActiveZeroDocUsers,
+  logReengagementSend,
   sendZeroDocReOnboarding,
   sendReactivationNudge,
 });
@@ -974,6 +986,9 @@ const { handleCommand } = makeKadiCommandFlow({
   ensureAdmin,
   handleStatsCommand,
   handleBroadcastCommand,
+  handleReengagePreviewCommand,
+  handleReengageTestCommand,
+  handleReengageSegmentCommand,
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
 

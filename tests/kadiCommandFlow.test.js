@@ -56,3 +56,27 @@ test("plain profile command still starts profile flow", async () => {
   assert.equal(handled, true);
   assert.deepEqual(calls, [{ kind: "profile" }]);
 });
+
+test("admin reengage segment command routes to segment handler", async () => {
+  const { calls, flow } = makeFlow({
+    ensureAdmin: () => true,
+    handleReengageSegmentCommand: async (from, raw) => {
+      calls.push({ kind: "reengage_segment", from, raw });
+      return true;
+    },
+  });
+
+  const handled = await flow.handleAdmin(
+    { wa_id: "22679999999" },
+    "/reengage_segment recent_active_zero_doc 20"
+  );
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls, [
+    {
+      kind: "reengage_segment",
+      from: "22679999999",
+      raw: "/reengage_segment recent_active_zero_doc 20",
+    },
+  ]);
+});

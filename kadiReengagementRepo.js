@@ -90,6 +90,11 @@ function isSentLikeStatus(status) {
   return s === "sent" || s === "template_sent" || s === "success";
 }
 
+function isValidWaId(waId) {
+  const s = safeText(waId);
+  return /^\d{8,15}$/.test(s);
+}
+
 async function safeSelectRows(builders = []) {
   for (const build of builders) {
     try {
@@ -413,6 +418,29 @@ function rankInactiveUsers(users = []) {
   });
 }
 
+function rankRecentActiveZeroDocUsers(users = []) {
+  return [...(Array.isArray(users) ? users : [])].sort((a, b) => {
+    const aNever = !a.last_reengagement_at;
+    const bNever = !b.last_reengagement_at;
+
+    if (aNever !== bNever) return aNever ? -1 : 1;
+
+    const byOldestReengagement = compareIsoAsc(
+      a.last_reengagement_at,
+      b.last_reengagement_at
+    );
+    if (byOldestReengagement !== 0) return byOldestReengagement;
+
+    const byRecentActivity = compareIsoAsc(
+      b.last_activity_at,
+      a.last_activity_at
+    );
+    if (byRecentActivity !== 0) return byRecentActivity;
+
+    return String(a.wa_id).localeCompare(String(b.wa_id));
+  });
+}
+
 // ===============================
 // LOGGING
 // ===============================
@@ -541,8 +569,63 @@ async function getInactiveUsers(days = 7, limit = 50, options = {}) {
   return rankInactiveUsers(eligible).slice(0, safeLimit);
 }
 
+// ===============================
+// RECENT ACTIVE ZERO DOC USERS
+// ===============================
+async function getRecentActiveZeroDocUsers(limit = 20, options = {}) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 20));
+  const activeDays = Math.max(1, Number(options?.activeDays) || 30);
+  const cooldownDays = Math.max(0, Number(options?.cooldownDays) || 7);
+  const excludeWaIds = Array.isArray(options?.excludeWaIds)
+    ? options.excludeWaIds
+    : [];
+  const fetchLimit = Math.min(Math.max(safeLimit * 50, 300), 5000);
+  const cutoffMs = Date.now() - activeDays * 24 * 60 * 60 * 1000;
+
+  const activityRows = await fetchActivityRows(fetchLimit);
+  if (!activityRows.length) return [];
+
+  const recentActive = activityRows
+    .map((row) => {
+      const waId = safeText(row?.wa_id);
+      const lastActivityAt = row?.last_seen || row?.created_at || null;
+
+      return {
+        wa_id: waId,
+        owner_name: row?.owner_name || null,
+        created_at: row?.created_at || null,
+        last_activity_at: lastActivityAt,
+        days_since_activity: lastActivityAt ? daysSince(lastActivityAt) : 9999,
+      };
+    })
+    .filter((u) => {
+      const ts = toDateMs(u.last_activity_at);
+      return isValidWaId(u.wa_id) && ts != null && ts >= cutoffMs;
+    });
+
+  if (!recentActive.length) return [];
+
+  const docUsers = await getDocumentUsersSet(recentActive.map((u) => u.wa_id));
+  const zeroDoc = recentActive.filter((u) => !docUsers.has(u.wa_id));
+
+  if (!zeroDoc.length) return [];
+
+  const reengagementMap = await getReengagementStatsByWaIds(
+    zeroDoc.map((u) => u.wa_id)
+  );
+
+  const enriched = enrichUsersWithRotationStats(zeroDoc, reengagementMap);
+  const eligible = applyRotationFilters(enriched, {
+    cooldownDays,
+    excludeWaIds,
+  });
+
+  return rankRecentActiveZeroDocUsers(eligible).slice(0, safeLimit);
+}
+
 module.exports = {
   getZeroDocUsersBySegment,
   getInactiveUsers,
+  getRecentActiveZeroDocUsers,
   logReengagementSend,
 };

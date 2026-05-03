@@ -20,6 +20,9 @@ function makeKadiCommandFlow(deps) {
     handleWeeklyReportCommand,
     handleExportExcelCommand,
     handleBroadcastCommand,
+    handleReengagePreviewCommand,
+    handleReengageTestCommand,
+    handleReengageSegmentCommand,
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
 
@@ -434,6 +437,36 @@ function makeKadiCommandFlow(deps) {
     }
 
     // re-engagement
+    if (startsWithCommand(t, "/reengage_preview")) {
+      return runIfExists(
+        from,
+        handleReengagePreviewCommand,
+        "Service re-engagement preview",
+        from,
+        raw
+      );
+    }
+
+    if (startsWithCommand(t, "/reengage_test")) {
+      return runIfExists(
+        from,
+        handleReengageTestCommand,
+        "Service re-engagement test",
+        from,
+        raw
+      );
+    }
+
+    if (startsWithCommand(t, "/reengage_segment")) {
+      return runIfExists(
+        from,
+        handleReengageSegmentCommand,
+        "Service re-engagement segment",
+        from,
+        raw
+      );
+    }
+
     if (startsWithCommand(t, "/reengage_zero_docs")) {
       return runIfExists(
         from,

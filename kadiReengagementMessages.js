@@ -44,6 +44,18 @@ function buildInactiveMessage(days = 30) {
   );
 }
 
+function buildRecentActiveZeroDocMessage() {
+  return (
+    "Bonjour\n\n" +
+    "Avec KADI, vous pouvez créer un devis, une facture ou un reçu directement ici sur WhatsApp.\n\n" +
+    "Exemple :\n" +
+    "Devis pour Moussa\n" +
+    "2 portes à 25000\n" +
+    "Main d’œuvre à 50000\n\n" +
+    "Envoyez simplement votre demande et KADI prépare le document."
+  );
+}
+
 function getZeroDocMessageByVariant(variant = "A") {
   return String(variant || "A").toUpperCase() === "B"
     ? buildZeroDocMessageB()
@@ -53,6 +65,7 @@ function getZeroDocMessageByVariant(variant = "A") {
 module.exports = {
   buildZeroDocMessageA,
   buildZeroDocMessageB,
+  buildRecentActiveZeroDocMessage,
   buildInactiveMessage,
   getZeroDocMessageByVariant,
 };
