@@ -367,9 +367,9 @@ function makeKadiMenus(deps) {
         { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
         {
           id: "STAMP_TOGGLE",
-          title: isEnabled ? "Pause" : "Préparer",
+          title: "Tampon Kadi",
         },
-        { id: "STAMP_MORE", title: "⚙️ Options" },
+        { id: "STAMP_MORE", title: "Position/Taille" },
       ]
     );
   }
@@ -379,9 +379,9 @@ function makeKadiMenus(deps) {
       to,
       "⚙️ *Options du tampon*\n\nChoisissez ce que vous voulez modifier.",
       [
-        { id: "STAMP_EDIT_TITLE", title: "✏️ Titre" },
         { id: "STAMP_POS", title: "📍 Position" },
         { id: "STAMP_SIZE", title: "📏 Taille" },
+        { id: "PROFILE_STAMP", title: "🟦 Retour" },
       ]
     );
   }

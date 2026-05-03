@@ -95,8 +95,8 @@ function makeKadiStampFlow(deps) {
 
     return sendButtons(to, header + "\n\n👇 Choisissez :", [
       { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
-      { id: "STAMP_TOGGLE", title: enabled ? "Pause" : "Préparer" },
-      { id: "STAMP_MORE", title: "Réglages" },
+      { id: "STAMP_TOGGLE", title: "Tampon Kadi" },
+      { id: "STAMP_MORE", title: "Position/Taille" },
     ]);
   }
 
@@ -111,9 +111,9 @@ function makeKadiStampFlow(deps) {
       `• Taille : *${stampSizeLabel(size)}*`;
 
     return sendButtons(to, txt + "\n\n👇 Choisissez :", [
-      { id: "STAMP_EDIT_TITLE", title: "Fonction" },
       { id: "STAMP_POS", title: "Position" },
       { id: "STAMP_SIZE", title: "Taille" },
+      { id: "PROFILE_STAMP", title: "Retour" },
     ]);
   }
 

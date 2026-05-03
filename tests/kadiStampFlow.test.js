@@ -95,10 +95,14 @@ test("stamp menu uses ready wording and marks function as optional", async () =>
   assert.match(sent[0].text, /Avec tampon = coût du PDF \+ \*1 crédit\*/);
   assert.match(sent[0].text, /photo ou une image de votre tampon\/cachet/);
   assert.deepEqual(
-    sent[0].buttons.map((button) => button.id),
-    ["STAMP_UPLOAD_IMAGE", "STAMP_TOGGLE", "STAMP_MORE"]
+    sent[0].buttons.map((button) => button.title),
+    ["Envoyer mon tampon", "Tampon Kadi", "Position/Taille"]
   );
-  assert.equal(sent[0].buttons[0].title, "Envoyer mon tampon");
+  assert.doesNotMatch(sent[0].text, /Pause|Préparer/);
+  assert.doesNotMatch(
+    sent[0].buttons.map((button) => button.title).join(" "),
+    /Pause|Préparer/
+  );
 });
 
 test("stamp menu shows image ready wording when stamp image exists", async () => {

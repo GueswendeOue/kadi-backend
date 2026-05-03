@@ -74,7 +74,7 @@ function makeKadiCommandFlow(deps) {
       "Une fois prêt, KADI proposera avant chaque PDF :\n" +
       "• *Avec tampon* : 2 crédits\n" +
       "• *Sans tampon* : 1 crédit\n\n" +
-      "📷 L’envoi d’une photo de votre vrai tampon sera ajouté prochainement.";
+      "📷 Dans *Profil → Tampon*, vous pouvez aussi choisir *Envoyer mon tampon* pour importer une image de votre tampon/cachet.";
 
     if (typeof sendButtons === "function") {
       await sendButtons(from, message, [

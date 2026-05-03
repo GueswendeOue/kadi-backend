@@ -41,7 +41,8 @@ test("stamp text intent guides user to Profil/Tampon with clear costs", async ()
   assert.match(calls[0].text, /Profil → Tampon/);
   assert.match(calls[0].text, /Avec tampon.*2 crédits/s);
   assert.match(calls[0].text, /Sans tampon.*1 crédit/s);
-  assert.match(calls[0].text, /photo de votre vrai tampon sera ajouté prochainement/);
+  assert.match(calls[0].text, /Envoyer mon tampon/);
+  assert.match(calls[0].text, /tampon\/cachet/);
   assert.deepEqual(
     calls[0].buttons.map((button) => button.id),
     ["PROFILE_STAMP", "HOME_DOCS", "BACK_HOME"]
