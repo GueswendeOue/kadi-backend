@@ -64,6 +64,7 @@ test("pdf stamp flow downloads stamp image and passes it as stampBuffer", async 
     {
       stamp_enabled: true,
       stamp_image_path: "22670000000/stamp.png",
+      stamp_source: "uploaded",
     },
     null
   );
@@ -79,6 +80,41 @@ test("pdf stamp flow downloads stamp image and passes it as stampBuffer", async 
   assert.equal(calls[2].kind, "stamp");
   assert.equal(Buffer.isBuffer(calls[2].opts.stampBuffer), true);
   assert.equal(calls[2].opts.stampBuffer.toString(), "stamp-png");
+});
+
+test("pdf stamp flow uses generated stamp when source is generated even if image exists", async () => {
+  const calls = [];
+  const flow = makeFlow({
+    getSignedLogoUrl: async () => {
+      calls.push({ kind: "signed" });
+      return "signed";
+    },
+    downloadSignedUrlToBuffer: async () => {
+      calls.push({ kind: "download" });
+      return Buffer.from("stamp-png");
+    },
+    kadiStamp: {
+      applyStampToPdfBuffer: async (pdfBuffer, profile, opts) => {
+        calls.push({ kind: "stamp", profile, opts });
+        return pdfBuffer;
+      },
+    },
+  });
+
+  await flow.applyStampAndSignatureIfAny(
+    Buffer.from("pdf"),
+    {
+      stamp_enabled: true,
+      stamp_image_path: "22670000000/stamp.png",
+      stamp_source: "generated",
+    },
+    null
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, "stamp");
+  assert.equal(calls[0].opts.stampBuffer, null);
+  assert.equal(calls[0].profile.stamp_image_path, null);
 });
 
 test("pdf stamp flow keeps generated stamp fallback when image path is absent", async () => {
@@ -114,4 +150,3 @@ test("pdf stamp flow keeps generated stamp fallback when image path is absent", 
   assert.equal(calls[0].opts.stampBuffer, null);
   assert.equal(calls[0].profile.stamp_image_path, null);
 });
-

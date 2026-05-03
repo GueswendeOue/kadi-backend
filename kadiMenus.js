@@ -351,27 +351,49 @@ function makeKadiMenus(deps) {
     const p = await getOrCreateProfile(to);
     const isEnabled = p?.stamp_enabled === true;
     const hasImage = !!String(p?.stamp_image_path || "").trim();
+    const stampSource =
+      p?.stamp_source === "generated"
+        ? "Tampon Kadi"
+        : hasImage
+        ? "Mon tampon importé"
+        : "Tampon Kadi";
 
-    return sendButtons(
-      to,
+    const body =
       `🟦 *Tampon officiel*\n\n` +
-        `${
-          hasImage
-            ? "Tampon image prêt"
-            : isEnabled
-            ? "Tampon Kadi prêt ou à compléter"
-            : "Tampon non configuré"
-        }\n\n` +
-        `Le tampon peut être ajouté sur vos documents PDF.`,
-      [
-        { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
-        {
-          id: "STAMP_TOGGLE",
-          title: "Tampon Kadi",
-        },
-        { id: "STAMP_MORE", title: "Position/Taille" },
-      ]
-    );
+      `${
+        hasImage || isEnabled
+          ? "Statut : Tampon prêt"
+          : "Statut : Tampon non configuré"
+      }\n` +
+      `Tampon utilisé : ${stampSource}\n\n` +
+      `Le tampon peut être ajouté sur vos documents PDF.`;
+
+    if (typeof sendList === "function") {
+      return sendList(to, {
+        body,
+        buttonText: "Choisir",
+        sections: [
+          {
+            title: "Actions",
+            rows: [
+              {
+                id: "STAMP_UPLOAD_IMAGE",
+                title: hasImage ? "Remplacer mon tampon" : "Envoyer mon tampon",
+              },
+              { id: "STAMP_USE_UPLOADED", title: "Utiliser mon tampon" },
+              { id: "STAMP_USE_KADI", title: "Utiliser Tampon Kadi" },
+              { id: "STAMP_MORE", title: "Position/Taille" },
+            ],
+          },
+        ],
+      });
+    }
+
+    return sendButtons(to, body, [
+      { id: "STAMP_UPLOAD_IMAGE", title: hasImage ? "Remplacer" : "Envoyer" },
+      { id: "STAMP_USE_KADI", title: "Tampon Kadi" },
+      { id: "STAMP_MORE", title: "Position/Taille" },
+    ]);
   }
 
   async function sendStampMoreMenu(to) {

@@ -1424,18 +1424,34 @@ function makeKadiInteractiveFlow(deps) {
       return startProfileFlow(from);
     }
 
-    if (replyId === "STAMP_TOGGLE") {
+    if (replyId === "STAMP_USE_KADI" || replyId === "STAMP_TOGGLE") {
+      await updateProfile(from, {
+        stamp_enabled: true,
+        stamp_source: "generated",
+      });
+
+      await sendText(from, "✅ Tampon Kadi sélectionné.");
+
+      return sendStampMenu(from);
+    }
+
+    if (replyId === "STAMP_USE_UPLOADED") {
       const p = await getOrCreateProfile(from);
-      const nextEnabled = !(p?.stamp_enabled === true);
 
-      await updateProfile(from, { stamp_enabled: nextEnabled });
+      if (!String(p?.stamp_image_path || "").trim()) {
+        await sendText(
+          from,
+          "📷 Aucun tampon importé pour le moment.\nEnvoyez d’abord une photo ou une image de votre tampon/cachet."
+        );
+        return sendStampMenu(from);
+      }
 
-      await sendText(
-        from,
-        nextEnabled
-          ? "🟦 Tampon activé dans votre profil."
-          : "🟦 Tampon désactivé."
-      );
+      await updateProfile(from, {
+        stamp_enabled: true,
+        stamp_source: "uploaded",
+      });
+
+      await sendText(from, "✅ Mon tampon importé est sélectionné.");
 
       return sendStampMenu(from);
     }

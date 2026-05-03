@@ -363,6 +363,7 @@ async function saveProfileStampImageFromBuffer({
 
   const updated = await updateProfile(waId, {
     stamp_image_path: upload.filePath,
+    stamp_source: "uploaded",
     stamp_enabled: true,
   });
 

@@ -565,6 +565,7 @@ const {
   getSession,
   sendText,
   sendButtons,
+  sendList,
   getOrCreateProfile,
   updateProfile,
   STAMP_ONE_TIME_COST,

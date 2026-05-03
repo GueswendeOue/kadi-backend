@@ -112,7 +112,14 @@ function makeKadiPdfFlow(deps) {
       try {
         let stampBuf = null;
 
-        if (profile?.stamp_image_path) {
+        const stampSource = String(profile?.stamp_source || "")
+          .trim()
+          .toLowerCase();
+        const shouldUseUploadedStamp =
+          !!profile?.stamp_image_path &&
+          (stampSource === "uploaded" || !stampSource);
+
+        if (shouldUseUploadedStamp) {
           try {
             const signed = await getSignedLogoUrl(profile.stamp_image_path);
             stampBuf = await downloadSignedUrlToBuffer(signed);

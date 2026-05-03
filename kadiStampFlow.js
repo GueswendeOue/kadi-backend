@@ -5,6 +5,7 @@ function makeKadiStampFlow(deps) {
     getSession,
     sendText,
     sendButtons,
+    sendList = null,
     getOrCreateProfile,
     updateProfile,
   } = deps;
@@ -12,10 +13,21 @@ function makeKadiStampFlow(deps) {
   function hasStampProfileReady(profile) {
     return !!(
       profile?.stamp_enabled === true &&
-      (String(profile?.business_name || "").trim() ||
+      (String(profile?.stamp_image_path || "").trim() ||
+        String(profile?.business_name || "").trim() ||
         String(profile?.owner_name || "").trim() ||
         String(profile?.phone || "").trim())
     );
+  }
+
+  function resolveStampSource(profile) {
+    const source = String(profile?.stamp_source || "").trim().toLowerCase();
+    const hasImage = !!String(profile?.stamp_image_path || "").trim();
+
+    if (source === "uploaded" && hasImage) return "uploaded";
+    if (source === "generated") return "generated";
+    if (!source && hasImage) return "uploaded";
+    return "generated";
   }
 
   function resetStampChoice(session) {
@@ -65,6 +77,8 @@ function makeKadiStampFlow(deps) {
     const p = await getOrCreateProfile(to);
 
     const enabled = p?.stamp_enabled === true;
+    const source = resolveStampSource(p);
+    const hasImage = !!String(p?.stamp_image_path || "").trim();
     const pos = p?.stamp_position || "bottom-right";
     const size = p?.stamp_size || 170;
     const title = String(p?.stamp_title || "").trim();
@@ -85,6 +99,7 @@ function makeKadiStampFlow(deps) {
     const header =
       `🟦 *Tampon (PDF)*\n\n` +
       `• Statut : *${status}*\n` +
+      `• Tampon utilisé : *${source === "uploaded" ? "Mon tampon importé" : "Tampon Kadi"}*\n` +
       `• Fonction : *${title || "facultative"}*\n` +
       `• Position : *${stampPosLabel(pos)}*\n` +
       `• Taille : *${stampSizeLabel(size)}*\n` +
@@ -93,9 +108,45 @@ function makeKadiStampFlow(deps) {
       `Avec tampon = coût du PDF + *1 crédit*.\n\n` +
       `Vous pouvez envoyer une photo ou une image de votre tampon/cachet depuis ce menu.`;
 
+    if (typeof sendList === "function") {
+      return sendList(to, {
+        body: header,
+        buttonText: "Choisir",
+        sections: [
+          {
+            title: "Actions",
+            rows: [
+              {
+                id: "STAMP_UPLOAD_IMAGE",
+                title: hasImage ? "Remplacer mon tampon" : "Envoyer mon tampon",
+                description: "Importer une photo ou image de votre tampon/cachet",
+              },
+              {
+                id: "STAMP_USE_UPLOADED",
+                title: "Utiliser mon tampon",
+                description: hasImage
+                  ? "Utiliser l’image importée sur les PDF"
+                  : "Disponible après import de votre tampon",
+              },
+              {
+                id: "STAMP_USE_KADI",
+                title: "Utiliser Tampon Kadi",
+                description: "Utiliser le tampon généré automatiquement",
+              },
+              {
+                id: "STAMP_MORE",
+                title: "Position/Taille",
+                description: "Régler l’emplacement et la taille",
+              },
+            ],
+          },
+        ],
+      });
+    }
+
     return sendButtons(to, header + "\n\n👇 Choisissez :", [
-      { id: "STAMP_UPLOAD_IMAGE", title: "Envoyer mon tampon" },
-      { id: "STAMP_TOGGLE", title: "Tampon Kadi" },
+      { id: "STAMP_UPLOAD_IMAGE", title: hasImage ? "Remplacer" : "Envoyer" },
+      { id: "STAMP_USE_KADI", title: "Tampon Kadi" },
       { id: "STAMP_MORE", title: "Position/Taille" },
     ]);
   }
@@ -186,6 +237,7 @@ function makeKadiStampFlow(deps) {
   return {
     hasStampProfileReady,
     resetStampChoice,
+    resolveStampSource,
     buildPreGenerateStampMessage,
     sendPreGenerateStampMenu,
     stampPosLabel,

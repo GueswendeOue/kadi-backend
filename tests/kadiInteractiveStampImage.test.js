@@ -5,8 +5,7 @@ const assert = require("node:assert/strict");
 
 const { makeKadiInteractiveFlow } = require("../kadiInteractiveFlow");
 
-test("STAMP_UPLOAD_IMAGE puts session in stamp image upload step", async () => {
-  const session = { step: "idle", itemDraft: { label: "x" } };
+function makeFlow({ session, profile = {}, updateProfile = async () => {} } = {}) {
   const calls = [];
 
   const flow = makeKadiInteractiveFlow({
@@ -44,8 +43,8 @@ test("STAMP_UPLOAD_IMAGE puts session in stamp image upload step", async () => {
     tryHandleNaturalMessage: async () => false,
     processOcrImageToDraft: async () => {},
     createAndSendPdf: async () => {},
-    getOrCreateProfile: async () => ({}),
-    updateProfile: async () => ({}),
+    getOrCreateProfile: async () => profile,
+    updateProfile,
     hasStampProfileReady: () => false,
     resetStampChoice: () => {},
     buildDechargeConfirmationMessage: () => "",
@@ -69,10 +68,69 @@ test("STAMP_UPLOAD_IMAGE puts session in stamp image upload step", async () => {
     replyRechargeInfo: async () => {},
   });
 
+  return { flow, calls };
+}
+
+test("STAMP_UPLOAD_IMAGE puts session in stamp image upload step", async () => {
+  const session = { step: "idle", itemDraft: { label: "x" } };
+  const { flow, calls } = makeFlow({ session });
+
   await flow.handleInteractiveReply("22670000000", "STAMP_UPLOAD_IMAGE");
 
   assert.equal(session.step, "stamp_image_upload");
   assert.equal(session.profileStep, null);
   assert.equal(session.itemDraft, null);
   assert.match(calls[0].text, /Envoyez maintenant une photo ou une image de votre tampon\/cachet/);
+});
+
+test("STAMP_USE_KADI selects generated source without deleting uploaded image", async () => {
+  const session = { step: "idle" };
+  const patches = [];
+  const { flow } = makeFlow({
+    session,
+    profile: {
+      stamp_enabled: true,
+      stamp_image_path: "22670000000/stamp.png",
+      stamp_source: "uploaded",
+    },
+    updateProfile: async (waId, patch) => patches.push({ waId, patch }),
+  });
+
+  await flow.handleInteractiveReply("22670000000", "STAMP_USE_KADI");
+
+  assert.deepEqual(patches, [
+    {
+      waId: "22670000000",
+      patch: {
+        stamp_enabled: true,
+        stamp_source: "generated",
+      },
+    },
+  ]);
+});
+
+test("STAMP_USE_UPLOADED selects uploaded source when image exists", async () => {
+  const session = { step: "idle" };
+  const patches = [];
+  const { flow } = makeFlow({
+    session,
+    profile: {
+      stamp_enabled: true,
+      stamp_image_path: "22670000000/stamp.png",
+      stamp_source: "generated",
+    },
+    updateProfile: async (waId, patch) => patches.push({ waId, patch }),
+  });
+
+  await flow.handleInteractiveReply("22670000000", "STAMP_USE_UPLOADED");
+
+  assert.deepEqual(patches, [
+    {
+      waId: "22670000000",
+      patch: {
+        stamp_enabled: true,
+        stamp_source: "uploaded",
+      },
+    },
+  ]);
 });

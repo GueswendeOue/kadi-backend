@@ -77,6 +77,9 @@ test("stamp menu uses ready wording and marks function as optional", async () =>
     sendButtons: async (to, text, buttons) => {
       sent.push({ to, text, buttons });
     },
+    sendList: async (to, opts) => {
+      sent.push({ to, text: opts.body, rows: opts.sections[0].rows });
+    },
     getOrCreateProfile: async () => ({
       stamp_enabled: true,
       business_name: "Kadi Services",
@@ -95,12 +98,17 @@ test("stamp menu uses ready wording and marks function as optional", async () =>
   assert.match(sent[0].text, /Avec tampon = coût du PDF \+ \*1 crédit\*/);
   assert.match(sent[0].text, /photo ou une image de votre tampon\/cachet/);
   assert.deepEqual(
-    sent[0].buttons.map((button) => button.title),
-    ["Envoyer mon tampon", "Tampon Kadi", "Position/Taille"]
+    sent[0].rows.map((row) => row.title),
+    [
+      "Envoyer mon tampon",
+      "Utiliser mon tampon",
+      "Utiliser Tampon Kadi",
+      "Position/Taille",
+    ]
   );
   assert.doesNotMatch(sent[0].text, /Pause|Préparer/);
   assert.doesNotMatch(
-    sent[0].buttons.map((button) => button.title).join(" "),
+    sent[0].rows.map((row) => row.title).join(" "),
     /Pause|Préparer/
   );
 });
@@ -112,6 +120,9 @@ test("stamp menu shows image ready wording when stamp image exists", async () =>
     sendText: async () => {},
     sendButtons: async (to, text, buttons) => {
       sent.push({ to, text, buttons });
+    },
+    sendList: async (to, opts) => {
+      sent.push({ to, text: opts.body, rows: opts.sections[0].rows });
     },
     getOrCreateProfile: async () => ({
       stamp_enabled: true,
@@ -125,4 +136,32 @@ test("stamp menu shows image ready wording when stamp image exists", async () =>
 
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /Tampon image prêt/);
+  assert.match(sent[0].text, /Tampon utilisé : \*Mon tampon importé\*/);
+  assert.equal(sent[0].rows[0].title, "Remplacer mon tampon");
+});
+
+test("stamp source falls back to uploaded when image exists and source is absent", () => {
+  const flow = makeKadiStampFlow({
+    getSession: () => ({}),
+    sendText: async () => {},
+    sendButtons: async () => {},
+    getOrCreateProfile: async () => ({}),
+    updateProfile: async () => ({}),
+  });
+
+  assert.equal(
+    flow.resolveStampSource({
+      stamp_image_path: "22670000000/stamp.png",
+      stamp_source: null,
+    }),
+    "uploaded"
+  );
+
+  assert.equal(
+    flow.resolveStampSource({
+      stamp_image_path: "22670000000/stamp.png",
+      stamp_source: "generated",
+    }),
+    "generated"
+  );
 });
