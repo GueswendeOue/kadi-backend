@@ -125,8 +125,13 @@ function makeKadiStatsService(deps) {
       0
     );
 
-    const generatedToPaidRate = pct(
-      stats?.funnel?.generatedToPaidRate,
+    const activeToPaidRate = pct(
+      stats?.funnel?.activeToPaidRate ?? stats?.kpis?.activeToPaidRate,
+      0
+    );
+
+    const docUsersToPaidRate = pct(
+      stats?.funnel?.docUsersToPaidRate ?? stats?.kpis?.docUsersToPaidRate,
       0
     );
 
@@ -136,7 +141,24 @@ function makeKadiStatsService(deps) {
     );
 
     const creditsPaid30d = toNum(
-      stats?.monetization?.creditsPaid30d ?? stats?.revenue?.creditsPaid,
+      stats?.monetization?.creditsPurchased30d ??
+        stats?.monetization?.creditsPaid30d ??
+        stats?.revenue?.creditsPaid,
+      0
+    );
+
+    const pdfByPayingUsers30d = toNum(
+      stats?.monetization?.pdfByPayingUsers30d,
+      0
+    );
+
+    const pdfAfterFirstTopup30d = toNum(
+      stats?.monetization?.pdfAfterFirstTopup30d,
+      0
+    );
+
+    const paidCreditPdfConsumed30dProxy = toNum(
+      stats?.monetization?.paidCreditPdfConsumed30dProxy,
       0
     );
 
@@ -176,9 +198,12 @@ function makeKadiStatsService(deps) {
     text += `Docs/actif 30j    ${docsPerActive30.toFixed(2)}\n\n`;
 
     text += "💰 *MONÉTISATION*\n";
-    text += `CA 30j            ${formatMoney(revenue30)}\n`;
-    text += `Payants           ${payingUsers}\n`;
-    text += `Crédits payés     ${creditsPaid30d}\n`;
+    text += `CA réel 30j       ${formatMoney(revenue30)}\n`;
+    text += `Payants 30j       ${payingUsers}\n`;
+    text += `Crédits achetés   ${creditsPaid30d}\n`;
+    text += `PDF payants 30j   ${pdfByPayingUsers30d}\n`;
+    text += `PDF après recharge ${pdfAfterFirstTopup30d}\n`;
+    text += `Crédits PDF payants ${paidCreditPdfConsumed30dProxy}\n`;
     text += `Wallets suivis    ${usersWithWallet}\n`;
     text += `0 crédit réel     ${usersZeroCredits}\n`;
     text += `Crédits faibles   ${usersLowCredits}\n`;
@@ -192,7 +217,8 @@ function makeKadiStatsService(deps) {
     text += "🎯 *FUNNEL*\n";
     text += `Signup→Actif      ${signupToActive30Rate}%\n`;
     text += `Actif→Doc         ${activeToCreatedRate}%\n`;
-    text += `Doc→Payé          ${generatedToPaidRate}%\n\n`;
+    text += `Actif→Payé        ${activeToPaidRate}%\n`;
+    text += `Doc users→Payé    ${docUsersToPaidRate}%\n\n`;
 
     text += "🔁 *RÉTENTION*\n";
     text += `Retour 7j/30j     ${retention7Approx}%\n\n`;

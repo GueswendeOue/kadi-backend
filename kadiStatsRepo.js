@@ -341,16 +341,29 @@ function isStampTx(row) {
   return reason.includes("stamp");
 }
 
+function isExcludedCreditGrant(row) {
+  const reason = lowerReason(row);
+  const meta = row?.meta || {};
+
+  if (meta?.isTestCredit === true) return true;
+  if (meta?.excludeFromRevenue === true) return true;
+
+  return (
+    reason === "admin_test_credit" ||
+    reason === "demo_reset" ||
+    reason === "rollback_pdf_failed" ||
+    reason.includes("bonus") ||
+    reason.includes("grant")
+  );
+}
+
 function isPaidCreditTx(row) {
   const reason = lowerReason(row);
   const delta = toNum(row?.delta, 0);
-  const meta = row?.meta || {};
 
   if (!(delta > 0)) return false;
 
-  if (reason === "admin_test_credit") return false;
-  if (meta?.isTestCredit === true) return false;
-  if (meta?.excludeFromRevenue === true) return false;
+  if (isExcludedCreditGrant(row)) return false;
 
   return (
     reason.includes("payment") ||
@@ -379,6 +392,79 @@ function getPaidAmountFcfa(row, { packCredits = 25, packPriceFcfa = 2000 } = {})
   if (credits <= 0) return 0;
 
   return Math.round((credits / Math.max(1, packCredits)) * packPriceFcfa);
+}
+
+function buildPaidBusinessMetrics({
+  creditEventsAll = [],
+  tx30 = [],
+  active30 = 0,
+  usersWithDocs = 0,
+  packCredits = 25,
+  packPriceFcfa = 2000,
+} = {}) {
+  let creditsPaid30 = 0;
+  let revenueMonth = 0;
+  const paidUsers30Set = new Set();
+  const firstPaidAtByWaId = new Map();
+
+  for (const row of ensureArray(creditEventsAll)) {
+    if (!isPaidCreditTx(row)) continue;
+
+    const waId = safeStr(row?.wa_id, "");
+    const createdAt = String(row?.created_at || "");
+    if (!waId || !createdAt) continue;
+
+    const current = firstPaidAtByWaId.get(waId);
+    if (!current || createdAt < current) {
+      firstPaidAtByWaId.set(waId, createdAt);
+    }
+  }
+
+  for (const row of ensureArray(tx30)) {
+    if (!isPaidCreditTx(row)) continue;
+
+    creditsPaid30 += toNum(row.delta, 0);
+    revenueMonth += getPaidAmountFcfa(row, { packCredits, packPriceFcfa });
+
+    const waId = safeStr(row?.wa_id, "");
+    if (waId) paidUsers30Set.add(waId);
+  }
+
+  const pdfTx30 = ensureArray(tx30).filter(isPdfTx);
+
+  const pdfByPayingUsers30d = pdfTx30.filter((row) =>
+    paidUsers30Set.has(safeStr(row?.wa_id, ""))
+  ).length;
+
+  const pdfAfterFirstTopup30d = pdfTx30.filter((row) => {
+    const waId = safeStr(row?.wa_id, "");
+    const firstPaidAt = firstPaidAtByWaId.get(waId);
+    const createdAt = String(row?.created_at || "");
+
+    return !!firstPaidAt && !!createdAt && createdAt >= firstPaidAt;
+  }).length;
+
+  const paidCreditPdfConsumed30dProxy = pdfTx30
+    .filter((row) => paidUsers30Set.has(safeStr(row?.wa_id, "")))
+    .reduce((sum, row) => sum + Math.abs(toNum(row?.delta, 0)), 0);
+
+  const paidUsers30d = paidUsers30Set.size;
+  const activeToPaidRate = pct(paidUsers30d, active30);
+  const docUsersToPaidRate = pct(paidUsers30d, usersWithDocs);
+
+  return {
+    creditsPaid30: Math.round(creditsPaid30),
+    revenueMonth: Math.round(revenueMonth),
+    paidUsers30d,
+    paidUsers30Set,
+    firstPaidAtByWaId,
+    pdfTx30,
+    pdfByPayingUsers30d,
+    pdfAfterFirstTopup30d,
+    paidCreditPdfConsumed30dProxy,
+    activeToPaidRate,
+    docUsersToPaidRate,
+  };
 }
 
 function buildWalletStatsFromEvents(events = []) {
@@ -694,22 +780,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
   // ===============================
   // REVENUE / PAYING USERS
   // ===============================
-  let creditsPaid30 = 0;
-  let revenueMonth = 0;
-  const paidUsersSet = new Set();
-
-  for (const row of tx30) {
-    if (isPaidCreditTx(row)) {
-      creditsPaid30 += toNum(row.delta, 0);
-      revenueMonth += getPaidAmountFcfa(row, { packCredits, packPriceFcfa });
-
-      const waId = safeStr(row?.wa_id, "");
-      if (waId) paidUsersSet.add(waId);
-    }
-  }
-
-  const paidUsers = paidUsersSet.size;
-
   let creditsPaidPrev30 = 0;
   let revenuePrev30 = 0;
 
@@ -723,7 +793,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     }
   }
 
-  revenueMonth = Math.round(revenueMonth);
   revenuePrev30 = Math.round(revenuePrev30);
 
   // ===============================
@@ -733,6 +802,19 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     () => countDistinct("kadi_documents", "wa_id"),
     0
   );
+
+  const paidMetrics = buildPaidBusinessMetrics({
+    creditEventsAll,
+    tx30,
+    active30,
+    usersWithDocs,
+    packCredits,
+    packPriceFcfa,
+  });
+
+  const creditsPaid30 = paidMetrics.creditsPaid30;
+  const revenueMonth = paidMetrics.revenueMonth;
+  const paidUsers = paidMetrics.paidUsers30d;
 
   const signupToActive30Rate = pct(active30, totalUsers);
   const activeToCreatedRate = pct(usersWithDocs, active30);
@@ -824,6 +906,11 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       revenueGrowth30d: revenue30Growth,
       payingUsers: paidUsers,
       creditsPaid30d: creditsPaid30,
+      creditsPurchased30d: creditsPaid30,
+      pdfByPayingUsers30d: paidMetrics.pdfByPayingUsers30d,
+      pdfAfterFirstTopup30d: paidMetrics.pdfAfterFirstTopup30d,
+      paidCreditPdfConsumed30dProxy:
+        paidMetrics.paidCreditPdfConsumed30dProxy,
       packCredits,
       packPriceFcfa,
       usersZeroCredits,
@@ -837,6 +924,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       signupToActive30Rate,
       activeToCreatedRate,
       createdToGeneratedRate,
+      activeToPaidRate: paidMetrics.activeToPaidRate,
+      docUsersToPaidRate: paidMetrics.docUsersToPaidRate,
       generatedToPaidRate,
     },
 
@@ -907,6 +996,8 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       onboardingRate: 0,
       activationRate: pct(usersWithDocs, totalUsers),
       paymentConversion: pct(paidUsers, active30),
+      activeToPaidRate: paidMetrics.activeToPaidRate,
+      docUsersToPaidRate: paidMetrics.docUsersToPaidRate,
       docsPerWeek: docs7,
       docsPerMonth: docs30,
     },
@@ -1009,6 +1100,8 @@ module.exports = {
   getDocsForExport,
   money,
   _private: {
+    isExcludedCreditGrant,
     isPaidCreditTx,
+    buildPaidBusinessMetrics,
   },
 };
