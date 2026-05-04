@@ -404,6 +404,7 @@ function buildPaidBusinessMetrics({
 } = {}) {
   let creditsPaid30 = 0;
   let revenueMonth = 0;
+  let paymentsReceived30d = 0;
   const paidUsers30Set = new Set();
   const firstPaidAtByWaId = new Map();
 
@@ -423,6 +424,7 @@ function buildPaidBusinessMetrics({
   for (const row of ensureArray(tx30)) {
     if (!isPaidCreditTx(row)) continue;
 
+    paymentsReceived30d += 1;
     creditsPaid30 += toNum(row.delta, 0);
     revenueMonth += getPaidAmountFcfa(row, { packCredits, packPriceFcfa });
 
@@ -436,17 +438,24 @@ function buildPaidBusinessMetrics({
     paidUsers30Set.has(safeStr(row?.wa_id, ""))
   ).length;
 
-  const pdfAfterFirstTopup30d = pdfTx30.filter((row) => {
+  const pdfAfterFirstTopupRows30d = pdfTx30.filter((row) => {
     const waId = safeStr(row?.wa_id, "");
     const firstPaidAt = firstPaidAtByWaId.get(waId);
     const createdAt = String(row?.created_at || "");
 
     return !!firstPaidAt && !!createdAt && createdAt >= firstPaidAt;
-  }).length;
+  });
+
+  const pdfAfterFirstTopup30d = pdfAfterFirstTopupRows30d.length;
 
   const paidCreditPdfConsumed30dProxy = pdfTx30
     .filter((row) => paidUsers30Set.has(safeStr(row?.wa_id, "")))
     .reduce((sum, row) => sum + Math.abs(toNum(row?.delta, 0)), 0);
+
+  const creditsUsedAfterFirstTopup30d = pdfAfterFirstTopupRows30d.reduce(
+    (sum, row) => sum + Math.abs(toNum(row?.delta, 0)),
+    0
+  );
 
   const paidUsers30d = paidUsers30Set.size;
   const activeToPaidRate = pct(paidUsers30d, active30);
@@ -455,6 +464,7 @@ function buildPaidBusinessMetrics({
   return {
     creditsPaid30: Math.round(creditsPaid30),
     revenueMonth: Math.round(revenueMonth),
+    paymentsReceived30d,
     paidUsers30d,
     paidUsers30Set,
     firstPaidAtByWaId,
@@ -462,6 +472,7 @@ function buildPaidBusinessMetrics({
     pdfByPayingUsers30d,
     pdfAfterFirstTopup30d,
     paidCreditPdfConsumed30dProxy,
+    creditsUsedAfterFirstTopup30d,
     activeToPaidRate,
     docUsersToPaidRate,
   };
@@ -581,7 +592,6 @@ function buildYcInsights({
   docs7Growth,
   signupToActive30Rate,
   activeToCreatedRate,
-  generatedToPaidRate,
 }) {
   const alerts = [];
   const insights = [];
@@ -590,8 +600,10 @@ function buildYcInsights({
     alerts.push(`• Baisse docs 7j: ${docs7Growth}%`);
   }
 
-  if (generatedToPaidRate < 5 && docsGenerated > 20) {
-    alerts.push(`• Conversion Doc→Payé faible: ${generatedToPaidRate}%`);
+  if (active30 > 0 && paidUsers < Math.max(1, Math.round(active30 * 0.01))) {
+    alerts.push(
+      `• Monétisation faible : ${paidUsers} clients payants sur ${active30} actifs 30j`
+    );
   }
 
   if (active30 > 0 && active7 < Math.round(active30 * 0.15)) {
@@ -870,7 +882,6 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
     docs7Growth,
     signupToActive30Rate,
     activeToCreatedRate,
-    generatedToPaidRate,
   });
 
   return {
@@ -905,12 +916,15 @@ async function getStats({ packCredits = 25, packPriceFcfa = 2000 } = {}) {
       revenue30d: revenueMonth,
       revenueGrowth30d: revenue30Growth,
       payingUsers: paidUsers,
+      paymentsReceived30d: paidMetrics.paymentsReceived30d,
       creditsPaid30d: creditsPaid30,
       creditsPurchased30d: creditsPaid30,
       pdfByPayingUsers30d: paidMetrics.pdfByPayingUsers30d,
       pdfAfterFirstTopup30d: paidMetrics.pdfAfterFirstTopup30d,
       paidCreditPdfConsumed30dProxy:
         paidMetrics.paidCreditPdfConsumed30dProxy,
+      creditsUsedAfterFirstTopup30d:
+        paidMetrics.creditsUsedAfterFirstTopup30d,
       packCredits,
       packPriceFcfa,
       usersZeroCredits,
@@ -1103,5 +1117,6 @@ module.exports = {
     isExcludedCreditGrant,
     isPaidCreditTx,
     buildPaidBusinessMetrics,
+    buildYcInsights,
   },
 };

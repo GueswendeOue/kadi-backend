@@ -136,10 +136,40 @@ test("paid business metrics separate paid users, paid PDFs and post-topup PDFs",
 
   assert.equal(metrics.revenueMonth, 2000);
   assert.equal(metrics.creditsPaid30, 20);
+  assert.equal(metrics.paymentsReceived30d, 1);
   assert.equal(metrics.paidUsers30d, 1);
   assert.equal(metrics.activeToPaidRate, 10);
   assert.equal(metrics.docUsersToPaidRate, 20);
   assert.equal(metrics.pdfByPayingUsers30d, 1);
   assert.equal(metrics.pdfAfterFirstTopup30d, 2);
   assert.equal(metrics.paidCreditPdfConsumed30dProxy, 1);
+  assert.equal(metrics.creditsUsedAfterFirstTopup30d, 3);
+});
+
+test("business insights use monetization alert instead of Doc to paid alert", () => {
+  const insights = _private.buildYcInsights({
+    totalUsers: 2405,
+    active7: 108,
+    active30: 1004,
+    docs7: 16,
+    docs30: 162,
+    docsGenerated: 660,
+    usersWithDocs: 660,
+    paidUsers: 2,
+    usersZeroCredits: 0,
+    docs7Growth: 0,
+    signupToActive30Rate: 42,
+    activeToCreatedRate: 20,
+  });
+
+  assert.equal(
+    insights.alerts.some((alert) => alert.includes("Conversion Doc→Payé")),
+    false
+  );
+  assert.equal(
+    insights.alerts.includes(
+      "• Monétisation faible : 2 clients payants sur 1004 actifs 30j"
+    ),
+    true
+  );
 });

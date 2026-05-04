@@ -25,6 +25,23 @@ function makeKadiStatsService(deps) {
     return Math.max(0, Math.round(n));
   }
 
+  function formatPctValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "0%";
+    if (n > 0 && n < 1) {
+      return `${n.toFixed(1).replace(".", ",")}%`;
+    }
+    return `${Math.round(n)}%`;
+  }
+
+  function formatRate(part, total, fallback = 0) {
+    const p = toNum(part, 0);
+    const t = toNum(total, 0);
+
+    if (t > 0) return formatPctValue((p / t) * 100);
+    return formatPctValue(fallback);
+  }
+
   function formatMoney(value) {
     try {
       if (typeof money === "function") return `${money(value)} FCFA`;
@@ -99,6 +116,11 @@ function makeKadiStatsService(deps) {
       stats?.usage?.docsPerActive30User ?? 0
     );
 
+    const usersWithDocs = toNum(
+      stats?.usage?.usersWithDocs ?? stats?.users?.usersWithDocs,
+      0
+    );
+
     const revenue30 =
       toNum(stats?.monetization?.revenue30d, null) ??
       toNum(stats?.revenue?.month, 0);
@@ -107,30 +129,22 @@ function makeKadiStatsService(deps) {
       toNum(stats?.monetization?.payingUsers, null) ??
       toNum(stats?.users?.paid, 0);
 
-    const usersZeroCredits =
-      toNum(stats?.monetization?.usersZeroCredits, null) ??
-      toNum(stats?.conversion?.usersZeroCredits, 0);
-
-    const usersLowCredits =
-      toNum(stats?.monetization?.usersLowCredits, null) ??
-      toNum(stats?.conversion?.usersLowCredits, 0);
-
     const signupToActive30Rate = pct(
       stats?.funnel?.signupToActive30Rate,
       0
     );
 
-    const activeToCreatedRate = pct(
+    const activeToCreatedRate = toNum(
       stats?.funnel?.activeToCreatedRate,
       0
     );
 
-    const activeToPaidRate = pct(
+    const activeToPaidRate = toNum(
       stats?.funnel?.activeToPaidRate ?? stats?.kpis?.activeToPaidRate,
       0
     );
 
-    const docUsersToPaidRate = pct(
+    const docUsersToPaidRate = toNum(
       stats?.funnel?.docUsersToPaidRate ?? stats?.kpis?.docUsersToPaidRate,
       0
     );
@@ -147,8 +161,8 @@ function makeKadiStatsService(deps) {
       0
     );
 
-    const pdfByPayingUsers30d = toNum(
-      stats?.monetization?.pdfByPayingUsers30d,
+    const paymentsReceived30d = toNum(
+      stats?.monetization?.paymentsReceived30d,
       0
     );
 
@@ -157,19 +171,10 @@ function makeKadiStatsService(deps) {
       0
     );
 
-    const paidCreditPdfConsumed30dProxy = toNum(
-      stats?.monetization?.paidCreditPdfConsumed30dProxy,
+    const creditsUsedAfterFirstTopup30d = toNum(
+      stats?.monetization?.creditsUsedAfterFirstTopup30d ??
+        stats?.monetization?.paidCreditPdfConsumed30dProxy,
       0
-    );
-
-    const usersWithWallet = toNum(
-      stats?.monetization?.usersWithWallet ?? stats?.users?.usersWithWallet,
-      0
-    );
-
-    const balanceSource = safeText(
-      stats?.monetization?.balanceSource,
-      ""
     );
 
     const alerts = Array.isArray(stats?.alerts) ? stats.alerts : [];
@@ -198,27 +203,28 @@ function makeKadiStatsService(deps) {
     text += `Docs/actif 30j    ${docsPerActive30.toFixed(2)}\n\n`;
 
     text += "💰 *MONÉTISATION*\n";
-    text += `CA réel 30j       ${formatMoney(revenue30)}\n`;
-    text += `Payants 30j       ${payingUsers}\n`;
-    text += `Crédits achetés   ${creditsPaid30d}\n`;
-    text += `PDF payants 30j   ${pdfByPayingUsers30d}\n`;
-    text += `PDF après recharge ${pdfAfterFirstTopup30d}\n`;
-    text += `Crédits PDF payants ${paidCreditPdfConsumed30dProxy}\n`;
-    text += `Wallets suivis    ${usersWithWallet}\n`;
-    text += `0 crédit réel     ${usersZeroCredits}\n`;
-    text += `Crédits faibles   ${usersLowCredits}\n`;
-
-    if (balanceSource) {
-      text += `Source soldes     ${balanceSource}\n`;
-    }
+    text += `CA clients 30j    ${formatMoney(revenue30)}\n`;
+    text += `Clients payants   ${payingUsers}\n`;
+    text += `Paiements reçus   ${paymentsReceived30d}\n`;
+    text += `Crédits vendus    ${creditsPaid30d}\n`;
+    text += `Docs après paiement ${pdfAfterFirstTopup30d}\n`;
+    text += `Crédits utilisés  ${creditsUsedAfterFirstTopup30d}\n`;
 
     text += "\n";
 
     text += "🎯 *FUNNEL*\n";
-    text += `Signup→Actif      ${signupToActive30Rate}%\n`;
-    text += `Actif→Doc         ${activeToCreatedRate}%\n`;
-    text += `Actif→Payé        ${activeToPaidRate}%\n`;
-    text += `Doc users→Payé    ${docUsersToPaidRate}%\n\n`;
+    text += `Signup→Actif      ${formatPctValue(signupToActive30Rate)}\n`;
+    text += `Actif→Document    ${formatPctValue(activeToCreatedRate)}\n`;
+    text += `Actif→Client payant ${formatRate(
+      payingUsers,
+      active30,
+      activeToPaidRate
+    )}\n`;
+    text += `Créateur→Client   ${formatRate(
+      payingUsers,
+      usersWithDocs,
+      docUsersToPaidRate
+    )}\n\n`;
 
     text += "🔁 *RÉTENTION*\n";
     text += `Retour 7j/30j     ${retention7Approx}%\n\n`;
