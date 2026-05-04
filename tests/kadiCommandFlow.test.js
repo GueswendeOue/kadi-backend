@@ -81,3 +81,88 @@ test("admin reengage segment command routes to segment handler", async () => {
     },
   ]);
 });
+
+test("admin test credit command adds wallet credits without real payment metadata", async () => {
+  const addCalls = [];
+  const { calls, flow } = makeFlow({
+    ensureAdmin: () => true,
+    addCredits: async (...args) => {
+      addCalls.push(args);
+      return { ok: true, balance: 20 };
+    },
+  });
+
+  const handled = await flow.handleAdmin(
+    { wa_id: "22679999999" },
+    "/test_credit 22671630608 20 test_tampon"
+  );
+
+  assert.equal(handled, true);
+  assert.equal(addCalls.length, 1);
+  assert.deepEqual(addCalls[0][0], { waId: "22671630608" });
+  assert.equal(addCalls[0][1], 20);
+  assert.equal(addCalls[0][2], "admin_test_credit");
+  assert.equal(addCalls[0][3], "admin_test_credit:22671630608:20:test_tampon");
+  assert.deepEqual(addCalls[0][4], {
+    source: "admin_test_command",
+    isTestCredit: true,
+    excludeFromRevenue: true,
+    amountFcfa: 0,
+    revenueFcfa: 0,
+    credits: 20,
+    adminWaId: "22679999999",
+    waId: "22671630608",
+    note: "test_tampon",
+    date: new Date().toISOString().slice(0, 10),
+  });
+  assert.deepEqual(calls, [
+    {
+      kind: "text",
+      to: "22679999999",
+      text: "✅ 20 crédits test ajoutés à 22671630608. Aucun paiement réel enregistré.",
+    },
+  ]);
+});
+
+test("test credit command is admin only", async () => {
+  let addCalled = false;
+  const { calls, flow } = makeFlow({
+    ensureAdmin: () => false,
+    addCredits: async () => {
+      addCalled = true;
+    },
+  });
+
+  const handled = await flow.handleCommand(
+    "22679999999",
+    "/test_credit 22671630608 20 test_tampon",
+    { wa_id: "22679999999" }
+  );
+
+  assert.equal(handled, false);
+  assert.equal(addCalled, false);
+  assert.deepEqual(calls, []);
+});
+
+test("existing admin credit command still uses manual paid topup reason", async () => {
+  const addCalls = [];
+  const { flow } = makeFlow({
+    ensureAdmin: () => true,
+    addCredits: async (...args) => {
+      addCalls.push(args);
+      return { ok: true, balance: 10 };
+    },
+  });
+
+  const handled = await flow.handleAdmin(
+    { wa_id: "22679999999" },
+    "/credit 22671630608 10 1000 OM12345"
+  );
+
+  assert.equal(handled, true);
+  assert.equal(addCalls.length, 1);
+  assert.equal(addCalls[0][2], "manual_om_topup");
+  assert.equal(addCalls[0][4].source, "admin_command");
+  assert.equal(addCalls[0][4].amountFcfa, 1000);
+  assert.equal(addCalls[0][4].paymentMethod, "orange_money_manual");
+});

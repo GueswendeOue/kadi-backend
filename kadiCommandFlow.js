@@ -164,6 +164,24 @@ function makeKadiCommandFlow(deps) {
     return `manual_om_topup:${waId}:${credits}:${amountFcfa}:${Date.now()}`;
   }
 
+  function safeNote(value = "") {
+    return String(value || "")
+      .trim()
+      .replace(/[^\p{L}\p{N}\s._:-]/gu, "_")
+      .replace(/\s+/g, " ")
+      .slice(0, 160);
+  }
+
+  function buildTestCreditOperationKey({ waId, credits, note }) {
+    const cleanNote = safeReference(note);
+
+    if (cleanNote) {
+      return `admin_test_credit:${waId}:${credits}:${cleanNote}`;
+    }
+
+    return `admin_test_credit:${waId}:${credits}:${Date.now()}`;
+  }
+
   function formatMoney(value) {
     return `${Math.round(toInt(value, 0)).toLocaleString("fr-FR")} FCFA`;
   }
@@ -315,6 +333,90 @@ function makeKadiCommandFlow(deps) {
     return true;
   }
 
+  async function handleTestCreditCommand(from, raw) {
+    if (typeof addCredits !== "function") {
+      await sendText(
+        from,
+        "❌ Crédit test indisponible.\n\nLe service addCredits n’est pas branché dans kadiEngine.js."
+      );
+      return true;
+    }
+
+    const parts = splitArgs(raw);
+
+    if (parts.length < 3) {
+      await sendText(
+        from,
+        "❌ Format invalide.\n\n" +
+          "Format attendu :\n" +
+          "/test_credit wa_id credits [note]\n\n" +
+          "Exemple :\n" +
+          "/test_credit 22671630608 20 test_tampon"
+      );
+      return true;
+    }
+
+    const targetWaId = normalizeWaId(parts[1]);
+    const credits = toInt(parts[2], 0);
+    const note = safeNote(parts.slice(3).join(" "));
+
+    if (!targetWaId) {
+      await sendText(
+        from,
+        "❌ Numéro invalide.\n\nExemple : /test_credit 22671630608 20 test_tampon"
+      );
+      return true;
+    }
+
+    if (credits <= 0 || credits > 10000) {
+      await sendText(
+        from,
+        "❌ Nombre de crédits invalide.\n\nExemple : /test_credit 22671630608 20 test_tampon"
+      );
+      return true;
+    }
+
+    const operationKey = buildTestCreditOperationKey({
+      waId: targetWaId,
+      credits,
+      note,
+    });
+
+    try {
+      await addCredits(
+        { waId: targetWaId },
+        credits,
+        "admin_test_credit",
+        operationKey,
+        {
+          source: "admin_test_command",
+          isTestCredit: true,
+          excludeFromRevenue: true,
+          amountFcfa: 0,
+          revenueFcfa: 0,
+          credits,
+          adminWaId: from,
+          waId: targetWaId,
+          note: note || null,
+          date: todayKey(),
+        }
+      );
+    } catch (err) {
+      await sendText(
+        from,
+        "❌ Crédit test non ajouté.\n\n" +
+          `Erreur : ${String(err?.message || err || "unknown_error")}`
+      );
+      return true;
+    }
+
+    await sendText(
+      from,
+      `✅ ${credits} crédits test ajoutés à ${targetWaId}. Aucun paiement réel enregistré.`
+    );
+    return true;
+  }
+
   // ===============================
   // USER COMMANDS
   // ===============================
@@ -393,6 +495,11 @@ function makeKadiCommandFlow(deps) {
     // manual paid credit topup
     if (startsWithCommand(t, "/credit")) {
       return handleManualCreditCommand(from, raw);
+    }
+
+    // admin/test credits, excluded from real payment metrics
+    if (startsWithCommand(t, "/test_credit")) {
+      return handleTestCreditCommand(from, raw);
     }
 
     // optional legacy dedicated stats commands

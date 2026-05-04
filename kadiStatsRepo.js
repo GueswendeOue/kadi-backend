@@ -344,8 +344,13 @@ function isStampTx(row) {
 function isPaidCreditTx(row) {
   const reason = lowerReason(row);
   const delta = toNum(row?.delta, 0);
+  const meta = row?.meta || {};
 
   if (!(delta > 0)) return false;
+
+  if (reason === "admin_test_credit") return false;
+  if (meta?.isTestCredit === true) return false;
+  if (meta?.excludeFromRevenue === true) return false;
 
   return (
     reason.includes("payment") ||
@@ -1003,4 +1008,7 @@ module.exports = {
   getTopClients,
   getDocsForExport,
   money,
+  _private: {
+    isPaidCreditTx,
+  },
 };
