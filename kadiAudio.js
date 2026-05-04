@@ -66,6 +66,27 @@ function prepareTranscriptVariants(text = "", options = {}) {
   };
 }
 
+function isInvalidTranscriptForBusiness(text = "") {
+  const value = normalizeTranscript(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (!value) return true;
+  if (value.length < 8) return true;
+
+  const meaningfulTokens = value.match(/[a-z0-9]+/g) || [];
+  if (meaningfulTokens.length < 2) return true;
+
+  return [
+    "ne pas reformuler",
+    "ne pas resumer",
+    "transcrire fidelement",
+    "instruction",
+    "prompt",
+  ].some((blocked) => value.includes(blocked));
+}
+
 function looksUsableIntent(intent) {
   if (!intent || typeof intent !== "object") return false;
 
@@ -357,6 +378,29 @@ async function handleIncomingAudioMessage(msg, value, deps) {
         ""
     ).trim();
 
+    if (
+      isInvalidTranscriptForBusiness(rawTranscriptText) ||
+      isInvalidTranscriptForBusiness(businessText)
+    ) {
+      console.warn("[KADI/AUDIO] rejected invalid transcript", {
+        from,
+        mediaId,
+        raw: rawTranscriptText,
+        parse: businessText,
+      });
+
+      try {
+        const s = getSession(from);
+        clearAudioIntentState(s);
+      } catch (_) {}
+
+      await sendText(
+        from,
+        "Je n’ai pas bien compris le vocal. Réessayez avec le client, les éléments et les prix."
+      );
+      return true;
+    }
+
     console.log("[KADI/AUDIO] transcript", {
       from,
       mediaId,
@@ -489,6 +533,7 @@ async function handleIncomingAudioMessage(msg, value, deps) {
 
 module.exports = {
   normalizeTranscript,
+  isInvalidTranscriptForBusiness,
   prepareTranscriptVariants,
   getWhatsAppMediaUrl,
   downloadWhatsAppMedia,
