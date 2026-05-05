@@ -836,6 +836,7 @@ const {
   listRecentCertifiedInvoices,
   rebuildCertifiedInvoicePdf,
   money,
+  ensureAdmin,
 });
 
 // ===============================
@@ -1044,6 +1045,7 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
   startCertifiedInvoiceFlow,
   sendRecentCertifiedInvoices,
   sendHistoryHome,
+  ensureAdmin,
 });
 
 // ===============================
@@ -1129,6 +1131,14 @@ async function handleTextMessage(from, text, msg) {
     normalizedText.includes("facture certifiée") ||
     normalizedText === "fec"
   ) {
+    if (!ensureAdmin({ wa_id: from })) {
+      await sendText(
+        from,
+        "La facture électronique certifiée est en préparation. Pour le moment, Kadi génère des factures classiques."
+      );
+      return true;
+    }
+
     return startCertifiedInvoiceFlow(from);
   }
 
@@ -1206,8 +1216,17 @@ async function handleInteractiveMessage(from, msg) {
 
   if (
     replyId === "DOC_FEC" ||
-    replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE"
+    replyId === "DOC_FACTURE_ELECTRONIQUE_CERTIFIE" ||
+    replyId === "DOC_FACTURE_CERTIFIEE"
   ) {
+    if (!ensureAdmin({ wa_id: from })) {
+      await sendText(
+        from,
+        "La facture électronique certifiée est en préparation. Pour le moment, Kadi génère des factures classiques."
+      );
+      return true;
+    }
+
     await startCertifiedInvoiceFlow(from);
     return true;
   }

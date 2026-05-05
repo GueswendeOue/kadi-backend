@@ -137,11 +137,6 @@ function makeKadiMenus(deps) {
               title: "📝 Décharge",
               description: "Créer une décharge",
             },
-            {
-              id: "DOC_FEC",
-              title: "⚡ FEC",
-              description: "Facture Électronique Certifiée",
-            },
           ],
         },
       ],

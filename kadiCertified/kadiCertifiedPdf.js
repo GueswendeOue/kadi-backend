@@ -47,7 +47,7 @@ function shortHash(hash) {
 function getStatusLabel(status) {
   const s = safeText(status, "draft").toLowerCase();
 
-  if (s === "certified") return "CERTIFIÉE ✅";
+  if (s === "certified") return "MODE TEST VALIDÉ";
   if (s === "pending") return "EN ATTENTE";
   if (s === "rejected") return "REJETÉE";
   if (s === "cancelled") return "ANNULÉE";
@@ -158,7 +158,7 @@ function drawTitleBlock(doc, invoice) {
 
   drawBox(doc, x, y, w, h);
 
-  drawText(doc, "FACTURE ÉLECTRONIQUE CERTIFIÉE", x + 12, y + 10, {
+  drawText(doc, "PRÉ-FEC INTERNE — FACTURE STRUCTURÉE TEST", x + 12, y + 10, {
     size: 15,
     font: "Helvetica-Bold",
     width: 330,
@@ -478,7 +478,7 @@ function drawVerificationBlock(doc, invoice, qrBuffer) {
 
   drawText(
     doc,
-    "Facture certifiée — traçabilité et vérification numérique actives",
+    "Document interne de test — traçabilité et vérification numérique actives",
     x + 100,
     y + 74,
     {
@@ -493,7 +493,7 @@ function drawVerificationBlock(doc, invoice, qrBuffer) {
 function drawFooter(doc) {
   const y = doc.page.height - 34;
 
-  drawText(doc, "KADI — Facture électronique certifiée", 40, y, {
+  drawText(doc, "KADI — Pré-FEC interne / mode test", 40, y, {
     size: 8,
     color: "#555555",
     width: doc.page.width - 80,

@@ -18,7 +18,11 @@ function makeKadiPriorityRouter(deps) {
     // FEC
     startCertifiedInvoiceFlow = null,
     sendRecentCertifiedInvoices = null,
+    ensureAdmin = null,
   } = deps;
+
+  const FEC_PREPARATION_MESSAGE =
+    "La facture électronique certifiée est en préparation. Pour le moment, Kadi génère des factures classiques.";
 
   function normalizeText(rawText = "") {
     return String(norm(rawText) || "")
@@ -335,25 +339,32 @@ function makeKadiPriorityRouter(deps) {
       }
 
       if (intent === "fec") {
+        if (typeof ensureAdmin === "function" && !ensureAdmin({ wa_id: from })) {
+          await sendText(from, FEC_PREPARATION_MESSAGE);
+          return true;
+        }
+
         if (typeof startCertifiedInvoiceFlow === "function") {
           await startCertifiedInvoiceFlow(from);
         } else {
           await sendText(
             from,
-            "🧾 La FEC est disponible depuis le menu Documents."
+            "🧾 Le mode test FEC interne est indisponible."
           );
-          if (typeof sendDocsMenu === "function") {
-            await sendDocsMenu(from);
-          }
         }
         return true;
       }
 
       if (intent === "fec_history") {
+        if (typeof ensureAdmin === "function" && !ensureAdmin({ wa_id: from })) {
+          await sendText(from, FEC_PREPARATION_MESSAGE);
+          return true;
+        }
+
         if (typeof sendRecentCertifiedInvoices === "function") {
           await sendRecentCertifiedInvoices(from);
         } else {
-          await sendText(from, "📚 L’historique FEC arrive bientôt.");
+          await sendText(from, "📚 L’historique Pré-FEC interne arrive bientôt.");
         }
         return true;
       }
@@ -440,8 +451,7 @@ function makeKadiPriorityRouter(deps) {
             `• Devis\n` +
             `• Factures\n` +
             `• Reçus\n` +
-            `• Décharges\n` +
-            `• FEC\n\n` +
+            `• Décharges\n\n` +
             `Vous pouvez :\n` +
             `• écrire naturellement\n` +
             `• envoyer un vocal\n` +

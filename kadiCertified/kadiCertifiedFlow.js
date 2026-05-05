@@ -14,7 +14,11 @@ function makeKadiCertifiedFlow(deps) {
     rebuildCertifiedInvoicePdf = null,
 
     money,
+    ensureAdmin = null,
   } = deps;
+
+  const FEC_PREPARATION_MESSAGE =
+    "La facture électronique certifiée est en préparation. Pour le moment, Kadi génère des factures classiques.";
 
   function safeText(v, def = "") {
     const s = String(v ?? "").trim();
@@ -145,7 +149,7 @@ function makeKadiCertifiedFlow(deps) {
     const seller = buildSellerPreview(profile);
 
     return (
-      `🧾 *FACTURE ÉLECTRONIQUE CERTIFIÉE*\n\n` +
+      `🧾 *PRÉ-FEC INTERNE — FACTURE STRUCTURÉE TEST*\n\n` +
       `🏢 *ÉMETTEUR*\n` +
       `${seller.name}\n` +
       `IFU: ${seller.ifu}\n` +
@@ -173,7 +177,7 @@ function makeKadiCertifiedFlow(deps) {
     if (!sellerName || !sellerIfu) {
       await sendText(
         from,
-        "⚠️ Pour créer une *FEC*, votre profil entreprise doit être complet.\n\n" +
+        "⚠️ Pour créer une *Pré-FEC interne*, votre profil entreprise doit être complet.\n\n" +
           "Champs obligatoires :\n" +
           "• Nom entreprise\n" +
           "• IFU\n\n" +
@@ -188,7 +192,7 @@ function makeKadiCertifiedFlow(deps) {
   async function sendCertifiedHomeMenu(from) {
     await sendButtons(
       from,
-      "🧾 *FEC — Facture Électronique Certifiée*\n\nChoisissez une option :",
+      "🧾 *Mode test FEC — Pré-FEC interne*\n\nChoisissez une option :",
       [
         { id: "CERT_INV_NEW", title: "Nouvelle" },
         { id: "CERT_INV_LIST", title: "Historique" },
@@ -201,6 +205,11 @@ function makeKadiCertifiedFlow(deps) {
   async function startCertifiedInvoiceFlow(from) {
     const s = getSession(from);
     if (!s) return false;
+
+    if (typeof ensureAdmin === "function" && !ensureAdmin({ wa_id: from })) {
+      await sendText(from, FEC_PREPARATION_MESSAGE);
+      return true;
+    }
 
     const profile = await ensureCertifiedProfileReady(from);
     if (!profile) return true;
@@ -225,7 +234,7 @@ function makeKadiCertifiedFlow(deps) {
 
     await sendText(
       from,
-      "🧾 *Nouvelle FEC*\n\n👤 Quel est le nom du client ?"
+      "🧾 *Nouvelle facture structurée test*\n\n👤 Quel est le nom du client ?"
     );
     return true;
   }
@@ -237,7 +246,7 @@ function makeKadiCertifiedFlow(deps) {
     if (!draft) {
       await sendText(
         from,
-        "📄 Je ne vois pas encore de FEC en cours.\nTapez MENU pour recommencer."
+        "📄 Je ne vois pas encore de Pré-FEC interne en cours.\nTapez MENU pour recommencer."
       );
       return true;
     }
@@ -273,7 +282,7 @@ function makeKadiCertifiedFlow(deps) {
     if (typeof listRecentCertifiedInvoices !== "function") {
       await sendText(
         from,
-        "📚 L’historique des FEC arrive bientôt."
+        "📚 L’historique Pré-FEC interne arrive bientôt."
       );
       return true;
     }
@@ -283,13 +292,13 @@ function makeKadiCertifiedFlow(deps) {
     if (!rows.length) {
       await sendText(
         from,
-        "📭 Vous n’avez pas encore de FEC."
+        "📭 Vous n’avez pas encore de Pré-FEC interne."
       );
       return true;
     }
 
     const msg =
-      `📚 *Vos dernières FEC*\n\n` +
+      `📚 *Vos dernières Pré-FEC internes*\n\n` +
       rows
         .map((row, idx) => {
           return (
@@ -323,7 +332,7 @@ function makeKadiCertifiedFlow(deps) {
     if (!draft) {
       await sendText(
         from,
-        "📄 Je ne vois pas encore de FEC en cours.\nTapez MENU pour recommencer."
+        "📄 Je ne vois pas encore de Pré-FEC interne en cours.\nTapez MENU pour recommencer."
       );
       return true;
     }
@@ -347,7 +356,7 @@ function makeKadiCertifiedFlow(deps) {
       `⚠️ *Confirmation finale*\n\n` +
         `Client : ${safeText(draft?.buyer?.name, "-")}\n` +
         `Total TTC : ${formatMoney(draft?.total_ttc)}\n\n` +
-        `Cette *FEC* sera enregistrée dans le système sécurisé.`,
+        `Cette *facture structurée test* sera enregistrée dans le mode interne.`,
       [
         { id: "CERT_INV_FINAL_OK", title: "Confirmer" },
         { id: "CERT_INV_REVIEW", title: "Retour" },
@@ -366,7 +375,7 @@ function makeKadiCertifiedFlow(deps) {
     if (!draft) {
       await sendText(
         from,
-        "📄 Je ne vois pas encore de FEC en cours.\nTapez MENU pour recommencer."
+        "📄 Je ne vois pas encore de Pré-FEC interne en cours.\nTapez MENU pour recommencer."
       );
       return true;
     }
@@ -381,7 +390,7 @@ function makeKadiCertifiedFlow(deps) {
     try {
       await sendText(
         from,
-        "⏳ Génération sécurisée de la FEC..."
+        "⏳ Génération de la facture structurée test..."
       );
 
       const result = await createCertifiedInvoiceFromDraft({
@@ -396,7 +405,7 @@ function makeKadiCertifiedFlow(deps) {
         mediaId: result.mediaId,
         filename: result.filename,
         caption:
-          `✅ FEC générée\n` +
+          `✅ Pré-FEC interne générée\n` +
           `N°: ${safeText(result?.invoice?.invoice_number, "-")}\n` +
           `Réf: ${safeText(result?.invoice?.compliance_reference, "-")}\n` +
           `Total TTC: ${formatMoney(result?.invoice?.total_ttc)}`,
@@ -406,7 +415,7 @@ function makeKadiCertifiedFlow(deps) {
 
       await sendButtons(
         from,
-        "✅ Votre FEC a été générée avec succès.",
+        "✅ Votre Pré-FEC interne a été générée en mode test.",
         [
           { id: "CERT_INV_NEW", title: "Nouvelle" },
           { id: "CERT_INV_LIST", title: "Historique" },
@@ -420,7 +429,7 @@ function makeKadiCertifiedFlow(deps) {
 
       await sendText(
         from,
-        "❌ Impossible de générer la FEC pour le moment."
+        "❌ Impossible de générer la Pré-FEC interne pour le moment."
       );
       return true;
     } finally {
@@ -430,7 +439,7 @@ function makeKadiCertifiedFlow(deps) {
 
   async function resendLatestCertifiedPdf(from) {
     if (typeof listRecentCertifiedInvoices !== "function") {
-      await sendText(from, "⚠️ Renvoi FEC indisponible pour le moment.");
+      await sendText(from, "⚠️ Renvoi Pré-FEC interne indisponible pour le moment.");
       return true;
     }
 
@@ -438,7 +447,7 @@ function makeKadiCertifiedFlow(deps) {
     const latest = Array.isArray(rows) ? rows[0] : null;
 
     if (!latest?.id) {
-      await sendText(from, "📭 Aucune FEC trouvée.");
+      await sendText(from, "📭 Aucune Pré-FEC interne trouvée.");
       return true;
     }
 
@@ -453,7 +462,7 @@ function makeKadiCertifiedFlow(deps) {
           to: from,
           mediaId: rebuilt.mediaId,
           filename: rebuilt.filename,
-          caption: `📩 Voici à nouveau votre FEC.\nN°: ${safeText(rebuilt?.invoice?.invoice_number, "-")}`,
+          caption: `📩 Voici à nouveau votre Pré-FEC interne.\nN°: ${safeText(rebuilt?.invoice?.invoice_number, "-")}`,
         });
         return true;
       } catch (e) {
@@ -462,7 +471,7 @@ function makeKadiCertifiedFlow(deps) {
     }
 
     if (!latest?.pdf_media_id) {
-      await sendText(from, "⚠️ PDF FEC introuvable pour le moment.");
+      await sendText(from, "⚠️ PDF Pré-FEC interne introuvable pour le moment.");
       return true;
     }
 
@@ -470,7 +479,7 @@ function makeKadiCertifiedFlow(deps) {
       to: from,
       mediaId: latest.pdf_media_id,
       filename: safeText(latest.pdf_filename, `${safeText(latest.invoice_number, "fec")}.pdf`),
-      caption: `📩 Voici à nouveau votre FEC.\nN°: ${safeText(latest.invoice_number, "-")}`,
+      caption: `📩 Voici à nouveau votre Pré-FEC interne.\nN°: ${safeText(latest.invoice_number, "-")}`,
     });
 
     return true;
@@ -494,7 +503,7 @@ function makeKadiCertifiedFlow(deps) {
 
     if (replyId === "CERT_INV_CANCEL") {
       resetCertifiedDraftSession(s);
-      await sendText(from, "✅ Flow FEC fermé.");
+      await sendText(from, "✅ Mode test FEC fermé.");
       return true;
     }
 
