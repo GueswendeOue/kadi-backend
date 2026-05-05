@@ -997,6 +997,7 @@ const { handleCommand } = makeKadiCommandFlow({
   handleReengageSegmentCommand,
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
+  startCertifiedInvoiceFlow,
 
   // credits
   addCredits,

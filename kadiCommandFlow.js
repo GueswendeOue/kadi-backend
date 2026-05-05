@@ -25,6 +25,7 @@ function makeKadiCommandFlow(deps) {
     handleReengageSegmentCommand,
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
+    startCertifiedInvoiceFlow,
 
     // credits
     addCredits = null,
@@ -500,6 +501,16 @@ function makeKadiCommandFlow(deps) {
     // admin/test credits, excluded from real payment metrics
     if (startsWithCommand(t, "/test_credit")) {
       return handleTestCreditCommand(from, raw);
+    }
+
+    // internal Pré-FEC test mode, admin only
+    if (startsWithCommand(t, "/prefec") || startsWithCommand(t, "/admin_fec")) {
+      return runIfExists(
+        from,
+        startCertifiedInvoiceFlow,
+        "Mode test FEC interne",
+        from
+      );
     }
 
     // optional legacy dedicated stats commands

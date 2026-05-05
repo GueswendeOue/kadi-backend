@@ -158,13 +158,19 @@ function drawTitleBlock(doc, invoice) {
 
   drawBox(doc, x, y, w, h);
 
-  drawText(doc, "PRÉ-FEC INTERNE — FACTURE STRUCTURÉE TEST", x + 12, y + 10, {
+  drawText(doc, "MODE TEST INTERNE — NON CERTIFIÉ OFFICIELLEMENT", x + 12, y + 8, {
     size: 15,
     font: "Helvetica-Bold",
-    width: 330,
+    width: 340,
   });
 
-  drawText(doc, `N°: ${safeText(invoice?.invoice_number, "-")}`, x + 12, y + 33, {
+  drawText(doc, "Pré-FEC interne — facture structurée test", x + 12, y + 30, {
+    size: 10,
+    font: "Helvetica-Bold",
+    width: 260,
+  });
+
+  drawText(doc, `N°: ${safeText(invoice?.invoice_number, "-")}`, x + 12, y + 45, {
     size: 10,
     width: 260,
   });
@@ -478,7 +484,7 @@ function drawVerificationBlock(doc, invoice, qrBuffer) {
 
   drawText(
     doc,
-    "Document interne de test — traçabilité et vérification numérique actives",
+    "MODE TEST INTERNE — NON CERTIFIÉ OFFICIELLEMENT",
     x + 100,
     y + 74,
     {
@@ -513,6 +519,10 @@ async function buildCertifiedInvoicePdfBuffer({
         size: "A4",
         margins: { top: 40, left: 40, right: 40, bottom: 40 },
       });
+
+      doc.info.Title = "MODE TEST INTERNE — NON CERTIFIÉ OFFICIELLEMENT";
+      doc.info.Subject = "Pré-FEC interne — facture structurée test";
+      doc.info.Keywords = "MODE TEST INTERNE NON CERTIFIE OFFICIELLEMENT";
 
       const chunks = [];
       doc.on("data", (chunk) => chunks.push(chunk));
