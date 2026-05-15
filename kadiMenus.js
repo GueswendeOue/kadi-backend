@@ -83,7 +83,7 @@ function makeKadiMenus(deps) {
           title: "Assistance",
           rows: [
             {
-              id: "SUPPORT_HUMAN",
+              id: "SUPPORT_TALK_TEAM",
               title: "Parler à l’équipe Kadi",
               description: "Être mis en relation avec Kadi",
             },

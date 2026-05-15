@@ -41,7 +41,7 @@ test("support menu exposes tutorial and support escalation choices", async () =>
   const ids = rows.map((row) => row.id);
 
   assert.deepEqual(ids, [
-    "SUPPORT_HUMAN",
+    "SUPPORT_TALK_TEAM",
     "SUPPORT_DEMO_VIDEO",
     "SUPPORT_PAYMENT",
   ]);

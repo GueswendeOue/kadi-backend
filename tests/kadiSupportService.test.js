@@ -241,12 +241,12 @@ test("support escalation choices open human support session", async () => {
 
   const handled = await service.handleSupportIncomingMessage("22670000000", {
     type: "interactive",
-    interactive: { list_reply: { id: "SUPPORT_HUMAN" } },
+    interactive: { list_reply: { id: "SUPPORT_TALK_TEAM" } },
   });
 
   assert.equal(handled, true);
   assert.equal(repo.sessions.get("22670000000").status, "open");
-  assert.equal(repo.sessions.get("22670000000").reason, "human_support");
+  assert.equal(repo.sessions.get("22670000000").reason, "talk_team");
   assert.match(sent[0].text, /D’accord, je vous mets en relation/);
 });
 

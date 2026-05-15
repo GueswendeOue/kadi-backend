@@ -77,7 +77,7 @@ function looksLikeSupportIntent(text = "") {
 
 function isSupportInteractiveReply(replyId = "") {
   return [
-    "SUPPORT_HUMAN",
+    "SUPPORT_TALK_TEAM",
     "SUPPORT_PAYMENT",
   ].includes(String(replyId || "").trim().toUpperCase());
 }
@@ -253,11 +253,11 @@ function makeKadiSupportService(deps = {}) {
 
       if (isSupportInteractiveReply(replyId)) {
         const reasons = {
-          SUPPORT_HUMAN: "human_support",
+          SUPPORT_TALK_TEAM: "talk_team",
           SUPPORT_PAYMENT: "payment",
         };
         const labels = {
-          SUPPORT_HUMAN: "Parler à l’équipe Kadi",
+          SUPPORT_TALK_TEAM: "Parler à l’équipe Kadi",
           SUPPORT_PAYMENT: "Problème paiement",
         };
         const normalizedReplyId = String(replyId || "").trim().toUpperCase();
