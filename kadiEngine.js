@@ -90,6 +90,8 @@ const {
   makeKadiReengagementService,
 } = require("./kadiReengagementService");
 const { makeKadiHistoryFlow } = require("./kadiHistoryFlow");
+const { makeKadiSupportService } = require("./kadiSupportService");
+const kadiSupportRepo = require("./kadiSupportRepo");
 
 // ===============================
 // Certified module (FEC)
@@ -975,9 +977,18 @@ const {
 });
 
 // ===============================
+// Support humain
+// ===============================
+const supportService = makeKadiSupportService({
+  sendText,
+  supportRepo: kadiSupportRepo,
+  logger,
+});
+
+// ===============================
 // Command flow
 // ===============================
-const { handleCommand } = makeKadiCommandFlow({
+const { handleCommand, handleAdmin: handleAdminCommand } = makeKadiCommandFlow({
   sendText,
   sendButtons,
 
@@ -998,6 +1009,8 @@ const { handleCommand } = makeKadiCommandFlow({
   handleReengageZeroDocsCommand,
   handleReengageInactiveCommand,
   startCertifiedInvoiceFlow,
+  supportCommandHandlers: supportService,
+  supportPrincipalWaId: supportService.getSupportPrincipalWaId(),
 
   // credits
   addCredits,
@@ -1055,6 +1068,10 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
 async function handleTextMessage(from, text, msg) {
   const normalizedText = norm(text).toLowerCase().trim();
   console.log("[KADI/TEXT] raw:", text, "| norm:", normalizedText);
+
+  if (await handleAdminCommand({ wa_id: from }, text)) return true;
+
+  if (await supportService.handleSupportText(from, text)) return true;
 
   if (isHardGlobalInterrupt(text)) {
     clearCurrentFlowSession(getSession(from));
@@ -1262,6 +1279,14 @@ async function handleIncomingMessage(value) {
         resolveOwnerKey(identity);
 
         await ensureWelcomeCredits(from);
+
+        if (msg.type !== "text") {
+          const handledSupport = await supportService.handleSupportIncomingMessage(
+            from,
+            msg
+          );
+          if (handledSupport) return;
+        }
 
         if (msg.type === "audio") {
           await handleIncomingAudioMessage(msg, value, {

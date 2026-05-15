@@ -1,0 +1,177 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { makeKadiSupportService } = require("../kadiSupportService");
+
+function makeMemoryRepo() {
+  const sessions = new Map();
+  const agents = new Map([
+    [
+      "22670626055",
+      {
+        wa_id: "22670626055",
+        name: "Admin principal",
+        role: "admin",
+        is_active: true,
+        priority: 0,
+      },
+    ],
+  ]);
+
+  return {
+    sessions,
+    agents,
+    async getOpenSupportSession(waId) {
+      const row = sessions.get(waId);
+      return row?.status === "open" ? row : null;
+    },
+    async openSupportSession({ waId, reason, lastUserMessage }) {
+      const existing = sessions.get(waId);
+      if (existing?.status === "open") {
+        existing.reason = reason || existing.reason;
+        existing.last_user_message = lastUserMessage || existing.last_user_message;
+        return { session: existing, created: false };
+      }
+
+      const row = {
+        id: `s-${waId}`,
+        wa_id: waId,
+        status: "open",
+        reason,
+        last_user_message: lastUserMessage,
+        opened_at: "2026-05-15T00:00:00.000Z",
+      };
+      sessions.set(waId, row);
+      return { session: row, created: true };
+    },
+    async updateOpenSupportSessionMessage(waId, message) {
+      const row = sessions.get(waId);
+      if (!row || row.status !== "open") return null;
+      row.last_user_message = message;
+      return row;
+    },
+    async closeSupportSession(waId, closedBy) {
+      const row = sessions.get(waId);
+      if (!row || row.status !== "open") return null;
+      row.status = "closed";
+      row.closed_by = closedBy;
+      row.closed_at = "2026-05-15T00:01:00.000Z";
+      return row;
+    },
+    async getSupportSessionStatus(waId) {
+      return sessions.get(waId) || null;
+    },
+    async listOpenSupportSessions() {
+      return Array.from(sessions.values()).filter((row) => row.status === "open");
+    },
+    async listActiveSupportAgents() {
+      return Array.from(agents.values()).filter((row) => row.is_active);
+    },
+    async addSupportAgent({ waId, name, role = "support", priority = 100 }) {
+      const row = {
+        wa_id: waId,
+        name,
+        role,
+        is_active: true,
+        priority,
+      };
+      agents.set(waId, row);
+      return row;
+    },
+    async disableSupportAgent(waId) {
+      const row = agents.get(waId);
+      if (row) row.is_active = false;
+      return row || null;
+    },
+  };
+}
+
+function makeService(repo = makeMemoryRepo()) {
+  const sent = [];
+  const service = makeKadiSupportService({
+    supportRepo: repo,
+    principalWaId: "22670626055",
+    sendText: async (to, text) => sent.push({ to, text }),
+    logger: { warn: () => {} },
+  });
+  return { repo, sent, service };
+}
+
+test("support text opens a human support session and alerts agents", async () => {
+  const { repo, sent, service } = makeService();
+
+  const handled = await service.handleSupportText("22670000000", "support");
+
+  assert.equal(handled, true);
+  assert.equal(repo.sessions.get("22670000000").status, "open");
+  assert.match(sent[0].text, /D’accord, je vous mets en relation/);
+  assert.equal(sent[0].to, "22670000000");
+  assert.equal(sent[1].to, "22670626055");
+  assert.match(sent[1].text, /Nouvelle demande support Kadi/);
+});
+
+test("open support session forwards user messages without customer auto-reply", async () => {
+  const { sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportText(
+    "22670000000",
+    "Fais une facture pour Moussa 1000"
+  );
+
+  assert.equal(handled, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "22670626055");
+  assert.match(sent[0].text, /Fais une facture pour Moussa 1000/);
+});
+
+test("support reply sends official Kadi text to the client", async () => {
+  const { sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "bug facture");
+  sent.length = 0;
+
+  const result = await service.replyToClient({
+    agentWaId: "22670626055",
+    clientWaId: "22670000000",
+    message: "Nous vérifions votre problème.",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(sent, [
+    { to: "22670000000", text: "Nous vérifions votre problème." },
+  ]);
+});
+
+test("support close closes session and tells client Kadi resumes", async () => {
+  const { repo, sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const result = await service.closeSession({
+    agentWaId: "22670626055",
+    clientWaId: "22670000000",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(repo.sessions.get("22670000000").status, "closed");
+  assert.match(sent[0].text, /Kadi reprend automatiquement/);
+});
+
+test("agent add and disable manage active support agents", async () => {
+  const { service } = makeService();
+
+  await service.addAgent({ waId: "70620000", name: "Awa Support" });
+  let text = await service.agentsText();
+  assert.match(text, /\+22670620000/);
+  assert.match(text, /Awa Support/);
+
+  await service.disableAgent("22670620000");
+  text = await service.agentsText();
+  assert.doesNotMatch(text, /\+22670620000/);
+});

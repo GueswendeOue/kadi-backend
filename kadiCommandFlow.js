@@ -26,6 +26,8 @@ function makeKadiCommandFlow(deps) {
     handleReengageZeroDocsCommand,
     handleReengageInactiveCommand,
     startCertifiedInvoiceFlow,
+    supportCommandHandlers = null,
+    supportPrincipalWaId = "22670626055",
 
     // credits
     addCredits = null,
@@ -163,6 +165,166 @@ function makeKadiCommandFlow(deps) {
     }
 
     return `manual_om_topup:${waId}:${credits}:${amountFcfa}:${Date.now()}`;
+  }
+
+  function isSupportAdmin(identity) {
+    const from = normalizeWaId(identity?.wa_id || identity?.from || identity?.id || "");
+    const principal = normalizeWaId(supportPrincipalWaId);
+    return ensureAdmin(identity) || (!!from && !!principal && from === principal);
+  }
+
+  function isSupportCommand(text = "") {
+    const t = lowerText(text);
+    return (
+      t === "/support_list" ||
+      t === "/support_agents" ||
+      startsWithCommand(t, "/support_reply") ||
+      startsWithCommand(t, "/support_close") ||
+      startsWithCommand(t, "/support_status") ||
+      startsWithCommand(t, "/support_agent_add") ||
+      startsWithCommand(t, "/support_agent_disable")
+    );
+  }
+
+  function extractSupportReply(raw = "") {
+    const match = String(raw || "").match(/^\/support_reply\s+(\S+)\s+([\s\S]+)$/i);
+    if (!match) return null;
+    return {
+      waId: normalizeWaId(match[1]),
+      message: String(match[2] || "").trim(),
+    };
+  }
+
+  async function handleSupportAdminCommand(from, raw) {
+    const t = lowerText(raw);
+    const handlers = supportCommandHandlers || {};
+
+    if (t === "/support_list") {
+      if (typeof handlers.listOpenSessionsText !== "function") {
+        return sendUnavailable(from, "Support");
+      }
+      await sendText(from, await handlers.listOpenSessionsText());
+      return true;
+    }
+
+    if (t === "/support_agents") {
+      if (typeof handlers.agentsText !== "function") {
+        return sendUnavailable(from, "Support agents");
+      }
+      await sendText(from, await handlers.agentsText());
+      return true;
+    }
+
+    if (startsWithCommand(t, "/support_reply")) {
+      if (typeof handlers.replyToClient !== "function") {
+        return sendUnavailable(from, "Support reply");
+      }
+
+      const parsed = extractSupportReply(raw);
+      if (!parsed?.waId || !parsed.message) {
+        await sendText(
+          from,
+          "❌ Format invalide.\n\nFormat : /support_reply <wa_id> <message>"
+        );
+        return true;
+      }
+
+      const result = await handlers.replyToClient({
+        agentWaId: from,
+        clientWaId: parsed.waId,
+        message: parsed.message,
+      });
+
+      await sendText(
+        from,
+        result?.ok
+          ? `✅ Réponse envoyée à +${parsed.waId}.`
+          : `❌ ${result?.error || "Réponse non envoyée."}`
+      );
+      return true;
+    }
+
+    if (startsWithCommand(t, "/support_close")) {
+      if (typeof handlers.closeSession !== "function") {
+        return sendUnavailable(from, "Support close");
+      }
+
+      const targetWaId = normalizeWaId(splitArgs(raw)[1]);
+      if (!targetWaId) {
+        await sendText(from, "❌ Format invalide.\n\nFormat : /support_close <wa_id>");
+        return true;
+      }
+
+      const result = await handlers.closeSession({
+        agentWaId: from,
+        clientWaId: targetWaId,
+      });
+
+      await sendText(
+        from,
+        result?.ok
+          ? `✅ Session support fermée pour +${targetWaId}.`
+          : `❌ ${result?.error || "Session non fermée."}`
+      );
+      return true;
+    }
+
+    if (startsWithCommand(t, "/support_status")) {
+      if (typeof handlers.statusText !== "function") {
+        return sendUnavailable(from, "Support status");
+      }
+
+      const targetWaId = normalizeWaId(splitArgs(raw)[1]);
+      if (!targetWaId) {
+        await sendText(from, "❌ Format invalide.\n\nFormat : /support_status <wa_id>");
+        return true;
+      }
+
+      await sendText(from, await handlers.statusText(targetWaId));
+      return true;
+    }
+
+    if (startsWithCommand(t, "/support_agent_add")) {
+      if (typeof handlers.addAgent !== "function") {
+        return sendUnavailable(from, "Support agent add");
+      }
+
+      const parts = splitArgs(raw);
+      const targetWaId = normalizeWaId(parts[1]);
+      const name = parts.slice(2).join(" ").trim();
+      if (!targetWaId || !name) {
+        await sendText(
+          from,
+          "❌ Format invalide.\n\nFormat : /support_agent_add <wa_id> <nom>"
+        );
+        return true;
+      }
+
+      await handlers.addAgent({ waId: targetWaId, name });
+      await sendText(from, `✅ Agent support ajouté : ${name} (+${targetWaId}).`);
+      return true;
+    }
+
+    if (startsWithCommand(t, "/support_agent_disable")) {
+      if (typeof handlers.disableAgent !== "function") {
+        return sendUnavailable(from, "Support agent disable");
+      }
+
+      const targetWaId = normalizeWaId(splitArgs(raw)[1]);
+      if (!targetWaId) {
+        await sendText(
+          from,
+          "❌ Format invalide.\n\nFormat : /support_agent_disable <wa_id>"
+        );
+        return true;
+      }
+
+      await handlers.disableAgent(targetWaId);
+      await sendText(from, `✅ Agent support désactivé : +${targetWaId}.`);
+      return true;
+    }
+
+    return false;
   }
 
   function safeNote(value = "") {
@@ -475,6 +637,12 @@ function makeKadiCommandFlow(deps) {
 
     if (!from) return false;
     if (!t) return false;
+
+    if (isSupportCommand(t)) {
+      if (!isSupportAdmin(identity)) return false;
+      return handleSupportAdminCommand(from, raw);
+    }
+
     if (!ensureAdmin(identity)) return false;
 
     // broadcast

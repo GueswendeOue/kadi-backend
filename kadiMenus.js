@@ -95,6 +95,11 @@ function makeKadiMenus(deps) {
               title: "❓ Aide",
               description: "Exemples et aide rapide",
             },
+            {
+              id: "HOME_SUPPORT",
+              title: "🆘 Support & assistance",
+              description: "Parler au support Kadi",
+            },
           ],
         },
       ],
