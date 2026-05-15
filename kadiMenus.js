@@ -71,6 +71,43 @@ function makeKadiMenus(deps) {
     });
   }
 
+  async function sendSupportMenu(to) {
+    return sendList(to, {
+      body:
+        "🆘 *Support & assistance Kadi*\n\n" +
+        "Choisissez ce dont vous avez besoin.",
+      buttonText: "Choisir",
+      footer: "Aide, paiement, bug ou support",
+      sections: [
+        {
+          title: "Assistance",
+          rows: [
+            {
+              id: "SUPPORT_TUTORIAL",
+              title: "Voir le tutoriel",
+              description: "Exemples rapides pour utiliser Kadi",
+            },
+            {
+              id: "SUPPORT_HUMAN",
+              title: "Parler au support",
+              description: "Être mis en relation avec Kadi",
+            },
+            {
+              id: "SUPPORT_PAYMENT",
+              title: "Problème paiement",
+              description: "Recharge, crédits, Orange Money",
+            },
+            {
+              id: "SUPPORT_BUG",
+              title: "Signaler un bug",
+              description: "Un blocage ou comportement anormal",
+            },
+          ],
+        },
+      ],
+    });
+  }
+
   async function sendDocsMenu(to) {
     return sendList(to, {
       body:
@@ -450,6 +487,7 @@ function makeKadiMenus(deps) {
 
   return {
     sendHomeMenu,
+    sendSupportMenu,
     sendDocsMenu,
     sendFactureCatalogMenu,
     sendCreditsMenu,

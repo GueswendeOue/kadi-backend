@@ -76,7 +76,11 @@ function looksLikeSupportIntent(text = "") {
 }
 
 function isSupportInteractiveReply(replyId = "") {
-  return String(replyId || "").trim().toUpperCase() === "HOME_SUPPORT";
+  return [
+    "SUPPORT_HUMAN",
+    "SUPPORT_PAYMENT",
+    "SUPPORT_BUG",
+  ].includes(String(replyId || "").trim().toUpperCase());
 }
 
 function supportOpeningMessage() {
@@ -249,9 +253,21 @@ function makeKadiSupportService(deps = {}) {
         msg?.interactive?.button_reply?.id || msg?.interactive?.list_reply?.id || "";
 
       if (isSupportInteractiveReply(replyId)) {
+        const reasons = {
+          SUPPORT_HUMAN: "parler_support",
+          SUPPORT_PAYMENT: "probleme_paiement",
+          SUPPORT_BUG: "bug",
+        };
+        const labels = {
+          SUPPORT_HUMAN: "Parler au support",
+          SUPPORT_PAYMENT: "Problème paiement",
+          SUPPORT_BUG: "Signaler un bug",
+        };
+        const normalizedReplyId = String(replyId || "").trim().toUpperCase();
+
         return startSupportSession(id, {
-          reason: "bouton_support",
-          message: "Support & assistance",
+          reason: reasons[normalizedReplyId] || "support",
+          message: labels[normalizedReplyId] || "Support & assistance",
         });
       }
 

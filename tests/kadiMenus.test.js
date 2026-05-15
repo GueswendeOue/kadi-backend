@@ -31,3 +31,19 @@ test("home menu stays within WhatsApp list limit and keeps support and stamp", a
   assert.ok(ids.includes("PROFILE_STAMP"));
   assert.equal(ids.includes("HOME_HELP"), false);
 });
+
+test("support menu exposes tutorial and support escalation choices", async () => {
+  const { lists, menus } = makeMenus();
+
+  await menus.sendSupportMenu("22670000000");
+
+  const rows = lists[0].payload.sections.flatMap((section) => section.rows);
+  const ids = rows.map((row) => row.id);
+
+  assert.deepEqual(ids, [
+    "SUPPORT_TUTORIAL",
+    "SUPPORT_HUMAN",
+    "SUPPORT_PAYMENT",
+    "SUPPORT_BUG",
+  ]);
+});

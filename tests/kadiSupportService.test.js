@@ -222,3 +222,30 @@ test("open support session still forwards business-looking text to admin", async
   assert.equal(sent[0].to, "22670626055");
   assert.match(sent[0].text, /Devis pour Moussa/);
 });
+
+test("HOME_SUPPORT interactive reply does not open human support session", async () => {
+  const { repo, sent, service } = makeService();
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { list_reply: { id: "HOME_SUPPORT" } },
+  });
+
+  assert.equal(handled, false);
+  assert.equal(repo.sessions.has("22670000000"), false);
+  assert.deepEqual(sent, []);
+});
+
+test("support escalation choices open human support session", async () => {
+  const { repo, sent, service } = makeService();
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { list_reply: { id: "SUPPORT_HUMAN" } },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(repo.sessions.get("22670000000").status, "open");
+  assert.equal(repo.sessions.get("22670000000").reason, "parler_support");
+  assert.match(sent[0].text, /D’accord, je vous mets en relation/);
+});

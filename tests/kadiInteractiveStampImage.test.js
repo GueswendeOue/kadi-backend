@@ -14,6 +14,7 @@ function makeFlow({ session, profile = {}, updateProfile = async () => {} } = {}
     sendButtons: async () => {},
     money: (value) => String(value),
     sendHomeMenu: async () => {},
+    sendSupportMenu: async (to) => calls.push({ kind: "support_menu", to }),
     sendDocsMenu: async () => {},
     sendCreditsMenu: async () => {},
     sendProfileMenu: async () => {},
@@ -81,6 +82,30 @@ test("STAMP_UPLOAD_IMAGE puts session in stamp image upload step", async () => {
   assert.equal(session.profileStep, null);
   assert.equal(session.itemDraft, null);
   assert.match(calls[0].text, /Envoyez maintenant une photo ou une image de votre tampon\/cachet/);
+});
+
+test("HOME_SUPPORT opens support submenu instead of a support session", async () => {
+  const session = { step: "idle" };
+  const { flow, calls } = makeFlow({ session });
+
+  await flow.handleInteractiveReply("22670000000", "HOME_SUPPORT");
+
+  assert.deepEqual(calls, [{ kind: "support_menu", to: "22670000000" }]);
+});
+
+test("SUPPORT_TUTORIAL sends short tutorial text", async () => {
+  const session = { step: "idle" };
+  const { flow, calls } = makeFlow({ session });
+
+  await flow.handleInteractiveReply("22670000000", "SUPPORT_TUTORIAL");
+
+  assert.equal(calls[0].kind, "text");
+  assert.match(calls[0].text, /Devis/);
+  assert.match(calls[0].text, /Facture/);
+  assert.match(calls[0].text, /Reçu/);
+  assert.match(calls[0].text, /Vocal/);
+  assert.match(calls[0].text, /Tampon/);
+  assert.match(calls[0].text, /Recharge/);
 });
 
 test("STAMP_USE_KADI selects generated source without deleting uploaded image", async () => {

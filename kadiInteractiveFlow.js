@@ -9,6 +9,7 @@ function makeKadiInteractiveFlow(deps) {
 
     // menus
     sendHomeMenu,
+    sendSupportMenu = null,
     sendDocsMenu,
     sendCreditsMenu,
     sendProfileMenu,
@@ -1011,6 +1012,15 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "HOME_DOCS") return sendDocsMenu(from);
     if (replyId === "HOME_CREDITS") return sendCreditsMenu(from);
     if (replyId === "HOME_PROFILE") return sendProfileMenu(from);
+    if (replyId === "HOME_SUPPORT") {
+      if (typeof sendSupportMenu === "function") return sendSupportMenu(from);
+
+      await sendText(
+        from,
+        "🆘 Support & assistance\n\nTapez SUPPORT pour parler à l’équipe Kadi."
+      );
+      return;
+    }
 
     if (replyId === "HOME_OCR") {
       resetTransientProductState(s);
@@ -1026,6 +1036,20 @@ function makeKadiInteractiveFlow(deps) {
     if (replyId === "HOME_TUTORIAL") {
       await track(from, "tutorial_opened");
       return sendTutorialQuickActions(from);
+    }
+
+    if (replyId === "SUPPORT_TUTORIAL") {
+      await sendText(
+        from,
+        "📘 *Tutoriel rapide Kadi*\n\n" +
+          "• Devis : “Devis pour Moussa, 2 portes à 25000”\n" +
+          "• Facture : “Facture pour Awa, réparation téléphone 15000”\n" +
+          "• Reçu : “Reçu pour Ibrahim, paiement de 20000 en espèces”\n" +
+          "• Vocal : envoyez un vocal clair avec client, éléments et prix.\n" +
+          "• Tampon : ouvrez MENU → Tampon pour configurer votre cachet.\n" +
+          "• Recharge : ouvrez MENU → Crédits / Recharge pour acheter des crédits."
+      );
+      return;
     }
 
     if (replyId === "HOME_HELP") {

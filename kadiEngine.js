@@ -508,6 +508,7 @@ const {
 // ===============================
 const {
   sendHomeMenu,
+  sendSupportMenu,
   sendDocsMenu,
   sendFactureCatalogMenu,
   sendFactureKindMenu,
@@ -874,6 +875,7 @@ const { handleInteractiveReply } = makeKadiInteractiveFlow({
   money,
 
   sendHomeMenu,
+  sendSupportMenu,
   sendDocsMenu,
   sendCreditsMenu,
   sendProfileMenu,
