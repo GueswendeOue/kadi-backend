@@ -429,6 +429,22 @@ async function getCertifiedInvoiceById(invoiceId) {
   };
 }
 
+async function getCertifiedInvoiceForVerificationById(invoiceId) {
+  const value = safeText(invoiceId);
+  if (!value) return null;
+
+  const { data, error } = await supabase
+    .from("kadi_certified_invoices")
+    .select(
+      "id,invoice_number,compliance_reference,status,compliance_status,issued_at,certified_at,created_at,total_ttc,currency,compliance_hash,verification_url"
+    )
+    .eq("id", value)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 async function getCertifiedInvoiceByNumber(invoiceNumber) {
   const value = safeText(invoiceNumber);
   if (!value) throw new Error("CERTIFIED_INVOICE_NUMBER_REQUIRED");
@@ -568,6 +584,7 @@ module.exports = {
   markCertifiedInvoiceCertified,
   attachCertifiedInvoicePdf,
   getCertifiedInvoiceById,
+  getCertifiedInvoiceForVerificationById,
   getCertifiedInvoiceByNumber,
   listRecentCertifiedInvoices,
   listCertifiedInvoiceEvents,

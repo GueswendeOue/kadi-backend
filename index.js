@@ -20,6 +20,12 @@ const {
 const { sendText } = require("./kadiMessaging");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
+const {
+  getCertifiedInvoiceForVerificationById,
+} = require("./kadiCertified/kadiCertifiedRepo");
+const {
+  makeCertifiedVerificationHandler,
+} = require("./kadiCertified/kadiCertifiedVerifyRoute");
 
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
@@ -366,6 +372,11 @@ app.get("/health", (_, res) => {
     ts: new Date().toISOString(),
   });
 });
+
+app.get(
+  "/verify/certified/:id",
+  makeCertifiedVerificationHandler({ getCertifiedInvoiceForVerificationById })
+);
 
 // ===============================
 // WEBHOOK VERIFY
