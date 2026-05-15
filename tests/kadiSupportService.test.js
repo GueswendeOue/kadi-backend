@@ -90,13 +90,14 @@ function makeMemoryRepo() {
 
 function makeService(repo = makeMemoryRepo()) {
   const sent = [];
+  const warns = [];
   const service = makeKadiSupportService({
     supportRepo: repo,
     principalWaId: "22670626055",
     sendText: async (to, text) => sent.push({ to, text }),
-    logger: { warn: () => {} },
+    logger: { warn: (...args) => warns.push(args) },
   });
-  return { repo, sent, service };
+  return { repo, sent, service, warns };
 }
 
 test("support text opens a human support session and alerts agents", async () => {
@@ -174,4 +175,50 @@ test("agent add and disable manage active support agents", async () => {
   await service.disableAgent("22670620000");
   text = await service.agentsText();
   assert.doesNotMatch(text, /\+22670620000/);
+});
+
+test("support repo lookup failure returns false so MENU can continue normally", async () => {
+  const repo = makeMemoryRepo();
+  repo.getOpenSupportSession = async () => {
+    throw new Error("relation kadi_support_sessions does not exist");
+  };
+  const { sent, service, warns } = makeService(repo);
+
+  const handled = await service.handleSupportText("22670000000", "Menu");
+
+  assert.equal(handled, false);
+  assert.deepEqual(sent, []);
+  assert.match(String(warns[0]?.[1] || ""), /kadi_support_sessions/);
+});
+
+test("support repo failure on normal text does not throw to global routing", async () => {
+  const repo = makeMemoryRepo();
+  repo.getOpenSupportSession = async () => {
+    throw new Error("supabase unavailable");
+  };
+  const { sent, service } = makeService(repo);
+
+  await assert.doesNotReject(() =>
+    service.handleSupportText("22670000000", "Bonjour")
+  );
+
+  assert.equal(await service.handleSupportText("22670000000", "Bonjour"), false);
+  assert.deepEqual(sent, []);
+});
+
+test("open support session still forwards business-looking text to admin", async () => {
+  const { sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportText(
+    "22670000000",
+    "Devis pour Moussa, 2 portes à 25000"
+  );
+
+  assert.equal(handled, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "22670626055");
+  assert.match(sent[0].text, /Devis pour Moussa/);
 });

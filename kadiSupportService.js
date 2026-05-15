@@ -210,20 +210,57 @@ function makeKadiSupportService(deps = {}) {
   }
 
   async function handleSupportText(from, text) {
-    const id = normalizeWaId(from);
-    if (!id) return false;
-
-    let open = null;
     try {
-      open = await supportRepo.getOpenSupportSession(id);
-    } catch (err) {
-      logger?.warn?.("[KADI/SUPPORT] open session lookup failed", err?.message || err);
-      if (!looksLikeSupportIntent(text)) return false;
-      throw err;
-    }
+      const id = normalizeWaId(from);
+      if (!id) return false;
 
-    if (open?.id) {
-      const message = safeText(text, 1000);
+      const open = await supportRepo.getOpenSupportSession(id);
+
+      if (open?.id) {
+        const message = safeText(text, 1000);
+        await supportRepo.updateOpenSupportSessionMessage(id, message);
+        await notifyAgents({
+          waId: id,
+          reason: open.reason || "support",
+          message,
+          isNew: false,
+        });
+        return true;
+      }
+
+      if (!looksLikeSupportIntent(text)) return false;
+
+      return startSupportSession(id, {
+        reason: "demande_support",
+        message: safeText(text, 1000),
+      });
+    } catch (err) {
+      logger?.warn?.("[KADI/SUPPORT] text support skipped", err?.message || err);
+      return false;
+    }
+  }
+
+  async function handleSupportIncomingMessage(from, msg = {}) {
+    try {
+      const id = normalizeWaId(from);
+      if (!id) return false;
+
+      const replyId =
+        msg?.interactive?.button_reply?.id || msg?.interactive?.list_reply?.id || "";
+
+      if (isSupportInteractiveReply(replyId)) {
+        return startSupportSession(id, {
+          reason: "bouton_support",
+          message: "Support & assistance",
+        });
+      }
+
+      const open = await supportRepo.getOpenSupportSession(id);
+      if (!open?.id) return false;
+
+      const message =
+        msg?.type === "text" ? safeText(msg?.text?.body, 1000) : buildMessageLabelFromMsg(msg);
+
       await supportRepo.updateOpenSupportSessionMessage(id, message);
       await notifyAgents({
         waId: id,
@@ -231,52 +268,12 @@ function makeKadiSupportService(deps = {}) {
         message,
         isNew: false,
       });
+
       return true;
-    }
-
-    if (!looksLikeSupportIntent(text)) return false;
-
-    return startSupportSession(id, {
-      reason: "demande_support",
-      message: safeText(text, 1000),
-    });
-  }
-
-  async function handleSupportIncomingMessage(from, msg = {}) {
-    const id = normalizeWaId(from);
-    if (!id) return false;
-
-    const replyId =
-      msg?.interactive?.button_reply?.id || msg?.interactive?.list_reply?.id || "";
-
-    if (isSupportInteractiveReply(replyId)) {
-      return startSupportSession(id, {
-        reason: "bouton_support",
-        message: "Support & assistance",
-      });
-    }
-
-    let open = null;
-    try {
-      open = await supportRepo.getOpenSupportSession(id);
     } catch (err) {
-      logger?.warn?.("[KADI/SUPPORT] open session lookup failed", err?.message || err);
+      logger?.warn?.("[KADI/SUPPORT] incoming support skipped", err?.message || err);
       return false;
     }
-    if (!open?.id) return false;
-
-    const message =
-      msg?.type === "text" ? safeText(msg?.text?.body, 1000) : buildMessageLabelFromMsg(msg);
-
-    await supportRepo.updateOpenSupportSessionMessage(id, message);
-    await notifyAgents({
-      waId: id,
-      reason: open.reason || "support",
-      message,
-      isNew: false,
-    });
-
-    return true;
   }
 
   async function listOpenSessionsText() {

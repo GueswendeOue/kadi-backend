@@ -1062,6 +1062,24 @@ const { handleUltraPriorityText } = makeKadiPriorityRouter({
   ensureAdmin,
 });
 
+async function safeHandleSupportText(from, text) {
+  try {
+    return await supportService.handleSupportText(from, text);
+  } catch (err) {
+    console.warn("[KADI/SUPPORT] text check skipped:", err?.message || err);
+    return false;
+  }
+}
+
+async function safeHandleSupportIncomingMessage(from, msg) {
+  try {
+    return await supportService.handleSupportIncomingMessage(from, msg);
+  } catch (err) {
+    console.warn("[KADI/SUPPORT] message check skipped:", err?.message || err);
+    return false;
+  }
+}
+
 // ===============================
 // Message handlers
 // ===============================
@@ -1071,13 +1089,13 @@ async function handleTextMessage(from, text, msg) {
 
   if (await handleAdminCommand({ wa_id: from }, text)) return true;
 
-  if (await supportService.handleSupportText(from, text)) return true;
-
   if (isHardGlobalInterrupt(text)) {
     clearCurrentFlowSession(getSession(from));
     await sendHomeMenu(from);
     return true;
   }
+
+  if (await safeHandleSupportText(from, text)) return true;
 
   // 1) Commandes explicites d'abord
   if (await handleCommand(from, text, { wa_id: from })) return true;
@@ -1281,10 +1299,7 @@ async function handleIncomingMessage(value) {
         await ensureWelcomeCredits(from);
 
         if (msg.type !== "text") {
-          const handledSupport = await supportService.handleSupportIncomingMessage(
-            from,
-            msg
-          );
+          const handledSupport = await safeHandleSupportIncomingMessage(from, msg);
           if (handledSupport) return;
         }
 
