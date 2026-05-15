@@ -33,72 +33,37 @@ function makeKadiMenus(deps) {
       footer: "Créez un document ou envoyez une photo",
       sections: [
         {
-          title: "Commencer",
+          title: "Menu principal",
           rows: [
             {
-              id: "DOC_FACTURE_MENU",
-              title: "📄 Facture",
-              description: "Créer une facture",
-            },
-            {
-              id: "DOC_DEVIS",
-              title: "📋 Devis",
-              description: "Créer un devis",
-            },
-            {
-              id: "DOC_RECU",
-              title: "🧾 Reçu",
-              description: "Créer un reçu",
-            },
-            {
-              id: "HOME_OCR",
-              title: "📷 Photo / OCR",
-              description: "Transformer une photo en document",
+              id: "HOME_DOCS",
+              title: "📄 Créer document",
+              description: "Facture, devis, reçu, photo",
             },
             {
               id: "HOME_HISTORY",
               title: "📚 Historique",
               description: "Voir vos documents récents",
             },
-          ],
-        },
-        {
-          title: "Compte",
-          rows: [
             {
-              id: "CREDITS_SOLDE",
-              title: "💳 Crédits",
-              description: "Voir votre solde",
-            },
-            {
-              id: "CREDITS_RECHARGE",
-              title: "🔄 Recharger",
-              description: "Acheter des crédits",
+              id: "HOME_CREDITS",
+              title: "💳 Crédits / Recharge",
+              description: "Solde et achat de crédits",
             },
             {
               id: "HOME_PROFILE",
               title: "🏢 Profil",
               description: "Voir ou modifier votre profil",
             },
-          ],
-        },
-        {
-          title: "Plus",
-          rows: [
             {
-              id: "DOC_DECHARGE",
-              title: "📝 Décharge",
-              description: "Créer une décharge",
-            },
-            {
-              id: "HOME_HELP",
-              title: "❓ Aide",
-              description: "Exemples et aide rapide",
+              id: "PROFILE_STAMP",
+              title: "🟦 Tampon",
+              description: "Configurer votre tampon",
             },
             {
               id: "HOME_SUPPORT",
               title: "🆘 Support & assistance",
-              description: "Parler au support Kadi",
+              description: "Aide, paiement, bug, support",
             },
           ],
         },
