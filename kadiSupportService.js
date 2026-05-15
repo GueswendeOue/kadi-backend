@@ -82,6 +82,23 @@ function isSupportInteractiveReply(replyId = "") {
   ].includes(String(replyId || "").trim().toUpperCase());
 }
 
+function isSupportExitReply(replyId = "") {
+  return [
+    "SUPPORT_EXIT",
+    "SUPPORT_STAY",
+  ].includes(String(replyId || "").trim().toUpperCase());
+}
+
+function isNavigationText(text = "") {
+  return [
+    "menu",
+    "accueil",
+    "home",
+    "retour",
+    "stop",
+  ].includes(normalizeForIntent(text));
+}
+
 function supportOpeningMessage() {
   return (
     "D’accord, je vous mets en relation avec le support Kadi.\n" +
@@ -112,6 +129,8 @@ function buildMessageLabelFromMsg(msg = {}) {
 function makeKadiSupportService(deps = {}) {
   const {
     sendText,
+    sendButtons = null,
+    sendHomeMenu = null,
     supportRepo,
     principalWaId = getSupportPrincipalWaId(),
     logger = console,
@@ -188,6 +207,25 @@ function makeKadiSupportService(deps = {}) {
     return sentTo;
   }
 
+  async function sendExitPrompt(waId) {
+    const message =
+      "Vous êtes actuellement en relation avec le support Kadi.\n" +
+      "Voulez-vous quitter le support et revenir au menu ?";
+
+    if (typeof sendButtons === "function") {
+      await sendButtons(waId, message, [
+        { id: "SUPPORT_EXIT", title: "Quitter support" },
+        { id: "SUPPORT_STAY", title: "Rester en support" },
+      ]);
+      return;
+    }
+
+    await sendText(
+      waId,
+      `${message}\n\nRépondez “Quitter support” ou “Rester en support”.`
+    );
+  }
+
   async function startSupportSession(waId, { reason = "support", message = "" } = {}) {
     const id = normalizeWaId(waId);
     if (!id) return false;
@@ -220,6 +258,11 @@ function makeKadiSupportService(deps = {}) {
       const open = await supportRepo.getOpenSupportSession(id);
 
       if (open?.id) {
+        if (isNavigationText(text)) {
+          await sendExitPrompt(id);
+          return true;
+        }
+
         const message = safeText(text, 1000);
         await supportRepo.updateOpenSupportSessionMessage(id, message);
         await notifyAgents({
@@ -250,6 +293,30 @@ function makeKadiSupportService(deps = {}) {
 
       const replyId =
         msg?.interactive?.button_reply?.id || msg?.interactive?.list_reply?.id || "";
+      const normalizedReplyId = String(replyId || "").trim().toUpperCase();
+
+      if (isSupportExitReply(normalizedReplyId)) {
+        const open = await supportRepo.getOpenSupportSession(id);
+        if (!open?.id) return false;
+
+        if (normalizedReplyId === "SUPPORT_EXIT") {
+          await supportRepo.closeSupportSession(id, id);
+          await sendText(
+            id,
+            "✅ Support clôturé. Vous pouvez continuer avec Kadi normalement."
+          );
+          if (typeof sendHomeMenu === "function") {
+            await sendHomeMenu(id);
+          }
+          return true;
+        }
+
+        await sendText(
+          id,
+          "D’accord. Expliquez votre problème ici, l’équipe Kadi vous répondra."
+        );
+        return true;
+      }
 
       if (isSupportInteractiveReply(replyId)) {
         const reasons = {
@@ -260,7 +327,6 @@ function makeKadiSupportService(deps = {}) {
           SUPPORT_TALK_TEAM: "Parler à l’équipe Kadi",
           SUPPORT_PAYMENT: "Problème paiement",
         };
-        const normalizedReplyId = String(replyId || "").trim().toUpperCase();
 
         return startSupportSession(id, {
           reason: reasons[normalizedReplyId] || "support",
@@ -270,6 +336,11 @@ function makeKadiSupportService(deps = {}) {
 
       const open = await supportRepo.getOpenSupportSession(id);
       if (!open?.id) return false;
+
+      if (msg?.type === "interactive") {
+        await sendExitPrompt(id);
+        return true;
+      }
 
       const message =
         msg?.type === "text" ? safeText(msg?.text?.body, 1000) : buildMessageLabelFromMsg(msg);
@@ -407,6 +478,7 @@ module.exports = {
   getSupportPrincipalWaId,
   looksLikeSupportIntent,
   isSupportInteractiveReply,
+  isSupportExitReply,
   supportOpeningMessage,
   makeKadiSupportService,
 };

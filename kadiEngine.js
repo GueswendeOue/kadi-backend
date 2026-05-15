@@ -983,6 +983,8 @@ const {
 // ===============================
 const supportService = makeKadiSupportService({
   sendText,
+  sendButtons,
+  sendHomeMenu,
   supportRepo: kadiSupportRepo,
   logger,
 });
@@ -1091,13 +1093,13 @@ async function handleTextMessage(from, text, msg) {
 
   if (await handleAdminCommand({ wa_id: from }, text)) return true;
 
+  if (await safeHandleSupportText(from, text)) return true;
+
   if (isHardGlobalInterrupt(text)) {
     clearCurrentFlowSession(getSession(from));
     await sendHomeMenu(from);
     return true;
   }
-
-  if (await safeHandleSupportText(from, text)) return true;
 
   // 1) Commandes explicites d'abord
   if (await handleCommand(from, text, { wa_id: from })) return true;

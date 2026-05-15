@@ -91,13 +91,17 @@ function makeMemoryRepo() {
 function makeService(repo = makeMemoryRepo()) {
   const sent = [];
   const warns = [];
+  const menus = [];
   const service = makeKadiSupportService({
     supportRepo: repo,
     principalWaId: "22670626055",
     sendText: async (to, text) => sent.push({ to, text }),
+    sendButtons: async (to, text, buttons) =>
+      sent.push({ kind: "buttons", to, text, buttons }),
+    sendHomeMenu: async (to) => menus.push({ to }),
     logger: { warn: (...args) => warns.push(args) },
   });
-  return { repo, sent, service, warns };
+  return { repo, sent, service, warns, menus };
 }
 
 test("support text opens a human support session and alerts agents", async () => {
@@ -274,4 +278,72 @@ test("payment support choice opens session with payment reason", async () => {
   assert.equal(handled, true);
   assert.equal(repo.sessions.get("22670000000").status, "open");
   assert.equal(repo.sessions.get("22670000000").reason, "payment");
+});
+
+test("open support MENU asks whether to exit without notifying admin", async () => {
+  const { sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportText("22670000000", "MENU");
+
+  assert.equal(handled, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "buttons");
+  assert.match(sent[0].text, /Voulez-vous quitter le support/);
+  assert.deepEqual(
+    sent[0].buttons.map((button) => button.id),
+    ["SUPPORT_EXIT", "SUPPORT_STAY"]
+  );
+});
+
+test("support exit choice closes session and shows home menu", async () => {
+  const { repo, sent, service, menus } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { button_reply: { id: "SUPPORT_EXIT" } },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(repo.sessions.get("22670000000").status, "closed");
+  assert.match(sent[0].text, /Support clôturé/);
+  assert.deepEqual(menus, [{ to: "22670000000" }]);
+});
+
+test("support stay choice keeps session open", async () => {
+  const { repo, sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { button_reply: { id: "SUPPORT_STAY" } },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(repo.sessions.get("22670000000").status, "open");
+  assert.match(sent[0].text, /Expliquez votre problème ici/);
+});
+
+test("interactive navigation during support is not relayed to admin", async () => {
+  const { sent, service } = makeService();
+
+  await service.handleSupportText("22670000000", "support");
+  sent.length = 0;
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { list_reply: { id: "HOME_SUPPORT" } },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "buttons");
+  assert.match(sent[0].text, /Voulez-vous quitter le support/);
 });
