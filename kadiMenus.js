@@ -83,24 +83,19 @@ function makeKadiMenus(deps) {
           title: "Assistance",
           rows: [
             {
-              id: "SUPPORT_TUTORIAL",
-              title: "Voir le tutoriel",
-              description: "Exemples rapides pour utiliser Kadi",
+              id: "SUPPORT_HUMAN",
+              title: "Parler à l’équipe Kadi",
+              description: "Être mis en relation avec Kadi",
             },
             {
-              id: "SUPPORT_HUMAN",
-              title: "Parler au support",
-              description: "Être mis en relation avec Kadi",
+              id: "SUPPORT_DEMO_VIDEO",
+              title: "Voir la vidéo démo",
+              description: "Démonstration rapide de Kadi",
             },
             {
               id: "SUPPORT_PAYMENT",
               title: "Problème paiement",
               description: "Recharge, crédits, Orange Money",
-            },
-            {
-              id: "SUPPORT_BUG",
-              title: "Signaler un bug",
-              description: "Un blocage ou comportement anormal",
             },
           ],
         },

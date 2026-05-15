@@ -5,7 +5,12 @@ const assert = require("node:assert/strict");
 
 const { makeKadiInteractiveFlow } = require("../kadiInteractiveFlow");
 
-function makeFlow({ session, profile = {}, updateProfile = async () => {} } = {}) {
+function makeFlow({
+  session,
+  profile = {},
+  updateProfile = async () => {},
+  demoVideoUrl = "",
+} = {}) {
   const calls = [];
 
   const flow = makeKadiInteractiveFlow({
@@ -67,6 +72,7 @@ function makeFlow({ session, profile = {}, updateProfile = async () => {} } = {}
     startProfileFlow: async () => {},
     replyBalance: async () => {},
     replyRechargeInfo: async () => {},
+    demoVideoUrl,
   });
 
   return { flow, calls };
@@ -93,19 +99,30 @@ test("HOME_SUPPORT opens support submenu instead of a support session", async ()
   assert.deepEqual(calls, [{ kind: "support_menu", to: "22670000000" }]);
 });
 
-test("SUPPORT_TUTORIAL sends short tutorial text", async () => {
+test("SUPPORT_DEMO_VIDEO sends demo link text", async () => {
   const session = { step: "idle" };
-  const { flow, calls } = makeFlow({ session });
+  const { flow, calls } = makeFlow({
+    session,
+    demoVideoUrl: "https://example.com/kadi-demo",
+  });
 
-  await flow.handleInteractiveReply("22670000000", "SUPPORT_TUTORIAL");
+  await flow.handleInteractiveReply("22670000000", "SUPPORT_DEMO_VIDEO");
 
   assert.equal(calls[0].kind, "text");
-  assert.match(calls[0].text, /Devis/);
-  assert.match(calls[0].text, /Facture/);
-  assert.match(calls[0].text, /Reçu/);
-  assert.match(calls[0].text, /Vocal/);
-  assert.match(calls[0].text, /Tampon/);
-  assert.match(calls[0].text, /Recharge/);
+  assert.match(calls[0].text, /Vidéo de démonstration Kadi/);
+  assert.match(calls[0].text, /https:\/\/example\.com\/kadi-demo/);
+  assert.match(calls[0].text, /Parler à l’équipe Kadi/);
+});
+
+test("SUPPORT_DEMO_VIDEO sends fallback when link is missing", async () => {
+  const session = { step: "idle" };
+  const { flow, calls } = makeFlow({ session, demoVideoUrl: "" });
+
+  await flow.handleInteractiveReply("22670000000", "SUPPORT_DEMO_VIDEO");
+
+  assert.equal(calls[0].kind, "text");
+  assert.match(calls[0].text, /sera bientôt disponible/);
+  assert.match(calls[0].text, /Parler à l’équipe Kadi/);
 });
 
 test("STAMP_USE_KADI selects generated source without deleting uploaded image", async () => {

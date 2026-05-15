@@ -79,7 +79,6 @@ function isSupportInteractiveReply(replyId = "") {
   return [
     "SUPPORT_HUMAN",
     "SUPPORT_PAYMENT",
-    "SUPPORT_BUG",
   ].includes(String(replyId || "").trim().toUpperCase());
 }
 
@@ -254,14 +253,12 @@ function makeKadiSupportService(deps = {}) {
 
       if (isSupportInteractiveReply(replyId)) {
         const reasons = {
-          SUPPORT_HUMAN: "parler_support",
-          SUPPORT_PAYMENT: "probleme_paiement",
-          SUPPORT_BUG: "bug",
+          SUPPORT_HUMAN: "human_support",
+          SUPPORT_PAYMENT: "payment",
         };
         const labels = {
-          SUPPORT_HUMAN: "Parler au support",
+          SUPPORT_HUMAN: "Parler à l’équipe Kadi",
           SUPPORT_PAYMENT: "Problème paiement",
-          SUPPORT_BUG: "Signaler un bug",
         };
         const normalizedReplyId = String(replyId || "").trim().toUpperCase();
 

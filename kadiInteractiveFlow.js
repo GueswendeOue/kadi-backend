@@ -81,6 +81,7 @@ function makeKadiInteractiveFlow(deps) {
     replyRechargeInfo,
     clearCurrentFlowSession = null,
     trackConversionEvent = null,
+    demoVideoUrl = process.env.KADI_DEMO_VIDEO_URL || "",
   } = deps;
 
   const KNOWN_WA_COUNTRY_CODES = [
@@ -1038,16 +1039,23 @@ function makeKadiInteractiveFlow(deps) {
       return sendTutorialQuickActions(from);
     }
 
-    if (replyId === "SUPPORT_TUTORIAL") {
+    if (replyId === "SUPPORT_DEMO_VIDEO") {
+      const url = safeText(demoVideoUrl, "");
+      if (!url) {
+        await sendText(
+          from,
+          "La vidéo de démonstration sera bientôt disponible. Vous pouvez choisir Parler à l’équipe Kadi."
+        );
+        return;
+      }
+
       await sendText(
         from,
-        "📘 *Tutoriel rapide Kadi*\n\n" +
-          "• Devis : “Devis pour Moussa, 2 portes à 25000”\n" +
-          "• Facture : “Facture pour Awa, réparation téléphone 15000”\n" +
-          "• Reçu : “Reçu pour Ibrahim, paiement de 20000 en espèces”\n" +
-          "• Vocal : envoyez un vocal clair avec client, éléments et prix.\n" +
-          "• Tampon : ouvrez MENU → Tampon pour configurer votre cachet.\n" +
-          "• Recharge : ouvrez MENU → Crédits / Recharge pour acheter des crédits."
+        "*Vidéo de démonstration Kadi*\n\n" +
+          "Voici une courte vidéo pour voir comment créer un devis, une facture ou un reçu avec Kadi :\n\n" +
+          `${url}\n\n` +
+          "Si vous avez encore un problème, choisissez :\n" +
+          "Parler à l’équipe Kadi"
       );
       return;
     }

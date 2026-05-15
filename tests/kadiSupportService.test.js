@@ -246,6 +246,32 @@ test("support escalation choices open human support session", async () => {
 
   assert.equal(handled, true);
   assert.equal(repo.sessions.get("22670000000").status, "open");
-  assert.equal(repo.sessions.get("22670000000").reason, "parler_support");
+  assert.equal(repo.sessions.get("22670000000").reason, "human_support");
   assert.match(sent[0].text, /D’accord, je vous mets en relation/);
+});
+
+test("demo video choice does not open human support session", async () => {
+  const { repo, sent, service } = makeService();
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { list_reply: { id: "SUPPORT_DEMO_VIDEO" } },
+  });
+
+  assert.equal(handled, false);
+  assert.equal(repo.sessions.has("22670000000"), false);
+  assert.deepEqual(sent, []);
+});
+
+test("payment support choice opens session with payment reason", async () => {
+  const { repo, service } = makeService();
+
+  const handled = await service.handleSupportIncomingMessage("22670000000", {
+    type: "interactive",
+    interactive: { list_reply: { id: "SUPPORT_PAYMENT" } },
+  });
+
+  assert.equal(handled, true);
+  assert.equal(repo.sessions.get("22670000000").status, "open");
+  assert.equal(repo.sessions.get("22670000000").reason, "payment");
 });

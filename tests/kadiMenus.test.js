@@ -41,9 +41,11 @@ test("support menu exposes tutorial and support escalation choices", async () =>
   const ids = rows.map((row) => row.id);
 
   assert.deepEqual(ids, [
-    "SUPPORT_TUTORIAL",
     "SUPPORT_HUMAN",
+    "SUPPORT_DEMO_VIDEO",
     "SUPPORT_PAYMENT",
-    "SUPPORT_BUG",
   ]);
+
+  assert.equal(rows[0].title, "Parler à l’équipe Kadi");
+  assert.equal(rows[1].title, "Voir la vidéo démo");
 });
