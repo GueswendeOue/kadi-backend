@@ -179,6 +179,7 @@ const { buildPdfBuffer } = require("./kadiPdf");
 const kadiStamp = require("./kadiStamp");
 const kadiSignature = require("./kadiSignature");
 const kadiBroadcast = require("./kadiBroadcast");
+const { isGlobalMenuText } = require("./kadiGlobalNav");
 
 // OCR
 const { kadiOcrEngine } = require("./kadiOcrEngine");
@@ -312,17 +313,7 @@ function getInteractiveReplyId(msg) {
 }
 
 function isHardGlobalInterrupt(text = "") {
-  const t = norm(text).toLowerCase().trim();
-
-  return (
-    t === "menu" ||
-    t === "accueil" ||
-    t === "home" ||
-    t === "retour" ||
-    t === "annuler" ||
-    t === "annule" ||
-    t === "stop"
-  );
+  return isGlobalMenuText(text);
 }
 
 function isHistoryStep(step = "") {

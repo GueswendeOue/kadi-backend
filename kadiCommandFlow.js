@@ -1,5 +1,7 @@
 "use strict";
 
+const { isGlobalMenuText } = require("./kadiGlobalNav");
+
 function makeKadiCommandFlow(deps) {
   const {
     sendText,
@@ -587,7 +589,7 @@ function makeKadiCommandFlow(deps) {
     const t = lowerText(text);
     if (!t) return false;
 
-    if (isOneOf(t, ["menu", "home", "accueil"])) {
+    if (isGlobalMenuText(t)) {
       await sendHomeMenu(from);
       return true;
     }

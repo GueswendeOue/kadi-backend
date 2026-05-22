@@ -58,6 +58,26 @@ test("plain profile command still starts profile flow", async () => {
   assert.deepEqual(calls, [{ kind: "profile" }]);
 });
 
+test("global menu aliases route to home menu", async () => {
+  const menuCalls = [];
+  const { flow } = makeFlow({
+    sendHomeMenu: async (to) => {
+      menuCalls.push({ to });
+      return true;
+    },
+  });
+
+  for (const text of ["menu", "MENU", "Menu", "accueil", "home", "retour", "stop"]) {
+    const handled = await flow.handleUserCommand("22670000000", text);
+    assert.equal(handled, true, text);
+  }
+
+  assert.deepEqual(
+    menuCalls,
+    Array.from({ length: 7 }, () => ({ to: "22670000000" }))
+  );
+});
+
 test("admin reengage segment command routes to segment handler", async () => {
   const { calls, flow } = makeFlow({
     ensureAdmin: () => true,

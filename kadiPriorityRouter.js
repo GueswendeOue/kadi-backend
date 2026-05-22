@@ -1,5 +1,7 @@
 "use strict";
 
+const { isGlobalMenuText } = require("./kadiGlobalNav");
+
 function makeKadiPriorityRouter(deps) {
   const {
     norm,
@@ -102,14 +104,7 @@ function makeKadiPriorityRouter(deps) {
     // ===============================
     // MENU / NAV
     // ===============================
-    if (
-      isExactMatch(t, [
-        "menu",
-        "accueil",
-        "home",
-        "retour",
-      ])
-    ) {
+    if (isGlobalMenuText(t)) {
       return "menu";
     }
 
