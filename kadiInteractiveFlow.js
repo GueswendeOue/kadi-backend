@@ -1842,6 +1842,16 @@ function makeKadiInteractiveFlow(deps) {
 
       const finalDraft = s.lastDocDraft;
 
+      if (finalDraft?.meta?.ocrTotalMismatch === true) {
+        await sendText(
+          from,
+          "⚠️ Je ne suis pas sûr du total.\n" +
+            `J’ai calculé ${Math.round(Number(finalDraft.meta.ocrComputedTotal || finalDraft.finance?.gross || 0))} FCFA, mais l’image indique ${Math.round(Number(finalDraft.meta.ocrDetectedTotal || 0))} FCFA.\n` +
+            "Veuillez vérifier les lignes avant de générer le PDF."
+        );
+        return sendCurrentDraftPreview(from, finalDraft);
+      }
+
       if (finalDraft._saving === true || s.isGeneratingPdf === true) {
         await sendText(from, "⏳ Génération en cours...");
         return;

@@ -75,7 +75,7 @@ function buildNormalizedText(data = {}) {
       const label = String(item?.label || "").trim();
       if (!label) continue;
 
-      const qty = safeNumber(item?.qty) ?? 1;
+      const qty = safeNumber(item?.quantity ?? item?.qty) ?? 1;
       const unitPrice = safeNumber(item?.unitPrice);
       const lineTotal = safeNumber(item?.lineTotal);
 
@@ -174,7 +174,8 @@ function normalizeParsedOcr(parsed) {
     items = data.items
       .map((item) => {
         const label = String(item?.label || "").trim();
-        const qty = safeNumber(item?.qty) ?? 1;
+        const qty = safeNumber(item?.quantity ?? item?.qty) ?? 1;
+        const unit = String(item?.unit || "").trim() || null;
         let unitPrice = safeNumber(item?.unitPrice);
         let lineTotal = safeNumber(item?.lineTotal);
 
@@ -188,7 +189,9 @@ function normalizeParsedOcr(parsed) {
 
         return {
           label,
+          quantity: qty,
           qty,
+          unit,
           unitPrice,
           lineTotal,
         };
@@ -196,7 +199,9 @@ function normalizeParsedOcr(parsed) {
       .filter((item) => item.label);
   }
 
-  const docTypeRaw = String(data.docType || "").trim().toLowerCase();
+  const docTypeRaw = String(data.documentType || data.docType || "")
+    .trim()
+    .toLowerCase();
   let docType = null;
   let factureKind = null;
 
@@ -230,40 +235,48 @@ function normalizeParsedOcr(parsed) {
     items,
     materialTotal: safeNumber(data.materialTotal),
     laborTotal: safeNumber(data.laborTotal),
-    grandTotal: safeNumber(data.grandTotal),
+    grandTotal: safeNumber(data.detectedTotal ?? data.grandTotal),
+    detectedTotal: safeNumber(data.detectedTotal ?? data.grandTotal),
+    warnings: Array.isArray(data.warnings)
+      ? data.warnings.map((w) => String(w || "").trim()).filter(Boolean)
+      : [],
   };
 }
 
 function buildPrompt() {
   return [
-    "Tu es un moteur d'extraction OCR pour KADI.",
+    "Tu es un moteur OpenAI Vision d'extraction de documents manuscrits pour KADI.",
     "Analyse cette image et retourne UNIQUEMENT un JSON valide.",
     "Ne retourne aucun texte hors JSON.",
     "Pas de markdown. Pas de ```json. Pas d'explication.",
     "N'invente aucune donnée absente.",
     "La langue principale du document est le français.",
+    "Lis l'image directement comme un humain, surtout les tableaux manuscrits.",
+    "Pour les tableaux, respecte les colonnes Désignation, Quantité, Prix unit, Prix total.",
     "Lis correctement les montants FCFA entiers avec espaces, virgules ou points.",
     "Ne jamais transformer 12500 en 25, ni 6000 en 6.",
+    "Préserve les chiffres dans les désignations: 2.5KWH, 3KVA, 450W, 2 modules, 2.5mm.",
+    "Si une quantité contient une unité comme 15m, renvoie quantity=15 et unit='m'.",
+    "Utilise la colonne Prix total comme lineTotal quand elle existe.",
     "Ignore téléphone, adresse et en-têtes inutiles, sauf docNumber si clair.",
-    "Pour chaque ligne, extrais label, qty, unitPrice, lineTotal.",
-    "Si qty manque mais le prix est clair, mets qty à 1.",
+    "Pour chaque ligne, extrais label, quantity, unit, unitPrice, lineTotal.",
+    "Si quantity manque mais le prix est clair, mets quantity à 1.",
     "Si une ligne comme 'Main d'oeuvre 30000' existe, mets-la comme item.",
-    "Si 'Totale matérielle' ou équivalent existe, mets-la dans materialTotal.",
-    "Si le montant final existe, mets-le dans grandTotal.",
-    "docType doit être l'une de ces valeurs : 'facture', 'facture_proforma', 'devis', 'recu'.",
+    "Si le montant final existe, mets-le dans detectedTotal.",
+    "Si une ligne est incertaine, ajoute un message court dans warnings.",
+    "documentType doit être l'une de ces valeurs : 'facture', 'facture_proforma', 'devis', 'recu'.",
     "Si le type n'est pas clair, choisis la meilleure valeur probable parmi ces quatre.",
     "Les nombres doivent être renvoyés comme nombres JSON, pas comme texte.",
     "JSON attendu :",
     "{",
-    '  "docType": "facture",',
+    '  "documentType": "facture",',
     '  "docNumber": "000396",',
     '  "client": null,',
     '  "items": [',
-    '    { "label": "Tom cim", "qty": 2, "unitPrice": 12500, "lineTotal": 25000 }',
+    '    { "label": "Câble 2.5mm", "quantity": 15, "unit": "m", "unitPrice": 1750, "lineTotal": 26250 }',
     "  ],",
-    '  "materialTotal": 93000,',
-    '  "laborTotal": 30000,',
-    '  "grandTotal": 123000',
+    '  "detectedTotal": 123000,',
+    '  "warnings": []',
     "}",
   ].join(" ");
 }
@@ -328,7 +341,12 @@ async function kadiOcrEngine(buffer, options = {}) {
       total: normalizedParsed.grandTotal || null,
     });
 
-    return normalized;
+    return {
+      kind: "vision_json",
+      text: normalized,
+      parsed: normalizedParsed,
+      raw: parsed,
+    };
   } catch (e) {
     console.error("[KADI OCR ENGINE] FAILED:", e?.message);
     throw e;

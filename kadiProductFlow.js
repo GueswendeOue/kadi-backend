@@ -544,6 +544,12 @@ function makeKadiProductFlow(deps) {
     s.clientPhoneReturnTarget = null;
     s.step = "doc_review";
 
+    s.lastDocDraft.meta = {
+      ...(s.lastDocDraft.meta || {}),
+      ocrTotalMismatch: false,
+      ocrReviewCorrected: true,
+    };
+
     await sendText(from, "✅ Correction appliquée.");
     return sendSafePreview(from, s.lastDocDraft);
   }

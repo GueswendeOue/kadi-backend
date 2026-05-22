@@ -213,6 +213,81 @@ function makeKadiOcrFlow(deps) {
     };
   }
 
+  function isStructuredVisionResult(value) {
+    return (
+      value &&
+      typeof value === "object" &&
+      value.kind === "vision_json" &&
+      value.parsed &&
+      typeof value.parsed === "object"
+    );
+  }
+
+  function getOcrResultText(value) {
+    if (isStructuredVisionResult(value)) return String(value.text || "");
+    return String(value || "");
+  }
+
+  function makeItemFromVisionRow(row = {}) {
+    const qty = Number(row?.quantity ?? row?.qty ?? 1);
+    let unitPrice = Number(row?.unitPrice ?? 0);
+    const lineTotal = Number(row?.lineTotal ?? 0);
+
+    if (
+      Number.isFinite(lineTotal) &&
+      lineTotal > 0 &&
+      (!Number.isFinite(unitPrice) || unitPrice <= 0) &&
+      Number.isFinite(qty) &&
+      qty > 0
+    ) {
+      unitPrice = Math.round(lineTotal / qty);
+    }
+
+    if (
+      Number.isFinite(lineTotal) &&
+      lineTotal > 0 &&
+      Number.isFinite(unitPrice) &&
+      unitPrice > 0 &&
+      Number.isFinite(qty) &&
+      qty > 0
+    ) {
+      const computed = Math.round(qty * unitPrice);
+      const gap = Math.abs(computed - lineTotal);
+      if (gap > 1) unitPrice = Math.round(lineTotal / qty);
+    }
+
+    const item = makeItem(
+      row?.label || "Produit",
+      Number.isFinite(qty) && qty > 0 ? qty : 1,
+      Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : 0
+    );
+
+    return {
+      ...item,
+      unit: row?.unit ? String(row.unit).trim() : null,
+      lineTotal: Number.isFinite(lineTotal) && lineTotal > 0 ? lineTotal : item.amount,
+    };
+  }
+
+  function parseVisionResultToDraft(value) {
+    const parsed = isStructuredVisionResult(value) ? value.parsed : {};
+
+    return {
+      client: parsed?.client || null,
+      items: Array.isArray(parsed?.items)
+        ? parsed.items
+            .map(makeItemFromVisionRow)
+            .filter((item) => looksLikeRealItemLabel(item?.label || ""))
+        : [],
+      detectedTotal:
+        Number(parsed?.detectedTotal ?? parsed?.grandTotal ?? 0) || null,
+      warnings: Array.isArray(parsed?.warnings) ? parsed.warnings : [],
+      docType: parsed?.docType || null,
+      factureKind: parsed?.factureKind || null,
+      rawVision: parsed,
+    };
+  }
+
   function makeFreshOcrBaseDraft({ existingDraft, guessedMeta }) {
     const current =
       existingDraft &&
@@ -300,10 +375,13 @@ function makeKadiOcrFlow(deps) {
       const gap = Math.abs(detectedTotal - computedTotal);
       const ratio = computedTotal > 0 ? gap / computedTotal : 0;
 
-      if (gap > 500 && ratio >= 0.12) {
+      if (gap > 500 || ratio >= 0.12) {
         return {
           needsReview: true,
           reason: "ocr_total_gap_high",
+          gap,
+          computedTotal,
+          detectedTotal,
           checked,
         };
       }
@@ -384,6 +462,23 @@ function makeKadiOcrFlow(deps) {
     ]);
   }
 
+  async function sendOcrReviewWarning(from, review = {}) {
+    if (review?.reason === "ocr_total_gap_high") {
+      await sendText(
+        from,
+        "⚠️ Je ne suis pas sûr du total.\n" +
+          `J’ai calculé ${Math.round(review.computedTotal || 0)} FCFA, mais l’image indique ${Math.round(review.detectedTotal || 0)} FCFA.\n` +
+          "Veuillez vérifier les lignes avant de générer le PDF."
+      );
+      return;
+    }
+
+    await sendText(
+      from,
+      "⚠️ J’ai lu la photo, mais je préfère une vérification avant génération.\n\nVous pouvez corriger, ajouter une ligne ou générer si tout vous semble bon."
+    );
+  }
+
   async function processOcrImageToDraft(from, mediaId) {
     const s = getSession(from);
 
@@ -398,13 +493,16 @@ function makeKadiOcrFlow(deps) {
 
     await sendText(from, "🔎 Lecture intelligente de la photo…");
 
+    let ocrResult = null;
     let ocrText = "";
 
     try {
-      ocrText = await robustOcr(buf, mime);
+      ocrResult = await robustOcr(buf, mime);
+      ocrText = getOcrResultText(ocrResult);
 
       logger?.info?.("ocr", "OCR text extracted", {
         from,
+        mode: isStructuredVisionResult(ocrResult) ? "vision_json" : "text",
         length: String(ocrText || "").trim().length,
         preview: String(ocrText || "").slice(0, 500),
       });
@@ -433,8 +531,18 @@ function makeKadiOcrFlow(deps) {
 
     let parsed = null;
     let usedGeminiParse = false;
+    const usedOpenAIVisionJson = isStructuredVisionResult(ocrResult);
 
-    if (typeof parseInvoiceTextWithGemini === "function") {
+    if (usedOpenAIVisionJson) {
+      parsed = parseVisionResultToDraft(ocrResult);
+      logger?.info?.("ocr", "OpenAI Vision structured parse ok", {
+        from,
+        client: parsed.client,
+        itemsCount: parsed.items.length,
+        total: parsed.detectedTotal || 0,
+        warningsCount: parsed.warnings.length,
+      });
+    } else if (typeof parseInvoiceTextWithGemini === "function") {
       try {
         const gemParsed = await parseInvoiceTextWithGemini(ocrText);
 
@@ -489,9 +597,12 @@ function makeKadiOcrFlow(deps) {
     s.lastDocDraft.meta = makeDraftMeta({
       ...(s.lastDocDraft.meta || {}),
       usedGeminiParse,
+      usedOpenAIVisionJson,
       ocrDetectedTotal: Number(parsed?.detectedTotal || 0) || null,
       ocrDocTypeGuess: guessedMeta?.type || null,
       ocrFactureKindGuess: guessedMeta?.factureKind || null,
+      ocrWarnings: Array.isArray(parsed?.warnings) ? parsed.warnings : [],
+      ocrTotalMismatch: false,
     });
 
     const candidateDraft = buildDraftFromParsed(s.lastDocDraft, parsed);
@@ -501,6 +612,16 @@ function makeKadiOcrFlow(deps) {
       s.lastDocDraft = review.checked.draft;
     } else {
       s.lastDocDraft = candidateDraft;
+    }
+
+    if (review?.reason === "ocr_total_gap_high") {
+      s.lastDocDraft.meta = makeDraftMeta({
+        ...(s.lastDocDraft.meta || {}),
+        ocrTotalMismatch: true,
+        ocrComputedTotal: Math.round(review.computedTotal || 0),
+        ocrDetectedTotal: Math.round(review.detectedTotal || 0),
+        ocrTotalGap: Math.round(review.gap || 0),
+      });
     }
 
     logger?.info?.("ocr", "Draft ready after normalization", {
@@ -535,10 +656,7 @@ function makeKadiOcrFlow(deps) {
     s.step = "doc_review";
 
     if (review.needsReview) {
-      await sendText(
-        from,
-        "⚠️ J’ai lu la photo, mais je préfère une vérification avant génération.\n\nVous pouvez corriger, ajouter une ligne ou générer si tout vous semble bon."
-      );
+      await sendOcrReviewWarning(from, review);
     }
 
     return sendUnifiedPreview(from, s.lastDocDraft);
