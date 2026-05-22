@@ -242,6 +242,7 @@ const PACK_PRICE_FCFA = Number(process.env.PACK_PRICE_FCFA || 2000);
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
 let getRecentActiveZeroDocUsers = null;
+let getExhaustedCreditUsers = null;
 let logReengagementSend = null;
 
 try {
@@ -249,6 +250,7 @@ try {
     getZeroDocUsersBySegment,
     getInactiveUsers,
     getRecentActiveZeroDocUsers,
+    getExhaustedCreditUsers,
     logReengagementSend,
   } = require("./kadiReengagementRepo"));
 } catch (_) {}
@@ -973,6 +975,7 @@ const {
   getZeroDocUsersBySegment,
   getInactiveUsers,
   getRecentActiveZeroDocUsers,
+  getExhaustedCreditUsers,
   logReengagementSend,
   sendZeroDocReOnboarding,
   sendReactivationNudge,
