@@ -152,6 +152,31 @@ function normalizeLabel(label = "") {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
+function parseTrailingNumberColumnsItem(segment = "") {
+  const raw = String(segment || "").trim();
+  if (!raw) return null;
+
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return null;
+
+  const priceToken = tokens[tokens.length - 1];
+  const qtyToken = tokens[tokens.length - 2];
+  const price = parseMoneyToken(priceToken);
+  const qty = Number(String(qtyToken || "").replace(",", "."));
+
+  if (!Number.isFinite(price) || price <= 0) return null;
+  if (!Number.isFinite(qty) || qty <= 0 || qty > 1000) return null;
+
+  const label = tokens.slice(0, -2).join(" ").trim();
+  if (!label || label.length < 2) return null;
+
+  return {
+    label: normalizeLabel(label),
+    qty,
+    unitPrice: price,
+  };
+}
+
 function isLikelyHumanOrCompanySegment(segment = "") {
   const s = String(segment || "").trim();
   if (!s) return false;
@@ -541,6 +566,9 @@ function parseStructuredItemSegment(segment = "") {
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
   const t = cleanText(raw);
+
+  const trailingColumnsItem = parseTrailingNumberColumnsItem(raw);
+  if (trailingColumnsItem) return trailingColumnsItem;
 
   let qty = 1;
 

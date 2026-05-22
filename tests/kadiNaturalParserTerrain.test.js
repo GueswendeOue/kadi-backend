@@ -44,6 +44,56 @@ test("terrain: parse un devis multi-ligne avec client et service", () => {
   assert.equal(parsed.items[1].unitPrice, 50000);
 });
 
+test("terrain: parse les colonnes finales depuis la droite", () => {
+  const parsed = parseNaturalWhatsAppMessage(
+    [
+      "Devis pour Moussa",
+      "Lampe 120 5 1500",
+      "Prise double 4 1500",
+      "Réparation téléphone 15000",
+      "Main d’œuvre 50000",
+    ].join("\n")
+  );
+
+  assert.equal(parsed.docType, "devis");
+  assert.equal(parsed.client, "Moussa");
+  assert.equal(parsed.kind, "items");
+  assert.equal(parsed.items.length, 4);
+
+  assert.equal(parsed.items[0].label, "Lampe 120");
+  assert.equal(parsed.items[0].qty, 5);
+  assert.equal(parsed.items[0].unitPrice, 1500);
+
+  assert.equal(parsed.items[1].label, "Prise double");
+  assert.equal(parsed.items[1].qty, 4);
+  assert.equal(parsed.items[1].unitPrice, 1500);
+
+  assert.equal(parsed.items[2].label, "Réparation téléphone");
+  assert.equal(parsed.items[2].qty, 1);
+  assert.equal(parsed.items[2].unitPrice, 15000);
+
+  assert.equal(parsed.items[3].label, "Main d’œuvre");
+  assert.equal(parsed.items[3].qty, 1);
+  assert.equal(parsed.items[3].unitPrice, 50000);
+});
+
+test("terrain: conserve les chiffres dans la désignation technique", () => {
+  const parsed = parseNaturalWhatsAppMessage(
+    [
+      "Facture pour Awa",
+      "Câble 2.5mm 10 500",
+    ].join("\n")
+  );
+
+  assert.equal(parsed.docType, "facture");
+  assert.equal(parsed.client, "Awa");
+  assert.equal(parsed.kind, "items");
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].label, "Câble 2.5mm");
+  assert.equal(parsed.items[0].qty, 10);
+  assert.equal(parsed.items[0].unitPrice, 500);
+});
+
 test("terrain: parse un devis compact avec deux lignes", () => {
   const parsed = parseNaturalWhatsAppMessage(
     "Fais-moi un devis pour Moussa avec 2 portes à 25000 et main d’œuvre 50000"
