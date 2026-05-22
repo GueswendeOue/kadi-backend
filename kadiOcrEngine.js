@@ -50,6 +50,14 @@ function safeNumber(value) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function safeConfidence(value) {
+  if (value == null) return null;
+  const n = Number(String(value).replace(",", "."));
+  if (!Number.isFinite(n)) return null;
+  if (n > 1 && n <= 100) return n / 100;
+  return n;
+}
+
 function normalizeMimeType(mimeType = "") {
   const t = String(mimeType || "").toLowerCase().trim();
 
@@ -177,7 +185,12 @@ function normalizeParsedOcr(parsed) {
         const qty = safeNumber(item?.quantity ?? item?.qty) ?? 1;
         const unit = String(item?.unit || "").trim() || null;
         let unitPrice = safeNumber(item?.unitPrice);
+        const lineTotalProvided =
+          item?.lineTotal != null && String(item.lineTotal).trim() !== "";
         let lineTotal = safeNumber(item?.lineTotal);
+        const warnings = Array.isArray(item?.warnings)
+          ? item.warnings.map((w) => String(w || "").trim()).filter(Boolean)
+          : [];
 
         if (unitPrice == null && lineTotal != null && qty > 0) {
           unitPrice = Math.round(lineTotal / qty);
@@ -194,6 +207,16 @@ function normalizeParsedOcr(parsed) {
           unit,
           unitPrice,
           lineTotal,
+          lineTotalProvided,
+          labelRaw: String(item?.labelRaw || item?.label || "").trim() || null,
+          quantityRaw:
+            item?.quantityRaw != null ? String(item.quantityRaw).trim() : null,
+          unitPriceRaw:
+            item?.unitPriceRaw != null ? String(item.unitPriceRaw).trim() : null,
+          lineTotalRaw:
+            item?.lineTotalRaw != null ? String(item.lineTotalRaw).trim() : null,
+          confidence: safeConfidence(item?.confidence),
+          warnings,
         };
       })
       .filter((item) => item.label);
@@ -259,11 +282,13 @@ function buildPrompt() {
     "Si une quantité contient une unité comme 15m, renvoie quantity=15 et unit='m'.",
     "Utilise la colonne Prix total comme lineTotal quand elle existe.",
     "Ignore téléphone, adresse et en-têtes inutiles, sauf docNumber si clair.",
-    "Pour chaque ligne, extrais label, quantity, unit, unitPrice, lineTotal.",
+    "Pour chaque ligne, extrais labelRaw, quantityRaw, unitPriceRaw, lineTotalRaw, label, quantity, unit, unitPrice, lineTotal, confidence, warnings.",
+    "Les champs Raw doivent contenir exactement ce que tu lis dans la cellule, même si c'est incertain.",
+    "confidence est un nombre entre 0 et 1 pour la ligne entière.",
     "Si quantity manque mais le prix est clair, mets quantity à 1.",
     "Si une ligne comme 'Main d'oeuvre 30000' existe, mets-la comme item.",
     "Si le montant final existe, mets-le dans detectedTotal.",
-    "Si une ligne est incertaine, ajoute un message court dans warnings.",
+    "Si une ligne est incertaine, ajoute un message court dans warnings de la ligne et dans warnings global.",
     "documentType doit être l'une de ces valeurs : 'facture', 'facture_proforma', 'devis', 'recu'.",
     "Si le type n'est pas clair, choisis la meilleure valeur probable parmi ces quatre.",
     "Les nombres doivent être renvoyés comme nombres JSON, pas comme texte.",
@@ -273,7 +298,7 @@ function buildPrompt() {
     '  "docNumber": "000396",',
     '  "client": null,',
     '  "items": [',
-    '    { "label": "Câble 2.5mm", "quantity": 15, "unit": "m", "unitPrice": 1750, "lineTotal": 26250 }',
+    '    { "labelRaw": "Câble 2.5mm", "quantityRaw": "15m", "unitPriceRaw": "1 750", "lineTotalRaw": "26 250", "label": "Câble 2.5mm", "quantity": 15, "unit": "m", "unitPrice": 1750, "lineTotal": 26250, "confidence": 0.92, "warnings": [] }',
     "  ],",
     '  "detectedTotal": 123000,',
     '  "warnings": []',

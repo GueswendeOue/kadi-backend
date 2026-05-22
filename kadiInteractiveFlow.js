@@ -1,5 +1,12 @@
 "use strict";
 
+function isOcrReviewBlockedDraft(draft) {
+  return (
+    draft?.meta?.ocrNeedsReview === true ||
+    draft?.meta?.ocrTotalMismatch === true
+  );
+}
+
 function makeKadiInteractiveFlow(deps) {
   const {
     getSession,
@@ -1842,11 +1849,11 @@ function makeKadiInteractiveFlow(deps) {
 
       const finalDraft = s.lastDocDraft;
 
-      if (finalDraft?.meta?.ocrTotalMismatch === true) {
+      if (isOcrReviewBlockedDraft(finalDraft)) {
         await sendText(
           from,
-          "⚠️ Je ne suis pas sûr du total.\n" +
-            `J’ai calculé ${Math.round(Number(finalDraft.meta.ocrComputedTotal || finalDraft.finance?.gross || 0))} FCFA, mais l’image indique ${Math.round(Number(finalDraft.meta.ocrDetectedTotal || 0))} FCFA.\n` +
+          "⚠️ Je ne suis pas sûr de certaines lignes.\n" +
+            "J’ai détecté une incohérence entre les prix lus et le total du document.\n" +
             "Veuillez vérifier les lignes avant de générer le PDF."
         );
         return sendCurrentDraftPreview(from, finalDraft);
@@ -2045,4 +2052,5 @@ function makeKadiInteractiveFlow(deps) {
 
 module.exports = {
   makeKadiInteractiveFlow,
+  isOcrReviewBlockedDraft,
 };

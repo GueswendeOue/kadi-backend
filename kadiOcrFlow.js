@@ -243,19 +243,6 @@ function makeKadiOcrFlow(deps) {
       unitPrice = Math.round(lineTotal / qty);
     }
 
-    if (
-      Number.isFinite(lineTotal) &&
-      lineTotal > 0 &&
-      Number.isFinite(unitPrice) &&
-      unitPrice > 0 &&
-      Number.isFinite(qty) &&
-      qty > 0
-    ) {
-      const computed = Math.round(qty * unitPrice);
-      const gap = Math.abs(computed - lineTotal);
-      if (gap > 1) unitPrice = Math.round(lineTotal / qty);
-    }
-
     const item = makeItem(
       row?.label || "Produit",
       Number.isFinite(qty) && qty > 0 ? qty : 1,
@@ -266,6 +253,19 @@ function makeKadiOcrFlow(deps) {
       ...item,
       unit: row?.unit ? String(row.unit).trim() : null,
       lineTotal: Number.isFinite(lineTotal) && lineTotal > 0 ? lineTotal : item.amount,
+      ocrLineTotalProvided:
+        typeof row?.lineTotalProvided === "boolean"
+          ? row.lineTotalProvided
+          : row?.lineTotalRaw != null || row?.lineTotal != null,
+      ocrLineTotalRaw: row?.lineTotalRaw != null ? String(row.lineTotalRaw).trim() : null,
+      ocrQuantityRaw: row?.quantityRaw != null ? String(row.quantityRaw).trim() : null,
+      ocrUnitPriceRaw: row?.unitPriceRaw != null ? String(row.unitPriceRaw).trim() : null,
+      ocrLabelRaw: row?.labelRaw != null ? String(row.labelRaw).trim() : null,
+      ocrConfidence:
+        Number.isFinite(Number(row?.confidence)) ? Number(row.confidence) : null,
+      ocrWarnings: Array.isArray(row?.warnings)
+        ? row.warnings.map((w) => String(w || "").trim()).filter(Boolean)
+        : [],
     };
   }
 
@@ -285,6 +285,106 @@ function makeKadiOcrFlow(deps) {
       docType: parsed?.docType || null,
       factureKind: parsed?.factureKind || null,
       rawVision: parsed,
+    };
+  }
+
+  function isLargeMoneyGap(left, right) {
+    if (!Number.isFinite(left) || !Number.isFinite(right) || left <= 0 || right <= 0) {
+      return false;
+    }
+
+    const gap = Math.abs(Math.round(left) - Math.round(right));
+    const base = Math.max(Math.abs(left), Math.abs(right));
+    const ratio = base > 0 ? gap / base : 0;
+    return gap > 500 && ratio >= 0.03;
+  }
+
+  function analyzeVisionConsistency(draft, parsed = {}) {
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+    const lineTotalItems = items.filter(
+      (item) => item?.ocrLineTotalProvided === true && Number(item?.lineTotal || 0) > 0
+    );
+    const tableHasLineTotals =
+      lineTotalItems.length >= 2 ||
+      items.some((item) => item?.ocrLineTotalProvided === true);
+    const suspiciousLines = [];
+
+    items.forEach((item, index) => {
+      const lineReasons = [];
+      const qty = Number(item?.qty ?? item?.quantity ?? 1);
+      const unitPrice = Number(item?.unitPrice || 0);
+      const lineTotal = Number(item?.lineTotal || 0);
+      const computed = Math.round((Number.isFinite(qty) ? qty : 1) * unitPrice);
+
+      if (tableHasLineTotals && lineTotal <= 0) {
+        lineReasons.push("missing_line_total");
+      }
+
+      if (
+        lineTotal > 0 &&
+        unitPrice > 0 &&
+        Number.isFinite(qty) &&
+        qty > 0 &&
+        isLargeMoneyGap(computed, lineTotal)
+      ) {
+        lineReasons.push("line_total_mismatch");
+      }
+
+      if (Number.isFinite(item?.ocrConfidence) && item.ocrConfidence < 0.75) {
+        lineReasons.push("low_confidence");
+      }
+
+      if (Array.isArray(item?.ocrWarnings) && item.ocrWarnings.length > 0) {
+        lineReasons.push("vision_warning");
+      }
+
+      if (lineReasons.length > 0) {
+        suspiciousLines.push({
+          index,
+          label: item?.label || "",
+          reasons: lineReasons,
+          computed,
+          lineTotal: lineTotal > 0 ? Math.round(lineTotal) : null,
+        });
+      }
+    });
+
+    const lineTotalSum = lineTotalItems.reduce(
+      (sum, item) => sum + Math.round(Number(item.lineTotal || 0)),
+      0
+    );
+    const computedTotal = Number(
+      draft?.finance?.gross ?? draft?.finance?.total ?? 0
+    );
+    const detectedTotal = Number(parsed?.detectedTotal || 0);
+
+    let totalMismatch = false;
+    let totalGap = 0;
+    let totalReference = null;
+    let totalCompared = null;
+
+    if (detectedTotal > 0 && (lineTotalSum > 0 || computedTotal > 0)) {
+      totalReference = detectedTotal;
+      totalCompared = lineTotalSum > 0 ? lineTotalSum : computedTotal;
+      totalGap = Math.abs(Math.round(totalReference) - Math.round(totalCompared));
+      totalMismatch = isLargeMoneyGap(totalReference, totalCompared);
+    } else if (lineTotalItems.length >= 2 && computedTotal > 0) {
+      totalReference = lineTotalSum;
+      totalCompared = computedTotal;
+      totalGap = Math.abs(Math.round(totalReference) - Math.round(totalCompared));
+      totalMismatch = isLargeMoneyGap(totalReference, totalCompared);
+    }
+
+    return {
+      suspiciousLines,
+      totalMismatch,
+      lineTotalSum: lineTotalSum > 0 ? Math.round(lineTotalSum) : null,
+      computedTotal: computedTotal > 0 ? Math.round(computedTotal) : null,
+      detectedTotal: detectedTotal > 0 ? Math.round(detectedTotal) : null,
+      totalGap: Math.round(totalGap || 0),
+      totalReference,
+      totalCompared,
+      globalWarnings: Array.isArray(parsed?.warnings) ? parsed.warnings : [],
     };
   }
 
@@ -358,6 +458,7 @@ function makeKadiOcrFlow(deps) {
   function needsManualReview(draft, parsed = {}) {
     const checked = runDraftValidation(draft);
     const issues = Array.isArray(checked?.issues) ? checked.issues : [];
+    const visionReview = analyzeVisionConsistency(checked?.draft || draft, parsed);
     const detectedTotal = Number(parsed?.detectedTotal || 0);
     const computedTotal = Number(
       checked?.draft?.finance?.gross ?? checked?.draft?.finance?.total ?? 0
@@ -367,6 +468,24 @@ function makeKadiOcrFlow(deps) {
       return {
         needsReview: true,
         reason: `validation_failed:${issues.join(",")}`,
+        checked,
+      };
+    }
+
+    if (
+      visionReview.totalMismatch ||
+      visionReview.suspiciousLines.length > 0 ||
+      visionReview.globalWarnings.length > 0
+    ) {
+      return {
+        needsReview: true,
+        reason: visionReview.totalMismatch
+          ? "ocr_total_gap_high"
+          : "ocr_suspicious_lines",
+        gap: visionReview.totalGap,
+        computedTotal: visionReview.computedTotal || computedTotal,
+        detectedTotal: visionReview.detectedTotal || detectedTotal,
+        visionReview,
         checked,
       };
     }
@@ -463,19 +582,11 @@ function makeKadiOcrFlow(deps) {
   }
 
   async function sendOcrReviewWarning(from, review = {}) {
-    if (review?.reason === "ocr_total_gap_high") {
-      await sendText(
-        from,
-        "⚠️ Je ne suis pas sûr du total.\n" +
-          `J’ai calculé ${Math.round(review.computedTotal || 0)} FCFA, mais l’image indique ${Math.round(review.detectedTotal || 0)} FCFA.\n` +
-          "Veuillez vérifier les lignes avant de générer le PDF."
-      );
-      return;
-    }
-
     await sendText(
       from,
-      "⚠️ J’ai lu la photo, mais je préfère une vérification avant génération.\n\nVous pouvez corriger, ajouter une ligne ou générer si tout vous semble bon."
+      "⚠️ Je ne suis pas sûr de certaines lignes.\n" +
+        "J’ai détecté une incohérence entre les prix lus et le total du document.\n" +
+        "Veuillez vérifier les lignes avant de générer le PDF."
     );
   }
 
@@ -603,6 +714,7 @@ function makeKadiOcrFlow(deps) {
       ocrFactureKindGuess: guessedMeta?.factureKind || null,
       ocrWarnings: Array.isArray(parsed?.warnings) ? parsed.warnings : [],
       ocrTotalMismatch: false,
+      ocrNeedsReview: false,
     });
 
     const candidateDraft = buildDraftFromParsed(s.lastDocDraft, parsed);
@@ -614,13 +726,19 @@ function makeKadiOcrFlow(deps) {
       s.lastDocDraft = candidateDraft;
     }
 
-    if (review?.reason === "ocr_total_gap_high") {
+    if (review?.needsReview) {
+      const visionReview = review.visionReview || {};
       s.lastDocDraft.meta = makeDraftMeta({
         ...(s.lastDocDraft.meta || {}),
         ocrTotalMismatch: true,
+        ocrNeedsReview: true,
         ocrComputedTotal: Math.round(review.computedTotal || 0),
         ocrDetectedTotal: Math.round(review.detectedTotal || 0),
         ocrTotalGap: Math.round(review.gap || 0),
+        ocrLineTotalSum: visionReview.lineTotalSum || null,
+        ocrSuspiciousLines: Array.isArray(visionReview.suspiciousLines)
+          ? visionReview.suspiciousLines
+          : [],
       });
     }
 

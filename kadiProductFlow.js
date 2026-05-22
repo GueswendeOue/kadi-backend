@@ -547,7 +547,9 @@ function makeKadiProductFlow(deps) {
     s.lastDocDraft.meta = {
       ...(s.lastDocDraft.meta || {}),
       ocrTotalMismatch: false,
+      ocrNeedsReview: false,
       ocrReviewCorrected: true,
+      ocrSuspiciousLines: [],
     };
 
     await sendText(from, "✅ Correction appliquée.");
