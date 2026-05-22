@@ -6,10 +6,13 @@ const {
   getZeroDocMessageByVariant,
   buildInactiveMessage,
   buildRecentActiveZeroDocMessage,
+  buildExhaustedCreditsMessage,
 } = require("./kadiReengagementMessages");
 
 const SEGMENT_RECENT_ACTIVE_ZERO_DOC = "recent_active_zero_doc";
+const SEGMENT_EXHAUSTED_CREDITS = "exhausted_credits";
 const RECENT_ACTIVE_ZERO_DOC_TEMPLATE = "kadi_recent_active_zero_doc_v1";
+const EXHAUSTED_CREDITS_TEMPLATE = "kadi_exhausted_credits_v1";
 const MANUAL_COOLDOWN_DAYS = 7;
 const MANUAL_MAX_LIMIT = 20;
 
@@ -67,6 +70,15 @@ function dedupeUsers(users = []) {
 
 function resolveSegmentConfig(segment) {
   const safeSegment = String(segment || "").trim().toLowerCase();
+
+  if (safeSegment === SEGMENT_EXHAUSTED_CREDITS) {
+    return {
+      segment: SEGMENT_EXHAUSTED_CREDITS,
+      campaignType: SEGMENT_EXHAUSTED_CREDITS,
+      templateName: EXHAUSTED_CREDITS_TEMPLATE,
+      messageText: buildExhaustedCreditsMessage(),
+    };
+  }
 
   if (safeSegment !== SEGMENT_RECENT_ACTIVE_ZERO_DOC) return null;
 
@@ -362,6 +374,7 @@ function makeKadiReengagementService({
   getZeroDocUsersBySegment,
   getInactiveUsers,
   getRecentActiveZeroDocUsers = null,
+  getExhaustedCreditUsers = null,
   logReengagementSend = null,
   sendTemplateMessage = null,
   adminWaId = null,
@@ -369,6 +382,18 @@ function makeKadiReengagementService({
   async function getSegmentUsers(segment, limit) {
     const config = resolveSegmentConfig(segment);
     if (!config) return { config: null, users: [] };
+
+    if (config.segment === SEGMENT_EXHAUSTED_CREDITS) {
+      if (typeof getExhaustedCreditUsers !== "function") {
+        return { config, users: null };
+      }
+
+      const users = await getExhaustedCreditUsers(limit, {
+        cooldownDays: MANUAL_COOLDOWN_DAYS,
+      });
+
+      return { config, users };
+    }
 
     if (typeof getRecentActiveZeroDocUsers !== "function") {
       return { config, users: null };

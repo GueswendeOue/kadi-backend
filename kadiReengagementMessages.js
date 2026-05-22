@@ -56,6 +56,20 @@ function buildRecentActiveZeroDocMessage() {
   );
 }
 
+function buildExhaustedCreditsMessage() {
+  return (
+    "Bonjour\n\n" +
+    "Vos crédits KADI sont épuisés.\n\n" +
+    "Pour continuer à créer vos documents :\n" +
+    "• 1000F = 10 crédits\n" +
+    "• 2000F = 25 crédits\n" +
+    "• 5000F = 70 crédits\n\n" +
+    "Un PDF simple coûte 1 crédit.\n" +
+    "Un PDF avec tampon coûte 2 crédits.\n\n" +
+    "Tapez “recharger” pour continuer."
+  );
+}
+
 function getZeroDocMessageByVariant(variant = "A") {
   return String(variant || "A").toUpperCase() === "B"
     ? buildZeroDocMessageB()
@@ -66,6 +80,7 @@ module.exports = {
   buildZeroDocMessageA,
   buildZeroDocMessageB,
   buildRecentActiveZeroDocMessage,
+  buildExhaustedCreditsMessage,
   buildInactiveMessage,
   getZeroDocMessageByVariant,
 };

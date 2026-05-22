@@ -29,9 +29,14 @@ const {
 
 let getZeroDocUsersBySegment = null;
 let getInactiveUsers = null;
+let getExhaustedCreditUsers = null;
 
 try {
-  ({ getZeroDocUsersBySegment, getInactiveUsers } = require("./kadiReengagementRepo"));
+  ({
+    getZeroDocUsersBySegment,
+    getInactiveUsers,
+    getExhaustedCreditUsers,
+  } = require("./kadiReengagementRepo"));
 } catch (e) {
   console.warn("⚠️ Reengagement repo not loaded:", e?.message);
 }
@@ -76,6 +81,13 @@ const REENGAGEMENT_INACTIVE_DAYS = Number(
 
 const REENGAGEMENT_INACTIVE_LIMIT = Number(
   process.env.KADI_REENGAGEMENT_INACTIVE_LIMIT || 20
+);
+
+const REENGAGEMENT_EXHAUSTED_CREDITS_ENABLED =
+  String(process.env.KADI_REENGAGEMENT_EXHAUSTED_CREDITS_ENABLED || "false").toLowerCase() === "true";
+
+const REENGAGEMENT_EXHAUSTED_CREDITS_LIMIT = Number(
+  process.env.KADI_REENGAGEMENT_EXHAUSTED_CREDITS_LIMIT || 10
 );
 
 const REENGAGEMENT_GUARD_ENABLED =
@@ -512,10 +524,13 @@ app.listen(PORT, () => {
           sendTemplateMessage: sendTemplate,
           getZeroDocUsersBySegment,
           getInactiveUsers,
+          getExhaustedCreditUsers,
           adminWaId: KADI_ADMIN_WA,
           zeroDocsLimit: REENGAGEMENT_ZERO_DOCS_LIMIT,
           inactiveDays: REENGAGEMENT_INACTIVE_DAYS,
           inactiveLimit: REENGAGEMENT_INACTIVE_LIMIT,
+          exhaustedCreditsEnabled: REENGAGEMENT_EXHAUSTED_CREDITS_ENABLED,
+          exhaustedCreditsLimit: REENGAGEMENT_EXHAUSTED_CREDITS_LIMIT,
         });
 
         console.log("✅ reengagement:", {

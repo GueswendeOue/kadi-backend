@@ -7,6 +7,7 @@ const {
 } = require("./kadiAdminNotifier");
 const {
   buildInactiveMessage,
+  buildExhaustedCreditsMessage,
   getZeroDocMessageByVariant,
 } = require("./kadiReengagementMessages");
 const { logReengagementSend } = require("./kadiReengagementRepo");
@@ -216,10 +217,13 @@ async function runReengagementCycle({
   sendTemplateMessage = null,
   getZeroDocUsersBySegment,
   getInactiveUsers,
+  getExhaustedCreditUsers = null,
   adminWaId = null,
   zeroDocsLimit = 30,
   inactiveDays = 30,
   inactiveLimit = 30,
+  exhaustedCreditsEnabled = false,
+  exhaustedCreditsLimit = 10,
   reengagementCooldownDays = Number(
     process.env.KADI_REENGAGEMENT_COOLDOWN_DAYS || 7
   ),
@@ -351,6 +355,62 @@ async function runReengagementCycle({
   }
 
   // ===============================
+  // EXHAUSTED CREDIT USERS
+  // ===============================
+  let exhaustedStats = null;
+
+  if (
+    exhaustedCreditsEnabled === true &&
+    typeof getExhaustedCreditUsers === "function"
+  ) {
+    const exhaustedExcludedBefore = alreadyTargetedSet.size;
+
+    const exhaustedUsers = normalizeUsers(
+      await getExhaustedCreditUsers(exhaustedCreditsLimit, {
+        cooldownDays: reengagementCooldownDays,
+        excludeWaIds: Array.from(alreadyTargetedSet),
+      })
+    );
+
+    const exhaustedBeforeSend = new Set(alreadyTargetedSet);
+
+    exhaustedStats = await runBatch({
+      users: exhaustedUsers,
+      sendText,
+      sendTemplateMessage,
+      messageText: buildExhaustedCreditsMessage(),
+      templateName: "kadi_exhausted_credits_v1",
+      campaignType: "exhausted_credits",
+      cycleKey,
+      alreadyTargetedSet,
+      sendDelayMs: safeDelayMs,
+    });
+
+    const exhaustedUniqueTouched = diffCount(
+      exhaustedBeforeSend,
+      alreadyTargetedSet
+    );
+
+    if (adminWaId) {
+      await notifyAdminReengagement({
+        sendText,
+        adminWaId,
+        type: "auto_exhausted_credits",
+        stats: exhaustedStats,
+        meta: {
+          cycleKey,
+          cooldownDays: reengagementCooldownDays,
+          sendDelayMs: safeDelayMs,
+          uniqueTouched: exhaustedUniqueTouched,
+          excludedThisSegment: exhaustedExcludedBefore,
+          alreadyTargetedInCycle: exhaustedExcludedBefore,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+  }
+
+  // ===============================
   // GLOBAL SUMMARY
   // ===============================
   if (adminWaId) {
@@ -372,6 +432,7 @@ async function runReengagementCycle({
     targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
+    exhaustedCredits: exhaustedStats,
   });
 
   return {
@@ -381,6 +442,7 @@ async function runReengagementCycle({
     targetedUnique: alreadyTargetedSet.size,
     zeroDocs: zeroStats,
     inactive: inactiveStats,
+    exhaustedCredits: exhaustedStats,
   };
 }
 
