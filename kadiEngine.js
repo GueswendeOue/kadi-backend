@@ -25,6 +25,7 @@ const {
 // ===============================
 const {
   sendText,
+  sendTypingIndicator,
   sendButtons,
   sendList,
   getMediaInfo,
@@ -32,6 +33,10 @@ const {
   uploadMediaBuffer,
   sendDocument,
 } = require("./kadiMessaging");
+const {
+  shouldSendTypingBeforeNaturalText,
+  shouldSendTypingForInteractiveReply,
+} = require("./kadiTypingPolicy");
 
 // ===============================
 // Utils / helpers
@@ -1210,6 +1215,10 @@ async function handleTextMessage(from, text, msg) {
   if (await handleProductFlowText(from, text)) return true;
 
   // 12) Compréhension naturelle
+  if (!msg?.typingAlreadySent && shouldSendTypingBeforeNaturalText(text)) {
+    await sendTypingIndicator(msg?.id);
+  }
+
   if (await tryHandleNaturalMessage(from, text)) return true;
   if (await handleSmartItemsBlockText(from, text)) return true;
 
@@ -1237,6 +1246,10 @@ async function handleInteractiveMessage(from, msg) {
       "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
     );
     return true;
+  }
+
+  if (shouldSendTypingForInteractiveReply(replyId)) {
+    await sendTypingIndicator(msg?.id);
   }
 
   const handledOnboarding = await handleOnboardingReply(from, replyId);
@@ -1302,12 +1315,16 @@ async function handleIncomingMessage(value) {
         }
 
         if (msg.type === "audio") {
+          await sendTypingIndicator(msg?.id);
           await handleIncomingAudioMessage(msg, value, {
             sendText,
             sendButtons,
             getSession,
             handleTranscribedText: async (audioFrom, text, textMsg) =>
-              handleTextMessage(audioFrom, text, textMsg),
+              handleTextMessage(audioFrom, text, {
+                ...textMsg,
+                typingAlreadySent: true,
+              }),
           });
           return;
         }

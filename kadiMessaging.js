@@ -2,6 +2,7 @@
 
 const {
   sendText,
+  sendTypingIndicator,
   sendButtons,
   sendList,
   getMediaInfo,
@@ -12,6 +13,7 @@ const {
 
 module.exports = {
   sendText,
+  sendTypingIndicator,
   sendButtons,
   sendList,
   getMediaInfo,

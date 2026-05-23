@@ -168,6 +168,37 @@ async function postJsonMessage(payload, timeout = 15000, context = "message", me
   }
 }
 
+async function sendTypingIndicator(messageId) {
+  const id = String(messageId || "").trim();
+  if (!id) return { accepted: false, skipped: true };
+
+  const payload = {
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: id,
+    typing_indicator: {
+      type: "text",
+    },
+  };
+
+  try {
+    const resp = await axios.post(graphUrl(`${PHONE_NUMBER_ID}/messages`), payload, {
+      headers: waHeadersJson(),
+      timeout: 5000,
+    });
+
+    return {
+      accepted: true,
+      raw: resp.data,
+      messageId: extractMessageId(resp.data),
+    };
+  } catch (error) {
+    const finalError = buildMetaApiError(error);
+    logError("sendTypingIndicator", finalError, { messageId: id });
+    return { accepted: false, error: finalError.message };
+  }
+}
+
 // ======================================================
 // Validation list message
 // ======================================================
@@ -507,6 +538,7 @@ function extractStatusesFromWebhookValue(value) {
 module.exports = {
   verifyRequestSignature,
   sendText,
+  sendTypingIndicator,
   sendTemplate,
   sendButtons,
   sendList,
