@@ -28,11 +28,21 @@ const KADI_NLU_SCHEMA = {
         type: ["string", "null"],
         enum: ["devis", "facture", "recu", "decharge", null],
       },
+      documentType: {
+        type: ["string", "null"],
+        enum: ["devis", "facture", "recu", "decharge", null],
+      },
       client: { type: ["string", "null"] },
       clientPhone: { type: ["string", "null"] },
       motif: { type: ["string", "null"] },
       subject: { type: ["string", "null"] },
       total: { type: ["number", "null"] },
+      paid: { type: "boolean" },
+      paymentMethod: { type: ["string", "null"] },
+      warnings: {
+        type: "array",
+        items: { type: "string" },
+      },
       currency: { type: ["string", "null"] },
       items: {
         type: "array",
@@ -42,10 +52,12 @@ const KADI_NLU_SCHEMA = {
           properties: {
             label: { type: "string" },
             qty: { type: "number" },
+            quantity: { type: "number" },
+            unit: { type: ["string", "null"] },
             unitPrice: { type: ["number", "null"] },
             lineTotal: { type: ["number", "null"] },
           },
-          required: ["label", "qty", "unitPrice", "lineTotal"],
+          required: ["label", "qty", "quantity", "unit", "unitPrice", "lineTotal"],
         },
       },
       dateText: { type: ["string", "null"] },
@@ -58,11 +70,15 @@ const KADI_NLU_SCHEMA = {
     required: [
       "kind",
       "docType",
+      "documentType",
       "client",
       "clientPhone",
       "motif",
       "subject",
       "total",
+      "paid",
+      "paymentMethod",
+      "warnings",
       "currency",
       "items",
       "dateText",
@@ -104,7 +120,8 @@ function sanitizePhone(value) {
 
 function sanitizeItem(item = {}) {
   const label = sanitizeString(item.label, 200);
-  const qty = Number(item.qty);
+  const qty = Number(item.quantity ?? item.qty);
+  const unit = sanitizeString(item.unit, 30);
   const unitPrice =
     item.unitPrice == null || Number.isNaN(Number(item.unitPrice))
       ? null
@@ -120,6 +137,8 @@ function sanitizeItem(item = {}) {
   return {
     label,
     qty,
+    quantity: qty,
+    unit,
     unitPrice,
     lineTotal,
   };
@@ -164,8 +183,8 @@ function inferTotalFromItems(items = []) {
 function sanitizeNluResult(result) {
   if (!result || typeof result !== "object") return null;
 
-  const kind = normalizeKind(result.kind);
-  const docType = normalizeDocType(result.docType);
+  let kind = normalizeKind(result.kind);
+  const docType = normalizeDocType(result.documentType || result.docType);
 
   const items = Array.isArray(result.items)
     ? result.items
@@ -186,6 +205,16 @@ function sanitizeNluResult(result) {
     total = inferTotalFromItems(items);
   }
 
+  if (kind === "unknown") {
+    if (items.length > 0) {
+      kind = "items";
+    } else if (docType && total != null && total >= 0) {
+      kind = "simple_payment";
+    } else if (docType) {
+      kind = "intent_only";
+    }
+  }
+
   const correctedText = sanitizeString(result.correctedText, 1000);
   const client = sanitizeString(result.client, 120);
   const clientPhone = sanitizePhone(result.clientPhone);
@@ -195,15 +224,23 @@ function sanitizeNluResult(result) {
   const ambiguityReason = sanitizeString(result.ambiguityReason, 200);
   const reasoningShort = sanitizeString(result.reasoningShort, 200);
   const currency = sanitizeString(result.currency, 20);
+  const paymentMethod = sanitizeString(result.paymentMethod, 80);
+  const warnings = Array.isArray(result.warnings)
+    ? result.warnings.map((w) => sanitizeString(w, 200)).filter(Boolean)
+    : [];
 
   return {
     kind,
     docType,
+    documentType: docType,
     client,
     clientPhone,
     motif,
     subject,
     total,
+    paid: Boolean(result.paid),
+    paymentMethod,
+    warnings,
     currency,
     items,
     dateText,
@@ -239,7 +276,14 @@ function buildDeveloperPrompt(options = {}) {
     "Si tu ne comprends pas assez bien, utilise kind='unknown'.",
     "Si le texte semble venir d'un vocal bruité, corrige légèrement le texte dans correctedText sans changer le sens.",
     "Quand plusieurs items sont présents, sépare-les proprement.",
-    "Si qty n'est pas claire mais qu'un item existe, mets qty=1.",
+    "Pour chaque item, retourne label, quantity, unit, unitPrice et lineTotal.",
+    "qty doit toujours être égal à quantity pour compatibilité.",
+    "Lis les colonnes depuis la droite quand une ligne finit par quantité puis prix.",
+    "Préserve les chiffres techniques dans les désignations : Lampe 120, 2.5KWH, 3KVA, 450W, 2 modules, 2.5mm.",
+    "Si quantity n'est pas claire mais qu'un item existe, mets quantity=1 et qty=1.",
+    "Si un paiement est mentionné comme payé en espèces, mets paid=true et paymentMethod='espèces'.",
+    "Si un total écrit existe, mets-le dans total.",
+    "Si qty*unitPrice ne correspond pas à lineTotal ou total, garde les valeurs lues et ajoute un warning.",
     "currency doit être 'FCFA' quand c'est très probable, sinon null.",
     "confidence doit être entre 0 et 1.",
     "Pour un message comme 'reçu pour Intel loyer avril 100000', la bonne lecture est généralement docType='recu', client='Intel', motif/subject='loyer avril', total=100000.",

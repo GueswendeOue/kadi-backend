@@ -74,7 +74,7 @@ test("parse une decharge mixte objet et somme", () => {
   assert.equal(parsed.discharge_purpose, "travaux");
 });
 
-test("flow decharge prefere le parseur local au NLU OpenAI degradé", async () => {
+test("flow decharge utilise OpenAI en priorité quand le JSON est structuré", async () => {
   const session = {};
   const sentTexts = [];
   let openAiCalls = 0;
@@ -116,7 +116,12 @@ test("flow decharge prefere le parseur local au NLU OpenAI degradé", async () =
         kind: "intent_only",
         docType: "decharge",
         client: "Ali",
-        subject: "Perceuse et paiement pour travaux",
+        cni_number: "B1234567",
+        receiver_phone: "70112233",
+        object_label: "perceuse",
+        amount_received: 35000,
+        discharge_purpose: "travaux",
+        subject: "perceuse",
         motif: "travaux",
         confidence: 0.9,
       };
@@ -149,7 +154,7 @@ test("flow decharge prefere le parseur local au NLU OpenAI degradé", async () =
   );
 
   assert.equal(handled, true);
-  assert.equal(openAiCalls, 0);
+  assert.equal(openAiCalls, 1);
   assert.equal(session.step, "doc_review");
   assert.equal(session.lastDocDraft.cni_number, "B1234567");
   assert.equal(session.lastDocDraft.receiver_phone, "70112233");

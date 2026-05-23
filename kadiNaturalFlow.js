@@ -56,6 +56,33 @@ function makeKadiNaturalFlow(deps) {
     return "local";
   }
 
+  function isSimpleLocalCommand(text = "") {
+    const t = String(text || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim()
+      .toLowerCase();
+
+    return [
+      "menu",
+      "accueil",
+      "home",
+      "retour",
+      "stop",
+      "solde",
+      "credit",
+      "credits",
+      "recharge",
+      "recharger",
+      "acheter",
+      "support",
+      "aide",
+      "tampon",
+      "cachet",
+      "historique",
+    ].includes(t);
+  }
+
   function isParsedResultUsable(parsed) {
     if (!parsed || typeof parsed !== "object") return false;
     if (parsed.kind === "unknown") return false;
@@ -118,12 +145,27 @@ function makeKadiNaturalFlow(deps) {
 
           if (!Number.isFinite(lineTotal) || lineTotal < 0) {
             issues.push("line_total_invalid");
+          } else if (lineTotal > 0) {
+            const gap = Math.abs(expected - Math.round(lineTotal));
+            const base = Math.max(expected, Math.round(lineTotal), 1);
+            if (gap > 500 && gap / base >= 0.03) {
+              issues.push("line_total_mismatch");
+            }
           }
         }
       }
 
       if (computed > 0 && total <= 0) {
         issues.push("draft_total_zero");
+      }
+
+      const writtenTotal = Number(draft?.meta?.nluDetectedTotal || 0);
+      if (writtenTotal > 0 && computed > 0) {
+        const gap = Math.abs(Math.round(writtenTotal) - computed);
+        const base = Math.max(Math.round(writtenTotal), computed, 1);
+        if (gap > 500 && gap / base >= 0.03) {
+          issues.push("written_total_mismatch");
+        }
       }
     }
 
@@ -147,31 +189,14 @@ function makeKadiNaturalFlow(deps) {
     let aiParsed = null;
     let localParsed = null;
 
-    try {
-      localParsed = parseNaturalWhatsAppMessage(rawText);
-
-      if (
-        (localParsed?.docType === "decharge" ||
-          localParsed?.kind === "items" ||
-          localParsed?.kind === "simple_payment") &&
-        isParsedResultUsable(localParsed)
-      ) {
-        console.log("[KADI/NATURAL] using local priority parse", {
-          kind: localParsed?.kind || null,
-          docType: localParsed?.docType || null,
-        });
-        return localParsed;
-      }
-    } catch (e) {
-      console.warn("[KADI/NATURAL] local decharge parser failed:", e?.message);
-    }
+    if (isSimpleLocalCommand(rawText)) return null;
 
     if (typeof parseNaturalWithOpenAI === "function") {
       try {
         aiParsed = await parseNaturalWithOpenAI(rawText);
 
         if (isParsedResultUsable(aiParsed)) {
-          console.log("[KADI/NATURAL] using OpenAI parse", {
+          console.log("[KADI/NATURAL] using OpenAI priority parse", {
             kind: aiParsed?.kind || null,
             docType: aiParsed?.docType || null,
             confidence: aiParsed?.confidence ?? null,
@@ -184,10 +209,10 @@ function makeKadiNaturalFlow(deps) {
     }
 
     try {
-      localParsed = localParsed || parseNaturalWhatsAppMessage(rawText);
+      localParsed = parseNaturalWhatsAppMessage(rawText);
 
       if (isParsedResultUsable(localParsed)) {
-        console.log("[KADI/NATURAL] using local parse", {
+        console.log("[KADI/NATURAL] using local fallback parse", {
           kind: localParsed?.kind || null,
           docType: localParsed?.docType || null,
         });
@@ -287,6 +312,14 @@ function makeKadiNaturalFlow(deps) {
       if (subject) {
         draft.subject = subject;
       }
+    }
+
+    if (parsed.paid === true) {
+      draft.paid = true;
+    }
+
+    if (parsed.paymentMethod) {
+      draft.paymentMethod = sanitizeText(parsed.paymentMethod, 80);
     }
 
     if (draft.type === "decharge") {
@@ -421,6 +454,7 @@ function makeKadiNaturalFlow(deps) {
   }
 
   async function sendDraftPreviewOrRecover(from, draft, rawText) {
+    const s = getSession(from);
     const validation = validateDraftForPreview(draft);
 
     if (!validation.ok) {
@@ -453,6 +487,8 @@ function makeKadiNaturalFlow(deps) {
       return true;
     }
 
+    s.step = "doc_review";
+
     const preview =
       draft.type === "decharge"
         ? buildDechargePreviewMessage({ doc: draft, money })
@@ -472,6 +508,7 @@ function makeKadiNaturalFlow(deps) {
     const rawText = String(text || "").trim();
 
     if (!rawText) return false;
+    if (isSimpleLocalCommand(rawText)) return false;
 
     const vagueCheck = detectVagueRequest(rawText);
 
@@ -617,6 +654,10 @@ function makeKadiNaturalFlow(deps) {
         draft.subject = null;
         draft.dechargeType = "argent";
       }
+      if (parsed.paid === true) draft.paid = true;
+      if (parsed.paymentMethod) {
+        draft.paymentMethod = sanitizeText(parsed.paymentMethod, 80);
+      }
       computeDraftFinance(draft);
 
       if (!safe(draft.client)) {
@@ -631,7 +672,6 @@ function makeKadiNaturalFlow(deps) {
         return sendClientMissingPrompt(from, draft);
       }
 
-      s.step = "doc_review";
       return sendDraftPreviewOrRecover(from, draft, rawText);
     }
 
@@ -651,7 +691,6 @@ function makeKadiNaturalFlow(deps) {
           return true;
         }
 
-        s.step = "doc_review";
         return sendDraftPreviewOrRecover(from, draft, rawText);
       }
 
@@ -675,9 +714,17 @@ function makeKadiNaturalFlow(deps) {
     }
 
     if (parsed.kind === "items") {
-      draft.items = (parsed.items || []).map((it) =>
-        makeItem(it.label, it.qty, it.unitPrice)
-      );
+      draft.items = (parsed.items || []).map((it) => {
+        const item = makeItem(it.label, it.qty ?? it.quantity, it.unitPrice);
+        return {
+          ...item,
+          unit: it.unit || null,
+          lineTotal:
+            Number.isFinite(Number(it.lineTotal)) && Number(it.lineTotal) > 0
+              ? Number(it.lineTotal)
+              : item.amount,
+        };
+      });
 
       computeDraftFinance(draft);
 
@@ -693,6 +740,8 @@ function makeKadiNaturalFlow(deps) {
         totalsGapSeverity: analysis.gapInfo.severity,
         missingHint: analysis.hint,
         nluSource: getNluSource(parsed),
+        nluDetectedTotal: Number(parsed?.total || 0) || null,
+        nluWarnings: Array.isArray(parsed?.warnings) ? parsed.warnings : [],
       });
 
       if (!safe(draft.client)) {
@@ -724,7 +773,6 @@ function makeKadiNaturalFlow(deps) {
         return true;
       }
 
-      s.step = "doc_review";
       return sendDraftPreviewOrRecover(from, draft, rawText);
     }
 
