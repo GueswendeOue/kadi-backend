@@ -26,44 +26,27 @@ function makeKadiMenus(deps) {
 
   async function sendHomeMenu(to) {
     return sendList(to, {
-      body:
-        "👋 Bienvenue sur KADI\n\n" +
-        "Choisissez l’action la plus simple pour commencer.",
+      body: "👋 KADI\n\nQue voulez-vous faire ?",
       buttonText: "Ouvrir",
-      footer: "Créez un document ou envoyez une photo",
+      footer: "Tapez AIDE si vous êtes bloqué.",
       sections: [
         {
           title: "Menu principal",
           rows: [
             {
               id: "HOME_DOCS",
-              title: "📄 Créer document",
-              description: "Facture, devis, reçu, photo",
+              title: "📄 Créer un document",
+              description: "Écrire, photo ou choix guidé",
             },
             {
               id: "HOME_HISTORY",
-              title: "📚 Historique",
-              description: "Voir vos documents récents",
+              title: "📚 Mes documents",
+              description: "Dernier PDF et documents récents",
             },
             {
               id: "HOME_CREDITS",
-              title: "💳 Crédits / Recharge",
-              description: "Solde et achat de crédits",
-            },
-            {
-              id: "HOME_PROFILE",
-              title: "🏢 Profil",
-              description: "Voir ou modifier votre profil",
-            },
-            {
-              id: "PROFILE_STAMP",
-              title: "🟦 Tampon",
-              description: "Configurer votre tampon",
-            },
-            {
-              id: "HOME_SUPPORT",
-              title: "🆘 Support & assistance",
-              description: "Aide, paiement, bug, support",
+              title: "💳 Crédits",
+              description: "Solde et recharge",
             },
           ],
         },
@@ -106,13 +89,29 @@ function makeKadiMenus(deps) {
   async function sendDocsMenu(to) {
     return sendList(to, {
       body:
-        "📄 Choisissez le type de document à créer.\n\n" +
-        "Vous pouvez aussi envoyer directement une photo ou écrire votre demande.",
+        "📄 Créer un document\n\n" +
+        "Le plus simple : écrivez votre demande en une phrase.\n\n" +
+        "Exemple :\nFacture pour Awa, 5 pagnes à 3000",
       buttonText: "Choisir",
-      footer: "Sélectionnez une option",
+      footer: "Vous pouvez aussi envoyer directement une photo.",
       sections: [
         {
-          title: "Documents",
+          title: "Commencer vite",
+          rows: [
+            {
+              id: "HOME_HELP",
+              title: "✍️ Écrire une phrase",
+              description: "Voir un exemple puis tapez votre demande",
+            },
+            {
+              id: "HOME_OCR",
+              title: "📷 Envoyer une photo",
+              description: "Lire une photo et préparer un document",
+            },
+          ],
+        },
+        {
+          title: "Choisir un type",
           rows: [
             {
               id: "DOC_FACTURE_MENU",
@@ -128,11 +127,6 @@ function makeKadiMenus(deps) {
               id: "DOC_RECU",
               title: "🧾 Reçu",
               description: "Confirmer un paiement",
-            },
-            {
-              id: "HOME_OCR",
-              title: "📷 Photo / OCR",
-              description: "Lire une photo et préparer un document",
             },
             {
               id: "DOC_DECHARGE",
@@ -230,10 +224,10 @@ function makeKadiMenus(deps) {
     if (typeof sendList !== "function") {
       return sendButtons(
         to,
-        "📄 *Vérifiez votre document*\n\nVous pouvez générer le PDF ou ajouter un détail.",
+        "📄 *Vérifiez votre document*\n\nS’il est correct, générez le PDF maintenant.",
         [
           { id: "DOC_CONFIRM", title: "📤 PDF" },
-          { id: "DOC_ADD_MORE", title: "➕ Ajouter" },
+          { id: "DOC_EDIT_TEXT", title: "✏️ Corriger" },
           { id: "DOC_CANCEL", title: "🏠 Menu" },
         ]
       );
@@ -277,20 +271,11 @@ function makeKadiMenus(deps) {
             description: "Générer et envoyer le PDF maintenant",
           },
           {
-            id: "DOC_ADD_MORE",
-            title: "➕ Ajouter ligne",
-            description: "Ajouter une nouvelle ligne",
-          },
-          {
             id: "DOC_EDIT_TEXT",
-            title: "✍️ Corriger texte",
-            description: "Recevoir le document en texte puis corriger",
+            title: "✏️ Corriger",
+            description: "Corriger le document avant PDF",
           },
         ],
-      },
-      {
-        title: "Compléments",
-        rows: enrichRows,
       },
     ];
 
