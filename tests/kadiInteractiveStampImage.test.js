@@ -9,6 +9,9 @@ function makeFlow({
   session,
   profile = {},
   updateProfile = async () => {},
+  hasStampProfileReady = () => false,
+  createAndSendPdf = async () => {},
+  sendPreGenerateStampMenu = async () => {},
   demoVideoUrl = "",
 } = {}) {
   const calls = [];
@@ -32,7 +35,7 @@ function makeFlow({
     sendStampPositionMenu2: async () => {},
     sendStampSizeMenu: async () => {},
     sendAlreadyGeneratedMenu: async () => {},
-    sendPreGenerateStampMenu: async () => {},
+    sendPreGenerateStampMenu,
     sendRechargePacksMenu: async () => {},
     sendRechargePaymentMethodMenu: async () => {},
     sendOrangeMoneyInstructions: async () => {},
@@ -48,10 +51,10 @@ function makeFlow({
     askItemLabel: async () => {},
     tryHandleNaturalMessage: async () => false,
     processOcrImageToDraft: async () => {},
-    createAndSendPdf: async () => {},
+    createAndSendPdf,
     getOrCreateProfile: async () => profile,
     updateProfile,
-    hasStampProfileReady: () => false,
+    hasStampProfileReady,
     resetStampChoice: () => {},
     buildDechargeConfirmationMessage: () => "",
     buildDechargePreviewMessage: () => "",
@@ -173,6 +176,75 @@ test("STAMP_USE_UPLOADED selects uploaded source when image exists", async () =>
         stamp_enabled: true,
         stamp_source: "uploaded",
       },
+    },
+  ]);
+});
+
+test("DOC_CONFIRM opens one-time stamp choice when stamp profile is ready", async () => {
+  const session = {
+    step: "doc_review",
+    lastDocDraft: {
+      type: "facture",
+      client: "Awa",
+      items: [{ label: "Pagne", qty: 5, unitPrice: 3000 }],
+      finance: { gross: 15000 },
+    },
+  };
+  const menus = [];
+  const { flow } = makeFlow({
+    session,
+    profile: {
+      stamp_enabled: true,
+      business_name: "Kadi Services",
+    },
+    hasStampProfileReady: () => true,
+    sendPreGenerateStampMenu: async (to, opts) => menus.push({ to, opts }),
+  });
+
+  await flow.handleInteractiveReply("22670000000", "DOC_CONFIRM");
+
+  assert.deepEqual(menus, [
+    {
+      to: "22670000000",
+      opts: {
+        baseCost: 1,
+      },
+    },
+  ]);
+});
+
+test("PRESTAMP_ADD_ONCE sets one-time stamp flags before creating PDF", async () => {
+  const session = {
+    step: "doc_review",
+    lastDocDraft: {
+      type: "facture",
+      client: "Awa",
+      items: [{ label: "Pagne", qty: 5, unitPrice: 3000 }],
+      finance: { gross: 15000 },
+    },
+  };
+  const createCalls = [];
+  const { flow } = makeFlow({
+    session,
+    profile: {
+      stamp_enabled: true,
+      business_name: "Kadi Services",
+    },
+    hasStampProfileReady: () => true,
+    createAndSendPdf: async () => {
+      createCalls.push({
+        addStampForNextDoc: session.addStampForNextDoc,
+        stampMode: session.stampMode,
+      });
+    },
+  });
+
+  await flow.handleInteractiveReply("22670000000", "PRESTAMP_ADD_ONCE");
+
+  assert.deepEqual(createCalls, [
+    {
+      addStampForNextDoc: true,
+      stampMode: "one_time",
     },
   ]);
 });

@@ -57,6 +57,178 @@ function makeKadiPdfFlow(deps) {
     return "Document";
   }
 
+  function hasGeneratedStampInfo(profile = {}) {
+    return !!(
+      safeText(profile?.business_name, "") ||
+      safeText(profile?.owner_name, "") ||
+      safeText(profile?.phone, "")
+    );
+  }
+
+  function resolveStampSource(profile = {}) {
+    const source = safeText(profile?.stamp_source, "").toLowerCase();
+    const hasImage = !!safeText(profile?.stamp_image_path, "");
+
+    if (source === "uploaded" && hasImage) return "uploaded";
+    if (source === "generated") return "generated";
+    if (hasImage) return "uploaded";
+    return "generated";
+  }
+
+  function logStampResult({ requested, source, applied, reason }) {
+    console.log(
+      `[KADI/STAMP] requested=${requested === true} source=${
+        source || "none"
+      } applied=${applied === true} reason=${reason || "-"}`
+    );
+  }
+
+  async function prepareStampForPdf({ profile, requested }) {
+    const source = resolveStampSource(profile);
+
+    if (requested !== true) {
+      return {
+        requested: false,
+        shouldApply: false,
+        source,
+        stampBuffer: null,
+        profile: { ...profile, stamp_enabled: false },
+        reason: "not_requested",
+      };
+    }
+
+    if (profile?.stamp_enabled !== true) {
+      return {
+        requested: true,
+        shouldApply: false,
+        source,
+        stampBuffer: null,
+        profile: { ...profile, stamp_enabled: false },
+        reason: "stamp_disabled",
+      };
+    }
+
+    if (source === "uploaded") {
+      const imagePath = safeText(profile?.stamp_image_path, "");
+
+      if (!imagePath) {
+        if (hasGeneratedStampInfo(profile)) {
+          return {
+            requested: true,
+            shouldApply: true,
+            source: "generated",
+            stampBuffer: null,
+            profile: {
+              ...profile,
+              stamp_enabled: true,
+              stamp_paid: true,
+              stamp_source: "generated",
+              stamp_image_path: null,
+            },
+            reason: "uploaded_path_missing_fallback_generated",
+          };
+        }
+
+        return {
+          requested: true,
+          shouldApply: false,
+          source,
+          stampBuffer: null,
+          profile: { ...profile, stamp_enabled: false },
+          reason: "uploaded_path_missing",
+        };
+      }
+
+      try {
+        const signed = await getSignedLogoUrl(imagePath);
+        const stampBuffer = await downloadSignedUrlToBuffer(signed);
+
+        return {
+          requested: true,
+          shouldApply: true,
+          source: "uploaded",
+          stampBuffer,
+          profile: {
+            ...profile,
+            stamp_enabled: true,
+            stamp_paid: true,
+            stamp_source: "uploaded",
+          },
+          reason: "uploaded_ready",
+        };
+      } catch (e) {
+        console.warn("[STAMP IMAGE DOWNLOAD ERROR]", e?.message || e);
+
+        if (hasGeneratedStampInfo(profile)) {
+          return {
+            requested: true,
+            shouldApply: true,
+            source: "generated",
+            stampBuffer: null,
+            profile: {
+              ...profile,
+              stamp_enabled: true,
+              stamp_paid: true,
+              stamp_source: "generated",
+              stamp_image_path: null,
+            },
+            reason: "uploaded_download_failed_fallback_generated",
+          };
+        }
+
+        return {
+          requested: true,
+          shouldApply: false,
+          source,
+          stampBuffer: null,
+          profile: { ...profile, stamp_enabled: false },
+          reason: "uploaded_download_failed_no_generated_fallback",
+        };
+      }
+    }
+
+    if (!hasGeneratedStampInfo(profile)) {
+      return {
+        requested: true,
+        shouldApply: false,
+        source,
+        stampBuffer: null,
+        profile: { ...profile, stamp_enabled: false },
+        reason: "generated_profile_missing",
+      };
+    }
+
+    return {
+      requested: true,
+      shouldApply: true,
+      source: "generated",
+      stampBuffer: null,
+      profile: {
+        ...profile,
+        stamp_enabled: true,
+        stamp_paid: true,
+        stamp_source: "generated",
+        stamp_image_path: null,
+      },
+      reason: "generated_ready",
+    };
+  }
+
+  async function sendStampUnavailableWarning(from, stampPlan = {}) {
+    await sendText(
+      from,
+      "⚠️ Je n’ai pas pu préparer le tampon pour ce PDF.\n\n" +
+        "Je continue sans tampon et sans crédit supplémentaire pour le tampon."
+    );
+
+    logStampResult({
+      requested: true,
+      source: stampPlan?.source,
+      applied: false,
+      reason: stampPlan?.reason || "unavailable",
+    });
+  }
+
   function clearGeneratedArtifacts(draft) {
     if (!draft || typeof draft !== "object") return;
 
@@ -102,15 +274,45 @@ function makeKadiPdfFlow(deps) {
   async function applyStampAndSignatureIfAny(
     pdfBuffer,
     profile,
-    logoBuffer = null
+    logoBuffer = null,
+    opts = {}
   ) {
     let buf = pdfBuffer;
 
+    const stampRequested =
+      opts.stampRequested === true || profile?.stamp_enabled === true;
+    const stampSource = safeText(opts.stampSource, resolveStampSource(profile));
+    const stampRequired = opts.stampRequired === true;
+    const hasPreparedStampBuffer = Object.prototype.hasOwnProperty.call(
+      opts,
+      "stampBuffer"
+    );
     const canStamp = profile?.stamp_enabled === true;
 
     if (canStamp && kadiStamp?.applyStampToPdfBuffer) {
       try {
-        let stampBuf = null;
+        const paidGateBlocks =
+          Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") &&
+          profile?.stamp_paid !== true &&
+          opts.ignorePaidFlag !== true;
+
+        if (paidGateBlocks) {
+          logStampResult({
+            requested: stampRequested,
+            source: stampSource,
+            applied: false,
+            reason: "stamp_paid_false",
+          });
+          if (stampRequired) {
+            throw new Error("STAMP_NOT_PAID");
+          }
+          return buf;
+        }
+
+        let stampBuf =
+          opts.stampBuffer && Buffer.isBuffer(opts.stampBuffer)
+            ? opts.stampBuffer
+            : null;
 
         const stampSource = String(profile?.stamp_source || "")
           .trim()
@@ -119,7 +321,7 @@ function makeKadiPdfFlow(deps) {
           !!profile?.stamp_image_path &&
           (stampSource === "uploaded" || !stampSource);
 
-        if (shouldUseUploadedStamp) {
+        if (!stampBuf && !hasPreparedStampBuffer && shouldUseUploadedStamp) {
           try {
             const signed = await getSignedLogoUrl(profile.stamp_image_path);
             stampBuf = await downloadSignedUrlToBuffer(signed);
@@ -136,10 +338,38 @@ function makeKadiPdfFlow(deps) {
           pages: "last",
           logoBuffer: Buffer.isBuffer(logoBuffer) ? logoBuffer : null,
           stampBuffer: Buffer.isBuffer(stampBuf) ? stampBuf : null,
+          required: stampRequired,
+          ignorePaidFlag: opts.ignorePaidFlag === true,
+        });
+
+        logStampResult({
+          requested: stampRequested,
+          source: stampSource || stampProfile?.stamp_source || "generated",
+          applied: true,
+          reason: opts.stampReason || "applied",
         });
       } catch (e) {
         console.warn("[STAMP ERROR]", e?.message || e);
+        logStampResult({
+          requested: stampRequested,
+          source: stampSource,
+          applied: false,
+          reason: `error:${String(e?.message || e || "unknown_error").slice(
+            0,
+            120
+          )}`,
+        });
+        if (stampRequired) {
+          throw e;
+        }
       }
+    } else {
+      logStampResult({
+        requested: stampRequested,
+        source: stampSource,
+        applied: false,
+        reason: canStamp ? "handler_missing" : "not_enabled",
+      });
     }
 
     if (kadiSignature?.applySignatureToPdfBuffer) {
@@ -382,9 +612,29 @@ function makeKadiPdfFlow(deps) {
     try {
       const profile = await getOrCreateProfile(from);
 
-      const useStampForThisDoc =
+      const stampRequestedForThisDoc =
         s.addStampForNextDoc === true && s.stampMode === "one_time";
 
+      let logoBuf = null;
+      if (profile?.logo_path) {
+        try {
+          const signed = await getSignedLogoUrl(profile.logo_path);
+          logoBuf = await downloadSignedUrlToBuffer(signed);
+        } catch (e) {
+          console.warn("[LOGO DOWNLOAD ERROR]", e?.message || e);
+        }
+      }
+
+      const stampPlan = await prepareStampForPdf({
+        profile,
+        requested: stampRequestedForThisDoc,
+      });
+
+      if (stampRequestedForThisDoc && !stampPlan.shouldApply) {
+        await sendStampUnavailableWarning(from, stampPlan);
+      }
+
+      const useStampForThisDoc = stampPlan.shouldApply === true;
       const stampExtraCost = useStampForThisDoc ? 1 : 0;
       totalCost = baseCost + stampExtraCost;
 
@@ -396,6 +646,9 @@ function makeKadiPdfFlow(deps) {
         totalCost,
         baseCost,
         stampExtraCost,
+        stampRequested: stampRequestedForThisDoc,
+        stampSource: stampPlan.source || null,
+        stampReason: stampPlan.reason || null,
         useStampForThisDoc,
       });
 
@@ -412,6 +665,9 @@ function makeKadiPdfFlow(deps) {
           source: finalDraft.source || null,
           baseCost,
           stampExtraCost,
+          stampRequested: stampRequestedForThisDoc,
+          stampSource: stampPlan.source || null,
+          stampReason: stampPlan.reason || null,
           useStampForThisDoc,
         }
       );
@@ -438,16 +694,6 @@ function makeKadiPdfFlow(deps) {
           factureKind: finalDraft.factureKind,
           dateISO: finalDraft.date,
         });
-      }
-
-      let logoBuf = null;
-      if (profile?.logo_path) {
-        try {
-          const signed = await getSignedLogoUrl(profile.logo_path);
-          logoBuf = await downloadSignedUrlToBuffer(signed);
-        } catch (e) {
-          console.warn("[LOGO DOWNLOAD ERROR]", e?.message || e);
-        }
       }
 
       const title = getDocTitle(finalDraft);
@@ -508,19 +754,31 @@ function makeKadiPdfFlow(deps) {
       });
 
       const stampProfile = useStampForThisDoc
-        ? { ...profile, stamp_enabled: true }
+        ? stampPlan.profile
         : { ...profile, stamp_enabled: false };
 
       pdfBuf = await applyStampAndSignatureIfAny(
         pdfBuf,
         stampProfile,
-        logoBuf
+        logoBuf,
+        {
+          stampRequested: stampRequestedForThisDoc,
+          stampRequired: useStampForThisDoc,
+          ignorePaidFlag: useStampForThisDoc,
+          stampBuffer: stampPlan.stampBuffer,
+          stampSource: stampPlan.source,
+          stampReason: stampPlan.reason,
+        }
       );
 
       finalDraft.meta = makeDraftMeta({
         ...(finalDraft.meta || {}),
         creditsConsumed: totalCost,
         usedStamp: !!useStampForThisDoc,
+        stampRequested: !!stampRequestedForThisDoc,
+        stampApplied: !!useStampForThisDoc,
+        stampSource: useStampForThisDoc ? stampPlan.source || null : null,
+        stampReason: stampPlan.reason || null,
         usedGeminiParse: !!finalDraft?.meta?.usedGeminiParse,
         businessSector: finalDraft?.meta?.businessSector || null,
         requestId: finalDraft.requestId,

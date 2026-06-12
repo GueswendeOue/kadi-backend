@@ -440,6 +440,8 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
   console.log("[STAMP APPLY INPUT]", {
     stamp_enabled: profile?.stamp_enabled,
     stamp_paid: profile?.stamp_paid,
+    stamp_required: opts.required === true,
+    ignore_paid_flag: opts.ignorePaidFlag === true,
     stamp_title: profile?.stamp_title || null,
     stamp_image_path: profile?.stamp_image_path || null,
     stamp_position: profile?.stamp_position || null,
@@ -449,14 +451,21 @@ async function applyStampToPdfBuffer(pdfBuffer, profile, opts = {}) {
 
   if (profile?.stamp_enabled !== true) {
     console.log("[STAMP APPLY] skipped: stamp_enabled !== true");
+    if (opts.required === true) {
+      throw new Error("STAMP_NOT_ENABLED");
+    }
     return pdfBuffer;
   }
 
   if (
     Object.prototype.hasOwnProperty.call(profile || {}, "stamp_paid") &&
-    profile?.stamp_paid !== true
+    profile?.stamp_paid !== true &&
+    opts.ignorePaidFlag !== true
   ) {
     console.log("[STAMP APPLY] skipped: stamp_paid !== true");
+    if (opts.required === true) {
+      throw new Error("STAMP_NOT_PAID");
+    }
     return pdfBuffer;
   }
 
