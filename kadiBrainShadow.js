@@ -5,6 +5,11 @@ const { buildBrainRequest, buildKadiContext } = require("./kadiBrainContext");
 const { makeKadiBrainProvider } = require("./kadiBrainProvider");
 const { validateBrainResult } = require("./kadiBrainValidator");
 const { isGlobalMenuText, normalizeGlobalNavText } = require("./kadiGlobalNav");
+const {
+  parseLegacyShadowFlag,
+  resolveBrainMode,
+  isShadowObservationEnabled,
+} = require("./kadiBrainConfig");
 
 const EXACT_LOCAL_COMMANDS = new Set([
   "aide", "help", "solde", "credit", "credits", "mon solde",
@@ -12,7 +17,7 @@ const EXACT_LOCAL_COMMANDS = new Set([
 ]);
 
 function envFlag(value) {
-  return /^(1|true|yes|on)$/i.test(String(value || "").trim());
+  return parseLegacyShadowFlag(value);
 }
 
 function isShadowEligibleText(text) {
@@ -30,7 +35,7 @@ function percentile(values, ratio) {
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio))];
 }
 
-function makeKadiBrainShadow({ enabled = envFlag(process.env.KADI_BRAIN_SHADOW_ENABLED), provider = null, logger = console, timeoutMs = 5000, maxSeen = 1000 } = {}) {
+function makeKadiBrainShadow({ enabled = isShadowObservationEnabled(resolveBrainMode()), provider = null, logger = console, timeoutMs = 5000, maxSeen = 1000 } = {}) {
   const brainProvider = provider || makeKadiBrainProvider({ timeoutMs });
   const seen = new Set();
   const latencies = [];
