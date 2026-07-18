@@ -330,8 +330,23 @@ async function parseNaturalWithOpenAI(text, options = {}) {
   return sanitizeNluResult(parsed);
 }
 
+async function createStrictStructuredCompletion({ model, schemaName, schema, messages, timeoutMs = 5000 }) {
+  return openai.chat.completions.create(
+    {
+      model: model || OPENAI_NLU_MODEL,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: schemaName, strict: true, schema },
+      },
+      messages,
+    },
+    { timeout: timeoutMs, maxRetries: 0 }
+  );
+}
+
 module.exports = {
   normalizeNluText,
   sanitizeNluResult,
   parseNaturalWithOpenAI,
+  createStrictStructuredCompletion,
 };

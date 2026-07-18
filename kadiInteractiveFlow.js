@@ -2043,6 +2043,7 @@ function makeKadiInteractiveFlow(deps) {
       from,
       "🤔 Je n’ai pas compris cette action.\nTapez MENU pour continuer."
     );
+    return false;
   }
 
   return {

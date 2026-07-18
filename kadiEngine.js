@@ -185,6 +185,8 @@ const kadiStamp = require("./kadiStamp");
 const kadiSignature = require("./kadiSignature");
 const kadiBroadcast = require("./kadiBroadcast");
 const { isGlobalMenuText } = require("./kadiGlobalNav");
+const { getInteractiveReplyDetails } = require("./kadiInteractiveReply");
+const { makeKadiBrainShadow } = require("./kadiBrainShadow");
 
 // OCR
 const { kadiOcrEngine } = require("./kadiOcrEngine");
@@ -310,12 +312,13 @@ function isIntentFixStep(step) {
 }
 
 function getInteractiveReplyId(msg) {
-  return (
-    msg?.interactive?.button_reply?.id ||
-    msg?.interactive?.list_reply?.id ||
-    null
-  );
+  return getInteractiveReplyDetails(msg).replyId;
 }
+
+const brainShadow = makeKadiBrainShadow({
+  logger,
+  timeoutMs: Number(process.env.KADI_BRAIN_TIMEOUT_MS || 5000),
+});
 
 function isHardGlobalInterrupt(text = "") {
   return isGlobalMenuText(text);
@@ -1104,6 +1107,30 @@ async function handleTextMessage(from, text, msg) {
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
   const s = getSession(from);
+  try {
+    void brainShadow.observeText({
+      waId: from,
+      text,
+      messageId: msg?.id,
+      session: s,
+      inputType: msg?.audioTranscript ? "voice" : "text",
+      mediaFacts: msg?.audioTranscript
+        ? {
+            detectedLanguages: Array.isArray(msg.audioTranscript.detectedLanguages)
+              ? msg.audioTranscript.detectedLanguages.slice(0, 3)
+              : [],
+          }
+        : null,
+    }).catch((error) => {
+      logger.warn("brain_shadow", "observation skipped", {
+        errorType: error?.name || "unknown",
+      });
+    });
+  } catch (error) {
+    logger.warn("brain_shadow", "observation skipped", {
+      errorType: error?.name || "unknown",
+    });
+  }
   const inHistoryFlow = isHistoryStep(s?.step);
   const inStructuredFlow = isStructuredCaptureStep(s?.step);
   const wantsGlobalInterrupt = isHardGlobalInterrupt(text);
@@ -1238,13 +1265,28 @@ async function handleTextMessage(from, text, msg) {
 }
 
 async function handleInteractiveMessage(from, msg) {
-  const replyId = getInteractiveReplyId(msg);
+  const details = getInteractiveReplyDetails(msg);
+  const replyId = details.replyId;
+  const sessionStep = getSession(from)?.step || null;
+  const logResult = (handledBy, handled) => {
+    console.log("[KADI/INTERACTIVE]", {
+      waId: from,
+      msgType: msg?.type || null,
+      rawReplyId: details.rawReplyId,
+      replyId,
+      replyTitle: details.replyTitle || null,
+      sessionStep,
+      handledBy,
+      handled,
+    });
+  };
 
   if (!replyId) {
     await sendText(
       from,
       "⚠️ Je n’ai pas pu ouvrir cette option.\nTapez MENU pour continuer."
     );
+    logResult(null, false);
     return true;
   }
 
@@ -1253,13 +1295,22 @@ async function handleInteractiveMessage(from, msg) {
   }
 
   const handledOnboarding = await handleOnboardingReply(from, replyId);
-  if (handledOnboarding) return true;
+  if (handledOnboarding) {
+    logResult("kadiOnboarding", true);
+    return true;
+  }
 
   const handledProfileReply = await handleProfileReply(from, replyId);
-  if (handledProfileReply) return true;
+  if (handledProfileReply) {
+    logResult("kadiProfileFlow", true);
+    return true;
+  }
 
   const handledHistoryReply = await handleHistoryInteractiveReply(from, replyId);
-  if (handledHistoryReply) return true;
+  if (handledHistoryReply) {
+    logResult("kadiHistoryFlow", true);
+    return true;
+  }
 
   if (
     replyId === "DOC_FEC" ||
@@ -1275,6 +1326,7 @@ async function handleInteractiveMessage(from, msg) {
     }
 
     await startCertifiedInvoiceFlow(from);
+    logResult("kadiCertifiedFlow", true);
     return true;
   }
 
@@ -1282,9 +1334,14 @@ async function handleInteractiveMessage(from, msg) {
     from,
     replyId
   );
-  if (handledCertifiedReply) return true;
+  if (handledCertifiedReply) {
+    logResult("kadiCertifiedFlow", true);
+    return true;
+  }
 
-  await handleInteractiveReply(from, replyId);
+  const handledInteractive = await handleInteractiveReply(from, replyId);
+  const wasHandled = handledInteractive !== false;
+  logResult(wasHandled ? "kadiInteractiveFlow" : null, wasHandled);
   return true;
 }
 
@@ -1334,7 +1391,7 @@ async function handleIncomingMessage(value) {
           return;
         }
 
-        if (msg.type === "interactive") {
+        if (msg.type === "interactive" || msg.type === "button") {
           await handleInteractiveMessage(from, msg);
           return;
         }
