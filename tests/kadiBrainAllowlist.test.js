@@ -237,23 +237,33 @@ test("validates user IDs without trimming or case conversion", () => {
 });
 
 test("allows an exact user ID match only", () => {
-  const decision = evaluateBrainActivationAllowlist(input({}, {
-    userId: "user-1",
-    userPhone: null,
-    allowlistedUserIds: ["user-1"],
-    allowlistedPhones: [],
-  }));
+  const candidateId = "candidate_UserId-EXACT_value";
+  const decision = evaluateBrainActivationAllowlist(input(
+    { candidateId },
+    {
+      userId: "user-1",
+      userPhone: null,
+      allowlistedUserIds: ["user-1"],
+      allowlistedPhones: [],
+    },
+  ));
   assert.equal(decision.reason, "activation_allowed");
   assert.equal(decision.matchedBy, "user_id");
+  assert.equal(decision.candidateId, candidateId);
 });
 
 test("normalizes only safe phone syntax", () => {
+  const candidateId = "candidate_Phone-EXACT_value";
   for (const userPhone of [
     "22670000000", "+22670000000", "0022670000000",
     "+226 70 00 00 00", "+226-70-00-00-00", "+226 (70) 00 00 00",
   ]) {
-    const decision = evaluateBrainActivationAllowlist(input({}, { userPhone }));
+    const decision = evaluateBrainActivationAllowlist(input(
+      { candidateId },
+      { userPhone },
+    ));
     assert.equal(decision.reason, "activation_allowed", userPhone);
+    assert.equal(decision.candidateId, candidateId);
     assert.equal(decision.normalizedPhone, "22670000000");
     assert.equal(decision.matchedBy, "phone");
   }
@@ -326,6 +336,23 @@ test("does not expose allowlist contents in output", () => {
   assert.equal(decision.metadata.userIdAllowlistSize, 2);
 });
 
+test("preserves candidateId unchanged on allowed and rejected decisions", () => {
+  const candidateId = " candidate_Keep-Case-And-Spaces ";
+  const allowed = evaluateBrainActivationAllowlist(input(
+    { candidateId },
+    { userPhone: "22670000000" },
+  ));
+  assert.equal(allowed.reason, "activation_allowed");
+  assert.equal(allowed.candidateId, candidateId);
+
+  const rejected = evaluateBrainActivationAllowlist(input(
+    { candidateId },
+    { userPhone: "22671111111" },
+  ));
+  assert.equal(rejected.reason, "user_not_allowlisted");
+  assert.equal(rejected.candidateId, candidateId);
+});
+
 test("accepts frozen inputs without mutation and is deterministic", () => {
   const userIds = Object.freeze(["user-1"]);
   const phones = Object.freeze(["22670000000"]);
@@ -341,6 +368,7 @@ test("accepts frozen inputs without mutation and is deterministic", () => {
   assert.deepEqual(first, second);
   assert.notStrictEqual(first, second);
   assert.notStrictEqual(first.metadata, second.metadata);
+  assert.equal(first.candidateId, eligibilityDecision.candidateId);
   assert.deepEqual(userIds, ["user-1"]);
   assert.deepEqual(phones, ["22670000000"]);
 });

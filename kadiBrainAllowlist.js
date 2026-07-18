@@ -270,6 +270,7 @@ function evaluateBrainActivationAllowlist(input) {
   return makeDecision({
     status: BRAIN_ALLOWLIST_STATUSES.ALLOWED,
     reason: BRAIN_ALLOWLIST_REASONS.ACTIVATION_ALLOWED,
+    ...candidateFields,
     ...identityFields,
     matchedBy,
   });
