@@ -168,6 +168,32 @@ function hasForbiddenIdentity(value, seen = new Set()) {
   return false;
 }
 
+function isNullableString(value) {
+  return value === null || typeof value === "string";
+}
+
+function isNullableFiniteNumber(value) {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isValidItem(value) {
+  return isPlainObject(value)
+    && isNullableString(value.description)
+    && isNullableFiniteNumber(value.quantity)
+    && isNullableString(value.unit)
+    && isNullableFiniteNumber(value.unitPrice)
+    && isNullableFiniteNumber(value.total);
+}
+
+function isValidAmbiguity(value) {
+  return isPlainObject(value)
+    && isNullableString(value.field)
+    && Array.isArray(value.options)
+    && value.options.every((option) => typeof option === "string")
+    && isNullableString(value.message)
+    && typeof value.blocking === "boolean";
+}
+
 function validateIntentResolution(input) {
   const errors = [];
   const add = (path, code) => errors.push({ path, code });
@@ -176,12 +202,22 @@ function validateIntentResolution(input) {
   if (!KNOWN_INTENTS.has(input.intent)) add("intent", "INVALID_INTENT");
   if (typeof input.confidence !== "number" || !Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) add("confidence", "INVALID_CONFIDENCE");
   if (input.language !== null && typeof input.language !== "string") add("language", "INVALID_LANGUAGE");
-  if (!isPlainObject(input.entities)) add("entities", "INVALID_ENTITIES");
+  if (!isPlainObject(input.entities)
+    || !Array.isArray(input.entities.items)
+    || input.entities.items.some((item) => !isValidItem(item))) add("entities", "INVALID_ENTITIES");
   if (!Array.isArray(input.missingFields) || input.missingFields.some((item) => typeof item !== "string")) add("missingFields", "INVALID_MISSING_FIELDS");
-  if (!Array.isArray(input.ambiguities) || input.ambiguities.some((item) => !isPlainObject(item))) add("ambiguities", "INVALID_AMBIGUITIES");
-  if (input.requestedAction !== null && !isPlainObject(input.requestedAction)) add("requestedAction", "INVALID_REQUESTED_ACTION");
-  if (!isPlainObject(input.conversation)) add("conversation", "INVALID_CONVERSATION");
-  if (!isPlainObject(input.safety)) add("safety", "INVALID_SAFETY");
+  if (!Array.isArray(input.ambiguities) || input.ambiguities.some((item) => !isValidAmbiguity(item))) add("ambiguities", "INVALID_AMBIGUITIES");
+  if (input.requestedAction !== null && (!isPlainObject(input.requestedAction)
+    || !isNullableString(input.requestedAction.type)
+    || !isNullableString(input.requestedAction.target))) add("requestedAction", "INVALID_REQUESTED_ACTION");
+  if (!isPlainObject(input.conversation)
+    || typeof input.conversation.isReplyToCurrentFlow !== "boolean"
+    || typeof input.conversation.requiresContext !== "boolean"
+    || !isNullableString(input.conversation.contextReference)) add("conversation", "INVALID_CONVERSATION");
+  if (!isPlainObject(input.safety)
+    || typeof input.safety.containsSensitiveData !== "boolean"
+    || typeof input.safety.requiresHumanReview !== "boolean"
+    || !isNullableString(input.safety.reason)) add("safety", "INVALID_SAFETY");
   if (hasForbiddenIdentity(input)) add("$", "RAW_WHATSAPP_IDENTITY_FORBIDDEN");
   return { valid: errors.length === 0, errors };
 }

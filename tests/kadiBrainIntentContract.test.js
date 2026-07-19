@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const contract = require("../kadiBrainIntentContract");
 
 const { KADI_INTENTS, KADI_INTENT_SCHEMA_VERSION, KADI_ACTIONABLE_CONFIDENCE_THRESHOLD,
@@ -124,4 +126,68 @@ test("module has no external integration surface", () => {
   assert.equal(Object.hasOwn(result, "candidateId"), false);
   assert.equal(Object.hasOwn(result, "waId"), false);
   assert.equal(Object.hasOwn(result, "bsuid"), false);
+});
+
+test("rejects malformed nested structures without throwing", () => {
+  const valid = invoice();
+  const malformed = [
+    { ...valid, entities: {} },
+    { ...valid, entities: { ...valid.entities, items: null } },
+    { ...valid, entities: { ...valid.entities, items: "item" } },
+    { ...valid, entities: { ...valid.entities, items: {} } },
+    { ...valid, entities: null },
+    { ...valid, entities: [] },
+    { ...valid, safety: undefined },
+    { ...valid, conversation: { isReplyToCurrentFlow: "false", requiresContext: false, contextReference: null } },
+    { ...valid, requestedAction: [] },
+    { ...valid, ambiguities: ["ambiguous"] },
+    { ...valid, missingFields: [1] },
+  ];
+
+  for (const input of malformed) {
+    assert.doesNotThrow(() => validateIntentResolution(input));
+    assert.equal(validateIntentResolution(input).valid, false);
+    assert.doesNotThrow(() => isActionableIntentResolution(input));
+    assert.equal(isActionableIntentResolution(input), false);
+  }
+});
+
+test("rejects the audited invoice shape without entities items", () => {
+  const input = {
+    schemaVersion: "kadi.intent.v1",
+    intent: "CREATE_INVOICE",
+    confidence: 0.95,
+    entities: {},
+    missingFields: [],
+    ambiguities: [],
+    requestedAction: { type: "CREATE_DOCUMENT", target: "invoice" },
+    conversation: { isReplyToCurrentFlow: false, requiresContext: false, contextReference: null },
+    safety: { containsSensitiveData: false, requiresHumanReview: false, reason: null },
+    explanation: null,
+  };
+  assert.doesNotThrow(() => isActionableIntentResolution(input));
+  assert.equal(validateIntentResolution(input).valid, false);
+  assert.equal(isActionableIntentResolution(input), false);
+});
+
+test("keeps a canonical complete invoice actionable after validation hardening", () => {
+  const input = invoice();
+  assert.deepEqual(validateIntentResolution(input), { valid: true, errors: [] });
+  assert.equal(isActionableIntentResolution(input), true);
+});
+
+test("source has no network or external dependency", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "kadiBrainIntentContract.js"), "utf8");
+  for (const forbidden of [
+    /\brequire\s*\(/,
+    /\bimport\s+/,
+    /\bfetch\s*\(/,
+    /\baxios\b/i,
+    /\bhttps?\b/i,
+    /\bnet\b/i,
+    /\btls\b/i,
+    /\bchild_process\b/i,
+    /\bsupabase\b/i,
+    /\bopenai\b/i,
+  ]) assert.doesNotMatch(source, forbidden);
 });
