@@ -27,9 +27,11 @@ const KADI_MAX_COLLECTED_FIELDS = 50;
 const KNOWN_INTENTS = new Set(Object.values(KADI_INTENTS));
 const KNOWN_CHANNELS = new Set(Object.values(KADI_PROMPT_CHANNELS));
 const FORBIDDEN_KEYS = new Set([
-  "wa_id", "waId", "bsuid", "phoneNumberId", "senderPhone", "recipientPhone",
-  "accessToken", "serviceRoleKey", "apiKey", "password", "otp", "pin",
+  "waid", "bsuid", "phonenumberid", "senderphone", "recipientphone",
+  "accesstoken", "servicerolekey", "apikey", "password", "otp", "pin",
 ]);
+const USER_INPUT_BEGIN = "KADI_USER_INPUT_BEGIN";
+const USER_INPUT_END = "KADI_USER_INPUT_END";
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -37,9 +39,29 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+function normalizeForbiddenKey(value) {
+  return String(value).trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function isForbiddenKey(value) {
+  return FORBIDDEN_KEYS.has(normalizeForbiddenKey(value));
+}
+
+function safeGet(value, key) {
+  try {
+    return value[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function truncateCodePoints(value, maximum) {
+  return Array.from(value).slice(0, maximum).join("");
+}
+
 function boundedString(value, maximum, emptyAsNull = true) {
   if (typeof value !== "string") return emptyAsNull ? null : "";
-  const result = value.trim().slice(0, maximum);
+  const result = truncateCodePoints(value.trim(), maximum);
   return result || (emptyAsNull ? null : "");
 }
 
@@ -60,23 +82,16 @@ function normalizeStringList(value, maximum) {
 
 function normalizeCapabilities(value) {
   if (!Array.isArray(value)) return [];
-  const result = [];
-  const seen = new Set();
-  for (const capability of value) {
-    if (typeof capability === "string" && KNOWN_INTENTS.has(capability) && !seen.has(capability)) {
-      seen.add(capability);
-      result.push(capability);
-      if (result.length === KADI_MAX_CAPABILITIES) break;
-    }
-  }
-  return result.sort();
+  return [...new Set(value.filter((capability) => (
+    typeof capability === "string" && KNOWN_INTENTS.has(capability)
+  )))].sort().slice(0, KADI_MAX_CAPABILITIES);
 }
 
 function normalizeSimpleValue(value) {
   if (value === null || typeof value === "boolean") return { accepted: true, value };
   if (typeof value === "number" && Number.isFinite(value)) return { accepted: true, value };
   if (typeof value === "string") {
-    return { accepted: true, value: value.slice(0, KADI_MAX_CONTEXT_MESSAGE_LENGTH) };
+    return { accepted: true, value: truncateCodePoints(value, KADI_MAX_CONTEXT_MESSAGE_LENGTH) };
   }
   if (Array.isArray(value)) {
     const normalized = [];
@@ -102,9 +117,9 @@ function normalizeCollectedFields(value) {
   const result = {};
   for (const key of Object.keys(value).sort()) {
     if (Object.keys(result).length === KADI_MAX_COLLECTED_FIELDS) break;
-    if (FORBIDDEN_KEYS.has(key)) continue;
+    if (isForbiddenKey(key)) continue;
     const normalizedKey = boundedString(key, KADI_MAX_CONTEXT_MESSAGE_LENGTH);
-    const normalized = normalizeSimpleValue(value[key]);
+    const normalized = normalizeSimpleValue(safeGet(value, key));
     if (normalizedKey && normalized.accepted) result[normalizedKey] = normalized.value;
   }
   return result;
@@ -143,55 +158,67 @@ function createEmptyPromptInput() {
   };
 }
 
-function normalizePromptInput(input) {
+function normalizePromptInputUnsafe(input) {
   const source = isPlainObject(input) ? input : {};
-  const currentFlow = isPlainObject(source.currentFlow) ? source.currentFlow : {};
-  const recentContext = isPlainObject(source.recentContext) ? source.recentContext : {};
-  const businessContext = isPlainObject(source.businessContext) ? source.businessContext : {};
-  const metadata = isPlainObject(source.metadata) ? source.metadata : {};
+  const sourceCurrentFlow = safeGet(source, "currentFlow");
+  const sourceRecentContext = safeGet(source, "recentContext");
+  const sourceBusinessContext = safeGet(source, "businessContext");
+  const sourceMetadata = safeGet(source, "metadata");
+  const currentFlow = isPlainObject(sourceCurrentFlow) ? sourceCurrentFlow : {};
+  const recentContext = isPlainObject(sourceRecentContext) ? sourceRecentContext : {};
+  const businessContext = isPlainObject(sourceBusinessContext) ? sourceBusinessContext : {};
+  const metadata = isPlainObject(sourceMetadata) ? sourceMetadata : {};
   return {
     schemaVersion: KADI_PROMPT_SCHEMA_VERSION,
-    channel: KNOWN_CHANNELS.has(source.channel) ? source.channel : KADI_PROMPT_CHANNELS.WHATSAPP,
-    languageHint: boundedString(source.languageHint, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-    userMessage: boundedString(source.userMessage, KADI_MAX_USER_MESSAGE_LENGTH, false),
+    channel: KNOWN_CHANNELS.has(safeGet(source, "channel")) ? safeGet(source, "channel") : KADI_PROMPT_CHANNELS.WHATSAPP,
+    languageHint: boundedString(safeGet(source, "languageHint"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+    userMessage: boundedString(safeGet(source, "userMessage"), KADI_MAX_USER_MESSAGE_LENGTH, false),
     currentFlow: {
-      active: currentFlow.active === true,
-      flowType: boundedString(currentFlow.flowType, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      step: boundedString(currentFlow.step, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      expectedFields: normalizeStringList(currentFlow.expectedFields, KADI_MAX_EXPECTED_FIELDS),
-      collectedFields: normalizeCollectedFields(currentFlow.collectedFields),
+      active: safeGet(currentFlow, "active") === true,
+      flowType: boundedString(safeGet(currentFlow, "flowType"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      step: boundedString(safeGet(currentFlow, "step"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      expectedFields: normalizeStringList(safeGet(currentFlow, "expectedFields"), KADI_MAX_EXPECTED_FIELDS),
+      collectedFields: normalizeCollectedFields(safeGet(currentFlow, "collectedFields")),
     },
     recentContext: {
-      previousUserMessage: boundedString(recentContext.previousUserMessage, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      previousAssistantMessage: boundedString(recentContext.previousAssistantMessage, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      lastResolvedIntent: KNOWN_INTENTS.has(recentContext.lastResolvedIntent)
-        ? recentContext.lastResolvedIntent : null,
+      previousUserMessage: boundedString(safeGet(recentContext, "previousUserMessage"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      previousAssistantMessage: boundedString(safeGet(recentContext, "previousAssistantMessage"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      lastResolvedIntent: KNOWN_INTENTS.has(safeGet(recentContext, "lastResolvedIntent"))
+        ? safeGet(recentContext, "lastResolvedIntent") : null,
     },
-    capabilities: normalizeCapabilities(source.capabilities),
+    capabilities: normalizeCapabilities(safeGet(source, "capabilities")),
     businessContext: {
-      businessName: boundedString(businessContext.businessName, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      defaultCurrency: boundedString(businessContext.defaultCurrency, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      countryCode: boundedString(businessContext.countryCode, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      businessName: boundedString(safeGet(businessContext, "businessName"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      defaultCurrency: boundedString(safeGet(businessContext, "defaultCurrency"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      countryCode: boundedString(safeGet(businessContext, "countryCode"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
     },
     metadata: {
-      messageType: boundedString(metadata.messageType, KADI_MAX_CONTEXT_MESSAGE_LENGTH),
-      hasImage: metadata.hasImage === true,
-      hasAudio: metadata.hasAudio === true,
-      hasDocument: metadata.hasDocument === true,
+      messageType: boundedString(safeGet(metadata, "messageType"), KADI_MAX_CONTEXT_MESSAGE_LENGTH),
+      hasImage: safeGet(metadata, "hasImage") === true,
+      hasAudio: safeGet(metadata, "hasAudio") === true,
+      hasDocument: safeGet(metadata, "hasDocument") === true,
     },
   };
+}
+
+function normalizePromptInput(input) {
+  try {
+    return normalizePromptInputUnsafe(input);
+  } catch {
+    return createEmptyPromptInput();
+  }
 }
 
 function hasForbiddenKey(value, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return false;
   seen.add(value);
   for (const [key, child] of Object.entries(value)) {
-    if (FORBIDDEN_KEYS.has(key) || hasForbiddenKey(child, seen)) return true;
+    if (isForbiddenKey(key) || hasForbiddenKey(child, seen)) return true;
   }
   return false;
 }
 
-function validatePromptInput(input) {
+function validatePromptInputUnsafe(input) {
   const errors = [];
   const add = (path, code) => errors.push({ path, code });
   if (!isPlainObject(input)) return { valid: false, errors: [{ path: "$", code: "INVALID_INPUT" }] };
@@ -239,12 +266,26 @@ function validatePromptInput(input) {
   return { valid: errors.length === 0, errors };
 }
 
+function validatePromptInput(input) {
+  try {
+    return validatePromptInputUnsafe(input);
+  } catch {
+    return { valid: false, errors: [{ path: "$", code: "INVALID_INPUT" }] };
+  }
+}
+
+function stringifyJsonString(value) {
+  return JSON.stringify(value)
+    .replaceAll(USER_INPUT_BEGIN, "KADI_USER_INPUT_B\\u0045GIN")
+    .replaceAll(USER_INPUT_END, "KADI_USER_INPUT_\\u0045ND");
+}
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (isPlainObject(value)) {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value).sort().map((key) => `${stringifyJsonString(key)}:${stableStringify(value[key])}`).join(",")}}`;
   }
-  return JSON.stringify(value);
+  return typeof value === "string" ? stringifyJsonString(value) : JSON.stringify(value);
 }
 
 function buildSystemMessage(capabilities) {
@@ -291,7 +332,7 @@ function buildIntentResolutionMessages(input) {
     errors: [],
     messages: [
       { role: "system", content: buildSystemMessage(normalized.capabilities) },
-      { role: "user", content: `KADI_USER_INPUT_BEGIN\n${stableStringify(userEnvelope)}\nKADI_USER_INPUT_END` },
+      { role: "user", content: `${USER_INPUT_BEGIN}\n${stableStringify(userEnvelope)}\n${USER_INPUT_END}` },
     ],
   };
 }
