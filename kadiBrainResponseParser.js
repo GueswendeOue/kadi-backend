@@ -25,20 +25,7 @@ const KADI_PARSE_ERROR_CODES = Object.freeze({
   INTERNAL_PARSE_FAILURE: "INTERNAL_PARSE_FAILURE",
 });
 
-const UNSAFE_PROPERTY_NAMES = new Set([
-  "__proto__",
-  "prototype",
-  "constructor",
-]);
-
-const OMITTED_MODEL_PROPERTIES = new Set([
-  "debug",
-  "chainOfThought",
-  "reasoning",
-  "internalReasoning",
-  "systemPrompt",
-  "toolCalls",
-]);
+const UNSAFE_PROPERTY_NAMES = new Set(["proto", "prototype", "constructor"]);
 
 function createEmptyParseResult() {
   return {
@@ -169,6 +156,10 @@ function extractStrictJsonObject(rawResponse) {
   };
 }
 
+function normalizeSecurityKey(key) {
+  return String(key).trim().toLowerCase().replace(/[_\-\s]/g, "");
+}
+
 function containsUnsafeProperty(value) {
   if (value === null || typeof value !== "object") {
     return false;
@@ -180,26 +171,9 @@ function containsUnsafeProperty(value) {
 
   return Object.keys(value).some(
     (key) =>
-      UNSAFE_PROPERTY_NAMES.has(key) || containsUnsafeProperty(value[key])
+      UNSAFE_PROPERTY_NAMES.has(normalizeSecurityKey(key)) ||
+      containsUnsafeProperty(value[key])
   );
-}
-
-function sanitizeModelValue(value) {
-  if (Array.isArray(value)) {
-    return value.map(sanitizeModelValue);
-  }
-
-  if (value === null || typeof value !== "object") {
-    return value;
-  }
-
-  const sanitized = {};
-  for (const key of Object.keys(value)) {
-    if (!OMITTED_MODEL_PROPERTIES.has(key)) {
-      sanitized[key] = sanitizeModelValue(value[key]);
-    }
-  }
-  return sanitized;
 }
 
 function cloneValidation(validation) {
@@ -215,26 +189,25 @@ function cloneValidation(validation) {
   };
 }
 
-function createParseFailure(errorCode, details = {}) {
+function createParseFailure(errorCode, validationErrors = []) {
+  const errors =
+    Array.isArray(validationErrors) && validationErrors.length > 0
+      ? validationErrors.map((error) => ({
+          path:
+            error && typeof error === "object" && !Array.isArray(error)
+              ? error.path
+              : "$",
+          code:
+            error && typeof error === "object" && !Array.isArray(error)
+              ? error.code
+              : errorCode,
+        }))
+      : [{ path: "$", code: errorCode }];
+
   return {
     ...createEmptyParseResult(),
     errorCode,
-    errors: Array.isArray(details.errors)
-      ? details.errors.map((error) =>
-          error && typeof error === "object" && !Array.isArray(error)
-            ? { path: error.path, code: error.code }
-            : String(error)
-        )
-      : [errorCode],
-    rawJson:
-      typeof details.rawJson === "string" ? details.rawJson : null,
-    parsedValue:
-      details.parsedValue &&
-      typeof details.parsedValue === "object" &&
-      !Array.isArray(details.parsedValue)
-        ? details.parsedValue
-        : null,
-    validation: details.validation || null,
+    errors,
   };
 }
 
@@ -242,45 +215,36 @@ function parseIntentResolutionResponse(rawResponse) {
   try {
     const extraction = extractStrictJsonObject(rawResponse);
     if (!extraction.ok) {
-      return createParseFailure(extraction.errorCode, extraction);
+      return createParseFailure(extraction.errorCode);
     }
 
     if (containsUnsafeProperty(extraction.parsedValue)) {
-      return createParseFailure(KADI_PARSE_ERROR_CODES.UNSAFE_VALUE, {
-        rawJson: extraction.rawJson,
-      });
+      return createParseFailure(KADI_PARSE_ERROR_CODES.UNSAFE_VALUE);
     }
 
-    const parsedValue = sanitizeModelValue(extraction.parsedValue);
-    const rawJson = JSON.stringify(parsedValue);
-    if (parsedValue.schemaVersion !== KADI_INTENT_SCHEMA_VERSION) {
-      return createParseFailure(KADI_PARSE_ERROR_CODES.INVALID_SCHEMA, {
-        rawJson,
-        parsedValue,
-      });
+    if (
+      extraction.parsedValue.schemaVersion !== KADI_INTENT_SCHEMA_VERSION
+    ) {
+      return createParseFailure(KADI_PARSE_ERROR_CODES.INVALID_SCHEMA);
     }
 
     const inputValidation = cloneValidation(
-      validateIntentResolution(parsedValue)
+      validateIntentResolution(extraction.parsedValue)
     );
     if (!inputValidation.valid) {
-      return createParseFailure(KADI_PARSE_ERROR_CODES.INVALID_RESOLUTION, {
-        errors: inputValidation.errors,
-        rawJson,
-        parsedValue,
-        validation: inputValidation,
-      });
+      return createParseFailure(
+        KADI_PARSE_ERROR_CODES.INVALID_RESOLUTION,
+        inputValidation.errors
+      );
     }
 
-    const resolution = normalizeIntentResolution(parsedValue);
+    const resolution = normalizeIntentResolution(extraction.parsedValue);
     const validation = cloneValidation(validateIntentResolution(resolution));
     if (!validation.valid) {
-      return createParseFailure(KADI_PARSE_ERROR_CODES.INVALID_RESOLUTION, {
-        errors: validation.errors,
-        rawJson,
-        parsedValue,
-        validation,
-      });
+      return createParseFailure(
+        KADI_PARSE_ERROR_CODES.INVALID_RESOLUTION,
+        validation.errors
+      );
     }
 
     return {
@@ -288,8 +252,8 @@ function parseIntentResolutionResponse(rawResponse) {
       ok: true,
       errorCode: null,
       errors: [],
-      rawJson,
-      parsedValue,
+      rawJson: null,
+      parsedValue: null,
       resolution,
       validation,
       actionable: isActionableIntentResolution(resolution),
