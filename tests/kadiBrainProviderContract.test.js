@@ -395,3 +395,290 @@ test("scenarios 121-140: production source has no provider execution surface", (
   assert.equal(openAiOccurrences.length, 2);
   assert.equal(geminiOccurrences.length, 2);
 });
+
+test("hardening: NETWORK has one coherent recoverable representation", () => {
+  const network = failureResponse(
+    "PROVIDER_NETWORK_ERROR",
+    "NETWORK",
+    "FAILED",
+    true
+  );
+  assert.deepEqual(validateProviderResponse(network), { valid: true, errors: [] });
+  assert.equal(isRecoverableProviderFailure(network), true);
+
+  const incoherent = [
+    failureResponse("PROVIDER_INTERNAL_ERROR", "NETWORK", "FAILED", true),
+    { ...network, status: "SUCCEEDED", ok: true, content: "unexpected" },
+    { ...network, recoverable: false },
+    { ...network, failureKind: "PROVIDER" },
+  ];
+  for (const value of incoherent) {
+    assert.equal(validateProviderResponse(value).valid, false);
+    assert.equal(isRecoverableProviderFailure(value), false);
+  }
+  for (const value of [null, "NETWORK"]) {
+    assert.equal(isRecoverableProviderFailure(value), false);
+  }
+});
+
+test("hardening: every canonical failure mapping is explicit and coherent", () => {
+  const mappings = [
+    ["PROVIDER_NETWORK_ERROR", "NETWORK", "FAILED", true],
+    ["PROVIDER_TIMEOUT", "TIMEOUT", "TIMED_OUT", true],
+    ["PROVIDER_RATE_LIMITED", "RATE_LIMIT", "FAILED", true],
+    ["PROVIDER_UNAVAILABLE", "PROVIDER", "FAILED", true],
+    ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    ["PROVIDER_AUTH_FAILED", "AUTHENTICATION", "FAILED", false],
+    ["PROVIDER_SAFETY_BLOCK", "SAFETY", "REJECTED", false],
+    ["PROVIDER_CONTENT_BLOCK", "CONTENT", "REJECTED", false],
+    ["INVALID_REQUEST", "CLIENT", "FAILED", false],
+    ["INVALID_MESSAGES", "CLIENT", "FAILED", false],
+    ["INVALID_PROVIDER", "CONFIGURATION", "FAILED", false],
+    ["INVALID_MODEL", "CONFIGURATION", "FAILED", false],
+    ["CANCELLED", "NONE", "CANCELLED", false],
+  ];
+  for (const [errorCode, failureKind, status, recoverable] of mappings) {
+    const response = failureResponse(errorCode, failureKind, status, recoverable);
+    assert.equal(validateProviderResponse(response).valid, true);
+    assert.equal(isRecoverableProviderFailure(response), recoverable);
+  }
+});
+
+test("hardening: request normalization covers booleans, richer partials, and every forbidden role", () => {
+  assert.deepEqual(normalizeProviderRequest(true), createEmptyProviderRequest());
+  const partial = normalizeProviderRequest({
+    provider: " OPENAI ",
+    model: " model-v2 ",
+    timeoutMs: 5000,
+    responseFormat: { type: "json_object", ignored: true },
+    generation: { temperature: 0, maxOutputCodePoints: 1000, seed: 7 },
+    metadata: { requestPurpose: "intent_resolution", tags: [" b ", "a", "b"] },
+    ignored: "discarded",
+  });
+  assert.deepEqual(partial, {
+    schemaVersion: "kadi.provider-request.v1",
+    provider: "OPENAI",
+    model: "model-v2",
+    messages: [],
+    timeoutMs: 5000,
+    responseFormat: { type: "json_object" },
+    generation: { temperature: 0, maxOutputCodePoints: 1000 },
+    metadata: { requestPurpose: "intent_resolution", tags: ["a", "b"] },
+  });
+  for (const role of ["assistant", "developer", "tool", "function", "model"]) {
+    const request = validRequest();
+    request.messages[1].role = role;
+    assert.equal(validateProviderRequest(normalizeProviderRequest(request)).valid, false);
+  }
+});
+
+test("hardening: request and response identities and secrets never leak", () => {
+  const properties = [
+    "waId", "wa_id", "WA_ID", "bsuid", "BSUID", "phone", "phoneNumber",
+    "fullName", "email", "userId", "sessionId", "apiKey", "API_KEY",
+    "accessToken", "ACCESS_TOKEN", "serviceRoleKey", "password", "Password",
+    "PASSWORD", "otp", "OTP", "pin", "PIN",
+  ];
+  properties.forEach((property, index) => {
+    const sentinel = `FORBIDDEN_SENTINEL_${index}`;
+    const request = validRequest();
+    request[property] = sentinel;
+    request.metadata[property] = sentinel;
+    const normalizedRequest = normalizeProviderRequest(request);
+    const requestValidation = validateProviderRequest(normalizedRequest);
+
+    const response = successResponse();
+    response[property] = sentinel;
+    response.metadata[property] = sentinel;
+    const normalizedResponse = normalizeProviderResponse(response);
+    const responseValidation = validateProviderResponse(normalizedResponse);
+
+    for (const value of [
+      normalizedRequest,
+      requestValidation,
+      requestValidation.errors,
+      normalizedResponse,
+      responseValidation,
+      responseValidation.errors,
+    ]) assert.equal(JSON.stringify(value).includes(sentinel), false);
+  });
+});
+
+test("hardening: response normalization handles booleans, invalid usage, and frozen inputs purely", () => {
+  assert.deepEqual(normalizeProviderResponse(false), createEmptyProviderResponse());
+  for (const invalid of [-1, 1.5, Infinity]) {
+    const response = successResponse();
+    response.usage = {
+      inputUnits: invalid,
+      outputUnits: invalid,
+      totalUnits: invalid,
+    };
+    assert.deepEqual(normalizeProviderResponse(response).usage, {
+      inputUnits: null,
+      outputUnits: null,
+      totalUnits: null,
+    });
+  }
+
+  const frozen = successResponse();
+  frozen.usage = Object.freeze({ inputUnits: 1, outputUnits: 2, totalUnits: 3 });
+  frozen.metadata = Object.freeze({
+    providerRequestId: " request-1 ",
+    finishReason: "STOP",
+  });
+  Object.freeze(frozen);
+  const before = JSON.stringify(frozen);
+  assert.doesNotThrow(() => normalizeProviderResponse(frozen));
+  assert.equal(JSON.stringify(frozen), before);
+});
+
+test("hardening: normalization and validation are byte deterministic and reference independent", () => {
+  const request = validRequest();
+  request.metadata.tags = ["z", "a", "z"];
+  const reversedRequest = reverseKeys(request);
+  reversedRequest.metadata.tags = ["a", "z"];
+  const firstRequest = normalizeProviderRequest(request);
+  const secondRequest = normalizeProviderRequest(reversedRequest);
+  assert.equal(JSON.stringify(firstRequest), JSON.stringify(secondRequest));
+  for (const key of ["messages", "responseFormat", "generation", "metadata"]) {
+    assert.notStrictEqual(firstRequest[key], secondRequest[key]);
+  }
+  firstRequest.messages.forEach((message, index) => {
+    assert.notStrictEqual(message, secondRequest.messages[index]);
+  });
+  assert.notStrictEqual(firstRequest.metadata.tags, secondRequest.metadata.tags);
+
+  const unicodeRequest = validRequest();
+  unicodeRequest.messages[1].content = "Facture 😀 é";
+  assert.equal(
+    JSON.stringify(normalizeProviderRequest(unicodeRequest)),
+    JSON.stringify(normalizeProviderRequest(reverseKeys(unicodeRequest)))
+  );
+
+  const firstResponse = normalizeProviderResponse(successResponse());
+  const secondResponse = normalizeProviderResponse(reverseKeys(successResponse()));
+  assert.equal(JSON.stringify(firstResponse), JSON.stringify(secondResponse));
+  assert.notStrictEqual(firstResponse.usage, secondResponse.usage);
+  assert.notStrictEqual(firstResponse.metadata, secondResponse.metadata);
+
+  const invalidRequest = validRequest();
+  invalidRequest.provider = "INVALID";
+  const firstValidation = validateProviderRequest(invalidRequest);
+  const secondValidation = validateProviderRequest(invalidRequest);
+  assert.equal(JSON.stringify(firstValidation), JSON.stringify(secondValidation));
+  assert.notStrictEqual(firstValidation.errors, secondValidation.errors);
+  firstValidation.errors.forEach((error, index) => {
+    assert.notStrictEqual(error, secondValidation.errors[index]);
+  });
+
+  firstRequest.messages[0].content = "changed";
+  firstRequest.responseFormat.type = "changed";
+  firstRequest.generation.temperature = 1;
+  firstRequest.metadata.requestPurpose = "changed";
+  firstRequest.metadata.tags.push("changed");
+  firstResponse.usage.inputUnits = 99;
+  firstResponse.metadata.finishReason = "ERROR";
+  firstValidation.errors[0].code = "changed";
+  assert.notEqual(JSON.stringify(firstRequest), JSON.stringify(secondRequest));
+  assert.notEqual(JSON.stringify(firstResponse), JSON.stringify(secondResponse));
+  assert.notEqual(JSON.stringify(firstValidation), JSON.stringify(secondValidation));
+});
+
+test("hardening: Unicode boundaries are exact and never silently truncated", () => {
+  const limits = KADI_PROVIDER_LIMITS;
+  for (const size of [
+    limits.maxModelNameCodePoints - 1,
+    limits.maxModelNameCodePoints,
+    limits.maxModelNameCodePoints + 1,
+  ]) {
+    const request = validRequest();
+    request.model = `😀${"m".repeat(size - 1)}`;
+    const normalized = normalizeProviderRequest(request);
+    assert.equal(normalized.model, request.model);
+    assert.equal(validateProviderRequest(normalized).valid, size <= limits.maxModelNameCodePoints);
+  }
+
+  for (const size of [
+    limits.maxMessageCodePoints - 1,
+    limits.maxMessageCodePoints,
+    limits.maxMessageCodePoints + 1,
+  ]) {
+    const request = validRequest();
+    request.messages[1].content = `😀${"m".repeat(size - 1)}`;
+    const normalized = normalizeProviderRequest(request);
+    assert.equal(normalized.messages[1].content, request.messages[1].content);
+    assert.equal(validateProviderRequest(normalized).valid, size <= limits.maxMessageCodePoints);
+  }
+
+  for (const size of [
+    limits.maxTotalMessageCodePoints - 1,
+    limits.maxTotalMessageCodePoints,
+    limits.maxTotalMessageCodePoints + 1,
+  ]) {
+    const request = validRequest();
+    request.messages = [
+      { role: "system", content: "s".repeat(12000) },
+      { role: "user", content: "u".repeat(12000) },
+      { role: "user", content: `😀${"t".repeat(size - 24001)}` },
+    ];
+    const normalized = normalizeProviderRequest(request);
+    assert.equal(
+      normalized.messages.reduce((total, message) => total + Array.from(message.content).length, 0),
+      size
+    );
+    assert.equal(validateProviderRequest(normalized).valid, size <= limits.maxTotalMessageCodePoints);
+  }
+
+  for (const size of [
+    limits.maxResponseCodePoints - 1,
+    limits.maxResponseCodePoints,
+    limits.maxResponseCodePoints + 1,
+  ]) {
+    const response = successResponse();
+    response.content = `😀${"r".repeat(size - 1)}`;
+    const normalized = normalizeProviderResponse(response);
+    assert.equal(normalized.content, response.content);
+    assert.equal(validateProviderResponse(normalized).valid, size <= limits.maxResponseCodePoints);
+  }
+
+  for (const size of [199, 200, 201]) {
+    const response = successResponse();
+    response.metadata.providerRequestId = `😀${"i".repeat(size - 1)}`;
+    const normalized = normalizeProviderResponse(response);
+    assert.equal(normalized.metadata.providerRequestId, response.metadata.providerRequestId);
+    assert.equal(validateProviderResponse(normalized).valid, size <= 200);
+  }
+
+  for (const count of [
+    limits.maxProviderRequestTags - 1,
+    limits.maxProviderRequestTags,
+    limits.maxProviderRequestTags + 1,
+  ]) {
+    const request = validRequest();
+    request.metadata.tags = Array.from({ length: count }, (_, index) => `😀-${index}`);
+    const normalized = normalizeProviderRequest(request);
+    assert.equal(
+      normalized.metadata.tags.length,
+      Math.min(count, limits.maxProviderRequestTags)
+    );
+    assert.equal(normalized.metadata.tags.every((tag) => tag.startsWith("😀-")), true);
+  }
+});
+
+test("hardening: production source blocks expanded execution, network, and key-reading surfaces", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "kadiBrainProviderContract.js"),
+    "utf8"
+  );
+  const forbidden = [
+    /\bimport\s*\(/,
+    /\brequire\s*\(\s*(?!["'])/,
+    /\brequire\s*\(\s*["'](?:node:)?(?:http|https|net|tls)["']\s*\)/i,
+    /\bnode:(?:http|https|net|tls)\b/i,
+    /https?:\/\//i,
+    /\b(?:api[_\-\s]?key|access[_\-\s]?token|service[_\-\s]?role[_\-\s]?key)\b/i,
+    /\b(?:handler|handlers)\s*=\s*[{[]/i,
+    /\b(?:dispatch|executeIntent|runProvider|callProvider)\s*\(/i,
+  ];
+  for (const pattern of forbidden) assert.doesNotMatch(source, pattern);
+});
