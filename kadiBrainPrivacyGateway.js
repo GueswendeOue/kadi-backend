@@ -131,6 +131,7 @@ const KEY_GROUPS = Object.freeze({
 const TEXT_PATTERNS = Object.freeze([
   ["EMAIL", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu],
   ["PHONE", /(?:\+?226[\s.-]*)?(?:[02567]\d(?:[\s.-]*\d{2}){3})\b/gu],
+  ["ADDRESS", /\b(?:adresse|domicile|livraison\s+[àa]|quartier|rue|avenue|secteur)(?=\s|:|$)\s*:?\s*[^,;\n]+/giu],
   ["AUTH_SECRET", /\b(?:mot[\s-]*de[\s-]*passe|password|passcode|pin|otp|code[\s-]*de[\s-]*v[ée]rification|mobile[\s-]*money[\s-]*pin)\b\s*[:=]?\s*\S+/giu],
   ["ACCESS_SECRET", /\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|service[\s_-]*role[\s_-]*key|bearer[\s_-]*token|secret[\s_-]*key)\b\s*[:=]?\s*\S+/giu],
   ["BUSINESS_IDENTIFIER", /\b(?:IFU|RCCM|tax[\s_-]*id|fiscal[\s_-]*id)\b\s*[:=]?\s*[A-Z0-9./-]+/giu],
@@ -170,6 +171,21 @@ function inspectStructure(value, seen = new Set()) {
   }
   seen.delete(value);
   return null;
+}
+
+function containsSecretAnywhere(value, seen = new Set()) {
+  if (typeof value === "string") {
+    return detectSensitiveText(value).some((item) => SECRET_CATEGORIES.has(item.category));
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  for (const key of Object.keys(value)) {
+    if (SECRET_CATEGORIES.has(classifySensitiveKey(key))) return true;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.get || descriptor.set) continue;
+    if (containsSecretAnywhere(descriptor.value, seen)) return true;
+  }
+  return false;
 }
 
 function createEmptyPrivacyInput() {
@@ -238,6 +254,7 @@ function detectSensitiveText(text) {
 
 function cloneContextValue(value, state, depth) {
   if (depth > KADI_PRIVACY_LIMITS.maxContextDepth) throw new Error("CONTEXT_TOO_LARGE");
+  if (typeof value === "bigint") throw new Error("INVALID_INPUT");
   if (
     value === null ||
     typeof value === "boolean" ||
@@ -363,10 +380,23 @@ function sanitizeText(text, path, policy, state) {
       replacements.push({ ...detection, replacement: "" });
       addRedaction(state, path, "PHONE", "REMOVE");
       state.personalBefore = true;
+    } else if (detection.category === "PHONE") {
+      state.personalBefore = true;
+      state.personalAfter = true;
     } else if (detection.category === "EMAIL" && policy.removeEmails) {
       replacements.push({ ...detection, replacement: "" });
       addRedaction(state, path, "EMAIL", "REMOVE");
       state.personalBefore = true;
+    } else if (detection.category === "EMAIL") {
+      state.personalBefore = true;
+      state.personalAfter = true;
+    } else if (detection.category === "ADDRESS" && policy.removeAddresses) {
+      replacements.push({ ...detection, replacement: "" });
+      addRedaction(state, path, "ADDRESS", "REMOVE");
+      state.personalBefore = true;
+    } else if (detection.category === "ADDRESS") {
+      state.personalBefore = true;
+      state.personalAfter = true;
     } else if (detection.category === "BUSINESS_IDENTIFIER" && !policy.allowBusinessIdentifiers) {
       replacements.push({ ...detection, replacement: "BUSINESS_ID_REMOVED" });
       addRedaction(state, path, "BUSINESS_IDENTIFIER", "REDACT");
@@ -437,6 +467,14 @@ function sanitizeContextValue(value, path, policy, state, keyCategory = "NONE") 
     addRedaction(state, path, keyCategory, "REMOVE");
     return undefined;
   }
+  if (
+    (keyCategory === "PHONE" && !policy.removePhones) ||
+    (keyCategory === "EMAIL" && !policy.removeEmails) ||
+    (keyCategory === "ADDRESS" && !policy.removeAddresses)
+  ) {
+    state.personalBefore = true;
+    state.personalAfter = true;
+  }
   if (keyCategory === "BUSINESS_IDENTIFIER" && !policy.allowBusinessIdentifiers) {
     state.businessSensitive = true;
     addRedaction(state, path, keyCategory, "REDACT");
@@ -482,6 +520,12 @@ function sanitizePrivacyInput(input) {
     if (!isPlainObject(input)) return invalidPrivacyResult("INVALID_INPUT");
     const structuralIssue = inspectStructure(input);
     if (structuralIssue) return invalidPrivacyResult(structuralIssue);
+    if (containsSecretAnywhere(input)) {
+      const blocked = invalidPrivacyResult("SECRET_DETECTED");
+      blocked.decision = "BLOCKED";
+      blocked.summary.containsSecrets = true;
+      return blocked;
+    }
     const normalized = normalizePrivacyInput(input);
     if (normalized.schemaVersion !== KADI_PRIVACY_INPUT_VERSION) {
       return invalidPrivacyResult(
@@ -554,6 +598,81 @@ function sanitizePrivacyInput(input) {
   }
 }
 
+function inspectSanitizedPrivacyPayload(sanitizedInput) {
+  const state = {
+    containsSecrets: false,
+    containsPersonalData: false,
+    containsBusinessSensitiveData: false,
+    unsafe: false,
+  };
+  if (
+    !isPlainObject(sanitizedInput) ||
+    typeof sanitizedInput.userMessage !== "string" ||
+    !isPlainObject(sanitizedInput.context) ||
+    inspectStructure(sanitizedInput)
+  ) {
+    state.unsafe = true;
+    return state;
+  }
+  const inspectText = (text) => {
+    for (const detection of detectSensitiveText(text)) {
+      if (SECRET_CATEGORIES.has(detection.category)) state.containsSecrets = true;
+      else if (PERSONAL_CATEGORIES.has(detection.category)) state.containsPersonalData = true;
+      else if (detection.category === "BUSINESS_IDENTIFIER") {
+        state.containsBusinessSensitiveData = true;
+      }
+    }
+    if (textNameMatches(text).length > 0) state.containsPersonalData = true;
+  };
+  const walk = (value, keyCategory = "NONE") => {
+    if (SECRET_CATEGORIES.has(keyCategory)) state.containsSecrets = true;
+    if (
+      PERSONAL_CATEGORIES.has(keyCategory) &&
+      !(keyCategory === "PERSONAL_NAME" &&
+        typeof value === "string" &&
+        /^PERSON_[1-9]\d*$/.test(value))
+    ) state.containsPersonalData = true;
+    if (keyCategory === "BUSINESS_IDENTIFIER") state.containsBusinessSensitiveData = true;
+    if (typeof value === "string") inspectText(value);
+    else if (Array.isArray(value)) value.forEach((item) => walk(item));
+    else if (isPlainObject(value)) {
+      for (const key of Object.keys(value)) walk(value[key], classifySensitiveKey(key));
+    }
+  };
+  inspectText(sanitizedInput.userMessage);
+  walk(sanitizedInput.context);
+  return state;
+}
+
+function isRestorablePersonalName(alias, value) {
+  if (
+    !/^PERSON_[1-9]\d*$/.test(alias) ||
+    typeof value !== "string" ||
+    !value.trim() ||
+    codePointLength(alias) > KADI_PRIVACY_LIMITS.maxAliasCodePoints
+  ) return false;
+  if (classifySensitiveKey(value) !== "NONE") return false;
+  if (detectSensitiveText(value).length > 0) return false;
+  return /^[\p{L}'’.-]+(?:\s+[\p{L}'’.-]+)+$/u.test(value.trim());
+}
+
+function derivePrivacySummary(result) {
+  const payload = inspectSanitizedPrivacyPayload(result.sanitizedInput);
+  const redactions = Array.isArray(result.redactions) ? result.redactions : [];
+  return {
+    containsSecrets:
+      result.errorCode === "SECRET_DETECTED" || payload.containsSecrets,
+    containsPersonalDataBefore:
+      payload.containsPersonalData ||
+      redactions.some((item) => PERSONAL_CATEGORIES.has(item?.category)),
+    containsPersonalDataAfter: payload.containsPersonalData,
+    containsBusinessSensitiveData:
+      payload.containsBusinessSensitiveData ||
+      redactions.some((item) => item?.category === "BUSINESS_IDENTIFIER"),
+    dataMinimized: redactions.length > 0,
+  };
+}
+
 function validatePrivacyResult(result) {
   const errors = [];
   const add = (path, code) => errors.push({ path, code });
@@ -613,9 +732,7 @@ function validatePrivacyResult(result) {
     else for (const [alias, value] of Object.entries(result.restorationMap)) {
       if (
         isDangerousKey(alias) ||
-        typeof value !== "string" ||
-        codePointLength(alias) > KADI_PRIVACY_LIMITS.maxAliasCodePoints ||
-        detectSensitiveText(value).some((item) => SECRET_CATEGORIES.has(item.category))
+        !isRestorablePersonalName(alias, value)
       ) add("restorationMap", "INVALID_RESTORATION_MAP");
     }
     const summaryKeys = [
@@ -627,6 +744,18 @@ function validatePrivacyResult(result) {
       JSON.stringify(Object.keys(result.summary)) !== JSON.stringify(summaryKeys) ||
       summaryKeys.some((key) => typeof result.summary[key] !== "boolean")
     ) add("summary", "INVALID_RESULT");
+    else {
+      const derivedSummary = derivePrivacySummary(result);
+      if (JSON.stringify(result.summary) !== JSON.stringify(derivedSummary)) {
+        add("summary", "INVALID_RESULT");
+      }
+      if (
+        result.allowed &&
+        (derivedSummary.containsSecrets ||
+          derivedSummary.containsPersonalDataAfter ||
+          derivedSummary.containsBusinessSensitiveData)
+      ) add("sanitizedInput", "INVALID_RESULT");
+    }
     if (result.decision === "ALLOWED") {
       if (!result.allowed || result.errorCode !== "NONE") add("decision", "INVALID_RESULT");
     } else if (result.decision === "ALLOWED_WITH_REDACTION") {
@@ -662,9 +791,17 @@ function validatePrivacyResult(result) {
 function isPrivacySafeForProvider(result) {
   try {
     if (!validatePrivacyResult(result).valid) return false;
-    if (!result.allowed || result.summary.containsSecrets) return false;
-    if (result.summary.containsPersonalDataAfter) return false;
-    if (inspectStructure(result.sanitizedInput)) return false;
+    if (!result.allowed) return false;
+    const inspection = inspectSanitizedPrivacyPayload(result.sanitizedInput);
+    if (
+      inspection.unsafe ||
+      inspection.containsSecrets ||
+      inspection.containsPersonalData ||
+      inspection.containsBusinessSensitiveData
+    ) return false;
+    for (const [alias, value] of Object.entries(result.restorationMap)) {
+      if (!isRestorablePersonalName(alias, value)) return false;
+    }
     return true;
   } catch {
     return false;

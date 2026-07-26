@@ -431,3 +431,204 @@ test("scenarios 137-153: production source is pure and has no persistence or exe
   ];
   for (const pattern of forbidden) assert.doesNotMatch(source, pattern);
 });
+
+test("hardening: every frozen constant rejects mutation", () => {
+  for (const value of [
+    KADI_PRIVACY_CATEGORIES,
+    KADI_PRIVACY_ACTIONS,
+    KADI_PRIVACY_DECISIONS,
+    KADI_PRIVACY_ERROR_CODES,
+    KADI_PRIVACY_LIMITS,
+  ]) {
+    const key = Object.keys(value)[0];
+    assert.throws(() => { value[key] = "MUTATED"; }, TypeError);
+  }
+});
+
+test("hardening: textual offsets and explicit addresses are exact", () => {
+  assert.deepEqual(detectSensitiveText("Téléphone 70 12 34 56"), [
+    { category: "PHONE", start: 10, end: 21 },
+  ]);
+  const addresses = [
+    "Adresse Ouagadougou secteur 15",
+    "Adresse : secteur 15",
+    "Domicile : Gounghin",
+    "Livraison à Tampouy",
+    "Quartier Karpala secteur 30",
+    "Rue 12.34",
+    "Avenue Kwamé Nkrumah",
+  ];
+  for (const text of addresses) {
+    const detections = detectSensitiveText(text);
+    assert.equal(detections.some((item) => item.category === "ADDRESS"), true);
+    assert.equal(JSON.stringify(detections).includes(text), false);
+  }
+});
+
+test("hardening: bigint fails closed without throwing", () => {
+  const input = validInput({ context: { count: 1n } });
+  assert.doesNotThrow(() => normalizePrivacyInput(input));
+  assert.equal(normalizePrivacyInput(input).schemaVersion, null);
+  assert.equal(sanitizePrivacyInput(input).allowed, false);
+});
+
+test("hardening: one name is pseudonymized with an exact local restoration map", () => {
+  const result = sanitizePrivacyInput(validInput({
+    context: { customerName: "Awa Kaboré" },
+  }));
+  assert.equal(result.sanitizedInput.context.customerName, "PERSON_1");
+  assert.deepEqual(result.restorationMap, { PERSON_1: "Awa Kaboré" });
+  assert.equal(isPrivacySafeForProvider(result), true);
+});
+
+test("hardening: restoration map boundaries and allowed values are validated", () => {
+  const base = sanitizePrivacyInput(validInput());
+  const exact = {};
+  for (let index = 1; index <= KADI_PRIVACY_LIMITS.maxRestorationEntries; index += 1) {
+    exact[`PERSON_${index}`] = `Personne ${"A".repeat(index)}`;
+  }
+  assert.equal(validatePrivacyResult({ ...base, restorationMap: exact }).valid, true);
+  const excessive = { ...exact, PERSON_101: `Personne ${"A".repeat(101)}` };
+  assert.equal(validatePrivacyResult({ ...base, restorationMap: excessive }).valid, false);
+
+  const forbidden = [
+    "70 12 34 56",
+    "awa@example.com",
+    "Adresse Ouagadougou secteur 15",
+    "waId",
+    "passport AB12345",
+    "OTP 123456",
+    "PIN 1234",
+    "Mot de passe abc123",
+    "access token secret-value",
+    "API key secret-value",
+  ];
+  for (const value of forbidden) {
+    const forged = { ...base, restorationMap: { PERSON_1: value } };
+    assert.equal(validatePrivacyResult(forged).valid, false);
+    assert.equal(isPrivacySafeForProvider(forged), false);
+  }
+});
+
+test("hardening: secrets at every depth and under unknown keys always block", () => {
+  const keys = [
+    "apiKey", "API_KEY", "accessToken", "ACCESS_TOKEN", "refreshToken",
+    "serviceRoleKey", "password", "Password", "PASSWORD", "otp", "OTP",
+    "pin", "PIN", "mobileMoneyPin", "bearerToken", "secretKey",
+    "api key", "access-token", "service_role_key",
+  ];
+  keys.forEach((key, index) => {
+    const sentinel = `ROOT_SECRET_SENTINEL_${index}`;
+    const placements = [
+      { [key]: sentinel },
+      { context: { [key]: sentinel } },
+      { policy: { [key]: sentinel } },
+      { unknown: [{ nested: { [key]: sentinel } }] },
+    ];
+    for (const placement of placements) {
+      const result = sanitizePrivacyInput({ ...validInput(), ...placement });
+      assert.equal(result.allowed, false);
+      assert.equal(result.decision, "BLOCKED");
+      assert.equal(result.errorCode, "SECRET_DETECTED");
+      assert.deepEqual(result.restorationMap, {});
+      assert.deepEqual(result.sanitizedInput, { userMessage: "", context: {} });
+      assert.equal(result.summary.containsSecrets, true);
+      assert.equal(JSON.stringify(result).includes(sentinel), false);
+    }
+  });
+});
+
+test("hardening: permissive policies disclose state but can never become provider-safe", () => {
+  const cases = [
+    ["removePhones", "Téléphone 70 12 34 56", "PHONE"],
+    ["removeEmails", "Email awa@example.com", "EMAIL"],
+    ["removeAddresses", "Adresse Ouagadougou secteur 15", "ADDRESS"],
+  ];
+  for (const [policyKey, userMessage, category] of cases) {
+    const input = validInput({ userMessage });
+    input.policy[policyKey] = false;
+    const result = sanitizePrivacyInput(input);
+    assert.equal(result.allowed, true);
+    assert.equal(result.sanitizedInput.userMessage, userMessage);
+    assert.equal(result.summary.containsPersonalDataBefore, true);
+    assert.equal(result.summary.containsPersonalDataAfter, true);
+    assert.equal(isPrivacySafeForProvider(result), false);
+    assert.equal(
+      detectSensitiveText(result.sanitizedInput.userMessage)
+        .some((item) => item.category === category),
+      true
+    );
+  }
+});
+
+test("hardening: financial amounts are removed from messages when disabled", () => {
+  const input = validInput({ userMessage: "Montant 125000 FCFA" });
+  input.policy.allowFinancialAmounts = false;
+  const result = sanitizePrivacyInput(input);
+  assert.equal(result.sanitizedInput.userMessage, "AMOUNT_REMOVED");
+  assert.equal(result.redactions.some((item) => item.category === "FINANCIAL"), true);
+  assert.equal(JSON.stringify(result).includes("125000"), false);
+});
+
+test("hardening: forged sanitized payloads and lying summaries are rejected", () => {
+  const clean = sanitizePrivacyInput(validInput());
+  const forbiddenMessages = [
+    "Téléphone 70 12 34 56",
+    "Email awa@example.com",
+    "Adresse Ouagadougou secteur 15",
+    "Facture pour Awa Kaboré",
+    "IFU 00012345",
+    "OTP 123456",
+  ];
+  for (const userMessage of forbiddenMessages) {
+    const forged = {
+      ...clean,
+      sanitizedInput: { userMessage, context: {} },
+    };
+    assert.equal(validatePrivacyResult(forged).valid, false);
+    assert.equal(isPrivacySafeForProvider(forged), false);
+  }
+  const contextCases = [
+    { phone: "70 12 34 56" },
+    { email: "awa@example.com" },
+    { address: "Ouagadougou" },
+    { waId: "22670123456" },
+    { passport: "AB12345" },
+    { customerName: "Awa Kaboré" },
+    { ifu: "00012345" },
+    { apiKey: "secret-value" },
+  ];
+  for (const context of contextCases) {
+    const forged = {
+      ...clean,
+      sanitizedInput: { userMessage: "Public", context },
+    };
+    assert.equal(validatePrivacyResult(forged).valid, false);
+    assert.equal(isPrivacySafeForProvider(forged), false);
+  }
+  const lying = {
+    ...clean,
+    summary: { ...clean.summary, containsPersonalDataAfter: true },
+  };
+  assert.equal(validatePrivacyResult(lying).valid, false);
+  assert.equal(isPrivacySafeForProvider(lying), false);
+});
+
+test("hardening: result references remain deeply independent", () => {
+  const input = validInput({ context: { customerName: "Awa Kaboré" } });
+  const first = sanitizePrivacyInput(input);
+  const second = sanitizePrivacyInput(input);
+  for (const key of [
+    "errors", "redactions", "sanitizedInput", "restorationMap", "summary",
+  ]) assert.notStrictEqual(first[key], second[key]);
+  assert.notStrictEqual(first.sanitizedInput.context, second.sanitizedInput.context);
+  first.redactions.forEach((item, index) =>
+    assert.notStrictEqual(item, second.redactions[index])
+  );
+  first.errors.push({ path: "changed", code: "INVALID_RESULT" });
+  first.redactions[0].path = "changed";
+  first.sanitizedInput.context.customerName = "changed";
+  first.restorationMap.PERSON_1 = "changed";
+  first.summary.dataMinimized = false;
+  assert.notEqual(JSON.stringify(first), JSON.stringify(second));
+});
