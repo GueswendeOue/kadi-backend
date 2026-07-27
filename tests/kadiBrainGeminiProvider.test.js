@@ -683,3 +683,330 @@ test("hardening: reordered client results produce byte-identical responses", () 
   const second = normalizeGeminiClientResult(reverseKeys(result), validProviderRequest());
   assert.equal(JSON.stringify(first), JSON.stringify(second));
 });
+
+test("closing escapes: French identity and biometric markers block in every message position", async () => {
+  const forbidden = [
+    "Carte d’identité 12345",
+    "CARTE D IDENTITE 12345",
+    "carte-identite-12345",
+    "carte_identite_12345",
+    "Carte nationale d’identité 12345",
+    "carte nationale identite 12345",
+    "CNIB B123456",
+    "CNI 123456",
+    "Pièce d’identité 98765",
+    "piece d'identite 98765",
+    "Numéro de pièce 12345",
+    "numero de piece 12345",
+    "Passeport A123456",
+    "passport A123456",
+    "Permis de conduire 12345",
+    "Acte de naissance 12345",
+    "Signature Awa",
+    "signature: Awa Kaboré",
+    "signature client Awa",
+    "signature manuscrite Awa",
+    "signé par Awa Kaboré",
+    "signe par Awa Kabore",
+    "Empreinte client",
+    "Empreinte digitale client",
+    "fingerprint PERSON_RAW",
+    "Biométrie utilisateur",
+    "biometrie utilisateur",
+    "cachet personnel Awa",
+  ];
+  const positions = ["first", "system", "second", "multiline", "middle", "end"];
+  for (const value of forbidden) {
+    for (const position of positions) {
+      let calls = 0;
+      const provider = createGeminiProvider({
+        client: { generateContent() { calls += 1; return clientResult(); } },
+      });
+      const request = validProviderRequest();
+      if (position === "system") request.messages[0].content = value;
+      else if (position === "second") {
+        request.messages.push({ role: "user", content: value });
+      } else if (position === "multiline") {
+        request.messages[1].content = `Ligne publique\n${value}\nFin`;
+      } else if (position === "middle") {
+        request.messages[1].content = `Début public ${value} fin publique`;
+      } else if (position === "end") {
+        request.messages[1].content = `Début public ${value}`;
+      } else request.messages[1].content = value;
+      const response = await provider.invoke({
+        providerRequest: request,
+        privacyResult: safePrivacyResult(),
+      });
+      assertCanonical(response);
+      assert.equal(response.status, "REJECTED");
+      assert.equal(response.errorCode, "INVALID_REQUEST");
+      assert.equal(calls, 0);
+      assert.equal(JSON.stringify(response).includes(value), false);
+    }
+  }
+});
+
+test("closing escapes: explicitly marked raw names block while aliases and public names remain allowed", async () => {
+  const forbidden = [
+    "Nom Awa Kaboré",
+    "Nom: Awa Kaboré",
+    "Nom client Awa Kaboré",
+    "Nom du client Awa Kaboré",
+    "Client Awa Kaboré",
+    "Bénéficiaire Awa Kaboré",
+    "Beneficiaire Awa Kabore",
+    "Destinataire Awa Kaboré",
+    "Expéditeur Issa Ouedraogo",
+    "expediteur Issa Ouedraogo",
+    "Titulaire Awa Kaboré",
+    "Propriétaire Awa Kaboré",
+    "proprietaire Awa Kabore",
+    "Madame Awa Kaboré",
+    "Monsieur Issa Ouedraogo",
+    "M. Issa Ouedraogo",
+    "Mme Awa Kaboré",
+    "nom-awa-kabore",
+    "nom_awa_kabore",
+  ];
+  for (const value of forbidden) {
+    let calls = 0;
+    const request = validProviderRequest();
+    request.messages[1].content = value;
+    const response = await createGeminiProvider({
+      client: { generateContent() { calls += 1; return clientResult(); } },
+    }).invoke({ providerRequest: request, privacyResult: safePrivacyResult() });
+    assertCanonical(response);
+    assert.equal(response.errorCode, "INVALID_REQUEST");
+    assert.equal(calls, 0);
+  }
+
+  const allowed = [
+    "PERSON_1", "PERSON_2", "Client PERSON_1", "Bénéficiaire PERSON_2",
+    "Facture Standard", "Produit Premium", "Service Express", "Ouagadougou",
+    "Burkina Faso", "Kadi AI", "SYSCOHADA", "25000 FCFA",
+    "Créer une facture de 25000 FCFA pour PERSON_1",
+    "Facture 2026-001, quantité 3, Produit Premium",
+    "Service disponible à Ouagadougou",
+  ];
+  for (const value of allowed) {
+    let calls = 0;
+    const request = validProviderRequest();
+    request.messages[1].content = value;
+    const response = await createGeminiProvider({
+      client: { generateContent() { calls += 1; return clientResult(); } },
+    }).invoke({ providerRequest: request, privacyResult: safePrivacyResult() });
+    assertCanonical(response);
+    assert.equal(response.ok, true);
+    assert.equal(calls, 1);
+  }
+});
+
+test("closing escapes: provider request ids reject normalized sensitive markers", () => {
+  const allowed = [
+    "req_test_1", "request-001", "gemini_call_42",
+    "abc123", "trace_001", "call-prod-02",
+  ];
+  const forbidden = [
+    "Adresse-Ouagadougou-secteur-15",
+    "adresse_ouaga_secteur_15",
+    "CARTE-IDENTITE-12345",
+    "signature-Awa",
+    "nom-Awa-Kabore",
+    "awa@example.com",
+    "70-12-34-56",
+    "OTP-123456",
+    "PIN_4321",
+    "waId-22670123456",
+    "IFU-00012345",
+    "RCCM-BF-OUA",
+    "Passeport-A123456",
+  ];
+  for (const providerRequestId of allowed) {
+    const response = normalizeGeminiClientResult(
+      clientResult({ providerRequestId: ` ${providerRequestId} ` }),
+      validProviderRequest()
+    );
+    assertCanonical(response);
+    assert.equal(response.metadata.providerRequestId, providerRequestId);
+  }
+  for (const providerRequestId of forbidden) {
+    const response = normalizeGeminiClientResult(
+      clientResult({ providerRequestId }),
+      validProviderRequest()
+    );
+    assertCanonical(response);
+    assert.equal(response.metadata.providerRequestId, null);
+    assert.equal(JSON.stringify(response).includes(providerRequestId), false);
+  }
+  assert.equal(
+    normalizeGeminiClientResult(
+      clientResult({ providerRequestId: "   " }),
+      validProviderRequest()
+    ).metadata.providerRequestId,
+    null
+  );
+});
+
+test("closing escapes: every forbidden factory option invalidates the injected client", async () => {
+  const extras = ["endpoint", "credentials", "apiKey", "projectId", "region"];
+  for (const extra of extras) {
+    let calls = 0;
+    const provider = createGeminiProvider({
+      client: { generateContent() { calls += 1; return clientResult(); } },
+      [extra]: "sentinel",
+    });
+    const response = await provider.invoke({
+      providerRequest: validProviderRequest(),
+      privacyResult: safePrivacyResult(),
+    });
+    assertCanonical(response);
+    assert.equal(response.errorCode, "PROVIDER_UNAVAILABLE");
+    assert.equal(calls, 0);
+    assert.equal(JSON.stringify(response).includes("sentinel"), false);
+  }
+});
+
+test("closing escapes: providers have isolated clients and no shared counters", async () => {
+  let callsA = 0;
+  let callsB = 0;
+  const providerA = createGeminiProvider({
+    client: { generateContent() { callsA += 1; return clientResult({ providerRequestId: "a" }); } },
+  });
+  const providerB = createGeminiProvider({
+    client: { generateContent() { callsB += 1; return clientResult({ providerRequestId: "b" }); } },
+  });
+  assert.notStrictEqual(providerA, providerB);
+  assert.notStrictEqual(providerA.invoke, providerB.invoke);
+  const input = {
+    providerRequest: validProviderRequest(),
+    privacyResult: safePrivacyResult(),
+  };
+  const responseA = await providerA.invoke(input);
+  assert.equal(callsA, 1);
+  assert.equal(callsB, 0);
+  const responseB = await providerB.invoke(input);
+  assert.equal(callsA, 1);
+  assert.equal(callsB, 1);
+  assert.equal(responseA.metadata.providerRequestId, "a");
+  assert.equal(responseB.metadata.providerRequestId, "b");
+});
+
+test("closing escapes: invoke always returns a Promise", async () => {
+  const validInput = {
+    providerRequest: validProviderRequest(),
+    privacyResult: safePrivacyResult(),
+  };
+  const cases = [
+    [createGeminiProvider(), validInput],
+    [createGeminiProvider({ client: { generateContent: () => clientResult() } }), undefined],
+    [createGeminiProvider({ client: { generateContent: () => clientResult() } }), {
+      ...validInput,
+      privacyResult: sanitizePrivacyInput({
+        ...createEmptyPrivacyInput(),
+        userMessage: "OTP 123456",
+      }),
+    }],
+    [createGeminiProvider({ client: { generateContent: () => clientResult() } }), validInput],
+    [createGeminiProvider({ client: { generateContent() { throw { kind: "NETWORK" }; } } }), validInput],
+  ];
+  for (const [provider, input] of cases) {
+    const promise = provider.invoke(input);
+    assert.equal(promise instanceof Promise, true);
+    assertCanonical(await promise);
+  }
+});
+
+test("closing escapes: deeply frozen requests and privacy results are accepted unchanged", async () => {
+  const request = validProviderRequest();
+  request.messages.forEach(Object.freeze);
+  Object.freeze(request.messages);
+  Object.freeze(request.generation);
+  Object.freeze(request.responseFormat);
+  Object.freeze(request.metadata.tags);
+  Object.freeze(request.metadata);
+  Object.freeze(request);
+  const privacyResult = safePrivacyResult();
+  Object.freeze(privacyResult.errors);
+  Object.freeze(privacyResult.sanitizedInput.context);
+  Object.freeze(privacyResult.sanitizedInput);
+  Object.freeze(privacyResult.redactions);
+  Object.freeze(privacyResult.restorationMap);
+  Object.freeze(privacyResult.summary);
+  Object.freeze(privacyResult);
+  const requestBefore = JSON.stringify(request);
+  const privacyBefore = JSON.stringify(privacyResult);
+  const response = await createGeminiProvider({
+    client: { generateContent: () => clientResult() },
+  }).invoke({ providerRequest: request, privacyResult });
+  assertCanonical(response);
+  assert.equal(response.ok, true);
+  assert.equal(JSON.stringify(request), requestBefore);
+  assert.equal(JSON.stringify(privacyResult), privacyBefore);
+});
+
+test("closing escapes: partial usage preserves every independently valid field", () => {
+  const cases = [
+    [
+      { inputUnits: 1, outputUnits: -1, totalUnits: 4 },
+      { inputUnits: 1, outputUnits: null, totalUnits: 4 },
+    ],
+    [
+      { inputUnits: -1, outputUnits: 3, totalUnits: 4 },
+      { inputUnits: null, outputUnits: 3, totalUnits: 4 },
+    ],
+    [
+      { inputUnits: 1, outputUnits: 3, totalUnits: -1 },
+      { inputUnits: 1, outputUnits: 3, totalUnits: null },
+    ],
+    [
+      { inputUnits: 0, outputUnits: 0 },
+      { inputUnits: 0, outputUnits: 0, totalUnits: null },
+    ],
+    [
+      { inputUnits: 2, totalUnits: 2 },
+      { inputUnits: 2, outputUnits: null, totalUnits: 2 },
+    ],
+  ];
+  for (const [usage, expected] of cases) {
+    const response = normalizeGeminiClientResult(
+      clientResult({ usage }),
+      validProviderRequest()
+    );
+    assertCanonical(response);
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.usage, expected);
+  }
+});
+
+test("closing escapes: complete active client mutation cannot affect later calls", async () => {
+  const providerRequest = validProviderRequest();
+  const privacyResult = safePrivacyResult();
+  const independentBuild = buildGeminiClientRequest(providerRequest);
+  const providerBefore = JSON.stringify(providerRequest);
+  const buildBefore = JSON.stringify(independentBuild);
+  let calls = 0;
+  const provider = createGeminiProvider({
+    client: {
+      generateContent(request) {
+        calls += 1;
+        request.model = "mutated";
+        request.systemInstruction = "mutated";
+        request.contents.push({ role: "user", parts: [{ text: "mutated" }] });
+        request.contents[0] = { role: "user", parts: [{ text: "replaced" }] };
+        request.contents[0].parts = [{ text: "parts replaced" }];
+        request.contents[0].parts[0].text = "text mutated";
+        request.generationConfig = { temperature: 1 };
+        request.generationConfig.temperature = 2;
+        return clientResult();
+      },
+    },
+  });
+  const first = await provider.invoke({ providerRequest, privacyResult });
+  const second = await provider.invoke({ providerRequest, privacyResult });
+  assertCanonical(first);
+  assertCanonical(second);
+  assert.equal(calls, 2);
+  assert.equal(JSON.stringify(providerRequest), providerBefore);
+  assert.equal(JSON.stringify(independentBuild), buildBefore);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+});

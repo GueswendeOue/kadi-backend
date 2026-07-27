@@ -148,14 +148,42 @@ function nonNegativeIntegerOrNull(value) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+function normalizeDetectionText(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function containsExplicitRestrictedMarker(value) {
+  const normalized = normalizeDetectionText(value);
+  if (!normalized) return false;
+  const documentOrBiometric =
+    /\b(?:carte(?: nationale)?(?: d)? identite|cnib|cni|piece(?: d)? identite|numero de piece|passeport|passport|permis de conduire|acte de naissance|signature(?: client| manuscrite)?|signe par|empreinte(?: digitale)?|fingerprint|biometrie|cachet personnel)\b/u;
+  if (documentOrBiometric.test(normalized)) return true;
+  const explicitSecret =
+    /\b(?:otp|pin|password|mot de passe|api key|access token|bearer token|service role key|secret key|mobile money pin|code de validation)\b\s+\S+/u;
+  if (explicitSecret.test(normalized)) return true;
+  const explicitAddress =
+    /\b(?:adresse|domicile|livraison a|quartier|rue|avenue|secteur)\b\s+\S+/u;
+  if (explicitAddress.test(normalized)) return true;
+  const personalName =
+    /\b(?:nom(?: du)? client|nom|client|beneficiaire|destinataire|expediteur|titulaire|proprietaire|monsieur|madame|m|mme)\s+([\p{L}]{2,})\s+([\p{L}]{2,})/u;
+  return personalName.test(normalized);
+}
+
 function containsRawIdentityText(value) {
   return typeof value === "string" &&
-    /\b(?:wa[\s_-]*id|bsuid|whatsapp[\s_-]*id|phone[\s_-]*number[\s_-]*id|code\s+de\s+validation|passeport)\b\s*[:=]?\s*\S+/iu.test(value);
+    /\b(?:wa[\s_-]*id|bsuid|whatsapp[\s_-]*id|phone[\s_-]*number[\s_-]*id|code\s+de\s+validation)\b\s*[:=]?\s*\S+/iu.test(value);
 }
 
 function isSensitiveText(value) {
   if (typeof value !== "string") return false;
-  if (containsRawIdentityText(value)) return true;
+  if (containsRawIdentityText(value) || containsExplicitRestrictedMarker(value)) return true;
   return detectSensitiveText(value).some((item) => item.category !== "FINANCIAL");
 }
 
