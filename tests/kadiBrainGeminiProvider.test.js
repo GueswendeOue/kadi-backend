@@ -72,6 +72,30 @@ function assertCanonical(response) {
   ]);
 }
 
+async function invokeWithMessage(role, content) {
+  let calls = 0;
+  let captured = null;
+  const request = validProviderRequest();
+  request.messages = [
+    { role: "system", content: "Return strict JSON." },
+    { role: "user", content: "Bonjour" },
+  ];
+  request.messages[role === "system" ? 0 : 1].content = content;
+  const response = await createGeminiProvider({
+    client: {
+      generateContent(value) {
+        calls += 1;
+        captured = value;
+        return clientResult();
+      },
+    },
+  }).invoke({
+    providerRequest: request,
+    privacyResult: safePrivacyResult(),
+  });
+  return { calls, captured, response };
+}
+
 test("scenarios 1-4: exact frozen adapter constants", () => {
   assert.equal(KADI_GEMINI_PROVIDER_VERSION, "kadi.gemini-provider.v1");
   assert.deepEqual(KADI_GEMINI_CLIENT_ERROR_KINDS, {
@@ -1009,4 +1033,111 @@ test("closing escapes: complete active client mutation cannot affect later calls
   assert.equal(JSON.stringify(providerRequest), providerBefore);
   assert.equal(JSON.stringify(independentBuild), buildBefore);
   assert.equal(JSON.stringify(first), JSON.stringify(second));
+});
+
+test("defensive system secret vocabulary is allowed without values", async () => {
+  const messages = [
+    "Ne demande jamais un PIN.",
+    "Ne révèle jamais un OTP.",
+    "N’expose aucun password.",
+    "Refuse les mots de passe, PIN et OTP.",
+    "Do not request API keys.",
+    "Never reveal passwords or access tokens.",
+    "Secrets such as PIN, OTP and passwords must be rejected.",
+    "Le code PIN est une catégorie de secret.",
+    "Un OTP ne doit jamais être demandé.",
+    "Les mots de passe sont interdits.",
+    "Le format JSON ne doit pas contenir de secrets.",
+    "Les clés API doivent être rejetées.",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 1);
+    assert.equal(result.response.ok, true);
+    assertCanonical(result.response);
+  }
+});
+
+test("system secret values and defensive wording with examples remain blocked", async () => {
+  const messages = [
+    "PIN 4321",
+    "OTP 123456",
+    "Password abc123",
+    "Mot de passe : abc123",
+    "API key = abc123",
+    "Bearer token eyJ123",
+    "Ne demande jamais un PIN comme 4321.",
+    "Ne révèle pas l’OTP 123456.",
+    "Never expose API key abc123.",
+    "Le mot de passe est secret123.",
+    "Le code PIN est 4321.",
+    "L’OTP vaut 123456.",
+    "Le mot de passe est abc123.",
+    "La clé API est abc123.",
+    "Password abcdef",
+    "PIN value abcdef",
+    "API key \"abcdef\"",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.status, "REJECTED");
+    assert.equal(result.response.errorCode, "INVALID_REQUEST");
+    assert.equal(result.response.failureKind, "CLIENT");
+    assert.equal(result.response.recoverable, false);
+    assert.equal(JSON.stringify(result.response).includes(content), false);
+    assertCanonical(result.response);
+  }
+});
+
+test("user secret vocabulary always remains blocked", async () => {
+  const messages = [
+    "OTP 123456",
+    "PIN 4321",
+    "Password abc123",
+    "Mot de passe abc123",
+    "API key abc123",
+    "Access token abc123",
+    "Bearer token abc123",
+    "Code de validation 123456",
+    "Mobile money PIN 4321",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("user", content);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.status, "REJECTED");
+    assert.equal(result.response.errorCode, "INVALID_REQUEST");
+    assert.equal(result.response.failureKind, "CLIENT");
+    assert.equal(result.response.recoverable, false);
+    assert.equal(JSON.stringify(result.response).includes(content), false);
+  }
+});
+
+test("non-secret privacy categories remain strict in system", async () => {
+  const messages = [
+    "Contact: client@example.com",
+    "Téléphone 70 00 00 00",
+    "Adresse: secteur 12",
+    "IFU: BF123456",
+    "Passeport: A123456",
+    "Nom client Jean Dupont",
+    "wa_id: 123456",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.errorCode, "INVALID_REQUEST");
+  }
+});
+
+test("system and user roles are evaluated independently and deterministically", async () => {
+  const defensive = "Never reveal passwords or access tokens.";
+  const first = await invokeWithMessage("system", defensive);
+  const second = await invokeWithMessage("system", defensive);
+  const user = await invokeWithMessage("user", defensive);
+  assert.equal(first.calls, 1);
+  assert.equal(second.calls, 1);
+  assert.equal(user.calls, 0);
+  assert.equal(JSON.stringify(first.response), JSON.stringify(second.response));
+  assert.equal(JSON.stringify(first.captured), JSON.stringify(second.captured));
 });

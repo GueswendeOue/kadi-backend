@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const providerContract = require("../kadiBrainProviderContract");
 const intentContract = require("../kadiBrainIntentContract");
+const geminiProvider = require("../kadiBrainGeminiProvider");
 const smoke = require("../scripts/runGeminiBrainIsolatedSmokeTest");
 
 function resolutionJson() {
@@ -171,6 +172,40 @@ test("privacy passes before prompt and provider construction", async () => {
   assert.deepEqual(setup.counts(), {
     clientCreations: 1, providerCreations: 1, invocations: 1,
   });
+});
+
+test("real prompt builder pipeline reaches the injected fake Gemini client", async () => {
+  let calls = 0;
+  let captured = null;
+  const setup = harness({
+    createProvider({ client }) {
+      return geminiProvider.createGeminiProvider({ client });
+    },
+    createRealClient() {
+      return {
+        generateContent(request) {
+          calls += 1;
+          captured = request;
+          return {
+            text: resolutionJson(),
+            model: smoke.KADI_GEMINI_SMOKE_MODEL,
+            finishReason: "STOP",
+            usage: { inputUnits: 12, outputUnits: 8, totalUnits: 20 },
+            providerRequestId: null,
+          };
+        },
+      };
+    },
+  });
+  const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  assert.equal(calls, 1);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.publicResult.providerResponseValid, true);
+  assert.equal(result.publicResult.execution, "NONE");
+  assert.equal(captured.model, smoke.KADI_GEMINI_SMOKE_MODEL);
+  assert.equal(Object.hasOwn(captured, "privacyResult"), false);
+  assert.equal(Object.hasOwn(captured, "restorationMap"), false);
+  assert.equal(Object.hasOwn(captured, "apiKey"), false);
 });
 
 test("simulated privacy rejection prevents client and provider creation", async () => {

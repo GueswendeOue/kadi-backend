@@ -187,10 +187,110 @@ function isSensitiveText(value) {
   return detectSensitiveText(value).some((item) => item.category !== "FINANCIAL");
 }
 
+const SYSTEM_SECRET_REFERENCE =
+  /\b(?:mobile money pins?|codes? de validation|mots? de passe|passwords?|passcodes?|pins?|otps?|api keys?|cl[ée]s? api|access tokens?|bearer tokens?|service role keys?|secret keys?)\b/giu;
+
+const SYSTEM_SECRET_REFERENCE_AT_START =
+  /^(?:mobile money pins?|codes? de validation|mots? de passe|passwords?|passcodes?|pins?|otps?|api keys?|cles? api|access tokens?|bearer tokens?|service role keys?|secret keys?)\b/u;
+
+const DEFENSIVE_SYSTEM_CONTEXT =
+  /\b(?:ne demande(?: jamais| pas| aucun)|ne revele(?: jamais| pas| aucun)|ne reproduis(?: jamais| pas| aucun)|n expose(?: jamais| pas| aucun)|refuse|rejette|bloque|interdit|ne stocke jamais|ne conserve jamais|never ask|do not ask|never reveal|do not reveal|never expose|do not expose|do not request|never request|reject|block|forbid|never store|do not store|must be rejected|doit(?: jamais)? etre demande|ne doit jamais etre demande|ne doivent jamais etre demandes?|sont interdits?|doivent etre rejetees?)\b/u;
+
+const SAFE_SYSTEM_CLASSIFICATION =
+  /\b(?:est une categorie de secret|is a category of secret|ne doit pas contenir de secrets?|doit etre rejetee?|doivent etre rejetees?|must be rejected|sont interdits?)\b/u;
+
+function containsNonSecretRestrictedMarker(value) {
+  const normalized = normalizeDetectionText(value);
+  if (!normalized) return false;
+  return (
+    /\b(?:carte(?: nationale)?(?: d)? identite|cnib|cni|piece(?: d)? identite|numero de piece|passeport|passport|permis de conduire|acte de naissance|signature(?: client| manuscrite)?|signe par|empreinte(?: digitale)?|fingerprint|biometrie|cachet personnel)\b/u.test(normalized) ||
+    /\b(?:adresse|domicile|livraison a|quartier|rue|avenue|secteur)\b\s+\S+/u.test(normalized) ||
+    /\b(?:nom(?: du)? client|nom|client|beneficiaire|destinataire|expediteur|titulaire|proprietaire|monsieur|madame|m|mme)\s+([\p{L}]{2,})\s+([\p{L}]{2,})/u.test(normalized)
+  );
+}
+
+function systemSecretReferenceHasValue(text, match) {
+  const termEnd = match.index + match[0].length;
+  const rawTail = text.slice(termEnd, termEnd + 64);
+  if (/^\s*[:=]\s*\S/u.test(rawTail)) return true;
+  if (/^\s*["'`]\s*\S/u.test(rawTail)) return true;
+  const tail = normalizeDetectionText(rawTail);
+  if (!tail) return false;
+  if (/^(?:\d{4,8}|sk \w+|aiza\w*|eyj\w*|bearer\s+\S+)/u.test(tail)) {
+    return true;
+  }
+  if (/^(?:comme|such as)\s+(?:\d{4,8}|[a-z]*\d+[a-z0-9]*)\b/u.test(tail)) {
+    return true;
+  }
+  if (/^(?:est une categorie de secret|is a category of secret)\b/u.test(tail)) {
+    return false;
+  }
+  if (SYSTEM_SECRET_REFERENCE_AT_START.test(tail)) return false;
+  if (/^(?:est|is|vaut|value|valeur|code)\s+\S/u.test(tail)) {
+    return true;
+  }
+  const first = tail.split(" ")[0];
+  const safeFollowers = new Set([
+    "and", "or", "et", "ou", "must", "doit", "doivent", "ne", "should",
+    "sont",
+  ]);
+  return (
+    /^(?:\d{4,8}|sk\w*|aiza\w*|eyj\w*)$/u.test(first) ||
+    /^(?=.*[a-z])(?=.*\d)[a-z0-9_-]{4,}$/u.test(first) ||
+    (/^[a-z]{4,}$/u.test(first) && !safeFollowers.has(first))
+  );
+}
+
+function containsSystemSecretReference(value) {
+  SYSTEM_SECRET_REFERENCE.lastIndex = 0;
+  return typeof value === "string" && SYSTEM_SECRET_REFERENCE.test(value);
+}
+
+function isSafeDefensiveSystemSecretReference(text) {
+  if (typeof text !== "string") return false;
+  const normalized = normalizeDetectionText(text);
+  if (!normalized) return false;
+  SYSTEM_SECRET_REFERENCE.lastIndex = 0;
+  const references = [...text.matchAll(SYSTEM_SECRET_REFERENCE)];
+  if (references.length === 0) return false;
+  if (
+    !DEFENSIVE_SYSTEM_CONTEXT.test(normalized) &&
+    !SAFE_SYSTEM_CLASSIFICATION.test(normalized)
+  ) return false;
+  return references.every(
+    (reference) => !systemSecretReferenceHasValue(text, reference)
+  );
+}
+
+function isSystemMessageTextSafe(value) {
+  if (typeof value !== "string") return false;
+  if (
+    containsRawIdentityText(value) ||
+    containsNonSecretRestrictedMarker(value)
+  ) return false;
+  const detections = detectSensitiveText(value).filter(
+    (item) => item.category !== "FINANCIAL"
+  );
+  if (
+    detections.some(
+      (item) => !["AUTH_SECRET", "ACCESS_SECRET"].includes(item.category)
+    )
+  ) return false;
+  if (detections.length === 0 && !containsSystemSecretReference(value)) {
+    return sanitizePrivacyInput({
+      userMessage: value,
+      context: {},
+    }).allowed === true;
+  }
+  return isSafeDefensiveSystemSecretReference(value);
+}
+
 function isProviderMessageTextSafe(messages) {
   if (!Array.isArray(messages)) return false;
   return messages.every((message) => {
     if (!isPlainObject(message) || typeof message.content !== "string") return false;
+    if (message.role === "system") return isSystemMessageTextSafe(message.content);
+    if (containsSystemSecretReference(message.content)) return false;
     if (isSensitiveText(message.content)) return false;
     const privacyCheck = sanitizePrivacyInput({
       userMessage: message.content,
