@@ -717,3 +717,354 @@ test("hardening: deeply frozen inputs and repeated mutated SDK calls stay indepe
   assert.notStrictEqual(first.usage, second.usage);
   assert.equal(JSON.stringify(neutralRequest), JSON.stringify(request()));
 });
+
+test("coverage closure: model versions and response IDs are filtered through the full provider", async () => {
+  const modelCases = [
+    "awa@example.com", "70 12 34 56", "+22670123456",
+    "Adresse Ouagadougou secteur 15", "Adresse-Ouagadougou-secteur-15",
+    "secret-123", "password-123", "mot-de-passe-123", "private-key-123",
+    "api-key-123", "access-token-123", "bearer-token-123",
+    "service-role-key-123", "OTP-123456", "PIN-4321", "waId-22670123456",
+    "IFU-00012345", "RCCM-BF-OUA", "Passeport-A123456",
+    "Carte-Identite-12345", "Nom-Awa-Kabore", "Signature-Awa", "", "   ",
+    "x".repeat(KADI_GEMINI_REAL_CLIENT_LIMITS.maxModelCodePoints + 1),
+    null, undefined, 42, false, [], {},
+    "gemini-2.5-flash", "gemini-2.0-flash", "models/gemini-test",
+    "test-model-version", "gemini_test_v1", "model-001",
+  ];
+  const idCases = [
+    "secret-123", "SECRET_123", "password-123", "mot-de-passe-123",
+    "private-key-123", "api-key-123", "access-token-123", "bearer-token-123",
+    "service-role-key-123", "OTP-123456", "PIN-4321", "awa@example.com",
+    "70-12-34-56", "+22670123456", "Adresse Ouagadougou secteur 15",
+    "Adresse-Ouagadougou-secteur-15", "carte-identite-12345",
+    "signature-Awa", "nom-Awa-Kabore", "IFU-00012345", "RCCM-BF-OUA",
+    "waId-22670123456", "Passeport-A123456", "", "   ",
+    "x".repeat(KADI_GEMINI_REAL_CLIENT_LIMITS.maxProviderRequestIdCodePoints + 1),
+    "response_test_1", "req_001", "gemini-response-42",
+    "call-prod-02", "trace_abc123", "abc123",
+  ];
+  const safeModels = new Set([
+    "gemini-2.5-flash", "gemini-2.0-flash", "models/gemini-test",
+    "test-model-version", "gemini_test_v1", "model-001",
+  ]);
+  const safeIds = new Set([
+    "response_test_1", "req_001", "gemini-response-42",
+    "call-prod-02", "trace_abc123", "abc123",
+  ]);
+  function providerInput() {
+    const providerRequest = providerContract.createEmptyProviderRequest();
+    providerRequest.provider = "GEMINI";
+    providerRequest.model = "safe-provider-model";
+    providerRequest.messages = [
+      { role: "system", content: "Return strict JSON." },
+      { role: "user", content: "Bonjour" },
+    ];
+    return {
+      providerRequest,
+      privacyResult: privacyGateway.sanitizePrivacyInput({
+        ...privacyGateway.createEmptyPrivacyInput(),
+        userMessage: "Bonjour",
+      }),
+    };
+  }
+  for (const modelVersion of modelCases) {
+    let calls = 0;
+    const output = await provider.createGeminiProvider({
+      client: factory(() => {
+        calls += 1;
+        return response({ modelVersion });
+      }),
+    }).invoke(providerInput());
+    assert.equal(calls, 1);
+    assert.equal(providerContract.validateProviderResponse(output).valid, true);
+    if (safeModels.has(modelVersion)) {
+      assert.equal(output.model, modelVersion);
+    } else {
+      assert.equal(output.model, "safe-provider-model");
+      if (typeof modelVersion === "string" && modelVersion) {
+        assert.equal(JSON.stringify(output).includes(modelVersion), false);
+      }
+    }
+  }
+  for (const responseId of idCases) {
+    let calls = 0;
+    const output = await provider.createGeminiProvider({
+      client: factory(() => {
+        calls += 1;
+        return response({ responseId });
+      }),
+    }).invoke(providerInput());
+    assert.equal(calls, 1);
+    assert.equal(providerContract.validateProviderResponse(output).valid, true);
+    if (safeIds.has(responseId)) {
+      assert.equal(output.metadata.providerRequestId, responseId);
+    } else {
+      assert.equal(output.metadata.providerRequestId, null);
+      if (responseId) assert.equal(JSON.stringify(output).includes(responseId), false);
+    }
+  }
+});
+
+test("coverage closure: every hostile response getter is contained at all three boundaries", async () => {
+  const sentinel = ["HOSTILE", "BOUNDARY", "PRIVATE"].join("_");
+  const cases = [
+    ["text", "root"], ["modelVersion", "root"], ["responseId", "root"],
+    ["usageMetadata", "root"], ["promptTokenCount", "usage"],
+    ["candidatesTokenCount", "usage"], ["totalTokenCount", "usage"],
+    ["candidates", "root"], ["0", "candidates"], ["finishReason", "candidate"],
+  ];
+  function hostileResponse(field, location) {
+    const raw = response();
+    let target = raw;
+    if (location === "usage") target = raw.usageMetadata;
+    if (location === "candidates") target = raw.candidates;
+    if (location === "candidate") target = raw.candidates[0];
+    Object.defineProperty(target, field, {
+      configurable: true,
+      get() {
+        throw new Error(sentinel);
+      },
+    });
+    return raw;
+  }
+  function providerInput() {
+    const providerRequest = providerContract.createEmptyProviderRequest();
+    providerRequest.provider = "GEMINI";
+    providerRequest.model = "safe-provider-model";
+    providerRequest.messages = [
+      { role: "system", content: "Return strict JSON." },
+      { role: "user", content: "Bonjour" },
+    ];
+    return {
+      providerRequest,
+      privacyResult: privacyGateway.sanitizePrivacyInput({
+        ...privacyGateway.createEmptyPrivacyInput(), userMessage: "Bonjour",
+      }),
+    };
+  }
+  for (const [field, location] of cases) {
+    const isRequiredText = field === "text";
+    const direct = () => normalizeGoogleGenerateContentResponse(
+      hostileResponse(field, location), request()
+    );
+    if (isRequiredText) {
+      assert.throws(direct, (error) => {
+        assert.deepEqual(error, { kind: "BAD_RESPONSE" });
+        return true;
+      });
+    } else {
+      assert.equal(JSON.stringify(direct()).includes(sentinel), false);
+    }
+
+    let directClientCalls = 0;
+    const client = factory(() => {
+      directClientCalls += 1;
+      return hostileResponse(field, location);
+    });
+    if (isRequiredText) {
+      await assert.rejects(client.generateContent(request()), { kind: "BAD_RESPONSE" });
+    } else {
+      assert.equal(JSON.stringify(await client.generateContent(request())).includes(sentinel), false);
+    }
+    assert.equal(directClientCalls, 1);
+
+    let providerCalls = 0;
+    const finalResponse = await provider.createGeminiProvider({
+      client: factory(() => {
+        providerCalls += 1;
+        return hostileResponse(field, location);
+      }),
+    }).invoke(providerInput());
+    assert.equal(providerCalls, 1);
+    assert.equal(providerContract.validateProviderResponse(finalResponse).valid, true);
+    assert.equal(JSON.stringify(finalResponse).includes(sentinel), false);
+    if (isRequiredText) assert.equal(finalResponse.errorCode, "PROVIDER_BAD_RESPONSE");
+  }
+});
+
+test("coverage closure: API keys never escape client ownership or canonical outputs", async () => {
+  const key = ["PRIVATE", "API", "KEY", "VALUE"].join("_");
+  let sdkInput;
+  let googleRequest;
+  const client = createGeminiRealClient({
+    apiKey: key,
+    sdkFactory(input) {
+      sdkInput = input;
+      return {
+        models: {
+          generateContent(inputRequest) {
+            googleRequest = inputRequest;
+            return response();
+          },
+        },
+      };
+    },
+  });
+  assert.deepEqual(Object.keys(client), ["generateContent"]);
+  assert.deepEqual(Object.getOwnPropertyNames(client), ["generateContent"]);
+  assert.equal(JSON.stringify(client).includes(key), false);
+  const output = await client.generateContent(request());
+  assert.equal(sdkInput.apiKey, key);
+  assert.equal(JSON.stringify(googleRequest).includes(key), false);
+  assert.equal(JSON.stringify(output).includes(key), false);
+
+  const providerRequest = providerContract.createEmptyProviderRequest();
+  providerRequest.provider = "GEMINI";
+  providerRequest.model = "safe-provider-model";
+  providerRequest.messages = [
+    { role: "system", content: "Return strict JSON." },
+    { role: "user", content: "Bonjour" },
+  ];
+  const finalResponse = await provider.createGeminiProvider({ client }).invoke({
+    providerRequest,
+    privacyResult: privacyGateway.sanitizePrivacyInput({
+      ...privacyGateway.createEmptyPrivacyInput(), userMessage: "Bonjour",
+    }),
+  });
+  assert.equal(JSON.stringify(finalResponse).includes(key), false);
+  assert.equal(JSON.stringify(finalResponse.metadata).includes(key), false);
+  assert.equal(JSON.stringify(finalResponse.usage).includes(key), false);
+  assert.equal(JSON.stringify(finalResponse.content).includes(key), false);
+
+  const rawError = Object.freeze({
+    status: 503,
+    message: key, stack: key, cause: key, headers: key, body: key,
+    config: key, request: key, response: key, url: key,
+  });
+  const errorClient = createGeminiRealClient({
+    apiKey: key,
+    sdkFactory() {
+      return { models: { generateContent() { throw rawError; } } };
+    },
+  });
+  await assert.rejects(errorClient.generateContent(request()), (error) => {
+    assert.deepEqual(Object.keys(error), ["kind"]);
+    assert.equal(JSON.stringify(error).includes(key), false);
+    return true;
+  });
+  const providerError = await provider.createGeminiProvider({
+    client: errorClient,
+  }).invoke({
+    providerRequest,
+    privacyResult: privacyGateway.sanitizePrivacyInput({
+      ...privacyGateway.createEmptyPrivacyInput(), userMessage: "Bonjour",
+    }),
+  });
+  assert.equal(providerContract.validateProviderResponse(providerError).valid, true);
+  assert.equal(JSON.stringify(providerError).includes(key), false);
+
+  const getterError = {};
+  Object.defineProperty(getterError, "status", {
+    get() {
+      throw new Error(key);
+    },
+  });
+  const getterClient = createGeminiRealClient({
+    apiKey: key,
+    sdkFactory() {
+      return { models: { generateContent() { throw getterError; } } };
+    },
+  });
+  await assert.rejects(getterClient.generateContent(request()), (error) => {
+    assert.deepEqual(Object.keys(error), ["kind"]);
+    assert.equal(JSON.stringify(error).includes(key), false);
+    return true;
+  });
+});
+
+test("coverage closure: exhaustive SDK mutations cannot affect later calls or caller inputs", async () => {
+  function deepFreeze(value) {
+    if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+    for (const child of Object.values(value)) deepFreeze(child);
+    return Object.freeze(value);
+  }
+  const neutralRequest = deepFreeze(request());
+  const before = JSON.stringify(neutralRequest);
+  const builds = [];
+  const client = factory((sdkRequest) => {
+    builds.push(JSON.parse(JSON.stringify(sdkRequest)));
+    const contents = sdkRequest.contents;
+    const firstContent = contents[0];
+    const parts = firstContent.parts;
+    const firstPart = parts[0];
+    const config = sdkRequest.config;
+    sdkRequest.model = "mutated";
+    sdkRequest.systemInstruction = "mutated";
+    sdkRequest.contents = [];
+    contents.push({ role: "user", parts: [{ text: "injected" }] });
+    contents[0] = { role: "model", parts: [] };
+    firstContent.role = "model";
+    firstContent.parts = [];
+    parts.push({ text: "injected" });
+    parts[0] = { text: "replaced" };
+    firstPart.text = "mutated";
+    sdkRequest.config = {};
+    config.systemInstruction = "mutated";
+    config.temperature = 1;
+    config.maxOutputTokens = 1;
+    config.responseMimeType = "text/plain";
+    return deepFreeze(response());
+  });
+  const first = await client.generateContent(neutralRequest);
+  const second = await client.generateContent(neutralRequest);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.notStrictEqual(first, second);
+  assert.notStrictEqual(first.usage, second.usage);
+  assert.equal(JSON.stringify(neutralRequest), before);
+  assert.equal(builds.length, 2);
+  assert.deepEqual(builds[0], builds[1]);
+
+  const buildOne = buildGoogleGenerateContentRequest(neutralRequest);
+  const buildTwo = buildGoogleGenerateContentRequest(neutralRequest);
+  const buildTwoBefore = JSON.stringify(buildTwo);
+  buildOne.model = "changed";
+  buildOne.contents[0].role = "model";
+  buildOne.contents[0].parts[0].text = "changed";
+  buildOne.config.temperature = 1;
+  assert.equal(JSON.stringify(buildTwo), buildTwoBefore);
+  assert.equal(JSON.stringify(neutralRequest), before);
+});
+
+test("coverage closure: promises, reordered values, Unicode, partial usage, and failures are deterministic", async () => {
+  const unicodeRequest = request({
+    systemInstruction: "Répondre en JSON.\nDeuxième ligne.",
+    contents: [{ role: "user", parts: [{ text: "Awa 👩🏿‍💼\nFacture n° 42" }] }],
+  });
+  const successClient = factory(() => response({
+    text: '{"message":"Création ✅\\nterminée"}',
+    usageMetadata: { promptTokenCount: 7 },
+    candidates: [{ finishReason: "UNRECOGNIZED_FUTURE_REASON" }],
+  }));
+  const promise = successClient.generateContent(unicodeRequest);
+  assert.equal(promise instanceof Promise, true);
+  const first = await promise;
+  const second = await successClient.generateContent(reverse(unicodeRequest));
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.usage, { inputUnits: 7, outputUnits: null, totalUnits: null });
+  assert.equal(first.finishReason, "UNKNOWN");
+
+  const invalidPromise = successClient.generateContent(null);
+  assert.equal(invalidPromise instanceof Promise, true);
+  await assert.rejects(invalidPromise, { kind: "BAD_RESPONSE" });
+  const exceptionClient = factory(() => {
+    throw Object.freeze({ status: 429, message: "rate limited" });
+  });
+  const exceptionPromise = exceptionClient.generateContent(request());
+  assert.equal(exceptionPromise instanceof Promise, true);
+  await assert.rejects(exceptionPromise, { kind: "RATE_LIMIT" });
+  assert.deepEqual(
+    mapGoogleGeminiError({ status: 429, message: "rate limited" }),
+    mapGoogleGeminiError(reverse({ status: 429, message: "rate limited" }))
+  );
+
+  const hostile = response();
+  Object.defineProperty(hostile, "text", {
+    get() {
+      throw new Error("PRIVATE_GETTER_VALUE");
+    },
+  });
+  const hostilePromise = factory(() => hostile).generateContent(request());
+  assert.equal(hostilePromise instanceof Promise, true);
+  await assert.rejects(hostilePromise, { kind: "BAD_RESPONSE" });
+});
