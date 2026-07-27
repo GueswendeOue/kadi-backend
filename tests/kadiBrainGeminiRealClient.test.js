@@ -6,6 +6,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const real = require("../kadiBrainGeminiRealClient");
+const provider = require("../kadiBrainGeminiProvider");
+const providerContract = require("../kadiBrainProviderContract");
+const privacyGateway = require("../kadiBrainPrivacyGateway");
 
 const {
   KADI_GEMINI_REAL_CLIENT_VERSION,
@@ -430,7 +433,8 @@ test("scenarios 145-158: source and repository surface remain isolated", () => {
     path.join(__dirname, "..", "kadiBrainGeminiRealClient.js"),
     "utf8"
   );
-  assert.equal(source.includes('require("@google/genai")'), true);
+  assert.equal(source.includes('import("@google/genai")'), true);
+  assert.equal(source.includes('require("@google/genai")'), false);
   for (const forbidden of [
     "@google/generative-ai", "GoogleGenerativeAI", "process.env",
     "GEMINI_API_KEY", "GOOGLE_API_KEY", "fetch(", "axios",
@@ -445,4 +449,271 @@ test("scenarios 145-158: source and repository surface remain isolated", () => {
   ]) assert.equal(source.includes(forbidden), false, forbidden);
   const dependencies = require("../package.json").dependencies;
   assert.equal(typeof dependencies["@google/genai"], "string");
+});
+
+test("hardening: sensitive model versions always fall back to the validated request model", async () => {
+  const unsafe = [
+    undefined, null, "", "   ", "x".repeat(KADI_GEMINI_REAL_CLIENT_LIMITS.maxModelCodePoints + 1),
+    "awa@example.com", "70 12 34 56", "+22670123456",
+    "Adresse Ouagadougou secteur 15", "Adresse-Ouagadougou-secteur-15",
+    "secret-value", "password-value", "private-key-value", "api-key-value",
+    "access-token-value", "bearer-token-value", "OTP-123456", "PIN-4321",
+    "waId-22670123456", "IFU-00012345", "RCCM-BF-OUA",
+    "Passeport-A123456", "Nom-Awa-Kabore", "Signature-Awa",
+  ];
+  for (const modelVersion of unsafe) {
+    const output = normalizeGoogleGenerateContentResponse(
+      response({ modelVersion }), request()
+    );
+    assert.equal(output.model, request().model);
+    if (typeof modelVersion === "string" && modelVersion.trim()) {
+      assert.equal(JSON.stringify(output).includes(modelVersion), false);
+    }
+  }
+  for (const modelVersion of [
+    "gemini-2.5-flash", "gemini-2.0-flash", "test-model-version",
+    "models/gemini-test", "gemini_test_v1", "model-001",
+  ]) {
+    assert.equal(normalizeGoogleGenerateContentResponse(
+      response({ modelVersion }), request()
+    ).model, modelVersion);
+  }
+
+  const providerRequest = providerContract.createEmptyProviderRequest();
+  providerRequest.provider = "GEMINI";
+  providerRequest.model = "safe-provider-model";
+  providerRequest.messages = [
+    { role: "system", content: "Return strict JSON." },
+    { role: "user", content: "Bonjour" },
+  ];
+  const privacyResult = privacyGateway.sanitizePrivacyInput({
+    ...privacyGateway.createEmptyPrivacyInput(),
+    userMessage: "Bonjour",
+  });
+  const client = factory(() => response({ modelVersion: "awa@example.com" }));
+  const finalResponse = await provider.createGeminiProvider({ client }).invoke({
+    providerRequest,
+    privacyResult,
+  });
+  assert.equal(finalResponse.model, providerRequest.model);
+  assert.equal(JSON.stringify(finalResponse).includes("awa@example.com"), false);
+});
+
+test("hardening: sensitive response IDs become null while technical IDs survive", () => {
+  const unsafe = [
+    "secret-123", "SECRET_123", "password-123", "mot-de-passe-123",
+    "private-key-123", "api-key-123", "access-token-123",
+    "bearer-token-123", "service-role-key-123", "OTP-123456", "PIN-4321",
+    "awa@example.com", "70-12-34-56", "+22670123456",
+    "Adresse Ouagadougou secteur 15", "Adresse-Ouagadougou-secteur-15",
+    "carte-identite-12345", "signature-Awa", "nom-Awa-Kabore",
+    "IFU-00012345", "RCCM-BF-OUA", "waId-22670123456",
+    "Passeport-A123456", "x".repeat(KADI_GEMINI_REAL_CLIENT_LIMITS.maxProviderRequestIdCodePoints + 1),
+    "", "   ",
+  ];
+  for (const responseId of unsafe) {
+    const output = normalizeGoogleGenerateContentResponse(
+      response({ responseId }), request()
+    );
+    assert.equal(output.providerRequestId, null, responseId);
+    if (responseId.trim()) {
+      assert.equal(JSON.stringify(output).includes(responseId), false);
+    }
+  }
+  for (const responseId of [
+    "response_test_1", "req_001", "gemini-response-42",
+    "call-prod-02", "trace_abc123", "abc123",
+  ]) {
+    assert.equal(normalizeGoogleGenerateContentResponse(
+      response({ responseId }), request()
+    ).providerRequestId, responseId);
+  }
+});
+
+test("hardening: hostile SDK getters never expose raw exceptions", () => {
+  const sentinel = ["HOSTILE", "GETTER", "PRIVATE"].join("_");
+  function hostile(target, key) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      get() {
+        throw new Error(sentinel);
+      },
+    });
+    return target;
+  }
+  const cases = [
+    ["text", hostile(response(), "text"), "BAD_RESPONSE"],
+    ["modelVersion", hostile(response(), "modelVersion"), null],
+    ["responseId", hostile(response(), "responseId"), null],
+    ["usageMetadata", hostile(response(), "usageMetadata"), null],
+    ["candidates", hostile(response(), "candidates"), null],
+  ];
+  for (const [name, raw, expectedError] of cases) {
+    if (expectedError) {
+      assert.throws(
+        () => normalizeGoogleGenerateContentResponse(raw, request()),
+        (error) => {
+          assert.deepEqual(error, { kind: expectedError });
+          assert.deepEqual(Object.keys(error), ["kind"]);
+          assert.equal(JSON.stringify(error).includes(sentinel), false);
+          return true;
+        },
+        name
+      );
+    } else {
+      const output = normalizeGoogleGenerateContentResponse(raw, request());
+      assert.equal(JSON.stringify(output).includes(sentinel), false);
+    }
+  }
+
+  for (const field of [
+    "promptTokenCount", "candidatesTokenCount", "totalTokenCount",
+  ]) {
+    const usageMetadata = hostile({
+      promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3,
+    }, field);
+    const output = normalizeGoogleGenerateContentResponse(
+      response({ usageMetadata }), request()
+    );
+    assert.equal(output.usage[
+      field === "promptTokenCount"
+        ? "inputUnits"
+        : field === "candidatesTokenCount"
+          ? "outputUnits"
+          : "totalUnits"
+    ], null);
+    assert.equal(JSON.stringify(output).includes(sentinel), false);
+  }
+
+  const candidatesWithHostileIndex = [];
+  hostile(candidatesWithHostileIndex, "0");
+  candidatesWithHostileIndex.length = 1;
+  assert.equal(normalizeGoogleGenerateContentResponse(
+    response({ candidates: candidatesWithHostileIndex }), request()
+  ).finishReason, "UNKNOWN");
+  const candidate = hostile({}, "finishReason");
+  assert.equal(normalizeGoogleGenerateContentResponse(
+    response({ candidates: [candidate] }), request()
+  ).finishReason, "UNKNOWN");
+});
+
+test("hardening: canonical errors never retain the key or hostile SDK internals", async () => {
+  const key = ["LOCAL", "KEY", "PRIVATE", "VALUE"].join("_");
+  const privateValues = [
+    key, `message-${key}`, `stack-${key}`, `cause-${key}`,
+    `body-${key}`, `headers-${key}`, `config-${key}`,
+    `response-${key}`, `request-${key}`, `url-${key}`,
+  ];
+  const rawError = {
+    kind: "NETWORK",
+    message: privateValues[1],
+    stack: privateValues[2],
+    cause: privateValues[3],
+    body: privateValues[4],
+    headers: privateValues[5],
+    config: privateValues[6],
+    response: privateValues[7],
+    request: privateValues[8],
+    url: privateValues[9],
+    apiKey: key,
+  };
+  const client = createGeminiRealClient({
+    apiKey: key,
+    sdkFactory() {
+      return {
+        models: {
+          generateContent() {
+            throw Object.freeze(rawError);
+          },
+        },
+      };
+    },
+  });
+  await assert.rejects(client.generateContent(request()), (error) => {
+    assert.deepEqual(error, { kind: "NETWORK" });
+    assert.deepEqual(Object.keys(error), ["kind"]);
+    for (const value of privateValues) {
+      assert.equal(JSON.stringify(error).includes(value), false);
+    }
+    return true;
+  });
+  const getterError = {};
+  Object.defineProperty(getterError, "kind", {
+    get() {
+      throw new Error(key);
+    },
+  });
+  assert.deepEqual(mapGoogleGeminiError(getterError), { kind: "UNKNOWN" });
+  assert.equal(JSON.stringify(client).includes(key), false);
+});
+
+test("hardening: injected factories keep the official SDK unloaded", async () => {
+  const sdkCacheBefore = Object.keys(require.cache).filter(
+    (entry) => entry.includes(`${path.sep}@google${path.sep}genai${path.sep}`)
+  );
+  let calls = 0;
+  const injected = factory(() => {
+    calls += 1;
+    return response();
+  });
+  assert.equal((await injected.generateContent(request())).finishReason, "STOP");
+  assert.equal(calls, 1);
+  const sdkCacheAfter = Object.keys(require.cache).filter(
+    (entry) => entry.includes(`${path.sep}@google${path.sep}genai${path.sep}`)
+  );
+  assert.deepEqual(sdkCacheAfter, sdkCacheBefore);
+
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "kadiBrainGeminiRealClient.js"),
+    "utf8"
+  );
+  assert.equal(source.includes('require("@google/genai")'), false);
+  assert.equal(source.includes('import("@google/genai")'), true);
+  const lazyClient = createGeminiRealClient({ apiKey: "LOCAL_FAKE_KEY" });
+  assert.deepEqual(Object.keys(lazyClient), ["generateContent"]);
+  assert.deepEqual(
+    Object.keys(require.cache).filter(
+      (entry) => entry.includes(`${path.sep}@google${path.sep}genai${path.sep}`)
+    ),
+    sdkCacheBefore
+  );
+});
+
+test("hardening: deeply frozen inputs and repeated mutated SDK calls stay independent", async () => {
+  function deepFreeze(value) {
+    if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+    for (const child of Object.values(value)) deepFreeze(child);
+    return Object.freeze(value);
+  }
+  const options = deepFreeze({
+    apiKey: "LOCAL_FAKE_KEY",
+    sdkFactory() {
+      return {
+        models: {
+          generateContent(googleRequest) {
+            googleRequest.model = "mutated";
+            googleRequest.contents[0].parts[0].text = "mutated";
+            googleRequest.config.temperature = 1;
+            return deepFreeze(response());
+          },
+        },
+      };
+    },
+  });
+  const neutralRequest = deepFreeze(request());
+  const firstBuild = buildGoogleGenerateContentRequest(neutralRequest);
+  const secondBuild = buildGoogleGenerateContentRequest(neutralRequest);
+  assert.notStrictEqual(firstBuild, secondBuild);
+  assert.notStrictEqual(firstBuild.contents, secondBuild.contents);
+  assert.notStrictEqual(firstBuild.contents[0], secondBuild.contents[0]);
+  assert.notStrictEqual(firstBuild.contents[0].parts, secondBuild.contents[0].parts);
+  assert.notStrictEqual(firstBuild.contents[0].parts[0], secondBuild.contents[0].parts[0]);
+  assert.notStrictEqual(firstBuild.config, secondBuild.config);
+  const client = createGeminiRealClient(options);
+  const first = await client.generateContent(neutralRequest);
+  const second = await client.generateContent(neutralRequest);
+  assert.deepEqual(first, second);
+  assert.notStrictEqual(first, second);
+  assert.notStrictEqual(first.usage, second.usage);
+  assert.equal(JSON.stringify(neutralRequest), JSON.stringify(request()));
 });

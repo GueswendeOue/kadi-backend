@@ -1,7 +1,5 @@
 "use strict";
 
-const { GoogleGenAI } = require("@google/genai");
-
 const KADI_GEMINI_REAL_CLIENT_VERSION = "kadi.gemini-real-client.v1";
 
 const KADI_GEMINI_REAL_CLIENT_ERROR_KINDS = Object.freeze({
@@ -74,7 +72,36 @@ function safeDescriptorValue(object, key) {
   return undefined;
 }
 
+function safeReadProperty(object, key) {
+  try {
+    if (
+      !object ||
+      (typeof object !== "object" && typeof object !== "function")
+    ) return { ok: false, value: undefined };
+    let current = object;
+    while (current) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor) {
+        if (!descriptor.set && typeof descriptor.get === "function") {
+          return { ok: true, value: descriptor.get.call(object) };
+        }
+        return {
+          ok: !descriptor.get && !descriptor.set,
+          value: !descriptor.get && !descriptor.set
+            ? descriptor.value
+            : undefined,
+        };
+      }
+      current = Object.getPrototypeOf(current);
+    }
+    return { ok: false, value: undefined };
+  } catch {
+    return { ok: false, value: undefined };
+  }
+}
+
 function readSdkText(response) {
+  try {
   let current = response;
   while (current) {
     const descriptor = Object.getOwnPropertyDescriptor(current, "text");
@@ -89,6 +116,9 @@ function readSdkText(response) {
     current = Object.getPrototypeOf(current);
   }
   return undefined;
+  } catch {
+    throw canonicalError("BAD_RESPONSE");
+  }
 }
 
 function normalizeForDetection(value) {
@@ -100,6 +130,21 @@ function normalizeForDetection(value) {
     .trim();
 }
 
+function containsSensitiveMarker(value) {
+  const raw = value.trim();
+  const normalized = normalizeForDetection(raw);
+  return (
+    /@/.test(raw) ||
+    /\+?\d(?:[\s.-]*\d){7,}/.test(raw) ||
+    /\b(?:secret|password|otp|pin|waid|ifu|rccm|passeport|passport|signature|adresse|domicile)\b/.test(normalized) ||
+    /\bmot\s+de\s+passe\b/.test(normalized) ||
+    /\b(?:private|api|service\s+role)\s+key\b/.test(normalized) ||
+    /\b(?:access|bearer)\s+token\b/.test(normalized) ||
+    /\b(?:carte|piece)\s+(?:nationale\s+)?(?:d\s+)?identite\b/.test(normalized) ||
+    /\bnom\s+[a-z]/.test(normalized)
+  );
+}
+
 function isSafeTechnicalId(value) {
   if (
     typeof value !== "string" ||
@@ -108,15 +153,19 @@ function isSafeTechnicalId(value) {
       KADI_GEMINI_REAL_CLIENT_LIMITS.maxProviderRequestIdCodePoints
   ) return false;
   const raw = value.trim();
-  const normalized = normalizeForDetection(raw);
-  if (
-    /@/.test(raw) ||
-    /\+?\d(?:[\s.-]*\d){7,}/.test(raw) ||
-    /\b(?:otp|pin|waid|ifu|rccm|passeport|passport|signature|adresse|domicile)\b/.test(normalized) ||
-    /\b(?:carte|piece)\s+(?:nationale\s+)?(?:d\s+)?identite\b/.test(normalized) ||
-    /\bnom\s+[a-z]/.test(normalized)
-  ) return false;
+  if (containsSensitiveMarker(raw)) return false;
   return /^[A-Za-z0-9_-]+$/.test(raw);
+}
+
+function normalizeSafeModelIdentifier(value, fallbackModel) {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    codePointLength(value) > KADI_GEMINI_REAL_CLIENT_LIMITS.maxModelCodePoints ||
+    containsSensitiveMarker(value) ||
+    !/^[A-Za-z0-9_./-]+$/.test(value)
+  ) return fallbackModel;
+  return value;
 }
 
 function validateNeutralRequest(neutralRequest) {
@@ -164,25 +213,29 @@ function validateNeutralRequest(neutralRequest) {
 }
 
 function buildGoogleGenerateContentRequest(neutralRequest) {
-  if (!validateNeutralRequest(neutralRequest)) return null;
-  // Code points are not tokens; this conservative bound is deterministic.
-  const maxOutputTokens = Math.min(
-    KADI_GEMINI_REAL_CLIENT_LIMITS.maxOutputTokens,
-    Math.max(1, Math.ceil(neutralRequest.generationConfig.maxOutputCodePoints / 2))
-  );
-  return {
-    model: neutralRequest.model,
-    contents: neutralRequest.contents.map((content) => ({
-      role: "user",
-      parts: content.parts.map((part) => ({ text: part.text })),
-    })),
-    config: {
-      systemInstruction: neutralRequest.systemInstruction,
-      temperature: 0,
-      responseMimeType: "application/json",
-      maxOutputTokens,
-    },
-  };
+  try {
+    if (!validateNeutralRequest(neutralRequest)) return null;
+    // Code points are not tokens; this conservative bound is deterministic.
+    const maxOutputTokens = Math.min(
+      KADI_GEMINI_REAL_CLIENT_LIMITS.maxOutputTokens,
+      Math.max(1, Math.ceil(neutralRequest.generationConfig.maxOutputCodePoints / 2))
+    );
+    return {
+      model: neutralRequest.model,
+      contents: neutralRequest.contents.map((content) => ({
+        role: "user",
+        parts: content.parts.map((part) => ({ text: part.text })),
+      })),
+      config: {
+        systemInstruction: neutralRequest.systemInstruction,
+        temperature: 0,
+        responseMimeType: "application/json",
+        maxOutputTokens,
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function nonNegativeSafeIntegerOrNull(value) {
@@ -206,56 +259,66 @@ function canonicalError(kind) {
 }
 
 function normalizeGoogleGenerateContentResponse(response, neutralRequest) {
-  if (
-    !response ||
-    typeof response !== "object" ||
-    Array.isArray(response) ||
-    !validateNeutralRequest(neutralRequest)
-  ) {
-    throw canonicalError("BAD_RESPONSE");
+  try {
+    if (
+      !response ||
+      typeof response !== "object" ||
+      Array.isArray(response) ||
+      !validateNeutralRequest(neutralRequest)
+    ) throw canonicalError("BAD_RESPONSE");
+    const candidatesRead = safeReadProperty(response, "candidates");
+    const candidates = candidatesRead.ok ? candidatesRead.value : null;
+    const candidateRead = Array.isArray(candidates) && candidates.length > 0
+      ? safeReadProperty(candidates, "0")
+      : { ok: false, value: null };
+    const finishRead = candidateRead.ok
+      ? safeReadProperty(candidateRead.value, "finishReason")
+      : { ok: false, value: undefined };
+    const finishReason = normalizeFinishReason(
+      finishRead.ok ? finishRead.value : undefined
+    );
+    const text = readSdkText(response);
+    if (typeof text !== "string" || !text.trim()) {
+      if (finishReason === "SAFETY") throw canonicalError("SAFETY");
+      if (finishReason === "CONTENT_FILTER") throw canonicalError("CONTENT");
+      throw canonicalError("BAD_RESPONSE");
+    }
+    const modelRead = safeReadProperty(response, "modelVersion");
+    const model = normalizeSafeModelIdentifier(
+      modelRead.ok ? modelRead.value : null,
+      neutralRequest.model
+    );
+    const usageRead = safeReadProperty(response, "usageMetadata");
+    const usage = usageRead.ok && isPlainObject(usageRead.value)
+      ? usageRead.value
+      : {};
+    const inputRead = safeReadProperty(usage, "promptTokenCount");
+    const outputRead = safeReadProperty(usage, "candidatesTokenCount");
+    const totalRead = safeReadProperty(usage, "totalTokenCount");
+    const responseIdRead = safeReadProperty(response, "responseId");
+    const responseId = responseIdRead.ok ? responseIdRead.value : null;
+    return {
+      text,
+      model,
+      finishReason,
+      usage: {
+        inputUnits: nonNegativeSafeIntegerOrNull(inputRead.value),
+        outputUnits: nonNegativeSafeIntegerOrNull(outputRead.value),
+        totalUnits: nonNegativeSafeIntegerOrNull(totalRead.value),
+      },
+      providerRequestId: isSafeTechnicalId(responseId)
+        ? responseId.trim()
+        : null,
+    };
+  } catch (error) {
+    const kind = safeDescriptorValue(error, "kind");
+    throw canonicalError(
+      typeof kind === "string" &&
+      Object.prototype.hasOwnProperty.call(KADI_GEMINI_REAL_CLIENT_ERROR_KINDS, kind)
+        ? kind
+        : "BAD_RESPONSE"
+    );
   }
-  const candidates = safeDescriptorValue(response, "candidates");
-  const candidate = Array.isArray(candidates) && candidates.length > 0
-    ? candidates[0]
-    : null;
-  const finishReason = normalizeFinishReason(
-    safeDescriptorValue(candidate, "finishReason")
-  );
-  const text = readSdkText(response);
-  if (typeof text !== "string" || !text.trim()) {
-    if (finishReason === "SAFETY") throw canonicalError("SAFETY");
-    if (finishReason === "CONTENT_FILTER") throw canonicalError("CONTENT");
-    throw canonicalError("BAD_RESPONSE");
-  }
-  const modelVersion = safeDescriptorValue(response, "modelVersion");
-  const model = typeof modelVersion === "string" &&
-    modelVersion.trim() &&
-    codePointLength(modelVersion) <=
-      KADI_GEMINI_REAL_CLIENT_LIMITS.maxModelCodePoints
-    ? modelVersion
-    : neutralRequest.model;
-  const usageMetadata = safeDescriptorValue(response, "usageMetadata");
-  const usage = isPlainObject(usageMetadata) ? usageMetadata : {};
-  const responseId = safeDescriptorValue(response, "responseId");
-  return {
-    text,
-    model,
-    finishReason,
-    usage: {
-      inputUnits: nonNegativeSafeIntegerOrNull(
-        safeDescriptorValue(usage, "promptTokenCount")
-      ),
-      outputUnits: nonNegativeSafeIntegerOrNull(
-        safeDescriptorValue(usage, "candidatesTokenCount")
-      ),
-      totalUnits: nonNegativeSafeIntegerOrNull(
-        safeDescriptorValue(usage, "totalTokenCount")
-      ),
-    },
-    providerRequestId: isSafeTechnicalId(responseId)
-      ? responseId.trim()
-      : null,
-  };
 }
 
 function mapGoogleGeminiError(error) {
@@ -308,30 +371,45 @@ function createGeminiRealClient(options) {
       typeof options.sdkFactory !== "function"
     )
   ) return null;
-  const sdkFactory = options.sdkFactory ||
-    (({ apiKey }) => new GoogleGenAI({ apiKey }));
+  const hasInjectedFactory = typeof options.sdkFactory === "function";
+  const sdkFactory = options.sdkFactory || (async ({ apiKey }) => {
+    const sdk = await import("@google/genai");
+    return new sdk.GoogleGenAI({ apiKey });
+  });
   let sdkClient;
-  try {
-    sdkClient = sdkFactory({ apiKey: options.apiKey });
-  } catch (error) {
-    const mapped = mapGoogleGeminiError(error);
-    return {
-      async generateContent() {
-        throw { kind: mapped.kind };
-      },
-    };
+  let initializationError = null;
+  if (hasInjectedFactory) {
+    try {
+      sdkClient = sdkFactory({ apiKey: options.apiKey });
+    } catch (error) {
+      initializationError = mapGoogleGeminiError(error);
+    }
+    const models = sdkClient &&
+      (typeof sdkClient === "object" || typeof sdkClient === "function")
+      ? safeDescriptorValue(sdkClient, "models")
+      : null;
+    if (!initializationError && typeof safeDescriptorValue(
+      models, "generateContent"
+    ) !== "function") return null;
   }
-  const models = sdkClient &&
-    (typeof sdkClient === "object" || typeof sdkClient === "function")
-    ? safeDescriptorValue(sdkClient, "models")
-    : null;
-  const generate = safeDescriptorValue(models, "generateContent");
-  if (typeof generate !== "function") return null;
+  let defaultInitialization;
   return {
     async generateContent(neutralRequest) {
       const googleRequest = buildGoogleGenerateContentRequest(neutralRequest);
       if (!googleRequest) throw canonicalError("BAD_RESPONSE");
+      if (initializationError) throw canonicalError(initializationError.kind);
       try {
+        if (!hasInjectedFactory) {
+          if (!defaultInitialization) {
+            defaultInitialization = Promise.resolve(
+              sdkFactory({ apiKey: options.apiKey })
+            );
+          }
+          sdkClient = await defaultInitialization;
+        }
+        const models = safeDescriptorValue(sdkClient, "models");
+        const generate = safeDescriptorValue(models, "generateContent");
+        if (typeof generate !== "function") throw canonicalError("UNAVAILABLE");
         const response = await generate.call(models, googleRequest);
         return normalizeGoogleGenerateContentResponse(response, neutralRequest);
       } catch (error) {
