@@ -7,7 +7,9 @@ const {
   validateProviderResponse,
 } = require("./kadiBrainProviderContract");
 const {
+  detectSensitiveText,
   isPrivacySafeForProvider,
+  sanitizePrivacyInput,
 } = require("./kadiBrainPrivacyGateway");
 
 const KADI_GEMINI_PROVIDER_VERSION = "kadi.gemini-provider.v1";
@@ -146,6 +148,47 @@ function nonNegativeIntegerOrNull(value) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+function containsRawIdentityText(value) {
+  return typeof value === "string" &&
+    /\b(?:wa[\s_-]*id|bsuid|whatsapp[\s_-]*id|phone[\s_-]*number[\s_-]*id|code\s+de\s+validation|passeport)\b\s*[:=]?\s*\S+/iu.test(value);
+}
+
+function isSensitiveText(value) {
+  if (typeof value !== "string") return false;
+  if (containsRawIdentityText(value)) return true;
+  return detectSensitiveText(value).some((item) => item.category !== "FINANCIAL");
+}
+
+function isProviderMessageTextSafe(messages) {
+  if (!Array.isArray(messages)) return false;
+  return messages.every((message) => {
+    if (!isPlainObject(message) || typeof message.content !== "string") return false;
+    if (isSensitiveText(message.content)) return false;
+    const privacyCheck = sanitizePrivacyInput({
+      userMessage: message.content,
+      context: {},
+    });
+    return privacyCheck.allowed === true && privacyCheck.decision === "ALLOWED";
+  });
+}
+
+function verifyPrivacyBinding(providerRequest, privacyResult) {
+  try {
+    return (
+      isPrivacySafeForProvider(privacyResult) === true &&
+      isPlainObject(providerRequest) &&
+      isProviderMessageTextSafe(providerRequest.messages)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safeProviderRequestId(value) {
+  const normalized = textOrNull(value, 200);
+  return normalized && !isSensitiveText(normalized) ? normalized : null;
+}
+
 function containsForbiddenKey(value, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return false;
   seen.add(value);
@@ -214,6 +257,7 @@ function buildGeminiClientRequest(providerRequest) {
     if (typeof request.model !== "string" || !request.model.trim()) {
       return null;
     }
+    if (!isProviderMessageTextSafe(request.messages)) return null;
     const systemMessages = request.messages.filter(
       (message) => message.role === "system"
     );
@@ -313,7 +357,7 @@ function normalizeGeminiClientResult(result, providerRequest) {
         response.usage.inputUnits + response.usage.outputUnits
     ) response.usage.totalUnits = null;
     response.metadata = {
-      providerRequestId: textOrNull(result.providerRequestId, 200),
+      providerRequestId: safeProviderRequestId(result.providerRequestId),
       finishReason: "STOP",
     };
     return validatedResponse(response);
@@ -362,7 +406,7 @@ function createGeminiProvider(options) {
             localFailure("INVALID_MODEL", "CONFIGURATION", "REJECTED", false)
           );
         }
-        if (!isPrivacySafeForProvider(privacyResult)) {
+        if (!verifyPrivacyBinding(providerRequest, privacyResult)) {
           return validatedResponse(
             localFailure("INVALID_REQUEST", "CLIENT", "REJECTED", false)
           );

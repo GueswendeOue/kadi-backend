@@ -435,3 +435,251 @@ test("scenarios 123-150: production imports and source expose no real provider s
   ];
   for (const pattern of forbidden) assert.doesNotMatch(source, pattern);
 });
+
+test("hardening: factory and invoke reject remaining primitive and malformed inputs", async () => {
+  for (const options of [true, false, []]) {
+    const response = await createGeminiProvider(options).invoke({
+      providerRequest: validProviderRequest(),
+      privacyResult: safePrivacyResult(),
+    });
+    assertCanonical(response);
+    assert.equal(response.errorCode, "PROVIDER_UNAVAILABLE");
+  }
+
+  let calls = 0;
+  const provider = createGeminiProvider({
+    client: { generateContent() { calls += 1; return clientResult(); } },
+  });
+  const invalidInputs = [undefined, "x", 4, true];
+  for (const input of invalidInputs) {
+    const response = await provider.invoke(input);
+    assertCanonical(response);
+    assert.equal(response.errorCode, "INVALID_REQUEST");
+  }
+  const badVersion = validProviderRequest(); badVersion.schemaVersion = "bad";
+  const generic = validProviderRequest(); generic.provider = "GENERIC";
+  const noMessages = validProviderRequest(); delete noMessages.messages;
+  for (const request of [badVersion, generic, noMessages]) {
+    const response = await provider.invoke({
+      providerRequest: request,
+      privacyResult: safePrivacyResult(),
+    });
+    assertCanonical(response);
+    assert.equal(response.ok, false);
+  }
+  assert.equal(calls, 0);
+});
+
+test("hardening: forged privacy payloads never reach the client", async () => {
+  let calls = 0;
+  const provider = createGeminiProvider({
+    client: { generateContent() { calls += 1; return clientResult(); } },
+  });
+  const forgedValues = [
+    { userMessage: "Téléphone 70 12 34 56", context: {} },
+    { userMessage: "Email awa@example.com", context: {} },
+    { userMessage: "Adresse Ouagadougou secteur 15", context: {} },
+    { userMessage: "OTP 123456", context: {} },
+  ];
+  for (const sanitizedInput of forgedValues) {
+    const privacyResult = {
+      ...safePrivacyResult(),
+      sanitizedInput,
+    };
+    const response = await provider.invoke({
+      providerRequest: validProviderRequest(),
+      privacyResult,
+    });
+    assertCanonical(response);
+    assert.equal(response.errorCode, "INVALID_REQUEST");
+  }
+  assert.equal(calls, 0);
+});
+
+test("hardening: secrets and personal data in transmitted messages block locally", async () => {
+  const unsafeMessages = [
+    "OTP 123456",
+    "PIN 4321",
+    "Mot de passe abc123",
+    "API key sk_test_123",
+    "Bearer token abc",
+    "serviceRoleKey secret-value",
+    "secretKey secret-value",
+    "mobile money PIN 1234",
+    "code de validation 998877",
+    "Téléphone 70 12 34 56",
+    "Email awa@example.com",
+    "Adresse Ouagadougou secteur 15",
+    "waId 22670123456",
+    "IFU 00012345",
+    "RCCM BF-OUA-2024",
+    "Passeport AB12345",
+    "Ligne publique\nOTP 123456\nFin",
+  ];
+  for (const content of unsafeMessages) {
+    let calls = 0;
+    const provider = createGeminiProvider({
+      client: { generateContent() { calls += 1; return clientResult(); } },
+    });
+    const request = validProviderRequest();
+    request.messages[1].content = content;
+    const response = await provider.invoke({
+      providerRequest: request,
+      privacyResult: safePrivacyResult(),
+    });
+    assertCanonical(response);
+    assert.equal(response.status, "REJECTED");
+    assert.equal(response.ok, false);
+    assert.equal(response.content, null);
+    assert.equal(response.errorCode, "INVALID_REQUEST");
+    assert.equal(response.failureKind, "CLIENT");
+    assert.equal(response.recoverable, false);
+    assert.equal(calls, 0);
+    assert.equal(JSON.stringify(response).includes(content), false);
+    assert.equal(buildGeminiClientRequest(request), null);
+  }
+
+  const amount = validProviderRequest();
+  amount.messages[1].content = "Montant 125000 FCFA";
+  assert.notEqual(buildGeminiClientRequest(amount), null);
+});
+
+test("hardening: multiline Unicode remains deterministic while tool and developer roles fail", () => {
+  const request = validProviderRequest();
+  request.messages[1].content = "Première ligne 😀\nDeuxième ligne é";
+  const first = buildGeminiClientRequest(request);
+  const second = buildGeminiClientRequest(reverseKeys(request));
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(first.contents[0].parts[0].text, request.messages[1].content);
+
+  for (const role of ["tool", "developer"]) {
+    const invalid = validProviderRequest();
+    invalid.messages[1].role = role;
+    assert.equal(buildGeminiClientRequest(invalid), null);
+  }
+  const noSystem = validProviderRequest();
+  noSystem.messages = [{ role: "user", content: "Créer une facture" }];
+  assert.equal(buildGeminiClientRequest(noSystem), null);
+});
+
+test("hardening: client result variants are minimized and sensitive request ids become null", () => {
+  const request = validProviderRequest();
+  const missingModel = normalizeGeminiClientResult(
+    clientResult({ model: undefined }),
+    request
+  );
+  assertCanonical(missingModel);
+  assert.equal(missingModel.model, null);
+
+  const trimmed = normalizeGeminiClientResult(
+    clientResult({ providerRequestId: " req_test_1 " }),
+    request
+  );
+  assert.equal(trimmed.metadata.providerRequestId, "req_test_1");
+
+  const sensitiveIds = [
+    "awa@example.com",
+    "70 12 34 56",
+    "Adresse Ouagadougou secteur 15",
+    "waId 22670123456",
+    "IFU 00012345",
+    "RCCM BF-OUA-2024",
+    "OTP-123456",
+    "PIN 4321",
+    "access token secret",
+    "API key secret",
+    "Passeport AB12345",
+  ];
+  for (const providerRequestId of sensitiveIds) {
+    const response = normalizeGeminiClientResult(
+      clientResult({ providerRequestId }),
+      request
+    );
+    assertCanonical(response);
+    assert.equal(response.metadata.providerRequestId, null);
+    assert.equal(JSON.stringify(response).includes(providerRequestId), false);
+  }
+
+  const rawSentinels = {
+    promptFeedback: "PRIVATE_PROMPT_FEEDBACK",
+    safetyRatings: "PRIVATE_SAFETY_RATINGS",
+    reasoning: "PRIVATE_REASONING",
+    chainOfThought: "PRIVATE_CHAIN",
+  };
+  const minimized = normalizeGeminiClientResult(
+    clientResult(rawSentinels),
+    request
+  );
+  for (const sentinel of Object.values(rawSentinels)) {
+    assert.equal(JSON.stringify(minimized).includes(sentinel), false);
+  }
+
+  for (const result of [
+    clientResult({ text: "   " }),
+    undefined,
+    true,
+    clientResult({ finishReason: null }),
+  ]) {
+    const response = normalizeGeminiClientResult(result, request);
+    assertCanonical(response);
+    assert.equal(response.ok, false);
+  }
+});
+
+test("hardening: error variants stay deterministic and never expose internals", () => {
+  for (const error of [
+    true,
+    { kind: "NETWORK", config: "PRIVATE_CONFIG" },
+    { kind: "NETWORK", apiKeySentinel: "PRIVATE_KEY" },
+  ]) {
+    const first = mapGeminiClientError(error);
+    const second = mapGeminiClientError(reverseKeys(error));
+    assertCanonical(first);
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(JSON.stringify(first).includes("PRIVATE_"), false);
+  }
+});
+
+test("hardening: local failures are byte deterministic", async () => {
+  const provider = createGeminiProvider({
+    client: { generateContent: () => clientResult() },
+  });
+  const first = await provider.invoke(undefined);
+  const second = await provider.invoke(undefined);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+});
+
+test("hardening: client-side request mutation cannot alter caller-owned structures", async () => {
+  const providerRequest = validProviderRequest();
+  const privacyResult = safePrivacyResult();
+  const providerBefore = JSON.stringify(providerRequest);
+  const privacyBefore = JSON.stringify(privacyResult);
+  const independentBuild = buildGeminiClientRequest(providerRequest);
+  const buildBefore = JSON.stringify(independentBuild);
+  const frozenResult = Object.freeze(clientResult());
+  const provider = createGeminiProvider({
+    client: {
+      generateContent(request) {
+        request.model = "mutated";
+        request.contents[0].parts[0].text = "mutated";
+        request.generationConfig.temperature = 1;
+        return frozenResult;
+      },
+    },
+  });
+  const response = await provider.invoke({ providerRequest, privacyResult });
+  assertCanonical(response);
+  assert.equal(JSON.stringify(providerRequest), providerBefore);
+  assert.equal(JSON.stringify(privacyResult), privacyBefore);
+  assert.equal(JSON.stringify(independentBuild), buildBefore);
+});
+
+test("hardening: reordered client results produce byte-identical responses", () => {
+  const result = clientResult({
+    text: '{"message":"Unicode 😀 é"}',
+    usage: { inputUnits: 3, outputUnits: 2, totalUnits: 5 },
+  });
+  const first = normalizeGeminiClientResult(result, validProviderRequest());
+  const second = normalizeGeminiClientResult(reverseKeys(result), validProviderRequest());
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+});
