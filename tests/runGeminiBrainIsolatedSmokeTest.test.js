@@ -70,6 +70,71 @@ function harness(overrides = {}) {
   };
 }
 
+const PUBLIC_FAILURE_KEYS = Object.freeze([
+  "smokeVersion", "model", "privacySafe", "providerRequestValid",
+  "providerStatus", "providerErrorCode", "providerFailureKind",
+  "recoverable", "providerResponseValid", "parserValid", "execution",
+]);
+
+function completeSentinels() {
+  return Object.freeze({
+    content: "SENTINEL_CONTENT_01",
+    providerRequestId: "SENTINEL_REQUEST_ID_02",
+    unknownMetadata: "SENTINEL_UNKNOWN_METADATA_03",
+    usage: 876543210,
+    prompt: "SENTINEL_PROMPT_05",
+    userMessage: "SENTINEL_USER_MESSAGE_06",
+    restorationMap: "SENTINEL_RESTORATION_MAP_07",
+    sanitizedUserMessage: "SENTINEL_SANITIZED_MESSAGE_08",
+    sanitizedContext: "SENTINEL_SANITIZED_CONTEXT_09",
+    privacyErrors: "SENTINEL_PRIVACY_ERRORS_10",
+    privacyRedactions: "SENTINEL_PRIVACY_REDACTIONS_11",
+    errorMessage: "SENTINEL_ERROR_MESSAGE_12",
+    errorStack: "SENTINEL_ERROR_STACK_13",
+    errorCause: "SENTINEL_ERROR_CAUSE_14",
+    errorHeaders: "SENTINEL_ERROR_HEADERS_15",
+    errorBody: "SENTINEL_ERROR_BODY_16",
+    errorConfig: "SENTINEL_ERROR_CONFIG_17",
+    errorRequest: "SENTINEL_ERROR_REQUEST_18",
+    errorResponse: "SENTINEL_ERROR_RESPONSE_19",
+    errorUrl: "SENTINEL_ERROR_URL_20",
+    apiKey: "SENTINEL_FAKE_API_KEY_21",
+  });
+}
+
+function cliEquivalentOptions(overrides = {}) {
+  const setup = harness(overrides);
+  const logs = [];
+  const errors = [];
+  setup.options.output = (result) => {
+    logs.push(JSON.stringify(result));
+  };
+  return { setup, logs, errors };
+}
+
+async function captureCliEquivalent(cli) {
+  const previousExitCode = process.exitCode;
+  try {
+    const result = await smoke.runGeminiIsolatedSmokeTest(cli.setup.options);
+    process.exitCode = result.exitCode;
+    if (result.code) {
+      cli.errors.push(
+        result.publicResult
+          ? JSON.stringify(result.publicResult)
+          : result.code
+      );
+    }
+    return {
+      result,
+      exitCode: process.exitCode,
+      logs: cli.logs.slice(),
+      errors: cli.errors.slice(),
+    };
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+}
+
 test("exports exact smoke constants and fresh dependencies", () => {
   assert.equal(smoke.KADI_GEMINI_SMOKE_VERSION, "kadi.gemini-isolated-smoke.v1");
   assert.equal(smoke.KADI_GEMINI_SMOKE_MODEL, "gemini-2.5-flash");
@@ -407,6 +472,282 @@ test("internal exceptions expose only the public code and never the fake key", a
     publicResult: null,
   });
   assert.equal(JSON.stringify(result).includes(setup.options.apiKey), false);
+});
+
+test("distinct private sentinels never escape provider failure, success, or internal failure", async () => {
+  const sentinels = completeSentinels();
+  assert.equal(new Set(Object.values(sentinels).map(String)).size, 21);
+  const privateStrings = Object.values(sentinels).map(String);
+  const privacyResult = {
+    allowed: true,
+    restorationMap: { value: sentinels.restorationMap },
+    sanitizedInput: {
+      userMessage: sentinels.sanitizedUserMessage,
+      context: { value: sentinels.sanitizedContext },
+    },
+    errors: [sentinels.privacyErrors],
+    redactions: [{ value: sentinels.privacyRedactions }],
+  };
+  const dependencies = {
+    createEmptyPrivacyInput: () => ({ userMessage: sentinels.userMessage }),
+    sanitizePrivacyInput: () => privacyResult,
+    isPrivacySafeForProvider: () => true,
+    createEmptyPromptInput: () => ({
+      channel: null,
+      languageHint: null,
+      userMessage: null,
+      capabilities: [],
+      businessContext: { defaultCurrency: null },
+      metadata: { messageType: null },
+    }),
+    buildIntentResolutionMessages: () => ({
+      valid: true,
+      messages: [
+        { role: "system", content: sentinels.prompt },
+        { role: "user", content: sentinels.userMessage },
+      ],
+    }),
+    validateProviderRequest: () => ({ valid: true, errors: [] }),
+    validateProviderResponse: () => ({ valid: true, errors: [] }),
+  };
+  const failedResponse = successfulProviderResponse();
+  failedResponse.status = "FAILED";
+  failedResponse.ok = false;
+  failedResponse.content = sentinels.content;
+  failedResponse.errorCode = "PROVIDER_UNAVAILABLE";
+  failedResponse.failureKind = "PROVIDER";
+  failedResponse.recoverable = true;
+  failedResponse.usage = {
+    inputUnits: sentinels.usage,
+    outputUnits: sentinels.usage,
+    totalUnits: sentinels.usage,
+  };
+  failedResponse.metadata = {
+    providerRequestId: sentinels.providerRequestId,
+    finishReason: "ERROR",
+    unknown: sentinels.unknownMetadata,
+  };
+  const failureSetup = harness({
+    apiKey: sentinels.apiKey,
+    dependencies,
+    createProvider: () => ({ invoke: async () => failedResponse }),
+  });
+  const failure = await smoke.runGeminiIsolatedSmokeTest(failureSetup.options);
+  assert.deepEqual(Object.keys(failure.publicResult), PUBLIC_FAILURE_KEYS);
+  assert.equal(failure.publicResult.execution, "NONE");
+  const serializedFailure = JSON.stringify(failure.publicResult);
+  for (const sentinel of privateStrings) {
+    assert.equal(serializedFailure.includes(sentinel), false);
+  }
+
+  const successResponse = successfulProviderResponse();
+  successResponse.content = sentinels.content;
+  successResponse.metadata = {
+    providerRequestId: sentinels.providerRequestId,
+    finishReason: "STOP",
+    unknown: sentinels.unknownMetadata,
+  };
+  successResponse.usage = {
+    inputUnits: 101,
+    outputUnits: 102,
+    totalUnits: 203,
+  };
+  const successSetup = harness({
+    apiKey: sentinels.apiKey,
+    dependencies: {
+      ...dependencies,
+      parseIntentResolutionResponse: () => ({
+        ok: true,
+        validation: { valid: true },
+        resolution: { intent: "CREATE_INVOICE" },
+      }),
+    },
+    createProvider: () => ({ invoke: async () => successResponse }),
+  });
+  const success = await smoke.runGeminiIsolatedSmokeTest(successSetup.options);
+  assert.deepEqual(Object.keys(success.publicResult), [
+    "smokeVersion", "model", "privacySafe", "providerRequestValid",
+    "providerStatus", "providerResponseValid", "parserValid", "intent",
+    "actionable", "execution", "usage",
+  ]);
+  assert.equal(success.publicResult.execution, "NONE");
+  const serializedSuccess = JSON.stringify(success.publicResult);
+  for (const sentinel of privateStrings) {
+    assert.equal(serializedSuccess.includes(sentinel), false);
+  }
+
+  const privateError = new Error(sentinels.errorMessage);
+  privateError.stack = sentinels.errorStack;
+  privateError.cause = sentinels.errorCause;
+  privateError.headers = sentinels.errorHeaders;
+  privateError.body = sentinels.errorBody;
+  privateError.config = sentinels.errorConfig;
+  privateError.request = sentinels.errorRequest;
+  privateError.response = sentinels.errorResponse;
+  privateError.url = sentinels.errorUrl;
+  const internalSetup = harness({
+    apiKey: sentinels.apiKey,
+    createRealClient() {
+      throw privateError;
+    },
+  });
+  const internal = await smoke.runGeminiIsolatedSmokeTest(internalSetup.options);
+  assert.deepEqual(internal, {
+    exitCode: 7,
+    code: "GEMINI_SMOKE_INTERNAL_FAILURE",
+    publicResult: null,
+  });
+  const serializedInternal = JSON.stringify(internal);
+  for (const sentinel of privateStrings) {
+    assert.equal(serializedInternal.includes(sentinel), false);
+  }
+});
+
+test("CLI-equivalent capture emits exactly one public output for exit codes zero through seven", async () => {
+  const cases = [
+    {
+      exitCode: 0,
+      code: null,
+      cli: () => cliEquivalentOptions(),
+      expectedCounts: { clientCreations: 1, providerCreations: 1, invocations: 1 },
+    },
+    {
+      exitCode: 1,
+      code: "GEMINI_SMOKE_KEY_MISSING",
+      cli: () => cliEquivalentOptions({ apiKey: undefined }),
+      expectedCounts: { clientCreations: 0, providerCreations: 0, invocations: 0 },
+    },
+    {
+      exitCode: 2,
+      code: "GEMINI_SMOKE_PRIVACY_REJECTED",
+      cli: () => cliEquivalentOptions({
+        dependencies: {
+          sanitizePrivacyInput: () => ({ allowed: false }),
+          isPrivacySafeForProvider: () => false,
+        },
+      }),
+      expectedCounts: { clientCreations: 0, providerCreations: 0, invocations: 0 },
+    },
+    {
+      exitCode: 3,
+      code: "GEMINI_SMOKE_REQUEST_INVALID",
+      cli: () => cliEquivalentOptions({
+        dependencies: {
+          buildIntentResolutionMessages: () => ({ valid: false, messages: [] }),
+        },
+      }),
+      expectedCounts: { clientCreations: 0, providerCreations: 0, invocations: 0 },
+    },
+    {
+      exitCode: 4,
+      code: "GEMINI_SMOKE_PROVIDER_FAILED",
+      cli: () => cliEquivalentOptions({
+        createProvider: () => ({
+          invoke: async () => {
+            const response = successfulProviderResponse();
+            response.status = "FAILED";
+            response.ok = false;
+            response.content = null;
+            response.errorCode = "PROVIDER_UNAVAILABLE";
+            response.failureKind = "PROVIDER";
+            response.recoverable = true;
+            response.metadata.finishReason = "ERROR";
+            return response;
+          },
+        }),
+      }),
+      expectedCounts: { clientCreations: 1, providerCreations: 0, invocations: 0 },
+    },
+    {
+      exitCode: 5,
+      code: "GEMINI_SMOKE_RESPONSE_INVALID",
+      cli: () => cliEquivalentOptions({
+        createProvider: () => ({ invoke: async () => ({ invalid: true }) }),
+      }),
+      expectedCounts: { clientCreations: 1, providerCreations: 0, invocations: 0 },
+    },
+    {
+      exitCode: 6,
+      code: "GEMINI_SMOKE_PARSE_FAILED",
+      cli: () => cliEquivalentOptions({
+        dependencies: {
+          parseIntentResolutionResponse: () => ({
+            ok: false, validation: null, resolution: null,
+          }),
+        },
+      }),
+      expectedCounts: { clientCreations: 1, providerCreations: 1, invocations: 1 },
+    },
+    {
+      exitCode: 7,
+      code: "GEMINI_SMOKE_INTERNAL_FAILURE",
+      cli: () => cliEquivalentOptions({
+        createRealClient() {
+          throw new Error("SIMULATED_INTERNAL_FAILURE");
+        },
+      }),
+      expectedCounts: { clientCreations: 0, providerCreations: 0, invocations: 0 },
+    },
+  ];
+  const originalExitCode = process.exitCode;
+  for (const scenario of cases) {
+    const cli = scenario.cli();
+    const captured = await captureCliEquivalent(cli);
+    assert.equal(captured.exitCode, scenario.exitCode);
+    assert.equal(captured.result.code, scenario.code);
+    assert.equal(captured.logs.length + captured.errors.length, 1);
+    assert.deepEqual(cli.setup.counts(), scenario.expectedCounts);
+    assert.equal(process.exitCode, originalExitCode);
+    const output = captured.logs[0] || captured.errors[0];
+    if (scenario.exitCode === 0 || scenario.exitCode === 4) {
+      const parsed = JSON.parse(output);
+      assert.equal(parsed.execution, "NONE");
+      assert.equal(JSON.stringify(parsed), output);
+      assert.equal(output.includes("apiKey"), false);
+      assert.equal(output.includes("prompt"), false);
+      assert.equal(output.includes("content"), false);
+      assert.equal(output.includes("metadata"), false);
+    } else {
+      assert.equal(output, scenario.code);
+    }
+  }
+});
+
+test("CLI-equivalent output is byte deterministic for success and provider failures", async () => {
+  const providerCases = [
+    null,
+    ["PROVIDER_AUTH_FAILED", "AUTHENTICATION", "REJECTED", false],
+    ["PROVIDER_RATE_LIMITED", "RATE_LIMIT", "FAILED", true],
+    ["PROVIDER_NETWORK_ERROR", "NETWORK", "FAILED", true],
+    ["PROVIDER_UNAVAILABLE", "PROVIDER", "FAILED", true],
+    ["PROVIDER_BAD_RESPONSE", "PROVIDER", "FAILED", true],
+  ];
+  for (const providerCase of providerCases) {
+    const run = async () => {
+      const overrides = providerCase
+        ? {
+          createProvider: () => ({
+            invoke: async () => {
+              const response = successfulProviderResponse();
+              response.status = providerCase[2];
+              response.ok = false;
+              response.content = null;
+              response.errorCode = providerCase[0];
+              response.failureKind = providerCase[1];
+              response.recoverable = providerCase[3];
+              response.metadata.finishReason = "ERROR";
+              return response;
+            },
+          }),
+        }
+        : {};
+      const cli = cliEquivalentOptions(overrides);
+      const captured = await captureCliEquivalent(cli);
+      assert.equal(captured.logs.length + captured.errors.length, 1);
+      return captured.logs[0] || captured.errors[0];
+    };
+    assert.equal(await run(), await run());
+  }
 });
 
 test("source remains isolated, storage-free, network-free, and execution-free", () => {
