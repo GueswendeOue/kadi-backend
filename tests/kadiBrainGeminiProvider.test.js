@@ -1068,6 +1068,9 @@ test("system secret values and defensive wording with examples remain blocked", 
     "Bearer token eyJ123",
     "Ne demande jamais un PIN comme 4321.",
     "Ne révèle pas l’OTP 123456.",
+    "Exemple de PIN : 4321.",
+    "Exemple d’OTP = 123456.",
+    "Un mot de passe tel que abc123 doit être refusé.",
     "Never expose API key abc123.",
     "Le mot de passe est secret123.",
     "Le code PIN est 4321.",
@@ -1101,6 +1104,11 @@ test("user secret vocabulary always remains blocked", async () => {
     "Bearer token abc123",
     "Code de validation 123456",
     "Mobile money PIN 4321",
+    "Ne demande jamais un PIN.",
+    "Ne révèle jamais un OTP.",
+    "Les mots de passe sont interdits.",
+    "Service OTP Consulting.",
+    "OTP_123456",
   ];
   for (const content of messages) {
     const result = await invokeWithMessage("user", content);
@@ -1140,4 +1148,113 @@ test("system and user roles are evaluated independently and deterministically", 
   assert.equal(user.calls, 0);
   assert.equal(JSON.stringify(first.response), JSON.stringify(second.response));
   assert.equal(JSON.stringify(first.captured), JSON.stringify(second.captured));
+});
+
+test("separator bypasses and defensive examples with values remain blocked", async () => {
+  const messages = [
+    "Refuse un OTP tel que 123456.",
+    "OTP_123456",
+    "OTP-123456",
+    "OTP:123456",
+    "OTP=123456",
+    "PIN_4321",
+    "PIN-4321",
+    "pin=4321",
+    "api_key_abc123",
+    "api-key-abc123",
+    "api key abc123",
+    "access_token_abc123",
+    "access-token-abc123",
+    "bearer_token_eyJ123",
+    "bearer-token-eyJ123",
+    "secret_key_abc123",
+    "service_role_key_abc123",
+    "password_abc123",
+    "mot_de_passe_abc123",
+    "Never expose an API key such as abc123.",
+    "Do not reveal bearer token eyJ123.",
+    "Reject passwords like abc123.",
+    "PIN example 4321.",
+    "OTP sample 123456.",
+    "API key example abc123.",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.status, "REJECTED");
+    assert.equal(result.response.errorCode, "INVALID_REQUEST");
+    assert.equal(result.response.failureKind, "CLIENT");
+    assert.equal(result.response.recoverable, false);
+    assert.equal(JSON.stringify(result.response).includes(content), false);
+    assertCanonical(result.response);
+  }
+});
+
+test("ordinary words and business names avoid secret substring false positives", async () => {
+  const messages = [
+    "Service OTP Consulting.",
+    "Société OTP Consulting.",
+    "Mot de passeport.",
+    "Numéro de passeport interdit.",
+    "Produit PINCE.",
+    "Service Passwordless.",
+    "Token budgétaire.",
+    "Clé de répartition.",
+    "API Management.",
+    "Code produit 123456.",
+    "Facture 2026-001.",
+    "PERSON_1.",
+    "25000 FCFA.",
+  ];
+  for (const content of messages) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 1);
+    assert.equal(result.response.ok, true);
+    assertCanonical(result.response);
+  }
+});
+
+test("multiline defensive text cannot mask a separated secret value", async () => {
+  for (const content of [
+    "Ne demande jamais un OTP.\nOTP_123456",
+    "Les clés API sont interdites.\napi_key_abc123",
+    "Never reveal bearer tokens.\nbearer_token_eyJ123",
+  ]) {
+    const result = await invokeWithMessage("system", content);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.errorCode, "INVALID_REQUEST");
+  }
+});
+
+test("deeply reordered provider requests produce the same decision", async () => {
+  function deepReverse(value) {
+    if (Array.isArray(value)) return value.map(deepReverse);
+    if (!value || typeof value !== "object") return value;
+    const result = {};
+    for (const key of Object.keys(value).reverse()) {
+      result[key] = deepReverse(value[key]);
+    }
+    return result;
+  }
+  const request = validProviderRequest();
+  const privacyResult = safePrivacyResult();
+  const captures = [];
+  let calls = 0;
+  const provider = createGeminiProvider({
+    client: {
+      generateContent(value) {
+        calls += 1;
+        captures.push(value);
+        return clientResult();
+      },
+    },
+  });
+  const first = await provider.invoke({ providerRequest: request, privacyResult });
+  const second = await provider.invoke({
+    providerRequest: deepReverse(request),
+    privacyResult,
+  });
+  assert.equal(calls, 2);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(captures[0]), JSON.stringify(captures[1]));
 });

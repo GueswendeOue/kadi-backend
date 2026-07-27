@@ -187,79 +187,158 @@ function isSensitiveText(value) {
   return detectSensitiveText(value).some((item) => item.category !== "FINANCIAL");
 }
 
-const SYSTEM_SECRET_REFERENCE =
-  /\b(?:mobile money pins?|codes? de validation|mots? de passe|passwords?|passcodes?|pins?|otps?|api keys?|cl[ée]s? api|access tokens?|bearer tokens?|service role keys?|secret keys?)\b/giu;
+const SECRET_TERMS = Object.freeze([
+  Object.freeze({ words: ["mobile", "money", "pin"], kind: "numeric" }),
+  Object.freeze({ words: ["code", "de", "validation"], kind: "numeric" }),
+  Object.freeze({ words: ["mot", "de", "passe"], kind: "string" }),
+  Object.freeze({ words: ["mots", "de", "passe"], kind: "string" }),
+  Object.freeze({ words: ["service", "role", "key"], kind: "string" }),
+  Object.freeze({ words: ["service", "role", "keys"], kind: "string" }),
+  Object.freeze({ words: ["servicerolekey"], kind: "string" }),
+  Object.freeze({ words: ["bearer", "token"], kind: "string" }),
+  Object.freeze({ words: ["bearer", "tokens"], kind: "string" }),
+  Object.freeze({ words: ["bearertoken"], kind: "string" }),
+  Object.freeze({ words: ["access", "token"], kind: "string" }),
+  Object.freeze({ words: ["access", "tokens"], kind: "string" }),
+  Object.freeze({ words: ["accesstoken"], kind: "string" }),
+  Object.freeze({ words: ["secret", "key"], kind: "string" }),
+  Object.freeze({ words: ["secret", "keys"], kind: "string" }),
+  Object.freeze({ words: ["secretkey"], kind: "string" }),
+  Object.freeze({ words: ["api", "key"], kind: "string" }),
+  Object.freeze({ words: ["api", "keys"], kind: "string" }),
+  Object.freeze({ words: ["apikey"], kind: "string" }),
+  Object.freeze({ words: ["cle", "api"], kind: "string" }),
+  Object.freeze({ words: ["cles", "api"], kind: "string" }),
+  Object.freeze({ words: ["password"], kind: "string" }),
+  Object.freeze({ words: ["passwords"], kind: "string" }),
+  Object.freeze({ words: ["passcode"], kind: "string" }),
+  Object.freeze({ words: ["passcodes"], kind: "string" }),
+  Object.freeze({ words: ["otp"], kind: "numeric" }),
+  Object.freeze({ words: ["pin"], kind: "numeric" }),
+]);
 
-const SYSTEM_SECRET_REFERENCE_AT_START =
-  /^(?:mobile money pins?|codes? de validation|mots? de passe|passwords?|passcodes?|pins?|otps?|api keys?|cles? api|access tokens?|bearer tokens?|service role keys?|secret keys?)\b/u;
+const SAFE_SECRET_FOLLOWERS = new Set([
+  "and", "or", "et", "ou", "must", "doit", "doivent", "ne", "should",
+  "sont", "interdit", "interdits", "interdite", "interdites", "refuse",
+  "refuses", "rejected", "reject", "secret", "secrets", "category",
+  "categorie", "consulting", "que", "as", "for", "an", "a", "un", "une",
+]);
 
-const DEFENSIVE_SYSTEM_CONTEXT =
-  /\b(?:ne demande(?: jamais| pas| aucun)|ne revele(?: jamais| pas| aucun)|ne reproduis(?: jamais| pas| aucun)|n expose(?: jamais| pas| aucun)|refuse|rejette|bloque|interdit|ne stocke jamais|ne conserve jamais|never ask|do not ask|never reveal|do not reveal|never expose|do not expose|do not request|never request|reject|block|forbid|never store|do not store|must be rejected|doit(?: jamais)? etre demande|ne doit jamais etre demande|ne doivent jamais etre demandes?|sont interdits?|doivent etre rejetees?)\b/u;
+const EXAMPLE_MARKERS = new Set([
+  "comme", "tel", "telle", "exemple", "vaut", "est", "valeur", "code",
+  "like", "such", "example", "sample", "is", "value",
+]);
 
-const SAFE_SYSTEM_CLASSIFICATION =
-  /\b(?:est une categorie de secret|is a category of secret|ne doit pas contenir de secrets?|doit etre rejetee?|doivent etre rejetees?|must be rejected|sont interdits?)\b/u;
+function normalizeSecretTokens(value) {
+  if (typeof value !== "string") return [];
+  return value
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[_\-\/\\:="'`()[\]{}]+/gu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+}
+
+function findSecretTerms(tokens) {
+  const matches = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    for (const term of SECRET_TERMS) {
+      if (
+        term.words.every((word, offset) => tokens[index + offset] === word)
+      ) {
+        matches.push({
+          index,
+          end: index + term.words.length,
+          kind: term.kind,
+        });
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
+function isPlausibleNumericValue(tokens) {
+  let digits = "";
+  for (const token of tokens.slice(0, 4)) {
+    if (!/^\d+$/u.test(token)) break;
+    digits += token;
+    if (digits.length >= 4 && digits.length <= 8) return true;
+    if (digits.length > 8) return false;
+  }
+  return false;
+}
+
+function isPlausibleStringValue(token) {
+  if (typeof token !== "string" || !token) return false;
+  if (SAFE_SECRET_FOLLOWERS.has(token)) return false;
+  if (/^(?:sk|aiza|eyj|token|key)[a-z0-9_-]*$/u.test(token)) return true;
+  if (/^(?=.*[a-z])(?=.*\d)[a-z0-9_-]{4,}$/u.test(token)) return true;
+  return /^[a-z]{4,}$/u.test(token);
+}
+
+function secretTermHasAssociatedValue(tokens, match) {
+  const tail = tokens.slice(match.end, match.end + 8);
+  const markerIndex = tail.findIndex((token) => EXAMPLE_MARKERS.has(token));
+  const afterMarker = markerIndex < 0
+    ? []
+    : tail.slice(markerIndex + 1).filter(
+      (token) => !SAFE_SECRET_FOLLOWERS.has(token)
+    );
+  if (match.kind === "numeric") {
+    if (isPlausibleNumericValue(tail)) return true;
+    return markerIndex >= 0 &&
+      (
+        isPlausibleNumericValue(afterMarker) ||
+        isPlausibleStringValue(afterMarker[0])
+      );
+  }
+  if (tail.length === 0) return false;
+  if (
+    tail[0] === "is" && tail.slice(0, 5).join(" ") ===
+      "is a category of secret"
+  ) return false;
+  if (
+    tail[0] === "est" && tail.slice(0, 5).join(" ") ===
+      "est une categorie de secret"
+  ) return false;
+  if (isPlausibleStringValue(tail[0])) return true;
+  return markerIndex >= 0 &&
+    isPlausibleStringValue(afterMarker[0]);
+}
 
 function containsNonSecretRestrictedMarker(value) {
   const normalized = normalizeDetectionText(value);
   if (!normalized) return false;
-  return (
-    /\b(?:carte(?: nationale)?(?: d)? identite|cnib|cni|piece(?: d)? identite|numero de piece|passeport|passport|permis de conduire|acte de naissance|signature(?: client| manuscrite)?|signe par|empreinte(?: digitale)?|fingerprint|biometrie|cachet personnel)\b/u.test(normalized) ||
+  if (
     /\b(?:adresse|domicile|livraison a|quartier|rue|avenue|secteur)\b\s+\S+/u.test(normalized) ||
     /\b(?:nom(?: du)? client|nom|client|beneficiaire|destinataire|expediteur|titulaire|proprietaire|monsieur|madame|m|mme)\s+([\p{L}]{2,})\s+([\p{L}]{2,})/u.test(normalized)
+  ) return true;
+  const documentMatch = normalized.match(
+    /\b(?:carte(?: nationale)?(?: d)? identite|cnib|cni|piece(?: d)? identite|numero de piece|numero de passeport|passeport|passport|permis de conduire|acte de naissance|signature(?: client| manuscrite)?|signe par|empreinte(?: digitale)?|fingerprint|biometrie|cachet personnel)\b(?:\s+(\S+))?/u
   );
-}
-
-function systemSecretReferenceHasValue(text, match) {
-  const termEnd = match.index + match[0].length;
-  const rawTail = text.slice(termEnd, termEnd + 64);
-  if (/^\s*[:=]\s*\S/u.test(rawTail)) return true;
-  if (/^\s*["'`]\s*\S/u.test(rawTail)) return true;
-  const tail = normalizeDetectionText(rawTail);
-  if (!tail) return false;
-  if (/^(?:\d{4,8}|sk \w+|aiza\w*|eyj\w*|bearer\s+\S+)/u.test(tail)) {
-    return true;
-  }
-  if (/^(?:comme|such as)\s+(?:\d{4,8}|[a-z]*\d+[a-z0-9]*)\b/u.test(tail)) {
-    return true;
-  }
-  if (/^(?:est une categorie de secret|is a category of secret)\b/u.test(tail)) {
-    return false;
-  }
-  if (SYSTEM_SECRET_REFERENCE_AT_START.test(tail)) return false;
-  if (/^(?:est|is|vaut|value|valeur|code)\s+\S/u.test(tail)) {
-    return true;
-  }
-  const first = tail.split(" ")[0];
-  const safeFollowers = new Set([
-    "and", "or", "et", "ou", "must", "doit", "doivent", "ne", "should",
-    "sont",
-  ]);
-  return (
-    /^(?:\d{4,8}|sk\w*|aiza\w*|eyj\w*)$/u.test(first) ||
-    /^(?=.*[a-z])(?=.*\d)[a-z0-9_-]{4,}$/u.test(first) ||
-    (/^[a-z]{4,}$/u.test(first) && !safeFollowers.has(first))
-  );
+  if (!documentMatch || !documentMatch[1]) return false;
+  return ![
+    "interdit", "interdite", "interdits", "interdites", "doit", "doivent",
+    "ne", "est", "must", "should",
+  ].includes(documentMatch[1]);
 }
 
 function containsSystemSecretReference(value) {
-  SYSTEM_SECRET_REFERENCE.lastIndex = 0;
-  return typeof value === "string" && SYSTEM_SECRET_REFERENCE.test(value);
+  return findSecretTerms(normalizeSecretTokens(value)).length > 0;
 }
 
 function isSafeDefensiveSystemSecretReference(text) {
   if (typeof text !== "string") return false;
-  const normalized = normalizeDetectionText(text);
-  if (!normalized) return false;
-  SYSTEM_SECRET_REFERENCE.lastIndex = 0;
-  const references = [...text.matchAll(SYSTEM_SECRET_REFERENCE)];
-  if (references.length === 0) return false;
-  if (
-    !DEFENSIVE_SYSTEM_CONTEXT.test(normalized) &&
-    !SAFE_SYSTEM_CLASSIFICATION.test(normalized)
-  ) return false;
-  return references.every(
-    (reference) => !systemSecretReferenceHasValue(text, reference)
-  );
+  const tokens = normalizeSecretTokens(text);
+  const references = findSecretTerms(tokens);
+  return references.length > 0 &&
+    references.every((reference) =>
+      !secretTermHasAssociatedValue(tokens, reference)
+    );
 }
 
 function isSystemMessageTextSafe(value) {
@@ -517,9 +596,44 @@ function createGeminiProvider(options) {
             localFailure("INVALID_REQUEST", "CLIENT", "REJECTED", false)
           );
         }
-        const providerRequest = input.providerRequest;
+        const rawProviderRequest = input.providerRequest;
         const privacyResult = input.privacyResult;
-        if (!validateProviderRequest(providerRequest).valid) {
+        const providerRequest = canonicalProviderRequest(rawProviderRequest);
+        if (
+          hasExactKeys(rawProviderRequest, [
+            "schemaVersion", "provider", "model", "messages", "timeoutMs",
+            "responseFormat", "generation", "metadata",
+          ]) &&
+          typeof rawProviderRequest.model === "string" &&
+          !rawProviderRequest.model.trim()
+        ) {
+          return validatedResponse(
+            localFailure("INVALID_REQUEST", "CLIENT", "REJECTED", false)
+          );
+        }
+        if (!providerRequest) {
+          if (
+            hasExactKeys(rawProviderRequest, [
+              "schemaVersion", "provider", "model", "messages", "timeoutMs",
+              "responseFormat", "generation", "metadata",
+            ]) &&
+            rawProviderRequest.provider !== "GEMINI"
+          ) {
+            return validatedResponse(
+              localFailure("INVALID_PROVIDER", "CONFIGURATION", "REJECTED", false)
+            );
+          }
+          if (
+            hasExactKeys(rawProviderRequest, [
+              "schemaVersion", "provider", "model", "messages", "timeoutMs",
+              "responseFormat", "generation", "metadata",
+            ]) &&
+            rawProviderRequest.model === null
+          ) {
+            return validatedResponse(
+              localFailure("INVALID_MODEL", "CONFIGURATION", "REJECTED", false)
+            );
+          }
           return validatedResponse(
             localFailure("INVALID_REQUEST", "CLIENT", "REJECTED", false)
           );
