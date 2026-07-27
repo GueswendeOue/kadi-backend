@@ -191,8 +191,118 @@ test("provider failure is minimized and is never retried", async () => {
   assert.deepEqual(result, {
     exitCode: 4,
     code: "GEMINI_SMOKE_PROVIDER_FAILED",
+    publicResult: {
+      smokeVersion: "kadi.gemini-isolated-smoke.v1",
+      model: "gemini-2.5-flash",
+      privacySafe: true,
+      providerRequestValid: true,
+      providerStatus: "FAILED",
+      providerErrorCode: "PROVIDER_UNAVAILABLE",
+      providerFailureKind: "PROVIDER",
+      recoverable: true,
+      providerResponseValid: true,
+      parserValid: false,
+      execution: "NONE",
+    },
+  });
+});
+
+test("every canonical provider failure exposes only the safe diagnostic category", async () => {
+  const sentinel = ["PRIVATE", "SDK", "SENTINEL"].join("_");
+  const cases = [
+    ["PROVIDER_AUTH_FAILED", "AUTHENTICATION", "REJECTED", false],
+    ["PROVIDER_RATE_LIMITED", "RATE_LIMIT", "FAILED", true],
+    ["PROVIDER_NETWORK_ERROR", "NETWORK", "FAILED", true],
+    ["PROVIDER_TIMEOUT", "TIMEOUT", "TIMED_OUT", true],
+    ["PROVIDER_UNAVAILABLE", "PROVIDER", "FAILED", true],
+    ["PROVIDER_SAFETY_BLOCK", "SAFETY", "REJECTED", false],
+    ["PROVIDER_CONTENT_BLOCK", "CONTENT", "REJECTED", false],
+    ["PROVIDER_BAD_RESPONSE", "PROVIDER", "FAILED", true],
+    ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    ["INVALID_REQUEST", "CLIENT", "REJECTED", false],
+  ];
+  const expectedKeys = [
+    "smokeVersion", "model", "privacySafe", "providerRequestValid",
+    "providerStatus", "providerErrorCode", "providerFailureKind",
+    "recoverable", "providerResponseValid", "parserValid", "execution",
+  ];
+  for (const [errorCode, failureKind, status, recoverable] of cases) {
+    let calls = 0;
+    const setup = harness({
+      createProvider: () => ({
+        async invoke() {
+          calls += 1;
+          const response = providerContract.createEmptyProviderResponse();
+          response.provider = "GEMINI";
+          response.model = smoke.KADI_GEMINI_SMOKE_MODEL;
+          response.status = status;
+          response.ok = false;
+          response.content = null;
+          response.errorCode = errorCode;
+          response.failureKind = failureKind;
+          response.recoverable = recoverable;
+          response.usage = {
+            inputUnits: null, outputUnits: null, totalUnits: null,
+          };
+          response.metadata = {
+            providerRequestId: sentinel,
+            finishReason: "ERROR",
+          };
+          return response;
+        },
+      }),
+    });
+    const first = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+    const second = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+    assert.equal(calls, 2);
+    assert.equal(first.exitCode, 4);
+    assert.equal(first.code, "GEMINI_SMOKE_PROVIDER_FAILED");
+    assert.deepEqual(Object.keys(first.publicResult), expectedKeys);
+    assert.equal(first.publicResult.providerErrorCode, errorCode);
+    assert.equal(first.publicResult.providerFailureKind, failureKind);
+    assert.equal(first.publicResult.providerStatus, status);
+    assert.equal(first.publicResult.recoverable, recoverable);
+    assert.equal(first.publicResult.execution, "NONE");
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    const serialized = JSON.stringify(first.publicResult);
+    for (const forbidden of [
+      sentinel, setup.options.apiKey, "content", "metadata", "providerRequestId",
+      "prompt", "messages", "usage", "stack", "headers", "body",
+    ]) assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});
+
+test("invalid raw provider fields and simulated SDK details never enter diagnostics", async () => {
+  const sentinel = ["RAW", "PRIVATE", "FAILURE"].join("_");
+  const setup = harness({
+    createProvider: () => ({
+      invoke: async () => ({
+        ...successfulProviderResponse(),
+        content: sentinel,
+        metadata: {
+          providerRequestId: sentinel,
+          finishReason: sentinel,
+          message: sentinel,
+          stack: sentinel,
+          body: sentinel,
+          headers: sentinel,
+        },
+        error: {
+          message: sentinel,
+          stack: sentinel,
+          body: sentinel,
+          headers: sentinel,
+        },
+      }),
+    }),
+  });
+  const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  assert.deepEqual(result, {
+    exitCode: 5,
+    code: "GEMINI_SMOKE_RESPONSE_INVALID",
     publicResult: null,
   });
+  assert.equal(JSON.stringify(result).includes(sentinel), false);
 });
 
 test("invalid provider response is rejected before parsing", async () => {

@@ -55,6 +55,26 @@ function failure(exitCode, code) {
   return { exitCode, code, publicResult: null };
 }
 
+function providerFailure(providerResponse) {
+  return {
+    exitCode: 4,
+    code: PUBLIC_CODES.PROVIDER_FAILED,
+    publicResult: {
+      smokeVersion: KADI_GEMINI_SMOKE_VERSION,
+      model: KADI_GEMINI_SMOKE_MODEL,
+      privacySafe: true,
+      providerRequestValid: true,
+      providerStatus: providerResponse.status,
+      providerErrorCode: providerResponse.errorCode,
+      providerFailureKind: providerResponse.failureKind,
+      recoverable: providerResponse.recoverable,
+      providerResponseValid: true,
+      parserValid: false,
+      execution: "NONE",
+    },
+  };
+}
+
 function createProviderRequest(dependencies, messages) {
   const request = dependencies.createEmptyProviderRequest();
   request.provider = "GEMINI";
@@ -140,7 +160,7 @@ async function runGeminiIsolatedSmokeTest(options = {}) {
       providerResponse.ok !== true ||
       providerResponse.status !== "SUCCEEDED"
     ) {
-      return failure(4, PUBLIC_CODES.PROVIDER_FAILED);
+      return providerFailure(providerResponse);
     }
 
     const parsed = dependencies.parseIntentResolutionResponse(
@@ -192,6 +212,12 @@ if (require.main === module) {
     },
   }).then((result) => {
     process.exitCode = result.exitCode;
-    if (result.code) console.error(result.code);
+    if (result.code) {
+      console.error(
+        result.publicResult
+          ? JSON.stringify(result.publicResult)
+          : result.code
+      );
+    }
   });
 }
