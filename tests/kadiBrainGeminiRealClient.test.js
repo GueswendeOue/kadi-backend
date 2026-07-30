@@ -1172,3 +1172,165 @@ test("installed SDK contract is locally compatible without constructing a client
   assert.equal(typeof sdk.GoogleGenAI, "function");
   assert.equal(sdk.GoogleGenAI.length, 1);
 });
+
+function assertModelNotFoundPropagation(rawError) {
+  const realError = mapGoogleGeminiError(rawError);
+  assert.deepEqual(realError, { kind: "MODEL_NOT_FOUND" });
+  const response = provider.mapGeminiClientError(realError);
+  assert.deepEqual(
+    [
+      response.status,
+      response.errorCode,
+      response.failureKind,
+      response.recoverable,
+    ],
+    ["FAILED", "PROVIDER_MODEL_NOT_FOUND", "PROVIDER", false]
+  );
+  assert.equal(providerContract.validateProviderResponse(response).valid, true);
+  return { realError, response };
+}
+
+test("coverage gap: numeric code 404 propagates MODEL_NOT_FOUND safely", () => {
+  const sentinel = "PRIVATE_NUMERIC_CODE_SENTINEL";
+  const rawError = {
+    code: 404,
+    message: sentinel,
+    stack: sentinel,
+    cause: sentinel,
+    headers: sentinel,
+    body: sentinel,
+    url: sentinel,
+    request: sentinel,
+    response: sentinel,
+    config: sentinel,
+  };
+  const first = assertModelNotFoundPropagation(rawError);
+  const second = assertModelNotFoundPropagation(reverse(rawError));
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+});
+
+test("coverage gap: MODEL_NOT_FOUND reason is order-independent and safe", () => {
+  const sentinel = "PRIVATE_REASON_SENTINEL";
+  const rawError = {
+    message: sentinel,
+    reason: "MODEL_NOT_FOUND",
+    stack: sentinel,
+    body: sentinel,
+  };
+  const first = assertModelNotFoundPropagation(rawError);
+  const second = assertModelNotFoundPropagation(reverse(rawError));
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+});
+
+test("coverage gap: bounded details NOT_FOUND propagates without reading overflow", () => {
+  const sentinel = "PRIVATE_DETAILS_SENTINEL";
+  const found = {
+    details: [{
+      reason: "NOT_FOUND",
+      message: sentinel,
+      body: sentinel,
+    }],
+    message: sentinel,
+  };
+  const first = assertModelNotFoundPropagation(found);
+  const second = assertModelNotFoundPropagation(reverse(found));
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+
+  const beyondLimit = {
+    details: Array.from({ length: 9 }, (_, index) =>
+      index === 8
+        ? Object.defineProperty({}, "reason", {
+            get() { throw new Error(sentinel); },
+          })
+        : { reason: `UNMAPPED_${index}`, message: sentinel }
+    ),
+  };
+  assert.deepEqual(mapGoogleGeminiError(beyondLimit), { kind: "UNKNOWN" });
+});
+
+test("coverage gap: hostile error getter is contained deterministically", () => {
+  const sentinel = "PRIVATE_ERROR_GETTER_SENTINEL";
+  const rawError = {
+    message: sentinel,
+    stack: sentinel,
+    cause: sentinel,
+  };
+  Object.defineProperty(rawError, "error", {
+    enumerable: true,
+    get() { throw new Error(sentinel); },
+  });
+  let first;
+  let second;
+  assert.doesNotThrow(() => {
+    first = mapGoogleGeminiError(rawError);
+    second = mapGoogleGeminiError(rawError);
+  });
+  assert.deepEqual(first, { kind: "UNKNOWN" });
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+});
+
+test("coverage gap: hostile details getter is contained deterministically", () => {
+  const sentinel = "PRIVATE_DETAILS_GETTER_SENTINEL";
+  const rawError = {
+    message: sentinel,
+    headers: sentinel,
+    body: sentinel,
+  };
+  Object.defineProperty(rawError, "details", {
+    enumerable: true,
+    get() { throw new Error(sentinel); },
+  });
+  let first;
+  let second;
+  assert.doesNotThrow(() => {
+    first = mapGoogleGeminiError(rawError);
+    second = mapGoogleGeminiError(rawError);
+  });
+  assert.deepEqual(first, { kind: "UNKNOWN" });
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+});
+
+test("coverage gap: hostile ownKeys proxies are contained at both levels", () => {
+  const sentinel = "PRIVATE_OWN_KEYS_SENTINEL";
+  const hostile = () => new Proxy({}, {
+    ownKeys() { throw new Error(sentinel); },
+  });
+  for (const rawError of [
+    hostile(),
+    { error: hostile(), message: sentinel },
+  ]) {
+    let first;
+    let second;
+    assert.doesNotThrow(() => {
+      first = mapGoogleGeminiError(rawError);
+      second = mapGoogleGeminiError(rawError);
+    });
+    assert.deepEqual(first, { kind: "UNKNOWN" });
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(JSON.stringify(first).includes(sentinel), false);
+  }
+});
+
+test("coverage gap: hostile getPrototypeOf proxy is immutable and deterministic", () => {
+  const sentinel = "PRIVATE_PROTOTYPE_SENTINEL";
+  const target = {};
+  const rawError = new Proxy(target, {
+    getPrototypeOf() { throw new Error(sentinel); },
+  });
+  const before = Reflect.ownKeys(target);
+  let first;
+  let second;
+  assert.doesNotThrow(() => {
+    first = mapGoogleGeminiError(rawError);
+    second = mapGoogleGeminiError(rawError);
+  });
+  assert.deepEqual(first, { kind: "UNKNOWN" });
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+  assert.deepEqual(Reflect.ownKeys(target), before);
+});
