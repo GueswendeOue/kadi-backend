@@ -682,3 +682,234 @@ test("hardening: production source blocks expanded execution, network, and key-r
   ];
   for (const pattern of forbidden) assert.doesNotMatch(source, pattern);
 });
+
+test("key order: deeply reordered requests and responses validate identically", () => {
+  const request = validRequest();
+  const reorderedRequest = reverseKeys(request);
+  const requestValidation = validateProviderRequest(request);
+  const reorderedRequestValidation = validateProviderRequest(reorderedRequest);
+  assert.equal(requestValidation.valid, true);
+  assert.equal(reorderedRequestValidation.valid, true);
+  assert.equal(
+    JSON.stringify(requestValidation),
+    JSON.stringify(reorderedRequestValidation)
+  );
+
+  const response = successResponse();
+  response.usage = { inputUnits: 2, outputUnits: 3, totalUnits: 5 };
+  response.metadata.providerRequestId = "request-1";
+  const reorderedResponse = reverseKeys(response);
+  const responseValidation = validateProviderResponse(response);
+  const reorderedResponseValidation = validateProviderResponse(reorderedResponse);
+  assert.equal(responseValidation.valid, true);
+  assert.equal(reorderedResponseValidation.valid, true);
+  assert.equal(
+    JSON.stringify(responseValidation),
+    JSON.stringify(reorderedResponseValidation)
+  );
+});
+
+test("exact keys: unknown own keys and missing required keys remain rejected", () => {
+  const requestUnknowns = [
+    (value) => { value.unknown = true; },
+    (value) => { value.messages[0].unknown = true; },
+    (value) => { value.generation.unknown = true; },
+    (value) => { value.metadata.unknown = true; },
+  ];
+  for (const mutate of requestUnknowns) {
+    const value = validRequest();
+    mutate(value);
+    assert.equal(validateProviderRequest(value).valid, false);
+  }
+
+  for (const key of ["provider", "model", "messages", "generation", "metadata"]) {
+    const value = validRequest();
+    delete value[key];
+    assert.equal(validateProviderRequest(value).valid, false);
+  }
+  for (const key of ["role", "content"]) {
+    const value = validRequest();
+    delete value.messages[0][key];
+    assert.equal(validateProviderRequest(value).valid, false);
+  }
+
+  const responseUnknowns = [
+    (value) => { value.unknown = true; },
+    (value) => { value.usage.unknown = true; },
+    (value) => { value.metadata.unknown = true; },
+    (value) => { value.error = { unknown: true }; },
+  ];
+  for (const mutate of responseUnknowns) {
+    const value = successResponse();
+    mutate(value);
+    assert.equal(validateProviderResponse(value).valid, false);
+  }
+  for (const key of ["status", "errorCode"]) {
+    const value = successResponse();
+    delete value[key];
+    assert.equal(validateProviderResponse(value).valid, false);
+  }
+});
+
+test("exact keys: inherited, symbol, numeric and prototype keys fail closed", () => {
+  const inherited = Object.create({ provider: "GENERIC" });
+  Object.assign(inherited, validRequest());
+  delete inherited.provider;
+  assert.equal(validateProviderRequest(inherited).valid, false);
+
+  for (const mutate of [
+    (value) => { value[Symbol("secret")] = "OTP_123456"; },
+    (value) => { value[0] = "unknown"; },
+    (value) => {
+      Object.defineProperty(value, "hidden", {
+        enumerable: false,
+        value: "unknown",
+      });
+    },
+    (value) => {
+      Object.defineProperty(value, "__proto__", {
+        enumerable: true,
+        value: { polluted: true },
+      });
+    },
+    (value) => { value.constructor = "unknown"; },
+    (value) => { value.prototype = "unknown"; },
+  ]) {
+    const request = validRequest();
+    mutate(request);
+    assert.equal(validateProviderRequest(request).valid, false);
+    const response = successResponse();
+    mutate(response);
+    assert.equal(validateProviderResponse(response).valid, false);
+  }
+  assert.equal({}.polluted, undefined);
+
+  const customPrototype = Object.assign(
+    Object.create({ inheritedUnknown: true }),
+    validRequest()
+  );
+  assert.equal(validateProviderRequest(customPrototype).valid, false);
+
+  const nullPrototype = Object.assign(Object.create(null), validRequest());
+  assert.equal(validateProviderRequest(nullPrototype).valid, true);
+});
+
+test("hostile getters and reflection traps return canonical failures", () => {
+  const validations = [];
+  for (const key of [
+    "provider", "messages", "generation", "metadata",
+  ]) {
+    const request = validRequest();
+    Object.defineProperty(request, key, {
+      enumerable: true,
+      get() { throw new Error(`HOSTILE_${key}`); },
+    });
+    validations.push(validateProviderRequest(request));
+  }
+
+  const unknownGetter = validRequest();
+  Object.defineProperty(unknownGetter, "unknown", {
+    enumerable: true,
+    get() { throw new Error("HOSTILE_UNKNOWN"); },
+  });
+  validations.push(validateProviderRequest(unknownGetter));
+
+  for (const [container, key] of [
+    ["messages", "role"],
+    ["generation", "temperature"],
+    ["metadata", "requestPurpose"],
+  ]) {
+    const request = validRequest();
+    const target = container === "messages"
+      ? request.messages[0]
+      : request[container];
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      get() { throw new Error(`HOSTILE_${container}_${key}`); },
+    });
+    validations.push(validateProviderRequest(request));
+  }
+
+  const ownKeysTrap = new Proxy(validRequest(), {
+    ownKeys() { throw new Error("HOSTILE_OWN_KEYS"); },
+  });
+  validations.push(validateProviderRequest(ownKeysTrap));
+
+  const responseGetter = successResponse();
+  Object.defineProperty(responseGetter, "status", {
+    enumerable: true,
+    get() { throw new Error("HOSTILE_STATUS"); },
+  });
+  validations.push(validateProviderResponse(responseGetter));
+
+  for (const [container, key] of [
+    ["usage", "inputUnits"],
+    ["metadata", "providerRequestId"],
+  ]) {
+    const response = successResponse();
+    Object.defineProperty(response[container], key, {
+      enumerable: true,
+      get() { throw new Error(`HOSTILE_${container}_${key}`); },
+    });
+    validations.push(validateProviderResponse(response));
+  }
+
+  for (const validation of validations) {
+    assert.equal(validation.valid, false);
+    assertErrorsSafe(validation);
+    assert.equal(JSON.stringify(validation).includes("HOSTILE"), false);
+  }
+});
+
+test("frozen, sealed and non-extensible reordered structures are pure", () => {
+  function deepFreeze(value) {
+    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+      for (const nested of Object.values(value)) deepFreeze(nested);
+      Object.freeze(value);
+    }
+    return value;
+  }
+  const variants = [
+    reverseKeys(validRequest()),
+    reverseKeys(validRequest()),
+    reverseKeys(validRequest()),
+  ];
+  deepFreeze(variants[0]);
+  Object.seal(variants[1]);
+  Object.preventExtensions(variants[2]);
+  for (const value of variants) {
+    const before = JSON.stringify(value);
+    assert.equal(validateProviderRequest(value).valid, true);
+    assert.equal(JSON.stringify(value), before);
+  }
+
+  const response = reverseKeys(successResponse());
+  deepFreeze(response);
+  const before = JSON.stringify(response);
+  assert.equal(validateProviderResponse(response).valid, true);
+  assert.equal(JSON.stringify(response), before);
+});
+
+test("array order is preserved and validation stays byte deterministic", () => {
+  const request = validRequest();
+  const reversedMessages = validRequest();
+  reversedMessages.messages.reverse();
+  assert.equal(validateProviderRequest(request).valid, true);
+  assert.equal(validateProviderRequest(reversedMessages).valid, false);
+  assert.deepEqual(reversedMessages.messages.map((message) => message.role), [
+    "user", "system",
+  ]);
+
+  for (const value of [
+    reverseKeys(validRequest()),
+    reverseKeys(successResponse()),
+  ]) {
+    const validate = Object.hasOwn(value, "messages")
+      ? validateProviderRequest
+      : validateProviderResponse;
+    assert.equal(
+      JSON.stringify(validate(value)),
+      JSON.stringify(validate(value))
+    );
+  }
+});

@@ -1157,6 +1157,8 @@ test("separator bypasses and defensive examples with values remain blocked", asy
     "OTP-123456",
     "OTP:123456",
     "OTP=123456",
+    "OTP/123456",
+    "OTP\\123456",
     "PIN_4321",
     "PIN-4321",
     "pin=4321",
@@ -1170,7 +1172,9 @@ test("separator bypasses and defensive examples with values remain blocked", asy
     "secret_key_abc123",
     "service_role_key_abc123",
     "password_abc123",
+    "password-abc123",
     "mot_de_passe_abc123",
+    "api/key/abc123",
     "Never expose an API key such as abc123.",
     "Do not reveal bearer token eyJ123.",
     "Reject passwords like abc123.",
@@ -1219,6 +1223,7 @@ test("multiline defensive text cannot mask a separated secret value", async () =
     "Ne demande jamais un OTP.\nOTP_123456",
     "Les clés API sont interdites.\napi_key_abc123",
     "Never reveal bearer tokens.\nbearer_token_eyJ123",
+    "Service OTP Consulting.\nOTP 123456",
   ]) {
     const result = await invokeWithMessage("system", content);
     assert.equal(result.calls, 0);
@@ -1257,4 +1262,78 @@ test("deeply reordered provider requests produce the same decision", async () =>
   assert.equal(calls, 2);
   assert.equal(JSON.stringify(first), JSON.stringify(second));
   assert.equal(JSON.stringify(captures[0]), JSON.stringify(captures[1]));
+});
+
+test("hostile provider request structures fail closed or are safely minimized", async () => {
+  async function invoke(providerRequest) {
+    let calls = 0;
+    let captured = null;
+    const response = await createGeminiProvider({
+      client: {
+        generateContent(value) {
+          calls += 1;
+          captured = value;
+          return clientResult();
+        },
+      },
+    }).invoke({ providerRequest, privacyResult: safePrivacyResult() });
+    assertCanonical(response);
+    return { calls, captured, response };
+  }
+
+  const rejected = [];
+  rejected.push(Object.create(validProviderRequest()));
+  rejected.push(Object.assign(
+    Object.create({ inherited: true }),
+    validProviderRequest()
+  ));
+  for (const mutate of [
+    (value) => { value.unknown = "OTP_123456"; },
+    (value) => { value[0] = "OTP_123456"; },
+    (value) => {
+      Object.defineProperty(value, "model", {
+        enumerable: true,
+        get() { throw new Error("HOSTILE_MODEL"); },
+      });
+    },
+  ]) {
+    const value = validProviderRequest();
+    mutate(value);
+    rejected.push(value);
+  }
+  for (const value of rejected) {
+    const result = await invoke(value);
+    assert.equal(result.calls, 0);
+    assert.equal(result.response.ok, false);
+    assert.equal(JSON.stringify(result.response).includes("HOSTILE"), false);
+  }
+
+  for (const protect of [
+    Object.freeze,
+    Object.seal,
+    Object.preventExtensions,
+  ]) {
+    const value = reverseKeys(validProviderRequest());
+    protect(value);
+    const before = JSON.stringify(value);
+    const result = await invoke(value);
+    assert.equal(result.calls, 1);
+    assert.equal(result.response.ok, true);
+    assert.equal(JSON.stringify(value), before);
+  }
+
+  const symbolRequest = validProviderRequest();
+  symbolRequest[Symbol("secret")] = "OTP_123456";
+  const symbolResult = await invoke(symbolRequest);
+  assert.equal(symbolResult.calls, 1);
+  assert.equal(
+    JSON.stringify(symbolResult.captured).includes("OTP_123456"),
+    false
+  );
+
+  const nullPrototype = Object.assign(
+    Object.create(null),
+    validProviderRequest()
+  );
+  assert.equal((await invoke(nullPrototype)).calls, 1);
 });

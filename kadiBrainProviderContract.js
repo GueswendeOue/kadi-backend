@@ -122,6 +122,19 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+function hasExactOwnKeys(value, expectedKeys) {
+  if (!isPlainObject(value)) return false;
+  const actualKeys = Reflect.ownKeys(value);
+  if (actualKeys.length !== expectedKeys.length) return false;
+  const expected = new Set(expectedKeys);
+  return (
+    actualKeys.every((key) => typeof key === "string" && expected.has(key)) &&
+    expectedKeys.every((key) =>
+      Object.prototype.hasOwnProperty.call(value, key)
+    )
+  );
+}
+
 function codePointLength(value) {
   return Array.from(value).length;
 }
@@ -257,12 +270,9 @@ function normalizeProviderRequest(input) {
 function validateProviderRequest(request) {
   const errors = [];
   const add = (path, code) => errors.push({ path, code });
-  if (!isPlainObject(request)) {
-    return { valid: false, errors: [{ path: "$", code: "INVALID_REQUEST" }] };
-  }
-  if (
-    JSON.stringify(Object.keys(request)) !==
-    JSON.stringify([
+  try {
+    if (
+      !hasExactOwnKeys(request, [
       "schemaVersion",
       "provider",
       "model",
@@ -271,8 +281,10 @@ function validateProviderRequest(request) {
       "responseFormat",
       "generation",
       "metadata",
-    ])
-  ) add("$", "INVALID_REQUEST");
+      ])
+    ) {
+      return { valid: false, errors: [{ path: "$", code: "INVALID_REQUEST" }] };
+    }
   if (request.schemaVersion !== KADI_PROVIDER_REQUEST_VERSION) add("schemaVersion", "INVALID_REQUEST");
   if (!PROVIDERS.has(request.provider)) add("provider", "INVALID_PROVIDER");
   if (
@@ -291,8 +303,7 @@ function validateProviderRequest(request) {
     let total = 0;
     request.messages.forEach((message, index) => {
       if (
-        !isPlainObject(message) ||
-        JSON.stringify(Object.keys(message)) !== JSON.stringify(["role", "content"])
+        !hasExactOwnKeys(message, ["role", "content"])
       ) {
         add(`messages[${index}]`, "INVALID_MESSAGES");
         return;
@@ -318,29 +329,27 @@ function validateProviderRequest(request) {
     request.timeoutMs > KADI_PROVIDER_LIMITS.maxTimeoutMs
   ) add("timeoutMs", "INVALID_TIMEOUT");
   if (
-    !isPlainObject(request.responseFormat) ||
-    JSON.stringify(Object.keys(request.responseFormat)) !== JSON.stringify(["type"]) ||
+    !hasExactOwnKeys(request.responseFormat, ["type"]) ||
     request.responseFormat.type !== "json_object"
   ) add("responseFormat", "INVALID_REQUEST");
   if (
-    !isPlainObject(request.generation) ||
-    JSON.stringify(Object.keys(request.generation)) !==
-      JSON.stringify(["temperature", "maxOutputCodePoints"]) ||
+    !hasExactOwnKeys(request.generation, ["temperature", "maxOutputCodePoints"]) ||
     request.generation.temperature !== 0 ||
     !Number.isInteger(request.generation.maxOutputCodePoints) ||
     request.generation.maxOutputCodePoints <= 0 ||
     request.generation.maxOutputCodePoints > KADI_PROVIDER_LIMITS.maxResponseCodePoints
   ) add("generation", "INVALID_LIMITS");
   if (
-    !isPlainObject(request.metadata) ||
-    JSON.stringify(Object.keys(request.metadata)) !==
-      JSON.stringify(["requestPurpose", "tags"]) ||
+    !hasExactOwnKeys(request.metadata, ["requestPurpose", "tags"]) ||
     request.metadata.requestPurpose !== "intent_resolution" ||
     !Array.isArray(request.metadata.tags) ||
     request.metadata.tags.length > KADI_PROVIDER_LIMITS.maxProviderRequestTags ||
     request.metadata.tags.some((tag) => typeof tag !== "string" || !tag.trim())
   ) add("metadata", "INVALID_REQUEST");
   return { valid: errors.length === 0, errors };
+  } catch {
+    return { valid: false, errors: [{ path: "$", code: "INVALID_REQUEST" }] };
+  }
 }
 
 function createEmptyProviderResponse() {
@@ -435,16 +444,21 @@ function normalizeProviderResponse(input) {
 function validateProviderResponse(response) {
   const errors = [];
   const add = (path, code) => errors.push({ path, code });
-  if (!isPlainObject(response)) {
-    return { valid: false, errors: [{ path: "$", code: "RESPONSE_NOT_OBJECT" }] };
-  }
-  if (
-    JSON.stringify(Object.keys(response)) !==
-    JSON.stringify([
+  try {
+    if (!isPlainObject(response)) {
+      return { valid: false, errors: [{ path: "$", code: "RESPONSE_NOT_OBJECT" }] };
+    }
+    if (
+      !hasExactOwnKeys(response, [
       "schemaVersion", "provider", "model", "status", "ok", "content",
       "errorCode", "failureKind", "recoverable", "usage", "metadata",
-    ])
-  ) add("$", "PROVIDER_BAD_RESPONSE");
+      ])
+    ) {
+      return {
+        valid: false,
+        errors: [{ path: "$", code: "PROVIDER_BAD_RESPONSE" }],
+      };
+    }
   if (response.schemaVersion !== KADI_PROVIDER_RESPONSE_VERSION) add("schemaVersion", "PROVIDER_BAD_RESPONSE");
   if (!PROVIDERS.has(response.provider)) add("provider", "INVALID_PROVIDER");
   if (
@@ -490,41 +504,50 @@ function validateProviderResponse(response) {
     add("usage", "PROVIDER_BAD_RESPONSE");
   } else {
     const keys = ["inputUnits", "outputUnits", "totalUnits"];
-    if (JSON.stringify(Object.keys(response.usage)) !== JSON.stringify(keys)) add("usage", "PROVIDER_BAD_RESPONSE");
-    for (const key of keys) {
-      const value = response.usage[key];
-      if (value !== null && (!Number.isInteger(value) || value < 0)) add(`usage.${key}`, "PROVIDER_BAD_RESPONSE");
+    if (!hasExactOwnKeys(response.usage, keys)) {
+      add("usage", "PROVIDER_BAD_RESPONSE");
+    } else {
+      for (const key of keys) {
+        const value = response.usage[key];
+        if (value !== null && (!Number.isInteger(value) || value < 0)) add(`usage.${key}`, "PROVIDER_BAD_RESPONSE");
+      }
+      if (
+        keys.every((key) => response.usage[key] !== null) &&
+        response.usage.totalUnits !==
+          response.usage.inputUnits + response.usage.outputUnits
+      ) add("usage.totalUnits", "PROVIDER_BAD_RESPONSE");
     }
-    if (
-      keys.every((key) => response.usage[key] !== null) &&
-      response.usage.totalUnits !==
-        response.usage.inputUnits + response.usage.outputUnits
-    ) add("usage.totalUnits", "PROVIDER_BAD_RESPONSE");
   }
   if (!isPlainObject(response.metadata)) {
     add("metadata", "PROVIDER_BAD_RESPONSE");
   } else {
-    if (
-      JSON.stringify(Object.keys(response.metadata)) !==
-      JSON.stringify(["providerRequestId", "finishReason"])
-    ) add("metadata", "PROVIDER_BAD_RESPONSE");
-    if (
-      response.metadata.providerRequestId !== null &&
-      (typeof response.metadata.providerRequestId !== "string" ||
-        !response.metadata.providerRequestId.trim() ||
-        codePointLength(response.metadata.providerRequestId) >
-          PROVIDER_REQUEST_ID_MAX_CODE_POINTS)
-    ) add("metadata.providerRequestId", "PROVIDER_BAD_RESPONSE");
-    if (
-      response.metadata.finishReason !== null &&
-      !FINISH_REASONS.has(response.metadata.finishReason)
-    ) add("metadata.finishReason", "PROVIDER_BAD_RESPONSE");
-    if (
-      response.status === "SUCCEEDED" &&
-      response.metadata.finishReason === "TOOL_CALL"
-    ) add("metadata.finishReason", "PROVIDER_BAD_RESPONSE");
+    if (!hasExactOwnKeys(response.metadata, ["providerRequestId", "finishReason"])) {
+      add("metadata", "PROVIDER_BAD_RESPONSE");
+    } else {
+      if (
+        response.metadata.providerRequestId !== null &&
+        (typeof response.metadata.providerRequestId !== "string" ||
+          !response.metadata.providerRequestId.trim() ||
+          codePointLength(response.metadata.providerRequestId) >
+            PROVIDER_REQUEST_ID_MAX_CODE_POINTS)
+      ) add("metadata.providerRequestId", "PROVIDER_BAD_RESPONSE");
+      if (
+        response.metadata.finishReason !== null &&
+        !FINISH_REASONS.has(response.metadata.finishReason)
+      ) add("metadata.finishReason", "PROVIDER_BAD_RESPONSE");
+      if (
+        response.status === "SUCCEEDED" &&
+        response.metadata.finishReason === "TOOL_CALL"
+      ) add("metadata.finishReason", "PROVIDER_BAD_RESPONSE");
+    }
   }
   return { valid: errors.length === 0, errors };
+  } catch {
+    return {
+      valid: false,
+      errors: [{ path: "$", code: "PROVIDER_BAD_RESPONSE" }],
+    };
+  }
 }
 
 function isSuccessfulProviderResponse(response) {
