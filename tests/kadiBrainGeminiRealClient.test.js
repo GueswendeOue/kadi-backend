@@ -75,7 +75,15 @@ test("scenarios 1-4: constants are exact, complete, and frozen", () => {
     NETWORK: "NETWORK", TIMEOUT: "TIMEOUT", RATE_LIMIT: "RATE_LIMIT",
     AUTHENTICATION: "AUTHENTICATION", SAFETY: "SAFETY", CONTENT: "CONTENT",
     UNAVAILABLE: "UNAVAILABLE", BAD_RESPONSE: "BAD_RESPONSE",
+    REQUEST_REJECTED: "REQUEST_REJECTED", MODEL_NOT_FOUND: "MODEL_NOT_FOUND",
     INTERNAL: "INTERNAL", CANCELLED: "CANCELLED", UNKNOWN: "UNKNOWN",
+    SDK_EXPORT_MISSING: "SDK_EXPORT_MISSING",
+    SDK_CONSTRUCTOR_INVALID: "SDK_CONSTRUCTOR_INVALID",
+    SDK_CLIENT_INVALID: "SDK_CLIENT_INVALID",
+    SDK_METHOD_MISSING: "SDK_METHOD_MISSING",
+    SDK_REQUEST_BUILD_FAILED: "SDK_REQUEST_BUILD_FAILED",
+    SDK_RESPONSE_NORMALIZATION_FAILED: "SDK_RESPONSE_NORMALIZATION_FAILED",
+    SDK_UNKNOWN_FAILURE: "SDK_UNKNOWN_FAILURE",
   });
   assert.deepEqual(Object.keys(KADI_GEMINI_REAL_CLIENT_LIMITS), [
     "maxApiKeyCodePoints", "maxModelCodePoints",
@@ -196,7 +204,7 @@ test("scenarios 41-58: malformed neutral requests never call the SDK", async () 
   for (const value of invalid) {
     assert.equal(buildGoogleGenerateContentRequest(value), null);
     await assert.rejects(client.generateContent(value), (error) => {
-      assert.deepEqual(error, { kind: "BAD_RESPONSE" });
+      assert.deepEqual(error, { kind: "SDK_REQUEST_BUILD_FAILED" });
       return true;
     });
   }
@@ -361,11 +369,12 @@ test("scenarios 93-104: every SDK finish reason maps without retaining raw unkno
 
 test("scenarios 105-128: errors map canonically without raw values", () => {
   const cases = [
-    [{ status: 400 }, "BAD_RESPONSE"], [{ status: 401 }, "AUTHENTICATION"],
+    [{ status: 400 }, "REQUEST_REJECTED"], [{ status: 401 }, "AUTHENTICATION"],
     [{ status: 403 }, "AUTHENTICATION"], [{ status: 408 }, "TIMEOUT"],
+    [{ status: 404 }, "MODEL_NOT_FOUND"],
     [{ status: 429 }, "RATE_LIMIT"], [{ status: 500 }, "INTERNAL"],
     [{ status: 502 }, "UNAVAILABLE"], [{ status: 503 }, "UNAVAILABLE"],
-    [{ status: 504 }, "UNAVAILABLE"], [{ status: 409 }, "UNAVAILABLE"],
+    [{ status: 504 }, "UNAVAILABLE"], [{ status: 409 }, "REQUEST_REJECTED"],
     [{ code: "ECONNRESET" }, "NETWORK"], [{ code: "ENOTFOUND" }, "NETWORK"],
     [{ code: "EAI_AGAIN" }, "NETWORK"], [{ code: "ECONNREFUSED" }, "NETWORK"],
     [{ code: "ETIMEDOUT" }, "TIMEOUT"], [{ name: "AbortError" }, "CANCELLED"],
@@ -1046,7 +1055,7 @@ test("coverage closure: promises, reordered values, Unicode, partial usage, and 
 
   const invalidPromise = successClient.generateContent(null);
   assert.equal(invalidPromise instanceof Promise, true);
-  await assert.rejects(invalidPromise, { kind: "BAD_RESPONSE" });
+  await assert.rejects(invalidPromise, { kind: "SDK_REQUEST_BUILD_FAILED" });
   const exceptionClient = factory(() => {
     throw Object.freeze({ status: 429, message: "rate limited" });
   });
@@ -1067,4 +1076,99 @@ test("coverage closure: promises, reordered values, Unicode, partial usage, and 
   const hostilePromise = factory(() => hostile).generateContent(request());
   assert.equal(hostilePromise instanceof Promise, true);
   await assert.rejects(hostilePromise, { kind: "BAD_RESPONSE" });
+});
+
+test("error mapping hardening: HTTP, string, nested, and ApiError-like signals are explicit", () => {
+  const cases = [
+    [{ status: 400 }, "REQUEST_REJECTED"],
+    [{ status: 401 }, "AUTHENTICATION"],
+    [{ status: 403 }, "AUTHENTICATION"],
+    [{ status: 404 }, "MODEL_NOT_FOUND"],
+    [{ status: 408 }, "TIMEOUT"],
+    [{ status: 409 }, "REQUEST_REJECTED"],
+    [{ status: 422 }, "REQUEST_REJECTED"],
+    [{ status: 429 }, "RATE_LIMIT"],
+    [{ status: 500 }, "INTERNAL"],
+    [{ status: 502 }, "UNAVAILABLE"],
+    [{ status: 503 }, "UNAVAILABLE"],
+    [{ status: 504 }, "UNAVAILABLE"],
+    [{ status: 418 }, "REQUEST_REJECTED"],
+    [{ status: 507 }, "UNAVAILABLE"],
+    [{ status: "404" }, "MODEL_NOT_FOUND"],
+    [{ statusCode: 404 }, "MODEL_NOT_FOUND"],
+    [{ error: { status: 404 } }, "MODEL_NOT_FOUND"],
+    [{ error: { code: "NOT_FOUND" } }, "MODEL_NOT_FOUND"],
+    [{ code: "INVALID_ARGUMENT" }, "REQUEST_REJECTED"],
+    [{ reason: "RESOURCE_NOT_FOUND" }, "MODEL_NOT_FOUND"],
+    [{ details: [{ reason: "RESOURCE_EXHAUSTED" }] }, "RATE_LIMIT"],
+    [{ name: "ApiError", statusCode: 403 }, "AUTHENTICATION"],
+    [new TypeError("PRIVATE_TYPE_ERROR"), "UNKNOWN"],
+    [{ kind: "SDK_EXPORT_MISSING" }, "SDK_EXPORT_MISSING"],
+    [{ kind: "SDK_CONSTRUCTOR_INVALID" }, "SDK_CONSTRUCTOR_INVALID"],
+    [{ kind: "SDK_CLIENT_INVALID" }, "SDK_CLIENT_INVALID"],
+    [{ kind: "SDK_METHOD_MISSING" }, "SDK_METHOD_MISSING"],
+    [{ kind: "SDK_RESPONSE_NORMALIZATION_FAILED" }, "SDK_RESPONSE_NORMALIZATION_FAILED"],
+  ];
+  for (const [input, expected] of cases) {
+    const first = mapGoogleGeminiError(input);
+    const second = mapGoogleGeminiError(reverse(input));
+    assert.deepEqual(first, { kind: expected });
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+  }
+});
+
+test("error mapping hardening: hostile and private fields never escape", () => {
+  const sentinel = "PRIVATE_ERROR_SENTINEL";
+  const privateError = {
+    statusCode: 404,
+    message: sentinel,
+    stack: sentinel,
+    cause: sentinel,
+    headers: sentinel,
+    body: sentinel,
+    url: sentinel,
+    request: sentinel,
+    response: sentinel,
+    config: sentinel,
+    error: { status: 404, message: sentinel },
+    details: [{ reason: "NOT_FOUND", message: sentinel }],
+  };
+  const mapped = mapGoogleGeminiError(privateError);
+  assert.deepEqual(mapped, { kind: "MODEL_NOT_FOUND" });
+  assert.equal(JSON.stringify(mapped).includes(sentinel), false);
+
+  for (const key of [
+    "status", "statusCode", "code", "name", "kind", "reason", "type",
+  ]) {
+    const hostile = {};
+    Object.defineProperty(hostile, key, {
+      get() { throw new Error(sentinel); },
+    });
+    const first = mapGoogleGeminiError(hostile);
+    const second = mapGoogleGeminiError(hostile);
+    assert.deepEqual(first, { kind: "UNKNOWN" });
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(JSON.stringify(first).includes(sentinel), false);
+  }
+
+  const proxy = new Proxy({}, {
+    getOwnPropertyDescriptor() { throw new Error(sentinel); },
+  });
+  assert.deepEqual(mapGoogleGeminiError(proxy), { kind: "UNKNOWN" });
+});
+
+test("installed SDK contract is locally compatible without constructing a client", () => {
+  const sdk = require("@google/genai");
+  const packagePath = path.join(
+    path.dirname(require.resolve("@google/genai")),
+    "..",
+    "..",
+    "package.json"
+  );
+  const packageVersion = JSON.parse(
+    fs.readFileSync(packagePath, "utf8")
+  ).version;
+  assert.equal(packageVersion, "2.13.0");
+  assert.equal(typeof sdk.GoogleGenAI, "function");
+  assert.equal(sdk.GoogleGenAI.length, 1);
 });

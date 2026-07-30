@@ -1241,3 +1241,18 @@ test("byte determinism: Unicode and multiline request content remain stable", ()
     );
   }
 });
+
+test("model-not-found provider failures are canonical and non-recoverable", () => {
+  assert.equal(
+    KADI_PROVIDER_ERROR_CODES.PROVIDER_MODEL_NOT_FOUND,
+    "PROVIDER_MODEL_NOT_FOUND"
+  );
+  const response = failureResponse(
+    "PROVIDER_MODEL_NOT_FOUND",
+    "PROVIDER",
+    "FAILED",
+    false
+  );
+  assert.equal(validateProviderResponse(response).valid, true);
+  assert.equal(isRecoverableProviderFailure(response), false);
+});

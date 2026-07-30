@@ -318,6 +318,7 @@ test("every canonical provider failure exposes only the safe diagnostic category
     ["PROVIDER_SAFETY_BLOCK", "SAFETY", "REJECTED", false],
     ["PROVIDER_CONTENT_BLOCK", "CONTENT", "REJECTED", false],
     ["PROVIDER_BAD_RESPONSE", "PROVIDER", "FAILED", true],
+    ["PROVIDER_MODEL_NOT_FOUND", "PROVIDER", "FAILED", false],
     ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
     ["INVALID_REQUEST", "CLIENT", "REJECTED", false],
   ];

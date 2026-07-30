@@ -101,7 +101,16 @@ test("scenarios 1-4: exact frozen adapter constants", () => {
   assert.deepEqual(KADI_GEMINI_CLIENT_ERROR_KINDS, {
     NETWORK: "NETWORK", TIMEOUT: "TIMEOUT", RATE_LIMIT: "RATE_LIMIT",
     AUTHENTICATION: "AUTHENTICATION", SAFETY: "SAFETY", CONTENT: "CONTENT",
-    UNAVAILABLE: "UNAVAILABLE", BAD_RESPONSE: "BAD_RESPONSE", INTERNAL: "INTERNAL",
+    UNAVAILABLE: "UNAVAILABLE", BAD_RESPONSE: "BAD_RESPONSE",
+    REQUEST_REJECTED: "REQUEST_REJECTED", MODEL_NOT_FOUND: "MODEL_NOT_FOUND",
+    INTERNAL: "INTERNAL",
+    SDK_EXPORT_MISSING: "SDK_EXPORT_MISSING",
+    SDK_CONSTRUCTOR_INVALID: "SDK_CONSTRUCTOR_INVALID",
+    SDK_CLIENT_INVALID: "SDK_CLIENT_INVALID",
+    SDK_METHOD_MISSING: "SDK_METHOD_MISSING",
+    SDK_REQUEST_BUILD_FAILED: "SDK_REQUEST_BUILD_FAILED",
+    SDK_RESPONSE_NORMALIZATION_FAILED: "SDK_RESPONSE_NORMALIZATION_FAILED",
+    SDK_UNKNOWN_FAILURE: "SDK_UNKNOWN_FAILURE",
     CANCELLED: "CANCELLED", UNKNOWN: "UNKNOWN",
   });
   assert.deepEqual(KADI_GEMINI_FINISH_REASONS, {
@@ -1336,4 +1345,29 @@ test("hostile provider request structures fail closed or are safely minimized", 
     validProviderRequest()
   );
   assert.equal((await invoke(nullPrototype)).calls, 1);
+});
+
+test("real client error kinds map to canonical non-leaking provider responses", () => {
+  const expected = {
+    REQUEST_REJECTED: ["INVALID_REQUEST", "CLIENT", "REJECTED", false],
+    MODEL_NOT_FOUND: ["PROVIDER_MODEL_NOT_FOUND", "PROVIDER", "FAILED", false],
+    SDK_EXPORT_MISSING: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_CONSTRUCTOR_INVALID: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_CLIENT_INVALID: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_METHOD_MISSING: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_REQUEST_BUILD_FAILED: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_RESPONSE_NORMALIZATION_FAILED: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+    SDK_UNKNOWN_FAILURE: ["PROVIDER_INTERNAL_ERROR", "INTERNAL", "FAILED", true],
+  };
+  for (const [kind, fields] of Object.entries(expected)) {
+    const first = mapGeminiClientError({ kind, message: "PRIVATE_SENTINEL" });
+    const second = mapGeminiClientError({ message: "CHANGED", kind });
+    assert.deepEqual(
+      [first.errorCode, first.failureKind, first.status, first.recoverable],
+      fields
+    );
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(JSON.stringify(first).includes("PRIVATE_SENTINEL"), false);
+    assertCanonical(first);
+  }
 });

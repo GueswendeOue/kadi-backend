@@ -11,9 +11,18 @@ const KADI_GEMINI_REAL_CLIENT_ERROR_KINDS = Object.freeze({
   CONTENT: "CONTENT",
   UNAVAILABLE: "UNAVAILABLE",
   BAD_RESPONSE: "BAD_RESPONSE",
+  REQUEST_REJECTED: "REQUEST_REJECTED",
+  MODEL_NOT_FOUND: "MODEL_NOT_FOUND",
   INTERNAL: "INTERNAL",
   CANCELLED: "CANCELLED",
   UNKNOWN: "UNKNOWN",
+  SDK_EXPORT_MISSING: "SDK_EXPORT_MISSING",
+  SDK_CONSTRUCTOR_INVALID: "SDK_CONSTRUCTOR_INVALID",
+  SDK_CLIENT_INVALID: "SDK_CLIENT_INVALID",
+  SDK_METHOD_MISSING: "SDK_METHOD_MISSING",
+  SDK_REQUEST_BUILD_FAILED: "SDK_REQUEST_BUILD_FAILED",
+  SDK_RESPONSE_NORMALIZATION_FAILED: "SDK_RESPONSE_NORMALIZATION_FAILED",
+  SDK_UNKNOWN_FAILURE: "SDK_UNKNOWN_FAILURE",
 });
 
 const KADI_GEMINI_REAL_CLIENT_LIMITS = Object.freeze({
@@ -321,20 +330,102 @@ function normalizeGoogleGenerateContentResponse(response, neutralRequest) {
   }
 }
 
+function extractTechnicalErrorSignals(error) {
+  try {
+    if (!error || (typeof error !== "object" && typeof error !== "function")) {
+      return { status: null, values: [] };
+    }
+    const nested = safeDescriptorValue(error, "error");
+    const details = safeDescriptorValue(error, "details");
+    const values = [
+      safeDescriptorValue(error, "status"),
+      safeDescriptorValue(error, "statusCode"),
+      safeDescriptorValue(error, "code"),
+      safeDescriptorValue(error, "name"),
+      safeDescriptorValue(error, "kind"),
+      safeDescriptorValue(error, "reason"),
+      safeDescriptorValue(error, "type"),
+      safeDescriptorValue(nested, "status"),
+      safeDescriptorValue(nested, "statusCode"),
+      safeDescriptorValue(nested, "code"),
+      safeDescriptorValue(nested, "name"),
+      safeDescriptorValue(nested, "kind"),
+      safeDescriptorValue(nested, "reason"),
+      safeDescriptorValue(nested, "type"),
+      ...(Array.isArray(details)
+        ? details.slice(0, 8).map((detail) => safeDescriptorValue(detail, "reason"))
+        : []),
+    ].filter((value) =>
+      typeof value === "string" &&
+      value.length <= 120 &&
+      /^[A-Za-z0-9_.:/-]+$/.test(value)
+    ).map((value) => value.trim().toUpperCase());
+    const rawStatus = safeDescriptorValue(error, "status") ??
+      safeDescriptorValue(error, "statusCode") ??
+      safeDescriptorValue(error, "code") ??
+      safeDescriptorValue(nested, "status") ??
+      safeDescriptorValue(nested, "statusCode") ??
+      safeDescriptorValue(nested, "code");
+    const status = Number.isInteger(rawStatus)
+      ? rawStatus
+      : typeof rawStatus === "string" && /^\d{3}$/.test(rawStatus)
+        ? Number(rawStatus)
+        : null;
+    return { status, values };
+  } catch {
+    return { status: null, values: [] };
+  }
+}
+
 function mapGoogleGeminiError(error) {
   try {
     if (!error || (typeof error !== "object" && typeof error !== "function")) {
       return canonicalError("UNKNOWN");
     }
-    const status = safeDescriptorValue(error, "status");
+    const signals = extractTechnicalErrorSignals(error);
+    const technical = new Set(signals.values);
+    const status = signals.status;
     if (status === 401 || status === 403) return canonicalError("AUTHENTICATION");
+    if (
+      status === 404 ||
+      ["MODEL_NOT_FOUND", "RESOURCE_NOT_FOUND", "NOT_FOUND"].some(
+        (value) => technical.has(value)
+      )
+    ) return canonicalError("MODEL_NOT_FOUND");
     if (status === 408) return canonicalError("TIMEOUT");
     if (status === 429) return canonicalError("RATE_LIMIT");
-    if (status === 502 || status === 503 || status === 504 || status === 409) {
+    if (status === 502 || status === 503 || status === 504) {
       return canonicalError("UNAVAILABLE");
     }
     if (status === 500) return canonicalError("INTERNAL");
-    if (status === 400) return canonicalError("BAD_RESPONSE");
+    if (status !== null && status >= 400 && status < 500) {
+      return canonicalError("REQUEST_REJECTED");
+    }
+    if (status !== null && status >= 500 && status < 600) {
+      return canonicalError("UNAVAILABLE");
+    }
+    if (
+      technical.has("UNAUTHENTICATED") ||
+      technical.has("PERMISSION_DENIED")
+    ) return canonicalError("AUTHENTICATION");
+    if (
+      technical.has("INVALID_ARGUMENT") ||
+      technical.has("BAD_REQUEST") ||
+      technical.has("FAILED_PRECONDITION") ||
+      technical.has("ALREADY_EXISTS") ||
+      technical.has("ABORTED") ||
+      technical.has("CONFLICT")
+    ) return canonicalError("REQUEST_REJECTED");
+    if (
+      technical.has("RESOURCE_EXHAUSTED") ||
+      technical.has("RATE_LIMITED")
+    ) return canonicalError("RATE_LIMIT");
+    if (
+      technical.has("DEADLINE_EXCEEDED") ||
+      technical.has("TIMEOUT")
+    ) return canonicalError("TIMEOUT");
+    if (technical.has("UNAVAILABLE")) return canonicalError("UNAVAILABLE");
+    if (technical.has("INTERNAL")) return canonicalError("INTERNAL");
     const code = safeDescriptorValue(error, "code");
     if (code === "ETIMEDOUT") return canonicalError("TIMEOUT");
     if (["ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(code)) {
@@ -373,8 +464,20 @@ function createGeminiRealClient(options) {
   ) return null;
   const hasInjectedFactory = typeof options.sdkFactory === "function";
   const sdkFactory = options.sdkFactory || (async ({ apiKey }) => {
-    const sdk = await import("@google/genai");
-    return new sdk.GoogleGenAI({ apiKey });
+    let sdk;
+    try {
+      sdk = await import("@google/genai");
+    } catch {
+      throw canonicalError("SDK_EXPORT_MISSING");
+    }
+    if (typeof sdk.GoogleGenAI !== "function") {
+      throw canonicalError("SDK_CONSTRUCTOR_INVALID");
+    }
+    try {
+      return new sdk.GoogleGenAI({ apiKey });
+    } catch {
+      throw canonicalError("SDK_CONSTRUCTOR_INVALID");
+    }
   });
   let sdkClient;
   let initializationError = null;
@@ -396,7 +499,7 @@ function createGeminiRealClient(options) {
   return {
     async generateContent(neutralRequest) {
       const googleRequest = buildGoogleGenerateContentRequest(neutralRequest);
-      if (!googleRequest) throw canonicalError("BAD_RESPONSE");
+      if (!googleRequest) throw canonicalError("SDK_REQUEST_BUILD_FAILED");
       if (initializationError) throw canonicalError(initializationError.kind);
       try {
         if (!hasInjectedFactory) {
@@ -408,8 +511,11 @@ function createGeminiRealClient(options) {
           sdkClient = await defaultInitialization;
         }
         const models = safeDescriptorValue(sdkClient, "models");
+        if (!models) throw canonicalError("SDK_CLIENT_INVALID");
         const generate = safeDescriptorValue(models, "generateContent");
-        if (typeof generate !== "function") throw canonicalError("UNAVAILABLE");
+        if (typeof generate !== "function") {
+          throw canonicalError("SDK_METHOD_MISSING");
+        }
         const response = await generate.call(models, googleRequest);
         return normalizeGoogleGenerateContentResponse(response, neutralRequest);
       } catch (error) {
