@@ -913,3 +913,331 @@ test("array order is preserved and validation stays byte deterministic", () => {
     );
   }
 });
+
+function canonicalResponseForStatus(status) {
+  if (status === "SUCCEEDED") {
+    const response = successResponse();
+    response.usage = { inputUnits: 2, outputUnits: 3, totalUnits: 5 };
+    response.metadata.providerRequestId = "request-1";
+    return response;
+  }
+  if (status === "TIMED_OUT") {
+    return failureResponse("PROVIDER_TIMEOUT", "TIMEOUT", status, true);
+  }
+  if (status === "REJECTED") {
+    return failureResponse("PROVIDER_SAFETY_BLOCK", "SAFETY", status, false);
+  }
+  return failureResponse("PROVIDER_BAD_RESPONSE", "PROVIDER", status, true);
+}
+
+function assertReorderedResponse(status) {
+  const canonical = canonicalResponseForStatus(status);
+  const reordered = reverseKeys(canonical);
+  const canonicalValidation = validateProviderResponse(canonical);
+  const reorderedValidation = validateProviderResponse(reordered);
+  assert.equal(canonicalValidation.valid, true);
+  assert.equal(reorderedValidation.valid, true);
+  assert.equal(
+    JSON.stringify(canonicalValidation),
+    JSON.stringify(reorderedValidation)
+  );
+}
+
+test("response key order: SUCCEEDED is deeply order-independent", () => {
+  assertReorderedResponse("SUCCEEDED");
+});
+
+test("response key order: FAILED is deeply order-independent", () => {
+  assertReorderedResponse("FAILED");
+});
+
+test("response key order: REJECTED is deeply order-independent", () => {
+  assertReorderedResponse("REJECTED");
+});
+
+test("response key order: TIMED_OUT is deeply order-independent", () => {
+  assertReorderedResponse("TIMED_OUT");
+});
+
+function assertMissingResponseKeys(status, keys) {
+  for (const key of keys) {
+    const response = canonicalResponseForStatus(status);
+    delete response[key];
+    assert.equal(
+      validateProviderResponse(response).valid,
+      false,
+      `${status}.${key}`
+    );
+  }
+}
+
+test("missing response keys: SUCCEEDED rejects every required deletion", () => {
+  assertMissingResponseKeys("SUCCEEDED", [
+    "status", "content", "usage", "metadata",
+  ]);
+});
+
+test("missing response keys: FAILED rejects every required deletion", () => {
+  assertMissingResponseKeys("FAILED", [
+    "status", "errorCode", "failureKind", "recoverable", "usage", "metadata",
+  ]);
+});
+
+test("missing response keys: REJECTED rejects every required deletion", () => {
+  assertMissingResponseKeys("REJECTED", [
+    "status", "errorCode", "failureKind", "recoverable",
+  ]);
+});
+
+test("missing response keys: TIMED_OUT rejects every required deletion", () => {
+  assertMissingResponseKeys("TIMED_OUT", [
+    "status", "errorCode", "failureKind", "recoverable",
+  ]);
+});
+
+function throwingDescriptorProxy(value, sentinel) {
+  return new Proxy(value, {
+    getOwnPropertyDescriptor() {
+      throw new Error(sentinel);
+    },
+  });
+}
+
+function throwingPrototypeProxy(value, sentinel) {
+  return new Proxy(value, {
+    getPrototypeOf() {
+      throw new Error(sentinel);
+    },
+  });
+}
+
+function assertCanonicalHostileValidation(validate, value, sentinel) {
+  let first;
+  let second;
+  assert.doesNotThrow(() => {
+    first = validate(value);
+    second = validate(value);
+  });
+  assert.equal(first.valid, false);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(first).includes(sentinel), false);
+  assertErrorsSafe(first);
+}
+
+test("hostile getOwnPropertyDescriptor: request root fails canonically", () => {
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    throwingDescriptorProxy(validRequest(), "HOSTILE_REQUEST_DESCRIPTOR"),
+    "HOSTILE_REQUEST_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: request message fails canonically", () => {
+  const request = validRequest();
+  request.messages[0] = throwingDescriptorProxy(
+    request.messages[0],
+    "HOSTILE_MESSAGE_DESCRIPTOR"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    request,
+    "HOSTILE_MESSAGE_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: generation fails canonically", () => {
+  const request = validRequest();
+  request.generation = throwingDescriptorProxy(
+    request.generation,
+    "HOSTILE_GENERATION_DESCRIPTOR"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    request,
+    "HOSTILE_GENERATION_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: request metadata fails canonically", () => {
+  const request = validRequest();
+  request.metadata = throwingDescriptorProxy(
+    request.metadata,
+    "HOSTILE_REQUEST_METADATA_DESCRIPTOR"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    request,
+    "HOSTILE_REQUEST_METADATA_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: response root fails canonically", () => {
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    throwingDescriptorProxy(
+      canonicalResponseForStatus("FAILED"),
+      "HOSTILE_ERROR_RESPONSE_DESCRIPTOR"
+    ),
+    "HOSTILE_ERROR_RESPONSE_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: response usage fails canonically", () => {
+  const response = successResponse();
+  response.usage = throwingDescriptorProxy(
+    response.usage,
+    "HOSTILE_USAGE_DESCRIPTOR"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    response,
+    "HOSTILE_USAGE_DESCRIPTOR"
+  );
+});
+
+test("hostile getOwnPropertyDescriptor: response metadata fails canonically", () => {
+  const response = canonicalResponseForStatus("FAILED");
+  response.metadata = throwingDescriptorProxy(
+    response.metadata,
+    "HOSTILE_ERROR_METADATA_DESCRIPTOR"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    response,
+    "HOSTILE_ERROR_METADATA_DESCRIPTOR"
+  );
+});
+
+test("hostile getPrototypeOf: request root fails canonically", () => {
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    throwingPrototypeProxy(validRequest(), "HOSTILE_REQUEST_PROTOTYPE"),
+    "HOSTILE_REQUEST_PROTOTYPE"
+  );
+});
+
+test("hostile getPrototypeOf: response root fails canonically", () => {
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    throwingPrototypeProxy(
+      canonicalResponseForStatus("FAILED"),
+      "HOSTILE_ERROR_RESPONSE_PROTOTYPE"
+    ),
+    "HOSTILE_ERROR_RESPONSE_PROTOTYPE"
+  );
+});
+
+test("hostile getPrototypeOf: request message fails canonically", () => {
+  const request = validRequest();
+  request.messages[0] = throwingPrototypeProxy(
+    request.messages[0],
+    "HOSTILE_MESSAGE_PROTOTYPE"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderRequest,
+    request,
+    "HOSTILE_MESSAGE_PROTOTYPE"
+  );
+});
+
+test("hostile getPrototypeOf: response usage fails canonically", () => {
+  const response = successResponse();
+  response.usage = throwingPrototypeProxy(
+    response.usage,
+    "HOSTILE_USAGE_PROTOTYPE"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    response,
+    "HOSTILE_USAGE_PROTOTYPE"
+  );
+});
+
+test("hostile getPrototypeOf: error-bearing response metadata fails canonically", () => {
+  const response = canonicalResponseForStatus("FAILED");
+  response.metadata = throwingPrototypeProxy(
+    response.metadata,
+    "HOSTILE_ERROR_METADATA_PROTOTYPE"
+  );
+  assertCanonicalHostileValidation(
+    validateProviderResponse,
+    response,
+    "HOSTILE_ERROR_METADATA_PROTOTYPE"
+  );
+});
+
+function protectDeep(value, protect) {
+  if (!value || typeof value !== "object") return value;
+  for (const nested of Object.values(value)) protectDeep(nested, protect);
+  protect(value);
+  return value;
+}
+
+function toNullPrototypeDeep(value) {
+  if (Array.isArray(value)) return value.map(toNullPrototypeDeep);
+  if (!value || typeof value !== "object") return value;
+  const result = Object.create(null);
+  for (const [key, nested] of Object.entries(value)) {
+    result[key] = toNullPrototypeDeep(nested);
+  }
+  return result;
+}
+
+function assertProtectedResponse(status, protect) {
+  const response = reverseKeys(canonicalResponseForStatus(status));
+  protectDeep(response, protect);
+  const before = JSON.stringify(response);
+  const first = validateProviderResponse(response);
+  const second = validateProviderResponse(response);
+  assert.equal(first.valid, true);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(response), before);
+}
+
+test("immutable response: deeply frozen success and failure remain deterministic", () => {
+  assertProtectedResponse("SUCCEEDED", Object.freeze);
+  assertProtectedResponse("FAILED", Object.freeze);
+});
+
+test("immutable response: deeply sealed success and failure remain deterministic", () => {
+  assertProtectedResponse("SUCCEEDED", Object.seal);
+  assertProtectedResponse("FAILED", Object.seal);
+});
+
+test("immutable response: deeply non-extensible success and failure remain deterministic", () => {
+  assertProtectedResponse("SUCCEEDED", Object.preventExtensions);
+  assertProtectedResponse("FAILED", Object.preventExtensions);
+});
+
+test("immutable response: null-prototype success and failure remain deterministic", () => {
+  for (const status of ["SUCCEEDED", "FAILED"]) {
+    const response = toNullPrototypeDeep(
+      reverseKeys(canonicalResponseForStatus(status))
+    );
+    const before = JSON.stringify(response);
+    const first = validateProviderResponse(response);
+    const second = validateProviderResponse(response);
+    assert.equal(first.valid, true);
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(JSON.stringify(response), before);
+  }
+});
+
+test("byte determinism: Unicode and multiline request content remain stable", () => {
+  for (const content of [
+    "Créer une facture pour Société Éléphant 🧾.",
+    "Créer une facture.\nClient: PERSON_1\nMontant: 25000 FCFA",
+  ]) {
+    const canonical = validRequest();
+    canonical.messages[1].content = content;
+    const reordered = reverseKeys(canonical);
+    assert.equal(
+      JSON.stringify(validateProviderRequest(canonical)),
+      JSON.stringify(validateProviderRequest(reordered))
+    );
+    assert.equal(
+      JSON.stringify(validateProviderRequest(canonical)),
+      JSON.stringify(validateProviderRequest(canonical))
+    );
+  }
+});
