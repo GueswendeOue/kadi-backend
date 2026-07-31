@@ -335,12 +335,146 @@ const brainShadow = makeKadiBrainShadow({
 
 let brainRealShadowIntegrationOverride = null;
 let defaultBrainRealShadowRunner = null;
+let defaultBrainRealShadowRunnerState = "UNINITIALIZED";
+
+const BRAIN_SHADOW_RESULT_STATUSES = new Set([
+  "SKIPPED", "SKIPPED_DUPLICATE", "INPUT_INVALID", "PRIVACY_BLOCKED",
+  "CONFIG_UNAVAILABLE", "PROVIDER_FAILED", "PARSE_FAILED", "SUCCEEDED",
+  "INTERNAL_FAILED", "TIMEOUT",
+]);
+const BRAIN_SHADOW_SOURCE_TYPES = new Set(["text", "voice"]);
+const BRAIN_SHADOW_PROVIDER_STATUSES = new Set([
+  "PENDING", "SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED", "REJECTED",
+]);
+const BRAIN_SHADOW_PROVIDER_FAILURE_KINDS = new Set([
+  "NONE", "CLIENT", "PROVIDER", "NETWORK", "TIMEOUT", "RATE_LIMIT",
+  "AUTHENTICATION", "SAFETY", "CONTENT", "CONFIGURATION", "INTERNAL",
+]);
+const BRAIN_SHADOW_PARSER_FAILURE_CODES = new Set([
+  "EMPTY_RESPONSE", "RESPONSE_NOT_STRING", "RESPONSE_TOO_LONG",
+  "MARKDOWN_NOT_ALLOWED", "SURROUNDING_TEXT_NOT_ALLOWED", "INVALID_JSON",
+  "ROOT_NOT_OBJECT", "MULTIPLE_JSON_VALUES", "INVALID_SCHEMA",
+  "INVALID_RESOLUTION", "UNSAFE_VALUE", "INTERNAL_PARSE_FAILURE",
+]);
+const BRAIN_SHADOW_CONFIDENCE_BUCKETS = new Set([
+  "NONE", "LOW", "MEDIUM", "HIGH",
+]);
+const BRAIN_SHADOW_LATENCY_BUCKETS = new Set([
+  "NONE", "LT_250MS", "LT_1S", "LT_3S", "GTE_3S",
+]);
+
+function safeOwnValue(source, key) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor && !descriptor.get && !descriptor.set
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPlainShadowResult(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function allowedValue(value, allowed, fallback = null) {
+  return typeof value === "string" && allowed.has(value) ? value : fallback;
+}
+
+function boundedResultCount(value) {
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, 100) : 0;
+}
+
+function projectBrainShadowResultForObservation(value) {
+  if (!isPlainShadowResult(value)) return null;
+
+  const safetySource = safeOwnValue(value, "safetyFlags");
+  const safetyIsPlain = isPlainShadowResult(safetySource);
+  const safetyFlags = Object.freeze({
+    containsSensitiveData: safetyIsPlain &&
+      safeOwnValue(safetySource, "containsSensitiveData") === true,
+    requiresHumanReview: safetyIsPlain &&
+      safeOwnValue(safetySource, "requiresHumanReview") === true,
+  });
+  const intent = safeOwnValue(value, "intent");
+  const timestamp = safeOwnValue(value, "timestamp");
+  const messageIdHash = safeOwnValue(value, "messageIdHash");
+
+  return Object.freeze({
+    shadowVersion: "kadi.brain-real-shadow.v1",
+    status: allowedValue(
+      safeOwnValue(value, "status"),
+      BRAIN_SHADOW_RESULT_STATUSES,
+      "INTERNAL_FAILED"
+    ),
+    sourceType: allowedValue(
+      safeOwnValue(value, "sourceType"),
+      BRAIN_SHADOW_SOURCE_TYPES
+    ),
+    messageIdHash: typeof messageIdHash === "string" &&
+      /^[a-f0-9]{16}$/u.test(messageIdHash)
+      ? messageIdHash
+      : null,
+    providerStatus: allowedValue(
+      safeOwnValue(value, "providerStatus"),
+      BRAIN_SHADOW_PROVIDER_STATUSES
+    ),
+    providerFailureKind: allowedValue(
+      safeOwnValue(value, "providerFailureKind"),
+      BRAIN_SHADOW_PROVIDER_FAILURE_KINDS,
+      "NONE"
+    ),
+    parserValid: safeOwnValue(value, "parserValid") === true,
+    parserFailureCode: allowedValue(
+      safeOwnValue(value, "parserFailureCode"),
+      BRAIN_SHADOW_PARSER_FAILURE_CODES
+    ),
+    intent: typeof intent === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(intent)
+      ? intent
+      : null,
+    confidenceBucket: allowedValue(
+      safeOwnValue(value, "confidenceBucket"),
+      BRAIN_SHADOW_CONFIDENCE_BUCKETS,
+      "NONE"
+    ),
+    actionable: safeOwnValue(value, "actionable") === true,
+    missingFieldCount: boundedResultCount(
+      safeOwnValue(value, "missingFieldCount")
+    ),
+    blockingAmbiguityCount: boundedResultCount(
+      safeOwnValue(value, "blockingAmbiguityCount")
+    ),
+    safetyFlags,
+    latencyBucket: allowedValue(
+      safeOwnValue(value, "latencyBucket"),
+      BRAIN_SHADOW_LATENCY_BUCKETS,
+      "NONE"
+    ),
+    execution: "NONE",
+    timestamp: typeof timestamp === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(timestamp)
+      ? timestamp
+      : null,
+  });
+}
 
 function configureBrainRealShadowIntegration(options = null) {
   brainRealShadowIntegrationOverride =
     options && typeof options === "object" && !Array.isArray(options)
       ? {
           runner: options.runner || null,
+          runnerFactory: typeof options.runnerFactory === "function"
+            ? options.runnerFactory
+            : null,
           mode: options.mode,
           onResult: typeof options.onResult === "function"
             ? options.onResult
@@ -348,6 +482,7 @@ function configureBrainRealShadowIntegration(options = null) {
         }
       : null;
   defaultBrainRealShadowRunner = null;
+  defaultBrainRealShadowRunnerState = "UNINITIALIZED";
 }
 
 function resolveBrainRealShadowMode() {
@@ -364,11 +499,27 @@ function getBrainRealShadowRunner() {
   if (brainRealShadowIntegrationOverride?.runner) {
     return brainRealShadowIntegrationOverride.runner;
   }
-  if (!defaultBrainRealShadowRunner) {
-    defaultBrainRealShadowRunner = createKadiBrainRealShadowRunner({
-      mode: BRAIN_MODES.SHADOW,
-      apiKey: process.env.GEMINI_API_KEY,
-    });
+  if (defaultBrainRealShadowRunnerState === "UNAVAILABLE") return null;
+  if (defaultBrainRealShadowRunnerState === "READY") {
+    return defaultBrainRealShadowRunner;
+  }
+  try {
+    const runnerFactory = brainRealShadowIntegrationOverride?.runnerFactory ||
+      createKadiBrainRealShadowRunner;
+    const options = brainRealShadowIntegrationOverride?.runnerFactory
+      ? { mode: BRAIN_MODES.SHADOW }
+      : { mode: BRAIN_MODES.SHADOW, apiKey: process.env.GEMINI_API_KEY };
+    const runner = runnerFactory(options);
+    if (!runner || typeof runner.run !== "function") {
+      defaultBrainRealShadowRunnerState = "UNAVAILABLE";
+      return null;
+    }
+    defaultBrainRealShadowRunner = runner;
+    defaultBrainRealShadowRunnerState = "READY";
+  } catch {
+    defaultBrainRealShadowRunner = null;
+    defaultBrainRealShadowRunnerState = "UNAVAILABLE";
+    return null;
   }
   return defaultBrainRealShadowRunner;
 }
@@ -463,19 +614,24 @@ function launchBrainRealShadowObservation({ text, msg, session }) {
 
   let pending;
   try {
-    pending = getBrainRealShadowRunner().run(input);
+    const runner = getBrainRealShadowRunner();
+    if (!runner || typeof runner.run !== "function") return false;
+    pending = runner.run(input);
   } catch {
     return false;
   }
-  Promise.resolve(pending)
+  Promise.resolve()
+    .then(() => pending)
     .then((result) => {
+      const projected = projectBrainShadowResultForObservation(result);
+      if (!projected) return;
       const onResult = brainRealShadowIntegrationOverride?.onResult;
       if (typeof onResult !== "function") return;
-      try {
-        Promise.resolve(onResult(result)).catch(() => {});
-      } catch {}
+      return Promise.resolve()
+        .then(() => onResult(projected))
+        .catch(() => undefined);
     })
-    .catch(() => {});
+    .catch(() => undefined);
   return true;
 }
 
@@ -1537,5 +1693,6 @@ module.exports = {
   configureBrainRealShadowIntegration,
   buildBrainRealShadowFlowContext,
   prepareBrainRealShadowInput,
+  projectBrainShadowResultForObservation,
   launchBrainRealShadowObservation,
 };

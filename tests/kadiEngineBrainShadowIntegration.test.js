@@ -49,6 +49,7 @@ const {
   configureBrainRealShadowIntegration,
   buildBrainRealShadowFlowContext,
   prepareBrainRealShadowInput,
+  projectBrainShadowResultForObservation,
   launchBrainRealShadowObservation,
 } = engineExports;
 
@@ -86,6 +87,11 @@ function textMessage(overrides = {}) {
 
 function flushDetached() {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function flushLateDetached() {
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  await flushDetached();
 }
 
 test.afterEach(() => {
@@ -352,7 +358,8 @@ test("detached success cannot alter session or execute actionable output", async
   assert.equal(observed.length, 0);
   await flushDetached();
   assert.equal(observed.length, 1);
-  assert.strictEqual(observed[0], PUBLIC_RESULT);
+  assert.notStrictEqual(observed[0], PUBLIC_RESULT);
+  assert.deepEqual(observed[0], PUBLIC_RESULT);
   assert.equal(observed[0].actionable, true);
   assert.equal(observed[0].execution, "NONE");
   assert.equal(JSON.stringify(session), before);
@@ -360,8 +367,9 @@ test("detached success cannot alter session or execute actionable output", async
 
 test("all bounded runner statuses leave the integration non-executing", async () => {
   const statuses = [
-    "CONFIG_UNAVAILABLE", "PRIVACY_BLOCKED", "PROVIDER_FAILED",
-    "PARSE_FAILED", "TIMEOUT", "INTERNAL_FAILED",
+    "SKIPPED", "SKIPPED_DUPLICATE", "INPUT_INVALID", "CONFIG_UNAVAILABLE",
+    "PRIVACY_BLOCKED", "PROVIDER_FAILED", "PARSE_FAILED", "SUCCEEDED",
+    "INTERNAL_FAILED", "TIMEOUT",
   ];
   for (const status of statuses) {
     const observed = [];
@@ -416,6 +424,279 @@ test("runner throws and early or late rejections are fully absorbed", async () =
   } finally {
     process.removeListener("unhandledRejection", listener);
   }
+});
+
+test("hostile thenables cannot throw into legacy or create multiple observations", async () => {
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    const cases = [
+      { get then() { throw new Error("PRIVATE_THEN_GETTER"); } },
+      { then() { throw new Error("PRIVATE_THEN_METHOD"); } },
+      { then(resolve) { resolve(PUBLIC_RESULT); resolve(PUBLIC_RESULT); } },
+      { then(resolve, reject) { resolve(PUBLIC_RESULT); reject(new Error("late")); } },
+      { then(resolve, reject) { reject(new Error("first")); resolve(PUBLIC_RESULT); } },
+      { then(resolve) { setTimeout(() => resolve(PUBLIC_RESULT), 5); } },
+      { then(resolve) { resolve({ ...PUBLIC_RESULT, rawMessage: "PRIVATE_RAW" }); } },
+    ];
+    for (const [index, thenable] of cases.entries()) {
+      const observed = [];
+      configureBrainRealShadowIntegration({
+        mode: "shadow",
+        runner: { run: () => thenable },
+        onResult: (value) => observed.push(value),
+      });
+      assert.doesNotThrow(() => launchBrainRealShadowObservation({
+        text: "Créer une facture",
+        msg: textMessage({ id: `thenable-${index}` }),
+        session: { step: "idle" },
+      }));
+      await flushLateDetached();
+      assert.ok(observed.length <= 1);
+      assert.equal(JSON.stringify(observed).includes("PRIVATE_RAW"), false);
+    }
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+});
+
+test("malicious runner values never cross the canonical hook boundary", async () => {
+  const maliciousObject = {
+    ...PUBLIC_RESULT,
+    messageId: "PRIVATE_MESSAGE_ID",
+    userMessage: "PRIVATE_USER_MESSAGE",
+    flowContext: { raw: "PRIVATE_FLOW" },
+    session: { token: "PRIVATE_SESSION" },
+    prompt: "PRIVATE_PROMPT",
+    providerResponse: "PRIVATE_PROVIDER",
+    stack: "PRIVATE_STACK",
+    error: new Error("PRIVATE_ERROR"),
+    unknown: "PRIVATE_UNKNOWN",
+    execution: "EXECUTE",
+  };
+  Object.defineProperty(maliciousObject, "hostile", {
+    enumerable: true,
+    get() { throw new Error("PRIVATE_GETTER"); },
+  });
+  const cyclic = { ...PUBLIC_RESULT };
+  cyclic.self = cyclic;
+  const hostileProxy = new Proxy({}, {
+    getPrototypeOf() { throw new Error("PRIVATE_PROXY"); },
+  });
+  const cases = [
+    maliciousObject, cyclic, hostileProxy, [], "string", null, undefined,
+  ];
+  for (const [index, runnerValue] of cases.entries()) {
+    const observed = [];
+    configureBrainRealShadowIntegration({
+      mode: "shadow",
+      runner: { run: () => runnerValue },
+      onResult: (value) => observed.push(value),
+    });
+    assert.doesNotThrow(() => launchBrainRealShadowObservation({
+      text: "Créer une facture pour PRIVATE_CLIENT",
+      msg: textMessage({ id: `PRIVATE_INPUT_ID_${index}` }),
+      session: { token: "PRIVATE_INPUT_SESSION" },
+    }));
+    await flushDetached();
+    assert.ok(observed.length <= 1);
+    const serialized = JSON.stringify(observed);
+    for (const sentinel of [
+      "PRIVATE_MESSAGE_ID", "PRIVATE_USER_MESSAGE", "PRIVATE_FLOW",
+      "PRIVATE_SESSION", "PRIVATE_PROMPT", "PRIVATE_PROVIDER",
+      "PRIVATE_STACK", "PRIVATE_ERROR", "PRIVATE_UNKNOWN", "PRIVATE_CLIENT",
+      "PRIVATE_INPUT_ID", "PRIVATE_INPUT_SESSION",
+    ]) assert.equal(serialized.includes(sentinel), false);
+    if (observed.length) {
+      assert.deepEqual(Object.keys(observed[0]), Object.keys(PUBLIC_RESULT));
+      assert.equal(observed[0].execution, "NONE");
+    }
+  }
+});
+
+test("projection normalizes invalid enums, hash and counts without arbitrary reads", () => {
+  const value = projectBrainShadowResultForObservation({
+    shadowVersion: "PRIVATE_VERSION",
+    status: "PRIVATE_STATUS",
+    sourceType: "PRIVATE_SOURCE",
+    messageIdHash: "PRIVATE_RAW_ID",
+    providerStatus: "PRIVATE_PROVIDER",
+    providerFailureKind: "PRIVATE_FAILURE",
+    parserValid: "yes",
+    parserFailureCode: "PRIVATE_PARSE",
+    intent: "private intent",
+    confidenceBucket: "PRIVATE_CONFIDENCE",
+    actionable: "yes",
+    missingFieldCount: 100000,
+    blockingAmbiguityCount: -1,
+    safetyFlags: { containsSensitiveData: true, extra: "PRIVATE_SAFETY" },
+    latencyBucket: "PRIVATE_LATENCY",
+    execution: "EXECUTE",
+    timestamp: "PRIVATE_TIMESTAMP",
+  });
+  assert.deepEqual(value, {
+    shadowVersion: "kadi.brain-real-shadow.v1",
+    status: "INTERNAL_FAILED",
+    sourceType: null,
+    messageIdHash: null,
+    providerStatus: null,
+    providerFailureKind: "NONE",
+    parserValid: false,
+    parserFailureCode: null,
+    intent: null,
+    confidenceBucket: "NONE",
+    actionable: false,
+    missingFieldCount: 100,
+    blockingAmbiguityCount: 0,
+    safetyFlags: { containsSensitiveData: true, requiresHumanReview: false },
+    latencyBucket: "NONE",
+    execution: "NONE",
+    timestamp: null,
+  });
+});
+
+test("hook receives a distinct deeply frozen result that cannot be enriched", async () => {
+  const source = { ...PUBLIC_RESULT, safetyFlags: { ...PUBLIC_RESULT.safetyFlags } };
+  let retained;
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: { run: () => source },
+    onResult(result) {
+      retained = result;
+      assert.throws(() => { result.status = "INJECTED"; }, TypeError);
+      assert.throws(() => { result.rawMessage = "secret"; }, TypeError);
+      assert.throws(() => { result.safetyFlags.foo = true; }, TypeError);
+      assert.throws(() => { result.safetyFlags = {}; }, TypeError);
+      assert.throws(() => { delete result.execution; }, TypeError);
+    },
+  });
+  launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage(),
+    session: Object.freeze({ step: "idle" }),
+  });
+  await flushDetached();
+  assert.notStrictEqual(retained, source);
+  assert.notStrictEqual(retained.safetyFlags, source.safetyFlags);
+  assert.equal(Object.isFrozen(retained), true);
+  assert.equal(Object.isFrozen(retained.safetyFlags), true);
+  assert.equal(retained.execution, "NONE");
+});
+
+test("hostile hooks are absorbed and invoked at most once", async () => {
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    const hooks = [
+      () => { throw new Error("PRIVATE_HOOK_THROW"); },
+      () => Promise.reject(new Error("PRIVATE_HOOK_REJECT")),
+      () => new Promise((resolve) => setTimeout(resolve, 5)),
+      () => ({ get then() { throw new Error("PRIVATE_HOOK_THENABLE"); } }),
+    ];
+    for (const [index, hook] of hooks.entries()) {
+      let calls = 0;
+      configureBrainRealShadowIntegration({
+        mode: "shadow",
+        runner: { run: () => PUBLIC_RESULT },
+        onResult(value) { calls += 1; return hook(value); },
+      });
+      assert.doesNotThrow(() => launchBrainRealShadowObservation({
+        text: "Créer une facture",
+        msg: textMessage({ id: `hook-${index}` }),
+        session: Object.freeze({ step: "idle" }),
+      }));
+      await flushLateDetached();
+      assert.equal(calls, 1);
+    }
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+});
+
+test("constructor failure is latched until a new integration instance", () => {
+  let constructions = 0;
+  const factory = () => {
+    constructions += 1;
+    throw new Error("PRIVATE_CONSTRUCTOR");
+  };
+  configureBrainRealShadowIntegration({ mode: "shadow", runnerFactory: factory });
+  for (const id of ["first", "second"]) {
+    assert.equal(launchBrainRealShadowObservation({
+      text: "Créer une facture",
+      msg: textMessage({ id }),
+      session: { step: "idle" },
+    }), false);
+  }
+  assert.equal(constructions, 1);
+  configureBrainRealShadowIntegration({ mode: "shadow", runnerFactory: factory });
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage({ id: "new-instance" }),
+    session: { step: "idle" },
+  }), false);
+  assert.equal(constructions, 2);
+});
+
+test("successful constructor is a singleton and runner owns id handling", async () => {
+  let constructions = 0;
+  const ids = [];
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runnerFactory() {
+      constructions += 1;
+      return { run(input) { ids.push(input.messageId); return PUBLIC_RESULT; } };
+    },
+  });
+  for (const id of ["identique", "identique", "unicode-🔒", "x".repeat(300)]) {
+    assert.equal(launchBrainRealShadowObservation({
+      text: "Même texte",
+      msg: textMessage({ id }),
+      session: { step: "idle" },
+    }), true);
+  }
+  await flushDetached();
+  assert.equal(constructions, 1);
+  assert.deepEqual(ids, ["identique", "identique", "unicode-🔒", "x".repeat(300)]);
+});
+
+test("sensitive session and draft values never reach flow context or hook", async () => {
+  const sensitive = {
+    clientName: "PRIVATE_CLIENT", phone: "PRIVATE_PHONE",
+    email: "PRIVATE_EMAIL", address: "PRIVATE_ADDRESS", IFU: "PRIVATE_IFU",
+    RCCM: "PRIVATE_RCCM", waId: "PRIVATE_WA", BSUID: "PRIVATE_BSUID",
+    OCR: "PRIVATE_OCR", paymentProof: "PRIVATE_PROOF", recharge: "PRIVATE_RECHARGE",
+    token: "PRIVATE_TOKEN", key: "PRIVATE_KEY", history: "PRIVATE_HISTORY",
+    restorationMap: "PRIVATE_RESTORE", montant: 99991, prix: 99992,
+    articles: [{ label: "PRIVATE_ARTICLE" }],
+  };
+  const session = Object.freeze({
+    step: "doc_client", mode: "facture", ...sensitive,
+    lastDocDraft: Object.freeze({ type: "facture", ...sensitive }),
+  });
+  let input;
+  let hookValue;
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: { run(value) { input = value; return PUBLIC_RESULT; } },
+    onResult(value) { hookValue = value; },
+  });
+  launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage(),
+    session,
+  });
+  await flushDetached();
+  const serialized = JSON.stringify({ flowContext: input.flowContext, hookValue });
+  for (const marker of Object.values(sensitive).flatMap((value) =>
+    typeof value === "string" ? [value] : []
+  )) assert.equal(serialized.includes(marker), false);
+  assert.equal(serialized.includes("99991"), false);
+  assert.equal(serialized.includes("99992"), false);
+  assert.equal(serialized.includes("PRIVATE_ARTICLE"), false);
 });
 
 test("a delayed runner never blocks legacy continuation", async () => {
