@@ -7,6 +7,8 @@ const path = require("node:path");
 const providerContract = require("../kadiBrainProviderContract");
 const intentContract = require("../kadiBrainIntentContract");
 const geminiProvider = require("../kadiBrainGeminiProvider");
+const responseParser = require("../kadiBrainResponseParser");
+const promptBuilder = require("../kadiBrainPromptBuilder");
 const smoke = require("../scripts/runGeminiBrainIsolatedSmokeTest");
 
 function resolutionJson() {
@@ -203,9 +205,57 @@ test("real prompt builder pipeline reaches the injected fake Gemini client", asy
   assert.equal(result.publicResult.providerResponseValid, true);
   assert.equal(result.publicResult.execution, "NONE");
   assert.equal(captured.model, smoke.KADI_GEMINI_SMOKE_MODEL);
+  assert.deepEqual(
+    captured.generationConfig.responseJsonSchema,
+    promptBuilder.KADI_INTENT_RESPONSE_JSON_SCHEMA
+  );
   assert.equal(Object.hasOwn(captured, "privacyResult"), false);
   assert.equal(Object.hasOwn(captured, "restorationMap"), false);
   assert.equal(Object.hasOwn(captured, "apiKey"), false);
+});
+
+test("realistic structured Gemini fixtures parse with local actionability only", () => {
+  const complete = promptBuilder.createCanonicalIntentResponseExample();
+  const missing = promptBuilder.createCanonicalIntentResponseExample();
+  missing.missingFields = ["clientName"];
+  missing.entities.clientName = null;
+  const ambiguous = promptBuilder.createCanonicalIntentResponseExample();
+  ambiguous.ambiguities = [{
+    field: "documentType",
+    options: ["invoice", "receipt"],
+    message: "Document type is ambiguous.",
+    blocking: true,
+  }];
+  const greeting = intentContract.createEmptyIntentResolution();
+  greeting.intent = "GREETING";
+  greeting.confidence = 0.99;
+  greeting.language = "fr";
+  const sensitive = intentContract.createEmptyIntentResolution();
+  sensitive.intent = "SENSITIVE_DATA_WARNING";
+  sensitive.confidence = 0.99;
+  sensitive.safety.containsSensitiveData = true;
+  sensitive.safety.requiresHumanReview = true;
+  sensitive.safety.reason = "Sensitive data category detected.";
+  const unknown = intentContract.createEmptyIntentResolution();
+  unknown.intent = "UNKNOWN";
+  unknown.confidence = 0.2;
+  const cases = [
+    [complete, "CREATE_INVOICE", true],
+    [missing, "CREATE_INVOICE", false],
+    [ambiguous, "CREATE_INVOICE", false],
+    [greeting, "GREETING", false],
+    [sensitive, "SENSITIVE_DATA_WARNING", false],
+    [unknown, "UNKNOWN", false],
+  ];
+  for (const [fixture, intent, actionable] of cases) {
+    const parsed = responseParser.parseIntentResolutionResponse(
+      JSON.stringify(fixture)
+    );
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.validation.valid, true);
+    assert.equal(parsed.resolution.intent, intent);
+    assert.equal(parsed.actionable, actionable);
+  }
 });
 
 test("simulated privacy rejection prevents client and provider creation", async () => {
@@ -434,11 +484,67 @@ test("parser failure is minimized with exit code six", async () => {
       }),
     },
   });
-  assert.deepEqual(await smoke.runGeminiIsolatedSmokeTest(setup.options), {
-    exitCode: 6,
-    code: "GEMINI_SMOKE_PARSE_FAILED",
-    publicResult: null,
+  const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  assert.equal(result.exitCode, 6);
+  assert.equal(result.code, "GEMINI_SMOKE_PARSE_FAILED");
+  assert.deepEqual(result.publicResult, {
+    smokeVersion: "kadi.gemini-isolated-smoke.v1",
+    model: "gemini-3.6-flash",
+    privacySafe: true,
+    providerRequestValid: true,
+    providerStatus: "SUCCEEDED",
+    providerResponseValid: true,
+    parserValid: false,
+    parserFailureCode: "INTERNAL_PARSE_FAILURE",
+    contentPresent: true,
+    contentLengthBucket: "501_2000",
+    jsonSyntaxValid: true,
+    rootType: "OBJECT",
+    observedKeyNames: [
+      "schemaVersion", "intent", "confidence", "language", "entities",
+      "missingFields", "ambiguities", "requestedAction", "conversation",
+      "safety", "explanation",
+    ],
+    missingRequiredKeys: [],
+    unknownKeyCount: 0,
+    invalidFieldCategories: [],
+    intentRecognized: true,
+    execution: "NONE",
   });
+  const serialized = JSON.stringify(result.publicResult);
+  assert.equal(serialized.includes("PERSON_1"), false);
+  assert.equal(serialized.includes("25000"), false);
+});
+
+test("real parser failure diagnostic is bounded and never copies raw values", async () => {
+  const privateValue = "PRIVATE_PERSON_AND_SECRET_987654";
+  const response = successfulProviderResponse();
+  response.content = JSON.stringify({
+    schemaVersion: "kadi.intent.v1",
+    intent: "CREATE_INVOICE",
+    unknownPrivateField: privateValue,
+  });
+  const setup = harness({
+    createProvider: () => ({ invoke: async () => response }),
+  });
+  const first = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  const second = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  assert.equal(first.exitCode, 6);
+  assert.equal(first.publicResult.parserValid, false);
+  assert.equal(first.publicResult.jsonSyntaxValid, true);
+  assert.equal(first.publicResult.rootType, "OBJECT");
+  assert.deepEqual(first.publicResult.observedKeyNames, [
+    "schemaVersion", "intent",
+  ]);
+  assert.equal(first.publicResult.unknownKeyCount, 1);
+  assert.equal(first.publicResult.intentRecognized, true);
+  assert.equal(first.publicResult.execution, "NONE");
+  assert.deepEqual(first, second);
+  const serialized = JSON.stringify(first.publicResult);
+  for (const forbidden of [
+    privateValue, "unknownPrivateField", "\"content\":", "prompt", "metadata",
+    "providerRequestId", "responseId", "stack",
+  ]) assert.equal(serialized.includes(forbidden), false, forbidden);
 });
 
 test("public success output is exact, minimized, and contains no private pipeline data", async () => {
@@ -735,13 +841,13 @@ test("CLI-equivalent capture emits exactly one public output for exit codes zero
     assert.deepEqual(cli.setup.counts(), scenario.expectedCounts);
     assert.equal(process.exitCode, originalExitCode);
     const output = captured.logs[0] || captured.errors[0];
-    if (scenario.exitCode === 0 || scenario.exitCode === 4) {
+    if ([0, 4, 6].includes(scenario.exitCode)) {
       const parsed = JSON.parse(output);
       assert.equal(parsed.execution, "NONE");
       assert.equal(JSON.stringify(parsed), output);
       assert.equal(output.includes("apiKey"), false);
       assert.equal(output.includes("prompt"), false);
-      assert.equal(output.includes("content"), false);
+      assert.equal(output.includes("\"content\":"), false);
       assert.equal(output.includes("metadata"), false);
     } else {
       assert.equal(output, scenario.code);

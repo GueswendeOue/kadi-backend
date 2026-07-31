@@ -12,12 +12,18 @@ const {
   KADI_MAX_EXPECTED_FIELDS,
   KADI_MAX_CAPABILITIES,
   KADI_MAX_COLLECTED_FIELDS,
+  KADI_INTENT_RESPONSE_JSON_SCHEMA,
+  createKadiIntentResponseJsonSchema,
+  createCanonicalIntentResponseExample,
   createEmptyPromptInput,
   normalizePromptInput,
   validatePromptInput,
   buildIntentResolutionMessages,
 } = require("../kadiBrainPromptBuilder");
 const { KADI_INTENTS } = require("../kadiBrainIntentContract");
+const {
+  parseIntentResolutionResponse,
+} = require("../kadiBrainResponseParser");
 
 function validInput(overrides = {}) {
   return {
@@ -41,6 +47,75 @@ test("exports stable frozen prompt constants and explicit limits", () => {
   assert.equal(KADI_MAX_EXPECTED_FIELDS, 30);
   assert.equal(KADI_MAX_CAPABILITIES, 50);
   assert.equal(KADI_MAX_COLLECTED_FIELDS, 50);
+});
+
+test("structured output schema exactly mirrors the canonical parser contract", () => {
+  const schema = createKadiIntentResponseJsonSchema();
+  const roots = [
+    "schemaVersion", "intent", "confidence", "language", "entities",
+    "missingFields", "ambiguities", "requestedAction", "conversation",
+    "safety", "explanation",
+  ];
+  assert.deepEqual(schema.required, roots);
+  assert.deepEqual(Object.keys(schema.properties), roots);
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.properties.schemaVersion.const, "kadi.intent.v1");
+  assert.deepEqual(schema.properties.intent.enum, Object.values(KADI_INTENTS));
+  assert.equal(schema.properties.intent.enum.length, 33);
+  assert.deepEqual(
+    schema.properties.entities.properties.items.items.required,
+    ["description", "quantity", "unit", "unitPrice", "total"]
+  );
+  assert.deepEqual(
+    schema.properties.ambiguities.items.required,
+    ["field", "options", "message", "blocking"]
+  );
+  assert.deepEqual(
+    schema.properties.conversation.required,
+    ["isReplyToCurrentFlow", "requiresContext", "contextReference"]
+  );
+  assert.deepEqual(
+    schema.properties.safety.required,
+    ["containsSensitiveData", "requiresHumanReview", "reason"]
+  );
+  for (const node of [
+    schema,
+    schema.properties.entities,
+    schema.properties.entities.properties.items.items,
+    schema.properties.ambiguities.items,
+    schema.properties.requestedAction.anyOf[1],
+    schema.properties.conversation,
+    schema.properties.safety,
+  ]) assert.equal(node.additionalProperties, false);
+  const serialized = JSON.stringify(schema);
+  assert.equal(serialized.includes("actionable"), false);
+  assert.equal(serialized.includes("normalizedData"), false);
+  assert.deepEqual(schema, KADI_INTENT_RESPONSE_JSON_SCHEMA);
+  assert.equal(Object.isFrozen(KADI_INTENT_RESPONSE_JSON_SCHEMA), true);
+  assert.notStrictEqual(schema, createKadiIntentResponseJsonSchema());
+});
+
+test("canonical fictitious example and real prompt parse through the strict parser", () => {
+  const example = createCanonicalIntentResponseExample();
+  const parsed = parseIntentResolutionResponse(JSON.stringify(example));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.validation.valid, true);
+  assert.equal(parsed.resolution.intent, "CREATE_INVOICE");
+  assert.equal(parsed.actionable, true);
+  const built = buildIntentResolutionMessages(validInput({
+    userMessage: "Créer une facture de 25000 FCFA pour PERSON_1",
+    capabilities: ["CREATE_INVOICE"],
+  }));
+  const system = built.messages[0].content;
+  for (const field of Object.keys(example)) assert.equal(system.includes(field), true, field);
+  for (const phrase of ["null", "[]", "actionable", "normalizedData", "additionalProperties"]) {
+    assert.equal(system.includes(phrase), true, phrase);
+  }
+  const combined = `${JSON.stringify(KADI_INTENT_RESPONSE_JSON_SCHEMA)}${JSON.stringify(example)}`;
+  for (const forbidden of [
+    "restorationMap", "sanitizedInput", "@", "RCCM", "IFU", "waId", "bsuid",
+  ]) assert.equal(combined.includes(forbidden), false, forbidden);
+  assert.deepEqual(createCanonicalIntentResponseExample(), example);
 });
 
 test("creates independent exact empty prompt inputs", () => {

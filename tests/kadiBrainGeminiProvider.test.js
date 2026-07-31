@@ -8,6 +8,7 @@ const path = require("node:path");
 const providerContract = require("../kadiBrainProviderContract");
 const privacyGateway = require("../kadiBrainPrivacyGateway");
 const gemini = require("../kadiBrainGeminiProvider");
+const promptBuilder = require("../kadiBrainPromptBuilder");
 
 const {
   createEmptyProviderRequest,
@@ -207,6 +208,7 @@ test("scenarios 27-44: neutral request build is exact, private, immutable, and d
       temperature: 0,
       maxOutputCodePoints: 32000,
       responseMimeType: "application/json",
+      responseJsonSchema: promptBuilder.createKadiIntentResponseJsonSchema(),
     },
   });
   assert.equal(JSON.stringify(request), before);
@@ -447,7 +449,11 @@ test("scenarios 123-150: production imports and source expose no real provider s
   );
   assert.deepEqual(
     Array.from(source.matchAll(/require\((["'])(.*?)\1\)/g), (match) => match[2]),
-    ["./kadiBrainProviderContract", "./kadiBrainPrivacyGateway"]
+    [
+      "./kadiBrainProviderContract",
+      "./kadiBrainPrivacyGateway",
+      "./kadiBrainPromptBuilder",
+    ]
   );
   assert.doesNotMatch(source, /\bimport\s*\(/);
   const forbidden = [
@@ -1370,4 +1376,24 @@ test("real client error kinds map to canonical non-leaking provider responses", 
     assert.equal(JSON.stringify(first).includes("PRIVATE_SENTINEL"), false);
     assertCanonical(first);
   }
+});
+
+test("provider transports one deterministic privacy-free responseJsonSchema", () => {
+  const first = buildGeminiClientRequest(validProviderRequest());
+  const second = buildGeminiClientRequest(validProviderRequest());
+  assert.deepEqual(
+    first.generationConfig.responseJsonSchema,
+    promptBuilder.KADI_INTENT_RESPONSE_JSON_SCHEMA
+  );
+  assert.deepEqual(first, second);
+  assert.notStrictEqual(
+    first.generationConfig.responseJsonSchema,
+    second.generationConfig.responseJsonSchema
+  );
+  assert.equal(Object.hasOwn(first.generationConfig, "responseSchema"), false);
+  const serialized = JSON.stringify(first.generationConfig.responseJsonSchema);
+  for (const forbidden of [
+    "restorationMap", "sanitizedInput", "privacyResult", "actionable",
+    "normalizedData",
+  ]) assert.equal(serialized.includes(forbidden), false, forbidden);
 });

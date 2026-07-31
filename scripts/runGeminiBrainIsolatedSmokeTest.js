@@ -22,6 +22,95 @@ const PUBLIC_CODES = Object.freeze({
   PARSE_FAILED: "GEMINI_SMOKE_PARSE_FAILED",
   INTERNAL_FAILURE: "GEMINI_SMOKE_INTERNAL_FAILURE",
 });
+const CANONICAL_RESPONSE_KEYS = Object.freeze([
+  "schemaVersion", "intent", "confidence", "language", "entities",
+  "missingFields", "ambiguities", "requestedAction", "conversation",
+  "safety", "explanation",
+]);
+const KNOWN_PARSE_FAILURE_CODES = new Set(
+  Object.values(responseParser.KADI_PARSE_ERROR_CODES)
+);
+const KNOWN_INTENTS = new Set(Object.values(intentContract.KADI_INTENTS));
+
+function contentLengthBucket(value) {
+  const length = typeof value === "string" ? Array.from(value).length : 0;
+  if (length === 0) return "0";
+  if (length <= 500) return "1_500";
+  if (length <= 2000) return "501_2000";
+  if (length <= 8000) return "2001_8000";
+  return "8001_PLUS";
+}
+
+function createSafeParseDiagnostic(content, parsed) {
+  let value = null;
+  let jsonSyntaxValid = false;
+  try {
+    value = JSON.parse(typeof content === "string" ? content.trim() : "");
+    jsonSyntaxValid = true;
+  } catch {}
+  const rootType = !jsonSyntaxValid
+    ? "UNKNOWN"
+    : value === null
+      ? "NULL"
+      : Array.isArray(value)
+        ? "ARRAY"
+        : typeof value === "object"
+          ? "OBJECT"
+          : typeof value === "string"
+            ? "STRING"
+            : typeof value === "number"
+              ? "NUMBER"
+              : typeof value === "boolean"
+                ? "BOOLEAN"
+                : "UNKNOWN";
+  const keys = rootType === "OBJECT" ? Object.keys(value) : [];
+  const observedKeyNames = CANONICAL_RESPONSE_KEYS.filter((key) =>
+    keys.includes(key)
+  );
+  const missingRequiredKeys = CANONICAL_RESPONSE_KEYS.filter((key) =>
+    !keys.includes(key)
+  );
+  const unknownKeyCount = keys.filter(
+    (key) => !CANONICAL_RESPONSE_KEYS.includes(key)
+  ).length;
+  const failureCode =
+    parsed && KNOWN_PARSE_FAILURE_CODES.has(parsed.errorCode)
+      ? parsed.errorCode
+      : responseParser.KADI_PARSE_ERROR_CODES.INTERNAL_PARSE_FAILURE;
+  const invalidFieldCategories = [];
+  if (!jsonSyntaxValid) invalidFieldCategories.push("JSON_SYNTAX");
+  if (rootType !== "OBJECT") invalidFieldCategories.push("ROOT_TYPE");
+  if (missingRequiredKeys.length) invalidFieldCategories.push("MISSING_REQUIRED");
+  if (unknownKeyCount) invalidFieldCategories.push("UNKNOWN_FIELDS");
+  if (
+    jsonSyntaxValid &&
+    rootType === "OBJECT" &&
+    failureCode === responseParser.KADI_PARSE_ERROR_CODES.INVALID_SCHEMA
+  ) invalidFieldCategories.push("SCHEMA_VERSION");
+  if (
+    jsonSyntaxValid &&
+    rootType === "OBJECT" &&
+    failureCode === responseParser.KADI_PARSE_ERROR_CODES.INVALID_RESOLUTION
+  ) invalidFieldCategories.push("FIELD_VALUE_OR_TYPE");
+  if (failureCode === responseParser.KADI_PARSE_ERROR_CODES.UNSAFE_VALUE) {
+    invalidFieldCategories.push("UNSAFE_PROPERTY");
+  }
+  return {
+    parserFailureCode: failureCode,
+    contentPresent: typeof content === "string" && content.length > 0,
+    contentLengthBucket: contentLengthBucket(content),
+    jsonSyntaxValid,
+    rootType,
+    observedKeyNames,
+    missingRequiredKeys,
+    unknownKeyCount,
+    invalidFieldCategories,
+    intentRecognized:
+      rootType === "OBJECT" &&
+      typeof value.intent === "string" &&
+      KNOWN_INTENTS.has(value.intent),
+  };
+}
 
 function createGeminiSmokeDependencies(overrides = {}) {
   const source = overrides && typeof overrides === "object" ? overrides : {};
@@ -167,7 +256,21 @@ async function runGeminiIsolatedSmokeTest(options = {}) {
       providerResponse.content
     );
     if (!parsed || parsed.ok !== true || parsed.validation?.valid !== true) {
-      return failure(6, PUBLIC_CODES.PARSE_FAILED);
+      return {
+        exitCode: 6,
+        code: PUBLIC_CODES.PARSE_FAILED,
+        publicResult: {
+          smokeVersion: KADI_GEMINI_SMOKE_VERSION,
+          model: KADI_GEMINI_SMOKE_MODEL,
+          privacySafe: true,
+          providerRequestValid: true,
+          providerStatus: providerResponse.status,
+          providerResponseValid: true,
+          parserValid: false,
+          ...createSafeParseDiagnostic(providerResponse.content, parsed),
+          execution: "NONE",
+        },
+      };
     }
 
     const publicResult = {

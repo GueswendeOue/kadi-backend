@@ -11,6 +11,9 @@ const {
   isPrivacySafeForProvider,
   sanitizePrivacyInput,
 } = require("./kadiBrainPrivacyGateway");
+const {
+  createKadiIntentResponseJsonSchema,
+} = require("./kadiBrainPromptBuilder");
 
 const KADI_GEMINI_PROVIDER_VERSION = "kadi.gemini-provider.v1";
 
@@ -547,6 +550,7 @@ function buildGeminiClientRequest(providerRequest) {
         temperature: 0,
         maxOutputCodePoints: request.generation.maxOutputCodePoints,
         responseMimeType: "application/json",
+        responseJsonSchema: createKadiIntentResponseJsonSchema(),
       },
     };
     return containsForbiddenKey(result) ? null : result;

@@ -4,6 +4,7 @@ const {
   KADI_INTENTS,
   KADI_INTENT_SCHEMA_VERSION,
   KADI_ACTIONABLE_CONFIDENCE_THRESHOLD,
+  createEmptyIntentResolution,
 } = require("./kadiBrainIntentContract");
 
 const KADI_PROMPT_SCHEMA_VERSION = "kadi.prompt.v1";
@@ -32,6 +33,160 @@ const FORBIDDEN_KEYS = new Set([
 ]);
 const USER_INPUT_BEGIN = "KADI_USER_INPUT_BEGIN";
 const USER_INPUT_END = "KADI_USER_INPUT_END";
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+function nullable(type) {
+  return { anyOf: [{ type }, { type: "null" }] };
+}
+
+const ENTITY_STRING_FIELDS = Object.freeze([
+  "documentType", "documentId", "documentNumber", "clientName", "clientPhone",
+  "clientAddress", "businessName", "date", "dueDate", "currency",
+  "paymentMethod", "reason", "description", "searchQuery", "requestedFormat",
+  "sourceDocumentId", "sourceDocumentNumber",
+]);
+const ENTITY_NUMBER_FIELDS = Object.freeze([
+  "amount", "subtotal", "tax", "discount",
+]);
+const ITEM_FIELDS = Object.freeze([
+  "description", "quantity", "unit", "unitPrice", "total",
+]);
+const AMBIGUITY_FIELDS = Object.freeze([
+  "field", "options", "message", "blocking",
+]);
+const ROOT_FIELDS = Object.freeze([
+  "schemaVersion", "intent", "confidence", "language", "entities",
+  "missingFields", "ambiguities", "requestedAction", "conversation",
+  "safety", "explanation",
+]);
+
+function createKadiIntentResponseJsonSchema() {
+  const entityProperties = {};
+  for (const field of ENTITY_STRING_FIELDS) {
+    entityProperties[field] = nullable("string");
+  }
+  for (const field of ENTITY_NUMBER_FIELDS) {
+    entityProperties[field] = nullable("number");
+  }
+  entityProperties.items = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: [...ITEM_FIELDS],
+      properties: {
+        description: nullable("string"),
+        quantity: nullable("number"),
+        unit: nullable("string"),
+        unitPrice: nullable("number"),
+        total: nullable("number"),
+      },
+    },
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: [...ROOT_FIELDS],
+    properties: {
+      schemaVersion: { const: KADI_INTENT_SCHEMA_VERSION },
+      intent: { type: "string", enum: Object.values(KADI_INTENTS) },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      language: nullable("string"),
+      entities: {
+        type: "object",
+        additionalProperties: false,
+        required: [...ENTITY_STRING_FIELDS, ...ENTITY_NUMBER_FIELDS, "items"],
+        properties: entityProperties,
+      },
+      missingFields: { type: "array", items: { type: "string" } },
+      ambiguities: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [...AMBIGUITY_FIELDS],
+          properties: {
+            field: nullable("string"),
+            options: { type: "array", items: { type: "string" } },
+            message: nullable("string"),
+            blocking: { type: "boolean" },
+          },
+        },
+      },
+      requestedAction: {
+        anyOf: [
+          { type: "null" },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["type", "target"],
+            properties: {
+              type: nullable("string"),
+              target: nullable("string"),
+            },
+          },
+        ],
+      },
+      conversation: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "isReplyToCurrentFlow", "requiresContext", "contextReference",
+        ],
+        properties: {
+          isReplyToCurrentFlow: { type: "boolean" },
+          requiresContext: { type: "boolean" },
+          contextReference: nullable("string"),
+        },
+      },
+      safety: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "containsSensitiveData", "requiresHumanReview", "reason",
+        ],
+        properties: {
+          containsSensitiveData: { type: "boolean" },
+          requiresHumanReview: { type: "boolean" },
+          reason: nullable("string"),
+        },
+      },
+      explanation: nullable("string"),
+    },
+  };
+}
+
+const KADI_INTENT_RESPONSE_JSON_SCHEMA = deepFreeze(
+  createKadiIntentResponseJsonSchema()
+);
+
+function createCanonicalIntentResponseExample() {
+  const example = createEmptyIntentResolution();
+  example.intent = KADI_INTENTS.CREATE_INVOICE;
+  example.confidence = 0.98;
+  example.language = "fr";
+  example.entities.documentType = "invoice";
+  example.entities.clientName = "PERSON_1";
+  example.entities.currency = "XOF";
+  example.entities.items = [{
+    description: "ITEM_1",
+    quantity: 1,
+    unit: "piece",
+    unitPrice: 25000,
+    total: 25000,
+  }];
+  example.requestedAction = {
+    type: KADI_INTENTS.CREATE_INVOICE,
+    target: "invoice",
+  };
+  example.explanation = "Intent classified from fictitious input.";
+  return example;
+}
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -302,6 +457,10 @@ function buildSystemMessage(capabilities) {
     `Capabilities allowed for this request: ${allowed}. Use UNKNOWN or UNSUPPORTED_REQUEST when appropriate.`,
     `The actionability confidence threshold is ${KADI_ACTIONABLE_CONFIDENCE_THRESHOLD}, for information only.`,
     "Expected JSON keys: schemaVersion, intent, confidence, language, entities, missingFields, ambiguities, requestedAction, conversation, safety, explanation.",
+    `Canonical JSON Schema: ${stableStringify(KADI_INTENT_RESPONSE_JSON_SCHEMA)}`,
+    `Canonical fictitious example: ${stableStringify(createCanonicalIntentResponseExample())}`,
+    "Every root and nested property declared by the schema is required. Use null for an unknown nullable value and [] for an empty array; never omit a required property.",
+    "Never add actionable, normalizedData, or any unknown property. Actionable is computed locally after strict parsing.",
     "Use conversation context only when it is explicitly present in the delimited input.",
   ].join("\n");
 }
@@ -338,6 +497,9 @@ function buildIntentResolutionMessages(input) {
 }
 
 module.exports = {
+  KADI_INTENT_RESPONSE_JSON_SCHEMA,
+  createKadiIntentResponseJsonSchema,
+  createCanonicalIntentResponseExample,
   KADI_PROMPT_SCHEMA_VERSION,
   KADI_PROMPT_CHANNELS,
   KADI_ALLOWED_CONTEXT_FIELDS,

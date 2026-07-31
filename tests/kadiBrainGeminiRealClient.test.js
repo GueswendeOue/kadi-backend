@@ -9,6 +9,7 @@ const real = require("../kadiBrainGeminiRealClient");
 const provider = require("../kadiBrainGeminiProvider");
 const providerContract = require("../kadiBrainProviderContract");
 const privacyGateway = require("../kadiBrainPrivacyGateway");
+const promptBuilder = require("../kadiBrainPromptBuilder");
 
 const {
   KADI_GEMINI_REAL_CLIENT_VERSION,
@@ -31,6 +32,7 @@ function request(overrides = {}) {
       temperature: 0,
       maxOutputCodePoints: 4096,
       responseMimeType: "application/json",
+      responseJsonSchema: promptBuilder.createKadiIntentResponseJsonSchema(),
     },
     ...overrides,
   };
@@ -150,6 +152,7 @@ test("scenarios 21-40: Google request build is exact, bounded, immutable, and de
       temperature: 0,
       responseMimeType: "application/json",
       maxOutputTokens: 2048,
+      responseJsonSchema: promptBuilder.createKadiIntentResponseJsonSchema(),
     },
   });
   assert.deepEqual(Object.keys(built), ["model", "contents", "config"]);
@@ -166,6 +169,7 @@ test("scenarios 21-40: Google request build is exact, bounded, immutable, and de
       temperature: 0,
       maxOutputCodePoints: 999999,
       responseMimeType: "application/json",
+      responseJsonSchema: promptBuilder.createKadiIntentResponseJsonSchema(),
     },
   })).config.maxOutputTokens, KADI_GEMINI_REAL_CLIENT_LIMITS.maxOutputTokens);
   assert.equal(buildGoogleGenerateContentRequest(request({
@@ -173,6 +177,7 @@ test("scenarios 21-40: Google request build is exact, bounded, immutable, and de
       temperature: 0,
       maxOutputCodePoints: 1,
       responseMimeType: "application/json",
+      responseJsonSchema: promptBuilder.createKadiIntentResponseJsonSchema(),
     },
   })).config.maxOutputTokens, 1);
 });
@@ -1333,4 +1338,39 @@ test("coverage gap: hostile getPrototypeOf proxy is immutable and deterministic"
   assert.equal(JSON.stringify(first), JSON.stringify(second));
   assert.equal(JSON.stringify(first).includes(sentinel), false);
   assert.deepEqual(Reflect.ownKeys(target), before);
+});
+
+test("structured output schema is copied into the single SDK request", async () => {
+  const input = request();
+  const built = buildGoogleGenerateContentRequest(input);
+  assert.deepEqual(
+    built.config.responseJsonSchema,
+    promptBuilder.createKadiIntentResponseJsonSchema()
+  );
+  assert.equal(Object.hasOwn(built.config, "responseSchema"), false);
+  let calls = 0;
+  let captured;
+  const client = createGeminiRealClient({
+    apiKey: "FAKE_TEST_KEY",
+    sdkFactory: () => ({
+      models: {
+        async generateContent(value) {
+          calls += 1;
+          captured = value;
+          return response();
+        },
+      },
+    }),
+  });
+  await client.generateContent(input);
+  assert.equal(calls, 1);
+  assert.deepEqual(
+    captured.config.responseJsonSchema,
+    promptBuilder.KADI_INTENT_RESPONSE_JSON_SCHEMA
+  );
+  captured.config.responseJsonSchema.properties.intent.enum[0] = "MUTATED";
+  assert.equal(
+    input.generationConfig.responseJsonSchema.properties.intent.enum[0],
+    "CREATE_QUOTE"
+  );
 });

@@ -63,6 +63,15 @@ function codePointLength(value) {
   return [...value].length;
 }
 
+function cloneJsonObject(value) {
+  try {
+    const cloned = JSON.parse(JSON.stringify(value));
+    return isPlainObject(cloned) ? cloned : null;
+  } catch {
+    return null;
+  }
+}
+
 function safeDescriptorValue(object, key) {
   if (
     !object ||
@@ -214,11 +223,13 @@ function validateNeutralRequest(neutralRequest) {
   const generation = neutralRequest.generationConfig;
   return exactKeys(generation, [
     "temperature", "maxOutputCodePoints", "responseMimeType",
+    "responseJsonSchema",
   ]) &&
     generation.temperature === 0 &&
     Number.isSafeInteger(generation.maxOutputCodePoints) &&
     generation.maxOutputCodePoints > 0 &&
-    generation.responseMimeType === "application/json";
+    generation.responseMimeType === "application/json" &&
+    cloneJsonObject(generation.responseJsonSchema) !== null;
 }
 
 function buildGoogleGenerateContentRequest(neutralRequest) {
@@ -240,6 +251,9 @@ function buildGoogleGenerateContentRequest(neutralRequest) {
         temperature: 0,
         responseMimeType: "application/json",
         maxOutputTokens,
+        responseJsonSchema: cloneJsonObject(
+          neutralRequest.generationConfig.responseJsonSchema
+        ),
       },
     };
   } catch {
