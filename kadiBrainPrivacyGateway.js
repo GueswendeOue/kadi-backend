@@ -85,6 +85,33 @@ const PERSONAL_CATEGORIES = new Set([
   "PERSONAL_NAME", "PHONE", "EMAIL", "ADDRESS", "RAW_IDENTITY",
   "SESSION_IDENTIFIER", "DOCUMENT_SENSITIVE",
 ]);
+const PERSONAL_NAME_CONTEXTS = Object.freeze([
+  "au nom de", "reçu de", "recu de", "facture à", "facture a",
+  "devis pour", "livraison à", "livraison a", "invoice for",
+  "customer", "destinataire", "bénéficiaire", "beneficiaire",
+  "expéditeur", "expediteur", "titulaire", "propriétaire", "proprietaire",
+  "responsable", "cliente", "client", "prénom", "prenom", "nom",
+  "monsieur", "madame", "mme", "m", "contact", "pour",
+]);
+const STRONG_PERSONAL_NAME_CONTEXTS = new Set([
+  "au nom de", "reçu de", "recu de", "facture à", "facture a",
+  "livraison à", "livraison a", "invoice for", "customer",
+  "destinataire", "bénéficiaire", "beneficiaire", "expéditeur",
+  "expediteur", "titulaire", "propriétaire", "proprietaire",
+  "responsable", "cliente", "client", "prénom", "prenom", "nom",
+  "monsieur", "madame", "mme", "m", "contact",
+]);
+const PERSONAL_NAME_BUSINESS_TERMS = new Set([
+  "aide", "annuler", "article", "bonjour", "burkina", "ciment", "client",
+  "confirmer", "décharge", "decharge", "devis", "facture", "faso",
+  "fcfa", "gemi" + "ni", "kadi", "menu", "moov", "non", "orange",
+  "ouagadougou", "pdf", "plomberie", "prix", "produit", "quantité",
+  "quantite", "réparation", "reparation", "reçu", "recu", "samsung",
+  "sacs", "service", "supa" + "base", "syscohada", "téléphone",
+  "telephone", "total",
+  "whatsapp", "oui",
+]);
+const PERSONAL_NAME_CONNECTORS = new Set(["de", "du", "des", "d", "la", "le"]);
 
 const KEY_GROUPS = Object.freeze({
   PERSONAL_NAME: new Set([
@@ -347,29 +374,137 @@ function addRedaction(state, path, category, action, alias = null) {
   state.redactions.push({ path, category, action, alias });
 }
 
+function normalizeNameTerm(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLocaleLowerCase("fr");
+}
+
+function reserveExistingAliases(text, state) {
+  for (const match of String(text || "").matchAll(/\bPERSON_([1-9]\d*)\b/gu)) {
+    state.reservedAliases.add(`PERSON_${match[1]}`);
+  }
+}
+
 function aliasName(value, state) {
   if (state.nameAliases.has(value)) return state.nameAliases.get(value);
   if (state.nameAliases.size >= KADI_PRIVACY_LIMITS.maxRestorationEntries) {
     throw new Error("INVALID_RESTORATION_MAP");
   }
-  const alias = `PERSON_${state.nameAliases.size + 1}`;
+  let index = state.nextAliasIndex;
+  let alias = `PERSON_${index}`;
+  while (state.reservedAliases.has(alias)) {
+    index += 1;
+    alias = `PERSON_${index}`;
+  }
+  state.nextAliasIndex = index + 1;
+  state.reservedAliases.add(alias);
   state.nameAliases.set(value, alias);
   state.restorationMap[alias] = value;
   return alias;
 }
 
-function textNameMatches(text) {
-  const pattern = /\b(?:pour|client(?:e)?|nom)\s+([A-ZÀ-ÖØ-Þ][\p{L}'’.-]+(?:\s+[A-ZÀ-ÖØ-Þ][\p{L}'’.-]+)+)/gu;
+function isNameUnit(value) {
+  return /^(?:[\p{Lu}][\p{L}\p{M}'’.-]*|[\p{Lu}][\p{L}\p{M}'’.-]*-[\p{Lu}]?[\p{L}\p{M}'’.-]+)$/u.test(value);
+}
+
+function isBusinessNameTerm(value) {
+  return PERSONAL_NAME_BUSINESS_TERMS.has(normalizeNameTerm(value));
+}
+
+function isPersonalNameSyntax(value, rejectBusinessTerms = true) {
+  const normalized = String(value || "").normalize("NFC").trim();
+  if (!normalized || codePointLength(normalized) > 160) return false;
+  if (/^PERSON_[1-9]\d*$/u.test(normalized)) return false;
+  const units = normalized.split(/\s+/u);
+  if (units.length < 1 || units.length > 5) return false;
+  let lexicalUnits = 0;
+  for (const unit of units) {
+    const normalizedUnit = normalizeNameTerm(unit.replace(/[.,;:!?]+$/u, ""));
+    if (PERSONAL_NAME_CONNECTORS.has(normalizedUnit)) continue;
+    if (
+      !isNameUnit(unit) ||
+      (rejectBusinessTerms && isBusinessNameTerm(unit))
+    ) return false;
+    lexicalUnits += 1;
+  }
+  return lexicalUnits > 0;
+}
+
+function isLikelyNameValue(value) {
+  return isPersonalNameSyntax(value, true);
+}
+
+function contextualNameMatches(text) {
+  const contexts = PERSONAL_NAME_CONTEXTS
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .sort((a, b) => b.length - a.length)
+    .join("|");
+  const pattern = new RegExp(`(?:^|\\b)(${contexts})(?=\\s|[.:=,-]|$)`, "giu");
   const matches = [];
   for (const match of text.matchAll(pattern)) {
-    const value = match[1];
-    const start = match.index + match[0].lastIndexOf(value);
+    const strongContext = STRONG_PERSONAL_NAME_CONTEXTS.has(
+      normalizeNameTerm(match[1])
+    );
+    const suffix = text.slice(match.index + match[0].length);
+    const leading = suffix.match(/^\s*(?:[.:=,-]\s*)?/u)?.[0] || "";
+    const captured = suffix.slice(leading.length).match(
+      /^[\p{L}\p{M}\d_'’.-]+(?:\s+[\p{L}\p{M}\d_'’.-]+){0,4}/u
+    )?.[0] || "";
+    const units = captured.split(/\s+/u);
+    const accepted = [];
+    for (const unit of units) {
+      const clean = unit.replace(/[.,;:!?]+$/u, "");
+      const normalized = normalizeNameTerm(clean);
+      if (
+        PERSONAL_NAME_CONNECTORS.has(normalized) &&
+        accepted.length > 0
+      ) {
+        accepted.push(clean);
+        continue;
+      }
+      if (!isNameUnit(clean) || (isBusinessNameTerm(clean) && !strongContext)) break;
+      accepted.push(clean);
+    }
+    while (
+      accepted.length &&
+      PERSONAL_NAME_CONNECTORS.has(normalizeNameTerm(accepted.at(-1)))
+    ) accepted.pop();
+    const value = accepted.join(" ");
+    if (!value || (!strongContext && !isLikelyNameValue(value))) continue;
+    const start = match.index + match[0].length + leading.length;
     matches.push({ start, end: start + value.length, value });
   }
   return matches;
 }
 
+function isolatedNameMatches(text) {
+  const value = String(text || "").normalize("NFC").trim();
+  if (!isLikelyNameValue(value)) return [];
+  return [{ start: text.indexOf(value), end: text.indexOf(value) + value.length, value }];
+}
+
+function personalNameMatches(text) {
+  const matches = [...contextualNameMatches(text)];
+  if (matches.length === 0) matches.push(...isolatedNameMatches(text));
+  return matches
+    .sort((a, b) => a.start - b.start || b.end - a.end)
+    .filter((item, index, list) =>
+      !list.slice(0, index).some(
+        (other) => item.start < other.end && item.end > other.start
+      )
+    );
+}
+
+function hasResidualPersonalName(text) {
+  if (typeof text !== "string") return false;
+  if (contextualNameMatches(text).length > 0) return true;
+  return isolatedNameMatches(text).length > 0;
+}
+
 function sanitizeText(text, path, policy, state) {
+  reserveExistingAliases(text, state);
   const replacements = [];
   for (const detection of detectSensitiveText(text)) {
     if (SECRET_CATEGORIES.has(detection.category)) {
@@ -411,7 +546,7 @@ function sanitizeText(text, path, policy, state) {
     }
   }
   if (!policy.allowPersonalNames && policy.pseudonymizeNames) {
-    for (const match of textNameMatches(text)) {
+    for (const match of personalNameMatches(text)) {
       const alias = aliasName(match.value, state);
       replacements.push({
         start: match.start,
@@ -546,6 +681,8 @@ function sanitizePrivacyInput(input) {
       redactions: [],
       restorationMap: {},
       nameAliases: new Map(),
+      reservedAliases: new Set(),
+      nextAliasIndex: 1,
     };
     const sanitizedMessage = sanitizeText(
       normalized.userMessage,
@@ -622,7 +759,7 @@ function inspectSanitizedPrivacyPayload(sanitizedInput) {
         state.containsBusinessSensitiveData = true;
       }
     }
-    if (textNameMatches(text).length > 0) state.containsPersonalData = true;
+    if (hasResidualPersonalName(text)) state.containsPersonalData = true;
   };
   const walk = (value, keyCategory = "NONE") => {
     if (SECRET_CATEGORIES.has(keyCategory)) state.containsSecrets = true;
@@ -653,7 +790,7 @@ function isRestorablePersonalName(alias, value) {
   ) return false;
   if (classifySensitiveKey(value) !== "NONE") return false;
   if (detectSensitiveText(value).length > 0) return false;
-  return /^[\p{L}'’.-]+(?:\s+[\p{L}'’.-]+)+$/u.test(value.trim());
+  return isPersonalNameSyntax(value, false);
 }
 
 function derivePrivacySummary(result) {

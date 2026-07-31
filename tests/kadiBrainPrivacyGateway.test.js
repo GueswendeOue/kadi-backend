@@ -265,6 +265,136 @@ test("scenarios 85-95: names are pseudonymized deterministically with a local ma
   assert.equal(first.redactions.every((item) => !("originalValue" in item)), true);
 });
 
+test("free-form names: explicit personal contexts pseudonymize simple and typographic names", () => {
+  const cases = [
+    ["Créer une facture pour Awa", "Awa"],
+    ["Facture à Issa", "Issa"],
+    ["Client: Fatou", "Fatou"],
+    ["Nom = Paul", "Paul"],
+    ["Madame Kaboré", "Kaboré"],
+    ["Au nom de Aminata Traoré", "Aminata Traoré"],
+    ["Reçu de Jean-Pierre", "Jean-Pierre"],
+    ["Destinataire O'Connor", "O'Connor"],
+    ["Invoice for Awa", "Awa"],
+    ["Customer: John", "John"],
+    ["Nom : Élodie", "Élodie"],
+    ["Client O’Connor", "O’Connor"],
+    ["pour JEAN PIERRE", "JEAN PIERRE"],
+    ["M. KABORÉ", "KABORÉ"],
+  ];
+  for (const [message, rawName] of cases) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.allowed, true, message);
+    assert.equal(result.decision, "ALLOWED_WITH_REDACTION", message);
+    assert.equal(result.sanitizedInput.userMessage.includes(rawName), false, message);
+    assert.equal(Object.values(result.restorationMap).includes(rawName), true, message);
+    assert.equal(isPrivacySafeForProvider(result), true, message);
+  }
+});
+
+test("free-form names: isolated likely-name replies are pseudonymized", () => {
+  for (const message of ["Awa", "Issa Ouedraogo", "Jean-Pierre", "Mme Kaboré"]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.decision, "ALLOWED_WITH_REDACTION", message);
+    assert.match(result.sanitizedInput.userMessage, /^(?:Mme )?PERSON_[1-9]\d*$/u);
+    assert.equal(result.sanitizedInput.userMessage.includes(message), false);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("free-form names: business commands, products, organizations and places remain usable", () => {
+  const messages = [
+    "Créer une facture de 25000 FCFA",
+    "Devis pour réparation téléphone",
+    "3 sacs de ciment",
+    "Service de plomberie",
+    "Orange Money",
+    "Ouagadougou",
+    "Burkina Faso",
+    "Article Samsung A15",
+    "PDF",
+    "Oui",
+    "Non",
+    "Confirmer",
+    "Moov",
+    "WhatsApp",
+    "Supabase",
+    "Gemini",
+    "Kadi",
+  ];
+  for (const message of messages) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.deepEqual(result.restorationMap, {});
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+  const explicit = sanitizePrivacyInput(validInput({ userMessage: "Client : Orange" }));
+  assert.equal(explicit.sanitizedInput.userMessage, "Client : PERSON_1");
+  assert.equal(explicit.restorationMap.PERSON_1, "Orange");
+});
+
+test("free-form names: placeholders are stable, distinct and collision-safe", () => {
+  const repeated = sanitizePrivacyInput(validInput({
+    userMessage: "Client Awa, destinataire Awa, responsable Issa",
+  }));
+  assert.equal(repeated.restorationMap.PERSON_1, "Awa");
+  assert.equal(repeated.restorationMap.PERSON_2, "Issa");
+  assert.equal(
+    repeated.sanitizedInput.userMessage.match(/PERSON_1/gu)?.length,
+    2
+  );
+  const collision = sanitizePrivacyInput(validInput({
+    userMessage: "PERSON_1 client Awa",
+  }));
+  assert.equal(collision.sanitizedInput.userMessage.includes("PERSON_1"), true);
+  assert.equal(collision.restorationMap.PERSON_2, "Awa");
+  assert.equal(collision.restorationMap.PERSON_1, undefined);
+});
+
+test("free-form names: restoration data stays local and residual names fail final safety", () => {
+  const result = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  assert.equal(JSON.stringify(result.sanitizedInput).includes("Awa"), false);
+  assert.equal("restorationMap" in result.sanitizedInput, false);
+  assert.equal(JSON.stringify({
+    privacySafe: isPrivacySafeForProvider(result),
+    blocked: !result.allowed,
+    reasonCode: result.errorCode,
+    placeholderCount: Object.keys(result.restorationMap).length,
+  }).includes("Awa"), false);
+
+  const forged = structuredClone(result);
+  forged.sanitizedInput.userMessage = "Client Awa";
+  forged.summary.containsPersonalDataAfter = true;
+  assert.equal(validatePrivacyResult(forged).valid, false);
+  assert.equal(isPrivacySafeForProvider(forged), false);
+});
+
+test("free-form names: secret precedence, immutability and determinism remain closed", () => {
+  const frozen = Object.freeze(validInput({ userMessage: "Client Awa, OTP 123456" }));
+  const before = JSON.stringify(frozen);
+  const blocked = sanitizePrivacyInput(frozen);
+  assert.equal(blocked.decision, "BLOCKED");
+  assert.equal(blocked.errorCode, "SECRET_DETECTED");
+  assert.equal(JSON.stringify(blocked).includes("Awa"), false);
+  assert.equal(JSON.stringify(blocked).includes("123456"), false);
+  assert.equal(JSON.stringify(frozen), before);
+
+  const unicode = validInput({ userMessage: "Nom : E\u0301lodie" });
+  const first = sanitizePrivacyInput(unicode);
+  const second = sanitizePrivacyInput(unicode);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(first.sanitizedInput.userMessage.includes("lodie"), false);
+});
+
+test("free-form names: detection stays bounded on maximum-length input", () => {
+  const input = validInput({ userMessage: "facture ".repeat(1500).slice(0, 12000) });
+  const started = process.hrtime.bigint();
+  const result = sanitizePrivacyInput(input);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.equal(result.allowed, true);
+  assert.equal(elapsedMs < 1000, true);
+});
+
 test("scenarios 96-104: default removal and financial policy are enforced", () => {
   const result = sanitizePrivacyInput(validInput({
     userMessage: "Téléphone 70 12 34 56 email awa@example.com IFU 00012345 montant 125000 FCFA",
