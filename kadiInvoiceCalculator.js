@@ -7,6 +7,7 @@ const {
   resolveInvoiceDocumentType,
   resolveSafeDocumentLabel,
 } = require("./kadiDocumentContract");
+const { MAX_INVOICE_ITEMS } = require("./kadiInvoiceLimits");
 
 function ok(value) {
   return { ok: true, value };
@@ -36,7 +37,7 @@ function calculateInvoiceFlowDraft(normalizedSubmission, issuerProfile = null) {
   if (
     !Array.isArray(normalizedSubmission.items) ||
     normalizedSubmission.items.length < 1 ||
-    normalizedSubmission.items.length > 6
+    normalizedSubmission.items.length > MAX_INVOICE_ITEMS
   ) {
     return fail("ITEM_COUNT_INVALID");
   }
@@ -50,7 +51,7 @@ function calculateInvoiceFlowDraft(normalizedSubmission, issuerProfile = null) {
       !Number.isSafeInteger(item.quantity_millis) ||
       item.quantity_millis <= 0 ||
       !Number.isSafeInteger(item.unit_price) ||
-      item.unit_price <= 0
+      item.unit_price < 0
     ) {
       return fail("ITEM_INVALID");
     }
@@ -126,6 +127,7 @@ function calculateInvoiceFlowDraft(normalizedSubmission, issuerProfile = null) {
     document_number: null,
     issue_date: null,
     transaction_date: normalizedSubmission.transaction_date || null,
+    subject: normalizedSubmission.invoice_subject || normalizedSubmission.client?.invoice_subject || null,
     currency: "XOF",
     issuer,
     client: {

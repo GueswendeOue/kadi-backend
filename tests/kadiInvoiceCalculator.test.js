@@ -38,7 +38,7 @@ test("one item is calculated locally in deterministic XOF integers", () => {
   assert.equal(result.value.issue_date, null);
 });
 
-test("six items are calculated and the maximum is enforced", () => {
+test("six items remain compatible and the calculator accepts canonical arrays beyond six", () => {
   const extra = {};
   for (let index = 2; index <= 6; index += 1) {
     extra[`item_${index}_designation`] = `Article ${index}`;
@@ -54,10 +54,19 @@ test("six items are calculated and the maximum is enforced", () => {
   assert.equal(result.value.items.length, 6);
   assert.equal(result.value.grand_total, 2500);
 
-  assert.equal(
-    calculateInvoiceFlowDraft({ ...normalized, items: [...normalized.items, normalized.items[0]] }).error,
-    "ITEM_COUNT_INVALID"
-  );
+  const seven = calculateInvoiceFlowDraft({ ...normalized, items: [...normalized.items, normalized.items[0]] });
+  assert.equal(seven.ok, true);
+  assert.equal(seven.value.items.length, 7);
+});
+
+test("canonical calculator is deterministic for 25 items and enforces 100", () => {
+  const one = normalize().items[0];
+  const submission = { ...normalize(), items: Array.from({ length: 25 }, () => one) };
+  const result = calculateInvoiceFlowDraft(submission);
+  assert.equal(result.ok, true);
+  assert.equal(result.value.items.length, 25);
+  assert.equal(result.value.grand_total, 50000);
+  assert.equal(calculateInvoiceFlowDraft({ ...submission, items: Array.from({ length: 101 }, () => one) }).error, "ITEM_COUNT_INVALID");
 });
 
 test("fractional quantities use deterministic half-up FCFA rounding", () => {
