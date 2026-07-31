@@ -217,7 +217,33 @@ function clockValue(clock) {
 function createKadiBrainRealShadowRunner(overrides = {}) {
   const dependencies = createDefaultDependencies(overrides);
   // Deduplication is local to this runner instance and is never persisted.
-  const seenMessageHashes = new Map();
+  const seenMessageIds = new Map();
+
+  function cloneBoundedResult(result) {
+    const clone = {
+      shadowVersion: result.shadowVersion,
+      status: result.status,
+      sourceType: result.sourceType,
+      messageIdHash: result.messageIdHash,
+      providerStatus: result.providerStatus,
+      providerFailureKind: result.providerFailureKind,
+      parserValid: result.parserValid,
+      parserFailureCode: result.parserFailureCode,
+      intent: result.intent,
+      confidenceBucket: result.confidenceBucket,
+      actionable: result.actionable,
+      missingFieldCount: result.missingFieldCount,
+      blockingAmbiguityCount: result.blockingAmbiguityCount,
+      safetyFlags: Object.freeze({
+        containsSensitiveData: result.safetyFlags.containsSensitiveData,
+        requiresHumanReview: result.safetyFlags.requiresHumanReview,
+      }),
+      latencyBucket: result.latencyBucket,
+      execution: "NONE",
+      timestamp: result.timestamp,
+    };
+    return Object.freeze(clone);
+  }
 
   async function emit(fields) {
     const result = createKadiBrainShadowResult({
@@ -226,7 +252,7 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
     });
     if (dependencies.resultSink) {
       try {
-        await dependencies.resultSink(result);
+        await dependencies.resultSink(cloneBoundedResult(result));
       } catch {}
     }
     return result;
@@ -269,7 +295,10 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
           status: KADI_BRAIN_SHADOW_STATUSES.INPUT_INVALID,
         });
       }
-      if (seenMessageHashes.has(preliminary.messageIdHash)) {
+      // The raw ID stays local and is never persisted or exposed. The public,
+      // truncated observability hash is not used as a uniqueness guarantee.
+      const deduplicationKey = normalized.messageId;
+      if (seenMessageIds.has(deduplicationKey)) {
         return emit({
           ...base,
           messageId: normalized.messageId,
@@ -277,9 +306,9 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
           status: KADI_BRAIN_SHADOW_STATUSES.SKIPPED_DUPLICATE,
         });
       }
-      seenMessageHashes.set(preliminary.messageIdHash, true);
-      if (seenMessageHashes.size > dependencies.cacheEntries) {
-        seenMessageHashes.delete(seenMessageHashes.keys().next().value);
+      seenMessageIds.set(deduplicationKey, true);
+      if (seenMessageIds.size > dependencies.cacheEntries) {
+        seenMessageIds.delete(seenMessageIds.keys().next().value);
       }
 
       const privacyInput =
@@ -377,7 +406,12 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
         });
       }
 
-      const providerCall = provider.invoke({ providerRequest, privacyResult });
+      const providerCall = Promise.resolve()
+        .then(() => provider.invoke({ providerRequest, privacyResult }))
+        .then(
+          (value) => ({ kind: "RESOLVED", value }),
+          () => ({ kind: "REJECTED" })
+        );
       const timed = await dependencies.timeout(
         providerCall,
         dependencies.timeoutMs
@@ -390,7 +424,16 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
         timestamp: start.timestamp,
         latencyMs: Math.max(0, end.milliseconds - start.milliseconds),
       };
-      if (!timed || timed.timedOut === true) {
+      if (
+        !isPlainObject(timed) ||
+        typeof timed.timedOut !== "boolean"
+      ) {
+        return emit({
+          ...finish,
+          status: KADI_BRAIN_SHADOW_STATUSES.INTERNAL_FAILED,
+        });
+      }
+      if (timed.timedOut === true) {
         return emit({
           ...finish,
           status: KADI_BRAIN_SHADOW_STATUSES.TIMEOUT,
@@ -398,7 +441,23 @@ function createKadiBrainRealShadowRunner(overrides = {}) {
           providerFailureKind: "TIMEOUT",
         });
       }
-      const providerResponse = timed.value;
+      if (
+        !isPlainObject(timed.value) ||
+        !["RESOLVED", "REJECTED"].includes(timed.value.kind)
+      ) {
+        return emit({
+          ...finish,
+          status: KADI_BRAIN_SHADOW_STATUSES.INTERNAL_FAILED,
+        });
+      }
+      if (timed.value.kind === "REJECTED") {
+        return emit({
+          ...finish,
+          status: KADI_BRAIN_SHADOW_STATUSES.PROVIDER_FAILED,
+          providerFailureKind: "INTERNAL",
+        });
+      }
+      const providerResponse = timed.value.value;
       if (!dependencies.providerContract
         .validateProviderResponse(providerResponse).valid) {
         return emit({

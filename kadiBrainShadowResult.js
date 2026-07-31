@@ -55,7 +55,12 @@ function isPlainObject(value) {
 }
 
 function confidenceBucket(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 1
+  ) {
     return KADI_BRAIN_CONFIDENCE_BUCKETS.NONE;
   }
   if (value < 0.5) return KADI_BRAIN_CONFIDENCE_BUCKETS.LOW;
@@ -76,13 +81,29 @@ function latencyBucket(value) {
 function hashMessageId(value, hashFunction) {
   if (typeof value !== "string" || !value.trim()) return null;
   try {
-    const computed = typeof hashFunction === "function"
-      ? hashFunction(value)
-      : createHash("sha256").update(value, "utf8").digest("hex");
-    if (typeof computed !== "string" || !/^[a-f0-9]{12,64}$/iu.test(computed)) {
-      return null;
+    let material = null;
+    if (typeof hashFunction === "function") {
+      try {
+        const injected = hashFunction(value);
+        if (
+          typeof injected === "string" &&
+          injected.length > 0 &&
+          injected.length <= 4096
+        ) material = injected;
+      } catch {}
     }
-    return computed.toLowerCase().slice(0, 16);
+    if (material === null) {
+      material = createHash("sha256").update(value, "utf8").digest("hex");
+    }
+    // Observability only: collisions are possible. This is neither a user
+    // identity nor the internal deduplication key.
+    return createHash("sha256")
+      .update("kadi-shadow-message-id-v1\0", "utf8")
+      .update(value, "utf8")
+      .update("\0", "utf8")
+      .update(material, "utf8")
+      .digest("hex")
+      .slice(0, 16);
   } catch {
     return null;
   }
@@ -95,7 +116,7 @@ function nonNegativeCount(value) {
 function createKadiBrainShadowResult(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const safety = isPlainObject(source.safetyFlags) ? source.safetyFlags : {};
-  return {
+  const result = {
     shadowVersion: KADI_BRAIN_SHADOW_VERSION,
     status: STATUS_VALUES.has(source.status)
       ? source.status
@@ -131,6 +152,8 @@ function createKadiBrainShadowResult(input = {}) {
       ? source.timestamp
       : null,
   };
+  Object.freeze(result.safetyFlags);
+  return Object.freeze(result);
 }
 
 module.exports = {

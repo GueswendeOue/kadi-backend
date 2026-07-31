@@ -78,9 +78,17 @@ test("shadow result projects every failure without raw input", () => {
 
 test("confidence and latency bucket boundaries are exact", () => {
   assert.deepEqual(
-    [undefined, -1, 0, 0.499, 0.5, 0.749, 0.75, 1]
+    [
+      null, undefined, NaN, -Infinity, Infinity, -1, -Number.EPSILON,
+      0, 0.499999, 0.5, 0.749999, 0.75, 1, 1 + Number.EPSILON, 2,
+      "0.75",
+    ]
       .map(confidenceBucket),
-    ["NONE", "LOW", "LOW", "LOW", "MEDIUM", "MEDIUM", "HIGH", "HIGH"]
+    [
+      "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+      "LOW", "LOW", "MEDIUM", "MEDIUM", "HIGH", "HIGH", "NONE",
+      "NONE", "NONE",
+    ]
   );
   assert.deepEqual(
     [undefined, -1, 0, 249, 250, 999, 1000, 2999, 3000]
@@ -118,11 +126,42 @@ test("message id hashing is deterministic, short, and injectable", () => {
   assert.equal(first, second);
   assert.match(first, /^[a-f0-9]{16}$/u);
   assert.equal(first.includes("message-1"), false);
-  assert.equal(
-    hashMessageId("message-1", () => "abcdef0123456789abcdef"),
-    "abcdef0123456789"
+  const injected = hashMessageId(
+    "message-1",
+    () => "abcdef0123456789abcdef"
   );
+  assert.match(injected, /^[a-f0-9]{16}$/u);
+  assert.notEqual(injected, "abcdef0123456789");
   assert.equal(hashMessageId("", () => "abcdef0123456789"), null);
+});
+
+test("hostile hash functions cannot expose the raw message id", () => {
+  for (const messageId of [
+    "abcdef0123456789",
+    "wamid.unicode-é-消息",
+    "f".repeat(256),
+  ]) {
+    const outputs = [
+      hashMessageId(messageId, () => messageId),
+      hashMessageId(messageId, () => `prefix-${messageId}-suffix`),
+      hashMessageId(messageId, () => "x".repeat(10000)),
+      hashMessageId(messageId, () => ""),
+      hashMessageId(messageId, () => null),
+      hashMessageId(messageId, () => ({})),
+      hashMessageId(messageId, () => { throw new Error("PRIVATE"); }),
+      hashMessageId(messageId, () => "constant"),
+    ];
+    for (const output of outputs) {
+      assert.match(output, /^[a-f0-9]{16}$/u);
+      assert.notEqual(output, messageId);
+      assert.equal(output.includes(messageId), false);
+    }
+    assert.equal(outputs[0], hashMessageId(messageId, () => messageId));
+  }
+  assert.notEqual(
+    hashMessageId("message-a", () => "constant"),
+    hashMessageId("message-b", () => "constant")
+  );
 });
 
 test("mapper accepts frozen input and is deterministic with injected time", () => {
@@ -145,4 +184,11 @@ test("mapper accepts frozen input and is deterministic with injected time", () =
   assert.equal(JSON.stringify(input), before);
   assert.notStrictEqual(first, second);
   assert.notStrictEqual(first.safetyFlags, second.safetyFlags);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.safetyFlags), true);
+  assert.throws(() => { first.status = "INJECTED"; }, TypeError);
+  assert.throws(() => { first.injected = "raw-data"; }, TypeError);
+  assert.throws(() => { first.safetyFlags.foo = true; }, TypeError);
+  assert.throws(() => { delete first.execution; }, TypeError);
+  assert.deepEqual(Object.keys(first), RESULT_KEYS);
 });
