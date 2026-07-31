@@ -54,10 +54,23 @@ function makeReply(payload) {
   };
 }
 
+function flattenComponents(components) {
+  return components.flatMap((component) => [
+    component,
+    ...flattenComponents(component.children || []),
+    ...flattenComponents(component.then || []),
+    ...flattenComponents(component.else || []),
+  ]);
+}
+
+function screenComponents(screen) {
+  return flattenComponents(screen.layout.children);
+}
+
 function fieldComponents(flow) {
-  return flow.screens.flatMap((screen) =>
-    screen.layout.children.flatMap((child) => child.children || [])
-  ).filter((component) => typeof component.name === "string" && component.name !== "form");
+  return flow.screens
+    .flatMap(screenComponents)
+    .filter((component) => typeof component.name === "string" && component.name !== "form");
 }
 
 test("KADI_FACTURE_V1 is parseable Flow JSON 7.3 with four ordered screens", () => {
@@ -168,33 +181,29 @@ test("every dynamic numeric payload targets a number declaration on the next scr
   let propagatedNumericFields = 0;
 
   for (const screen of flow.screens) {
-    const components = screen.layout.children.flatMap((child) => child.children || []);
-    const footer = components.find(
+    const footers = screenComponents(screen).filter(
       (component) => component.type === "Footer" && component["on-click-action"]?.name === "navigate"
     );
-    if (!footer) continue;
-    for (const [field, expression] of Object.entries(
-      footer["on-click-action"].payload || {}
-    )) {
-      if (!numericFieldPattern.test(field)) continue;
-      propagatedNumericFields += 1;
-      assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
-      for (const targetId of flow.routing_model[screen.id]) {
-        const target = screens.get(targetId);
-        assert.ok(target);
+    for (const footer of footers) {
+      const target = screens.get(footer["on-click-action"].next.name);
+      assert.ok(target);
+      for (const [field, expression] of Object.entries(
+        footer["on-click-action"].payload || {}
+      )) {
+        if (!numericFieldPattern.test(field)) continue;
+        propagatedNumericFields += 1;
+        assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
         assert.equal(target.data[field].type, "number", `${screen.id} -> ${target.id}.${field}`);
       }
     }
   }
 
-  assert.equal(propagatedNumericFields, 18);
+  assert.equal(propagatedNumericFields, 24);
 });
 
 test("Dropdown and TextArea components exclude Meta-rejected properties", () => {
   const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
-  const components = flow.screens.flatMap((screen) =>
-    screen.layout.children.flatMap((child) => child.children || [])
-  );
+  const components = flow.screens.flatMap(screenComponents);
   const dropdowns = components.filter((component) => component.type === "Dropdown");
   const textAreas = components.filter((component) => component.type === "TextArea");
 
@@ -206,9 +215,7 @@ test("Dropdown and TextArea components exclude Meta-rejected properties", () => 
 
 test("short choices use radio controls and inputs have no initial-value overlays", () => {
   const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
-  const components = flow.screens.flatMap((screen) =>
-    screen.layout.children.flatMap((child) => child.children || [])
-  );
+  const components = flow.screens.flatMap(screenComponents);
   const named = new Map(
     components
       .filter((component) => typeof component.name === "string")
@@ -233,24 +240,62 @@ test("short choices use radio controls and inputs have no initial-value overlays
 test("article routing choice reaches only destinations authorized by the routing model", () => {
   const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
   const screen = flow.screens.find(({ id }) => id === "ARTICLES_UN_TROIS");
-  const components = screen.layout.children[0].children;
+  const components = screenComponents(screen);
   const choice = components.find(({ name }) => name === "has_more_items");
-  const footer = components.find(({ type }) => type === "Footer");
+  const conditional = components.find(({ type }) => type === "If");
+  const yesFooter = conditional.then[0];
+  const noFooter = conditional.else[0];
 
   assert.deepEqual(choice["data-source"], [
     { id: "no", title: "Non" },
     { id: "yes", title: "Oui" },
   ]);
   assert.equal(choice.required, true);
-  assert.equal(
-    footer["on-click-action"].next.name,
-    "${(form.has_more_items == 'yes') ? 'ARTICLES_QUATRE_SIX' : 'OPTIONS'}"
-  );
+  assert.equal(conditional.condition, "${form.has_more_items} == 'yes'");
+  assert.equal(yesFooter.type, "Footer");
+  assert.equal(noFooter.type, "Footer");
+  assert.equal(yesFooter["on-click-action"].next.name, "ARTICLES_QUATRE_SIX");
+  assert.equal(noFooter["on-click-action"].next.name, "OPTIONS");
   assert.deepEqual(
     new Set(flow.routing_model.ARTICLES_UN_TROIS),
     new Set(["ARTICLES_QUATRE_SIX", "OPTIONS"])
   );
-  assert.equal(footer["on-click-action"].payload.has_more_items, "${form.has_more_items}");
+  assert.equal(yesFooter["on-click-action"].payload.has_more_items, "${form.has_more_items}");
+  assert.equal(noFooter["on-click-action"].payload.has_more_items, "no");
+  for (let index = 4; index <= 6; index += 1) {
+    for (const suffix of ["designation", "quantity", "unit", "unit_price"]) {
+      assert.equal(
+        Object.hasOwn(noFooter["on-click-action"].payload, `item_${index}_${suffix}`),
+        false
+      );
+    }
+  }
+});
+
+test("every navigate action uses a literal existing screen and a compatible data model", () => {
+  const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
+  const screens = new Map(flow.screens.map((screen) => [screen.id, screen]));
+  let navigateCount = 0;
+
+  for (const screen of flow.screens) {
+    const footers = screenComponents(screen).filter(
+      (component) => component.type === "Footer" && component["on-click-action"]?.name === "navigate"
+    );
+    for (const footer of footers) {
+      navigateCount += 1;
+      const action = footer["on-click-action"];
+      assert.equal(action.next.type, "screen");
+      assert.doesNotMatch(action.next.name, /\$\{/);
+      assert.ok(screens.has(action.next.name));
+      assert.ok(flow.routing_model[screen.id].includes(action.next.name));
+      const targetData = screens.get(action.next.name).data || {};
+      for (const key of Object.keys(action.payload || {})) {
+        assert.ok(Object.hasOwn(targetData, key), `${screen.id} -> ${action.next.name}.${key}`);
+      }
+    }
+  }
+
+  assert.equal(navigateCount, 4);
 });
 
 test("Flow fields are unique and article requirements are exact", () => {

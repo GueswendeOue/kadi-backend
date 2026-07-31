@@ -280,38 +280,74 @@
                 ]
               },
               {
-                "type": "Footer",
-                "label": "Continuer",
-                "on-click-action": {
-                  "name": "navigate",
-                  "next": {
-                    "type": "screen",
-                    "name": "${(form.has_more_items == 'yes') ? 'ARTICLES_QUATRE_SIX' : 'OPTIONS'}"
-                  },
-                  "payload": {
-                    "client_type": "${data.client_type}",
-                    "client_name": "${data.client_name}",
-                    "client_phone": "${data.client_phone}",
-                    "client_address": "${data.client_address}",
-                    "client_ifu": "${data.client_ifu}",
-                    "client_registry_number": "${data.client_registry_number}",
-                    "invoice_subject": "${data.invoice_subject}",
-                    "transaction_date": "${data.transaction_date}",
-                    "item_1_designation": "${form.item_1_designation}",
-                    "item_1_quantity": "${form.item_1_quantity}",
-                    "item_1_unit": "${form.item_1_unit}",
-                    "item_1_unit_price": "${form.item_1_unit_price}",
-                    "item_2_designation": "${form.item_2_designation}",
-                    "item_2_quantity": "${form.item_2_quantity}",
-                    "item_2_unit": "${form.item_2_unit}",
-                    "item_2_unit_price": "${form.item_2_unit_price}",
-                    "item_3_designation": "${form.item_3_designation}",
-                    "item_3_quantity": "${form.item_3_quantity}",
-                    "item_3_unit": "${form.item_3_unit}",
-                    "item_3_unit_price": "${form.item_3_unit_price}",
-                    "has_more_items": "${form.has_more_items}"
+                "type": "If",
+                "condition": "${form.has_more_items} == 'yes'",
+                "then": [
+                  {
+                    "type": "Footer",
+                    "label": "Continuer",
+                    "on-click-action": {
+                      "name": "navigate",
+                      "next": { "type": "screen", "name": "ARTICLES_QUATRE_SIX" },
+                      "payload": {
+                        "client_type": "${data.client_type}",
+                        "client_name": "${data.client_name}",
+                        "client_phone": "${data.client_phone}",
+                        "client_address": "${data.client_address}",
+                        "client_ifu": "${data.client_ifu}",
+                        "client_registry_number": "${data.client_registry_number}",
+                        "invoice_subject": "${data.invoice_subject}",
+                        "transaction_date": "${data.transaction_date}",
+                        "item_1_designation": "${form.item_1_designation}",
+                        "item_1_quantity": "${form.item_1_quantity}",
+                        "item_1_unit": "${form.item_1_unit}",
+                        "item_1_unit_price": "${form.item_1_unit_price}",
+                        "item_2_designation": "${form.item_2_designation}",
+                        "item_2_quantity": "${form.item_2_quantity}",
+                        "item_2_unit": "${form.item_2_unit}",
+                        "item_2_unit_price": "${form.item_2_unit_price}",
+                        "item_3_designation": "${form.item_3_designation}",
+                        "item_3_quantity": "${form.item_3_quantity}",
+                        "item_3_unit": "${form.item_3_unit}",
+                        "item_3_unit_price": "${form.item_3_unit_price}",
+                        "has_more_items": "${form.has_more_items}"
+                      }
+                    }
                   }
-                }
+                ],
+                "else": [
+                  {
+                    "type": "Footer",
+                    "label": "Continuer",
+                    "on-click-action": {
+                      "name": "navigate",
+                      "next": { "type": "screen", "name": "OPTIONS" },
+                      "payload": {
+                        "client_type": "${data.client_type}",
+                        "client_name": "${data.client_name}",
+                        "client_phone": "${data.client_phone}",
+                        "client_address": "${data.client_address}",
+                        "client_ifu": "${data.client_ifu}",
+                        "client_registry_number": "${data.client_registry_number}",
+                        "invoice_subject": "${data.invoice_subject}",
+                        "transaction_date": "${data.transaction_date}",
+                        "item_1_designation": "${form.item_1_designation}",
+                        "item_1_quantity": "${form.item_1_quantity}",
+                        "item_1_unit": "${form.item_1_unit}",
+                        "item_1_unit_price": "${form.item_1_unit_price}",
+                        "item_2_designation": "${form.item_2_designation}",
+                        "item_2_quantity": "${form.item_2_quantity}",
+                        "item_2_unit": "${form.item_2_unit}",
+                        "item_2_unit_price": "${form.item_2_unit_price}",
+                        "item_3_designation": "${form.item_3_designation}",
+                        "item_3_quantity": "${form.item_3_quantity}",
+                        "item_3_unit": "${form.item_3_unit}",
+                        "item_3_unit_price": "${form.item_3_unit_price}",
+                        "has_more_items": "no"
+                      }
+                    }
+                  }
+                ]
               }
             ]
           }
