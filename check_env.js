@@ -15,6 +15,7 @@ const RUNTIME_ENV_NAMES = Object.freeze([
   "GOOGLE_OCR_JSON_BASE64",
   "GOOGLE_OCR_JSON",
   "GCP_SA_JSON_B64",
+  "GOOGLE_APPLICATION_CREDENTIALS",
 ]);
 
 function getOwnDataValue(source, name) {
@@ -51,7 +52,7 @@ function printEnvPresenceReport(report, writeLine = console.log) {
 
   for (const name of RUNTIME_ENV_NAMES) {
     const status = report?.[name] === "SET" ? "SET" : "MISSING";
-    writeLine(`${name}=${status}`);
+    writeLine(`${name}: ${status}`);
   }
 }
 
