@@ -49,6 +49,7 @@ const ALLOWED_RESPONSE_FIELDS = Object.freeze([
   "flow_token",
   ...CLIENT_FIELDS,
   ...ITEM_FIELDS,
+  "has_more_items",
   ...OPTION_FIELDS,
 ]);
 
@@ -268,6 +269,19 @@ function normalizeYesNo(value) {
     : fail("STAMP_CHOICE_INVALID");
 }
 
+function normalizeMoreItemsChoice(value) {
+  if (value === undefined || value === null || value === "") return ok(null);
+  const mapping = new Map([
+    ["no", false],
+    ["Non", false],
+    ["yes", true],
+    ["Oui", true],
+  ]);
+  return typeof value === "string" && mapping.has(value.trim())
+    ? ok(mapping.get(value.trim()))
+    : fail("MORE_ITEMS_CHOICE_INVALID");
+}
+
 function normalizeInvoiceFlowSubmission(payload) {
   const descriptors = getOwnDataDescriptors(payload);
   if (!descriptors || Array.isArray(payload)) return fail("SUBMISSION_INVALID");
@@ -306,8 +320,12 @@ function normalizeInvoiceFlowSubmission(payload) {
   const transactionDate = normalizeDate(read("transaction_date"));
   if (!transactionDate.ok) return transactionDate;
 
+  const moreItemsChoice = normalizeMoreItemsChoice(read("has_more_items"));
+  if (!moreItemsChoice.ok) return moreItemsChoice;
+  const maximumItemIndex = moreItemsChoice.value === false ? 3 : 6;
+
   const items = [];
-  for (let index = 1; index <= 6; index += 1) {
+  for (let index = 1; index <= maximumItemIndex; index += 1) {
     const rawValues = {
       designation: read(`item_${index}_designation`),
       quantity: read(`item_${index}_quantity`),
@@ -319,6 +337,9 @@ function normalizeInvoiceFlowSubmission(payload) {
     );
     if (!present.some(Boolean)) {
       if (index === 1) return fail("ITEM_1_REQUIRED");
+      if (index === 4 && moreItemsChoice.value === true) {
+        return fail("ITEM_4_REQUIRED");
+      }
       continue;
     }
     if (!present.every(Boolean)) return fail(`ITEM_${index}_PARTIAL`);

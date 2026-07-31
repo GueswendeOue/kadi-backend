@@ -2,7 +2,7 @@
   "version": "7.3",
   "routing_model": {
     "CLIENT": ["ARTICLES_UN_TROIS"],
-    "ARTICLES_UN_TROIS": ["ARTICLES_QUATRE_SIX"],
+    "ARTICLES_UN_TROIS": ["ARTICLES_QUATRE_SIX", "OPTIONS"],
     "ARTICLES_QUATRE_SIX": ["OPTIONS"],
     "OPTIONS": []
   },
@@ -18,7 +18,7 @@
             "name": "form",
             "children": [
               {
-                "type": "Dropdown",
+                "type": "RadioButtonsGroup",
                 "name": "client_type",
                 "label": "Type de client",
                 "required": true,
@@ -30,7 +30,8 @@
               {
                 "type": "TextInput",
                 "name": "client_name",
-                "label": "Nom du client",
+                "label": "Nom",
+                "helper-text": "Nom du client",
                 "input-type": "text",
                 "required": true,
                 "max-chars": 200
@@ -38,7 +39,8 @@
               {
                 "type": "TextInput",
                 "name": "client_phone",
-                "label": "Téléphone du client",
+                "label": "Téléphone",
+                "helper-text": "Facultatif",
                 "input-type": "phone",
                 "required": false,
                 "max-chars": 50
@@ -46,7 +48,8 @@
               {
                 "type": "TextInput",
                 "name": "client_address",
-                "label": "Adresse du client",
+                "label": "Adresse",
+                "helper-text": "Facultatif",
                 "input-type": "text",
                 "required": false,
                 "max-chars": 300
@@ -72,7 +75,8 @@
               {
                 "type": "TextInput",
                 "name": "invoice_subject",
-                "label": "Objet de la facture",
+                "label": "Objet",
+                "helper-text": "Objet de la facture (facultatif)",
                 "input-type": "text",
                 "required": false,
                 "max-chars": 300
@@ -80,7 +84,8 @@
               {
                 "type": "DatePicker",
                 "name": "transaction_date",
-                "label": "Date de la vente ou prestation",
+                "label": "Date de transaction",
+                "helper-text": "Vente ou prestation (facultatif)",
                 "required": false
               },
               {
@@ -265,11 +270,24 @@
                 "max-chars": 15
               },
               {
+                "type": "RadioButtonsGroup",
+                "name": "has_more_items",
+                "label": "Avez-vous plus de 3 articles à ajouter ?",
+                "required": true,
+                "data-source": [
+                  { "id": "no", "title": "Non" },
+                  { "id": "yes", "title": "Oui" }
+                ]
+              },
+              {
                 "type": "Footer",
                 "label": "Continuer",
                 "on-click-action": {
                   "name": "navigate",
-                  "next": { "type": "screen", "name": "ARTICLES_QUATRE_SIX" },
+                  "next": {
+                    "type": "screen",
+                    "name": "${(form.has_more_items == 'yes') ? 'ARTICLES_QUATRE_SIX' : 'OPTIONS'}"
+                  },
                   "payload": {
                     "client_type": "${data.client_type}",
                     "client_name": "${data.client_name}",
@@ -290,7 +308,8 @@
                     "item_3_designation": "${form.item_3_designation}",
                     "item_3_quantity": "${form.item_3_quantity}",
                     "item_3_unit": "${form.item_3_unit}",
-                    "item_3_unit_price": "${form.item_3_unit_price}"
+                    "item_3_unit_price": "${form.item_3_unit_price}",
+                    "has_more_items": "${form.has_more_items}"
                   }
                 }
               }
@@ -322,7 +341,8 @@
         "item_3_designation": { "type": "string", "__example__": "Produit exemple" },
         "item_3_quantity": { "type": "number", "__example__": 1 },
         "item_3_unit": { "type": "string", "__example__": "unit" },
-        "item_3_unit_price": { "type": "number", "__example__": 1000 }
+        "item_3_unit_price": { "type": "number", "__example__": 1000 },
+        "has_more_items": { "type": "string", "__example__": "yes" }
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -333,14 +353,14 @@
             "children": [
               {
                 "type": "TextHeading",
-                "text": "Articles facultatifs"
+                "text": "Article 4"
               },
               {
                 "type": "TextInput",
                 "name": "item_4_designation",
                 "label": "Désignation art. 4",
                 "input-type": "text",
-                "required": false,
+                "required": true,
                 "max-chars": 300
               },
               {
@@ -348,14 +368,14 @@
                 "name": "item_4_quantity",
                 "label": "Quantité article 4",
                 "input-type": "number",
-                "required": false,
+                "required": true,
                 "max-chars": 20
               },
               {
                 "type": "Dropdown",
                 "name": "item_4_unit",
                 "label": "Unité article 4",
-                "required": false,
+                "required": true,
                 "data-source": [
                   { "id": "unit", "title": "Unité" },
                   { "id": "piece", "title": "Pièce" },
@@ -374,7 +394,7 @@
                 "label": "Prix article 4 FCFA",
                 "helper-text": "Prix unitaire en FCFA",
                 "input-type": "number",
-                "required": false,
+                "required": true,
                 "max-chars": 15
               },
               {
@@ -499,7 +519,8 @@
                     "item_6_designation": "${form.item_6_designation}",
                     "item_6_quantity": "${form.item_6_quantity}",
                     "item_6_unit": "${form.item_6_unit}",
-                    "item_6_unit_price": "${form.item_6_unit_price}"
+                    "item_6_unit_price": "${form.item_6_unit_price}",
+                    "has_more_items": "${data.has_more_items}"
                   }
                 }
               }
@@ -544,7 +565,8 @@
         "item_6_designation": { "type": "string", "__example__": "Produit exemple" },
         "item_6_quantity": { "type": "number", "__example__": 1 },
         "item_6_unit": { "type": "string", "__example__": "unit" },
-        "item_6_unit_price": { "type": "number", "__example__": 1000 }
+        "item_6_unit_price": { "type": "number", "__example__": 1000 },
+        "has_more_items": { "type": "string", "__example__": "no" }
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -554,7 +576,7 @@
             "name": "form",
             "children": [
               {
-                "type": "Dropdown",
+                "type": "RadioButtonsGroup",
                 "name": "tax_status",
                 "label": "Situation de la taxe",
                 "required": true,
@@ -622,7 +644,7 @@
                 "required": false
               },
               {
-                "type": "Dropdown",
+                "type": "RadioButtonsGroup",
                 "name": "add_stamp",
                 "label": "Ajouter mon tampon",
                 "required": true,
@@ -669,6 +691,7 @@
                     "item_6_quantity": "${data.item_6_quantity}",
                     "item_6_unit": "${data.item_6_unit}",
                     "item_6_unit_price": "${data.item_6_unit_price}",
+                    "has_more_items": "${data.has_more_items}",
                     "tax_status": "${form.tax_status}",
                     "tax_rate": "${form.tax_rate}",
                     "discount_amount": "${form.discount_amount}",

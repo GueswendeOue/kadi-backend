@@ -71,7 +71,7 @@ test("KADI_FACTURE_V1 is parseable Flow JSON 7.3 with four ordered screens", () 
   ]);
   assert.deepEqual(flow.routing_model, {
     CLIENT: ["ARTICLES_UN_TROIS"],
-    ARTICLES_UN_TROIS: ["ARTICLES_QUATRE_SIX"],
+    ARTICLES_UN_TROIS: ["ARTICLES_QUATRE_SIX", "OPTIONS"],
     ARTICLES_QUATRE_SIX: ["OPTIONS"],
     OPTIONS: [],
   });
@@ -130,7 +130,7 @@ test("every declared screen data property has a type-compatible synthetic exampl
     }
   }
 
-  assert.equal(declarationCount, 60);
+  assert.equal(declarationCount, 62);
 });
 
 test("propagated quantities and unit prices use numeric Meta data models", () => {
@@ -173,15 +173,17 @@ test("every dynamic numeric payload targets a number declaration on the next scr
       (component) => component.type === "Footer" && component["on-click-action"]?.name === "navigate"
     );
     if (!footer) continue;
-    const target = screens.get(footer["on-click-action"].next.name);
-    assert.ok(target);
     for (const [field, expression] of Object.entries(
       footer["on-click-action"].payload || {}
     )) {
       if (!numericFieldPattern.test(field)) continue;
       propagatedNumericFields += 1;
       assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
-      assert.equal(target.data[field].type, "number", `${screen.id} -> ${target.id}.${field}`);
+      for (const targetId of flow.routing_model[screen.id]) {
+        const target = screens.get(targetId);
+        assert.ok(target);
+        assert.equal(target.data[field].type, "number", `${screen.id} -> ${target.id}.${field}`);
+      }
     }
   }
 
@@ -202,6 +204,55 @@ test("Dropdown and TextArea components exclude Meta-rejected properties", () => 
   assert.ok(textAreas.every((component) => !Object.hasOwn(component, "max-chars")));
 });
 
+test("short choices use radio controls and inputs have no initial-value overlays", () => {
+  const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
+  const components = flow.screens.flatMap((screen) =>
+    screen.layout.children.flatMap((child) => child.children || [])
+  );
+  const named = new Map(
+    components
+      .filter((component) => typeof component.name === "string")
+      .map((component) => [component.name, component])
+  );
+
+  assert.equal(named.get("client_type").type, "RadioButtonsGroup");
+  assert.equal(named.get("has_more_items").type, "RadioButtonsGroup");
+  assert.equal(named.get("tax_status").type, "RadioButtonsGroup");
+  assert.equal(named.get("add_stamp").type, "RadioButtonsGroup");
+  assert.equal(named.get("payment_method").type, "Dropdown");
+
+  for (const component of components) {
+    if (!["TextInput", "TextArea", "Dropdown", "RadioButtonsGroup", "DatePicker"].includes(component.type)) {
+      continue;
+    }
+    assert.equal(Object.hasOwn(component, "init-value"), false, component.name);
+    assert.equal(Object.hasOwn(component, "placeholder"), false, component.name);
+  }
+});
+
+test("article routing choice reaches only destinations authorized by the routing model", () => {
+  const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
+  const screen = flow.screens.find(({ id }) => id === "ARTICLES_UN_TROIS");
+  const components = screen.layout.children[0].children;
+  const choice = components.find(({ name }) => name === "has_more_items");
+  const footer = components.find(({ type }) => type === "Footer");
+
+  assert.deepEqual(choice["data-source"], [
+    { id: "no", title: "Non" },
+    { id: "yes", title: "Oui" },
+  ]);
+  assert.equal(choice.required, true);
+  assert.equal(
+    footer["on-click-action"].next.name,
+    "${(form.has_more_items == 'yes') ? 'ARTICLES_QUATRE_SIX' : 'OPTIONS'}"
+  );
+  assert.deepEqual(
+    new Set(flow.routing_model.ARTICLES_UN_TROIS),
+    new Set(["ARTICLES_QUATRE_SIX", "OPTIONS"])
+  );
+  assert.equal(footer["on-click-action"].payload.has_more_items, "${form.has_more_items}");
+});
+
 test("Flow fields are unique and article requirements are exact", () => {
   const flow = JSON.parse(fs.readFileSync(flowPath, "utf8"));
   const fields = fieldComponents(flow);
@@ -211,7 +262,7 @@ test("Flow fields are unique and article requirements are exact", () => {
   for (let index = 1; index <= 6; index += 1) {
     const itemFields = fields.filter((field) => field.name.startsWith(`item_${index}_`));
     assert.equal(itemFields.length, 4);
-    assert.ok(itemFields.every((field) => field.required === (index === 1)));
+    assert.ok(itemFields.every((field) => field.required === (index === 1 || index === 4)));
   }
   assert.equal(names.filter((name) => /^item_\d+_designation$/.test(name)).length, 6);
 });
@@ -318,6 +369,68 @@ test("empty optional item is ignored and a partial optional item is rejected", (
   assert.equal(partial.error, "ITEM_2_PARTIAL");
 });
 
+test("one, two or three articles can skip the second article screen", () => {
+  for (let count = 1; count <= 3; count += 1) {
+    const additions = { has_more_items: "no" };
+    for (let index = 2; index <= count; index += 1) {
+      additions[`item_${index}_designation`] = `Article ${index}`;
+      additions[`item_${index}_quantity`] = index;
+      additions[`item_${index}_unit`] = "piece";
+      additions[`item_${index}_unit_price`] = index * 1000;
+    }
+    const result = normalizeInvoiceFlowSubmission(baseSubmission(additions));
+    assert.equal(result.ok, true, `article count ${count}`);
+    assert.equal(result.value.items.length, count);
+  }
+});
+
+test("the more-items route requires a complete article four", () => {
+  assert.equal(
+    normalizeInvoiceFlowSubmission(baseSubmission({ has_more_items: "yes" })).error,
+    "ITEM_4_REQUIRED"
+  );
+  assert.equal(
+    normalizeInvoiceFlowSubmission(
+      baseSubmission({ has_more_items: "yes", item_4_designation: "Transport" })
+    ).error,
+    "ITEM_4_PARTIAL"
+  );
+
+  const result = normalizeInvoiceFlowSubmission(
+    baseSubmission({
+      has_more_items: "yes",
+      item_2_designation: "Article 2",
+      item_2_quantity: 1,
+      item_2_unit: "piece",
+      item_2_unit_price: 2000,
+      item_3_designation: "Article 3",
+      item_3_quantity: 1,
+      item_3_unit: "piece",
+      item_3_unit_price: 3000,
+      item_4_designation: "Transport",
+      item_4_quantity: 1,
+      item_4_unit: "service",
+      item_4_unit_price: 5000,
+    })
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.value.items.length, 4);
+});
+
+test("the no-more-items route ignores item four through six", () => {
+  const result = normalizeInvoiceFlowSubmission(
+    baseSubmission({
+      has_more_items: "no",
+      item_4_designation: "Valeur ignorée",
+      item_4_quantity: 1,
+      item_4_unit: "unit",
+      item_4_unit_price: 1000,
+    })
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.value.items.length, 1);
+});
+
 test("article one, quantity, unit and price are validated without coercion", () => {
   assert.equal(
     normalizeInvoiceFlowSubmission(baseSubmission({ item_1_designation: "" })).error,
@@ -358,7 +471,7 @@ test("tax rate is required only for taxable submissions and no default is invent
 });
 
 test("normalization accepts exactly six complete articles", () => {
-  const additions = {};
+  const additions = { has_more_items: "yes" };
   for (let index = 2; index <= 6; index += 1) {
     additions[`item_${index}_designation`] = `Article ${index}`;
     additions[`item_${index}_quantity`] = "1";
