@@ -192,13 +192,14 @@ test("every dynamic numeric payload targets a number declaration on the next scr
       )) {
         if (!numericFieldPattern.test(field)) continue;
         propagatedNumericFields += 1;
-        assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
         assert.equal(target.data[field].type, "number", `${screen.id} -> ${target.id}.${field}`);
+        if (expression === null) continue;
+        assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
       }
     }
   }
 
-  assert.equal(propagatedNumericFields, 24);
+  assert.equal(propagatedNumericFields, 30);
 });
 
 test("Dropdown and TextArea components exclude Meta-rejected properties", () => {
@@ -264,9 +265,11 @@ test("article routing choice reaches only destinations authorized by the routing
   assert.equal(noFooter["on-click-action"].payload.has_more_items, "no");
   for (let index = 4; index <= 6; index += 1) {
     for (const suffix of ["designation", "quantity", "unit", "unit_price"]) {
+      const field = `item_${index}_${suffix}`;
+      assert.equal(Object.hasOwn(noFooter["on-click-action"].payload, field), true);
       assert.equal(
-        Object.hasOwn(noFooter["on-click-action"].payload, `item_${index}_${suffix}`),
-        false
+        noFooter["on-click-action"].payload[field],
+        suffix === "quantity" || suffix === "unit_price" ? null : ""
       );
     }
   }
@@ -289,8 +292,16 @@ test("every navigate action uses a literal existing screen and a compatible data
       assert.ok(screens.has(action.next.name));
       assert.ok(flow.routing_model[screen.id].includes(action.next.name));
       const targetData = screens.get(action.next.name).data || {};
+      assert.deepEqual(Object.keys(action.payload || {}).sort(), Object.keys(targetData).sort());
       for (const key of Object.keys(action.payload || {})) {
         assert.ok(Object.hasOwn(targetData, key), `${screen.id} -> ${action.next.name}.${key}`);
+        const value = action.payload[key];
+        if (typeof value === "string" && value.startsWith("${")) continue;
+        if (value === null) {
+          assert.equal(targetData[key].type, "number", `${action.next.name}.${key}`);
+          continue;
+        }
+        assert.equal(typeof value, targetData[key].type, `${action.next.name}.${key}`);
       }
     }
   }
@@ -463,13 +474,17 @@ test("the more-items route requires a complete article four", () => {
 });
 
 test("the no-more-items route ignores item four through six", () => {
+  const emptyLaterItems = {};
+  for (let index = 4; index <= 6; index += 1) {
+    emptyLaterItems[`item_${index}_designation`] = "";
+    emptyLaterItems[`item_${index}_quantity`] = null;
+    emptyLaterItems[`item_${index}_unit`] = "";
+    emptyLaterItems[`item_${index}_unit_price`] = null;
+  }
   const result = normalizeInvoiceFlowSubmission(
     baseSubmission({
       has_more_items: "no",
-      item_4_designation: "Valeur ignorée",
-      item_4_quantity: 1,
-      item_4_unit: "unit",
-      item_4_unit_price: 1000,
+      ...emptyLaterItems,
     })
   );
   assert.equal(result.ok, true);

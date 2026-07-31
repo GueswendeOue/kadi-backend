@@ -343,6 +343,18 @@
                         "item_3_quantity": "${form.item_3_quantity}",
                         "item_3_unit": "${form.item_3_unit}",
                         "item_3_unit_price": "${form.item_3_unit_price}",
+                        "item_4_designation": "",
+                        "item_4_quantity": null,
+                        "item_4_unit": "",
+                        "item_4_unit_price": null,
+                        "item_5_designation": "",
+                        "item_5_quantity": null,
+                        "item_5_unit": "",
+                        "item_5_unit_price": null,
+                        "item_6_designation": "",
+                        "item_6_quantity": null,
+                        "item_6_unit": "",
+                        "item_6_unit_price": null,
                         "has_more_items": "no"
                       }
                     }
