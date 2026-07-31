@@ -88,7 +88,9 @@ const PERSONAL_CATEGORIES = new Set([
 const PERSONAL_NAME_CONTEXTS = Object.freeze([
   "au nom de", "reçu de", "recu de", "facture à", "facture a",
   "devis pour", "livraison à", "livraison a", "invoice for",
-  "customer", "destinataire", "bénéficiaire", "beneficiaire",
+  "customer", "beneficiary", "recipient", "payee", "sender",
+  "account holder", "delivered to", "billed to", "paid by", "paid for",
+  "destinataire", "bénéficiaire", "beneficiaire",
   "expéditeur", "expediteur", "titulaire", "propriétaire", "proprietaire",
   "responsable", "cliente", "client", "prénom", "prenom", "nom",
   "monsieur", "madame", "mme", "m", "contact", "pour",
@@ -96,6 +98,8 @@ const PERSONAL_NAME_CONTEXTS = Object.freeze([
 const STRONG_PERSONAL_NAME_CONTEXTS = new Set([
   "au nom de", "reçu de", "recu de", "facture à", "facture a",
   "livraison à", "livraison a", "invoice for", "customer",
+  "beneficiary", "recipient", "payee", "sender", "account holder",
+  "delivered to", "billed to", "paid by", "paid for",
   "destinataire", "bénéficiaire", "beneficiaire", "expéditeur",
   "expediteur", "titulaire", "propriétaire", "proprietaire",
   "responsable", "cliente", "client", "prénom", "prenom", "nom",
@@ -107,11 +111,21 @@ const PERSONAL_NAME_BUSINESS_TERMS = new Set([
   "fcfa", "gemi" + "ni", "kadi", "menu", "moov", "non", "orange",
   "ouagadougou", "pdf", "plomberie", "prix", "produit", "quantité",
   "quantite", "réparation", "reparation", "reçu", "recu", "samsung",
-  "sacs", "service", "supa" + "base", "syscohada", "téléphone",
+  "sable", "sacs", "service", "supa" + "base", "syscohada", "téléphone",
   "telephone", "total",
+  "chez", "donnée", "donnee", "marque", "modèle", "modele", "paiement",
+  "peinture", "restaurant", "savon", "tissu",
   "whatsapp", "oui",
 ]);
 const PERSONAL_NAME_CONNECTORS = new Set(["de", "du", "des", "d", "la", "le"]);
+const PERSONAL_ENUMERATION_CONNECTORS = Object.freeze([" et ", " & ", " avec ", " puis "]);
+const TRANSACTION_RELATIONS = Object.freeze([
+  "a payé pour", "a paye pour", "commande pour", "reçoit de", "recoit de",
+  "achète pour", "achete pour", "a livré à", "a livre a",
+]);
+const CONCEPTUAL_PERSONAL_TAILS = Object.freeze([
+  "avec donnée de paiement", "avec donnee de paiement",
+]);
 
 const KEY_GROUPS = Object.freeze({
   PERSONAL_NAME: new Set([
@@ -159,8 +173,10 @@ const TEXT_PATTERNS = Object.freeze([
   ["EMAIL", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu],
   ["PHONE", /(?:\+?226[\s.-]*)?(?:[02567]\d(?:[\s.-]*\d{2}){3})\b/gu],
   ["ADDRESS", /\b(?:adresse|domicile|livraison\s+[àa]|quartier|rue|avenue|secteur)(?=\s|:|$)\s*:?\s*[^,;\n]+/giu],
-  ["AUTH_SECRET", /\b(?:mot[\s-]*de[\s-]*passe|password|passcode|pin|otp|code[\s-]*de[\s-]*v[ée]rification|mobile[\s-]*money[\s-]*pin)\b\s*[:=]?\s*\S+/giu],
-  ["ACCESS_SECRET", /\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|service[\s_-]*role[\s_-]*key|bearer[\s_-]*token|secret[\s_-]*key)\b\s*[:=]?\s*\S+/giu],
+  ["AUTH_SECRET", /\b(?:mot[\s-]*de[\s-]*passe|password|passcode|pin|otp|code[\s-]*de[\s-]*v[ée]rification|mobile[\s-]*money[\s-]*(?:pin|secret[\s-]*code))\b\s*[:=]?\s*\S+/giu],
+  ["ACCESS_SECRET", /\b(?:api[\s_-]*key|cl[ée][\s_-]*api|access[\s_-]*token|refresh[\s_-]*token|service[\s_-]*role[\s_-]*key|bearer(?:[\s_-]*token)?|secret[\s_-]*key|private[\s_-]*key)\b\s*[:=]?\s*[A-Z0-9][A-Z0-9._-]{2,}/giu],
+  ["ACCESS_SECRET", /\btoken\b\s*[:=]?\s*(?:sk[-_][A-Z0-9._-]+|ey[A-Z0-9._-]{3,})/giu],
+  ["AUTH_SECRET", /\b(?:num[ée]ro[\s-]*de[\s-]*carte|card[\s-]*number|cvv|iban|compte[\s-]*bancaire|bank[\s-]*account|date[\s-]*d['’]?expiration)\b\s*[:=]?\s*[A-Z0-9][A-Z0-9\s./-]{2,}/giu],
   ["BUSINESS_IDENTIFIER", /\b(?:IFU|RCCM|tax[\s_-]*id|fiscal[\s_-]*id)\b\s*[:=]?\s*[A-Z0-9./-]+/giu],
   ["DOCUMENT_SENSITIVE", /\b(?:passport|carte[\s-]*d['’]?identit[ée]|national[\s_-]*id)\b\s*[:=]?\s*[A-Z0-9./-]+/giu],
   ["FINANCIAL", /\b(?:montant|total|prix|solde)\b\s*[:=]?\s*\d[\d\s.,]*(?:FCFA|XOF|€|\$)?/giu],
@@ -224,8 +240,32 @@ function createEmptyPrivacyInput() {
   };
 }
 
+function attachSafeSerialization(result) {
+  const restorationMap = result.restorationMap;
+  delete result.restorationMap;
+  Object.defineProperty(result, "restorationMap", {
+    configurable: false,
+    enumerable: false,
+    writable: true,
+    value: restorationMap,
+  });
+  Object.defineProperty(result, "toJSON", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value() {
+      const output = {};
+      for (const key of Object.keys(this)) {
+        output[key] = this[key];
+      }
+      return output;
+    },
+  });
+  return result;
+}
+
 function createEmptyPrivacyResult() {
-  return {
+  return attachSafeSerialization({
     schemaVersion: KADI_PRIVACY_RESULT_VERSION,
     allowed: false,
     decision: KADI_PRIVACY_DECISIONS.INVALID_INPUT,
@@ -241,7 +281,7 @@ function createEmptyPrivacyResult() {
       containsBusinessSensitiveData: false,
       dataMinimized: false,
     },
-  };
+  });
 }
 
 function classifySensitiveKey(key) {
@@ -381,6 +421,16 @@ function normalizeNameTerm(value) {
     .toLocaleLowerCase("fr");
 }
 
+function canonicalNameKey(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[’‘ʻʼ]/gu, "'")
+    .replace(/[‐‑‒–—―]/gu, "-")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase("fr");
+}
+
 function reserveExistingAliases(text, state) {
   for (const match of String(text || "").matchAll(/\bPERSON_([1-9]\d*)\b/gu)) {
     state.reservedAliases.add(`PERSON_${match[1]}`);
@@ -388,7 +438,8 @@ function reserveExistingAliases(text, state) {
 }
 
 function aliasName(value, state) {
-  if (state.nameAliases.has(value)) return state.nameAliases.get(value);
+  const canonical = canonicalNameKey(value);
+  if (state.nameAliases.has(canonical)) return state.nameAliases.get(canonical);
   if (state.nameAliases.size >= KADI_PRIVACY_LIMITS.maxRestorationEntries) {
     throw new Error("INVALID_RESTORATION_MAP");
   }
@@ -400,20 +451,27 @@ function aliasName(value, state) {
   }
   state.nextAliasIndex = index + 1;
   state.reservedAliases.add(alias);
-  state.nameAliases.set(value, alias);
+  state.nameAliases.set(canonical, alias);
   state.restorationMap[alias] = value;
   return alias;
 }
 
-function isNameUnit(value) {
-  return /^(?:[\p{Lu}][\p{L}\p{M}'’.-]*|[\p{Lu}][\p{L}\p{M}'’.-]*-[\p{Lu}]?[\p{L}\p{M}'’.-]+)$/u.test(value);
+function isNameUnit(value, allowLowercase = false) {
+  const pattern = allowLowercase
+    ? /^[\p{L}\p{M}][\p{L}\p{M}'’.-]*$/u
+    : /^(?:[\p{Lu}][\p{L}\p{M}'’.-]*|[\p{Lu}][\p{L}\p{M}'’.-]*-[\p{Lu}]?[\p{L}\p{M}'’.-]+)$/u;
+  return pattern.test(value);
 }
 
 function isBusinessNameTerm(value) {
   return PERSONAL_NAME_BUSINESS_TERMS.has(normalizeNameTerm(value));
 }
 
-function isPersonalNameSyntax(value, rejectBusinessTerms = true) {
+function isPersonalNameSyntax(
+  value,
+  rejectBusinessTerms = true,
+  allowLowercase = false
+) {
   const normalized = String(value || "").normalize("NFC").trim();
   if (!normalized || codePointLength(normalized) > 160) return false;
   if (/^PERSON_[1-9]\d*$/u.test(normalized)) return false;
@@ -424,7 +482,7 @@ function isPersonalNameSyntax(value, rejectBusinessTerms = true) {
     const normalizedUnit = normalizeNameTerm(unit.replace(/[.,;:!?]+$/u, ""));
     if (PERSONAL_NAME_CONNECTORS.has(normalizedUnit)) continue;
     if (
-      !isNameUnit(unit) ||
+      !isNameUnit(unit, allowLowercase) ||
       (rejectBusinessTerms && isBusinessNameTerm(unit))
     ) return false;
     lexicalUnits += 1;
@@ -434,6 +492,10 @@ function isPersonalNameSyntax(value, rejectBusinessTerms = true) {
 
 function isLikelyNameValue(value) {
   return isPersonalNameSyntax(value, true);
+}
+
+function isLikelyShortNameValue(value) {
+  return isPersonalNameSyntax(value, true, true);
 }
 
 function contextualNameMatches(text) {
@@ -481,13 +543,78 @@ function contextualNameMatches(text) {
 
 function isolatedNameMatches(text) {
   const value = String(text || "").normalize("NFC").trim();
-  if (!isLikelyNameValue(value)) return [];
+  if (!isLikelyShortNameValue(value)) return [];
   return [{ start: text.indexOf(value), end: text.indexOf(value) + value.length, value }];
 }
 
-function personalNameMatches(text) {
-  const matches = [...contextualNameMatches(text)];
-  if (matches.length === 0) matches.push(...isolatedNameMatches(text));
+function transactionalNameMatches(text) {
+  const relations = TRANSACTION_RELATIONS
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .sort((a, b) => b.length - a.length)
+    .join("|");
+  const pattern = new RegExp(
+    `^\\s*([\\p{L}\\p{M}'’.-]+(?:\\s+[\\p{L}\\p{M}'’.-]+){0,4})` +
+      `\\s+(${relations})\\s+` +
+      `([\\p{L}\\p{M}'’.-]+(?:\\s+[\\p{L}\\p{M}'’.-]+){0,4})\\s*$`,
+    "iu"
+  );
+  const match = String(text || "").match(pattern);
+  if (!match) return [];
+  const left = match[1].trim();
+  const right = match[3].trim();
+  if (!isLikelyShortNameValue(left) || !isLikelyShortNameValue(right)) return [];
+  const leftStart = text.indexOf(left);
+  const rightStart = text.lastIndexOf(right);
+  return [
+    { start: leftStart, end: leftStart + left.length, value: left },
+    { start: rightStart, end: rightStart + right.length, value: right },
+  ];
+}
+
+function enumeratedNameMatches(text) {
+  const source = String(text || "").normalize("NFC").trim();
+  for (const connector of PERSONAL_ENUMERATION_CONNECTORS) {
+    const index = source.toLocaleLowerCase("fr").indexOf(connector);
+    if (index < 0) continue;
+    const left = source.slice(0, index).trim().replace(/^(?:monsieur|madame|mme|m)\.?\s+/iu, "");
+    const right = source.slice(index + connector.length).trim()
+      .replace(/^(?:monsieur|madame|mme|m)\.?\s+/iu, "");
+    if (!isLikelyShortNameValue(left) || !isLikelyShortNameValue(right)) continue;
+    const sourceStart = text.indexOf(source);
+    const leftStart = text.indexOf(left, sourceStart);
+    const rightStart = text.lastIndexOf(right);
+    return [
+      { start: leftStart, end: leftStart + left.length, value: left },
+      { start: rightStart, end: rightStart + right.length, value: right },
+    ];
+  }
+  return [];
+}
+
+function conceptualSubjectNameMatches(text) {
+  const source = String(text || "");
+  const normalized = source.toLocaleLowerCase("fr");
+  for (const tail of CONCEPTUAL_PERSONAL_TAILS) {
+    const marker = ` ${tail}`;
+    if (!normalized.endsWith(marker)) continue;
+    const name = source.slice(0, source.length - marker.length).trim();
+    if (!isLikelyShortNameValue(name, true)) return [];
+    const start = source.indexOf(name);
+    return [{ start, end: start + name.length, value: name }];
+  }
+  return [];
+}
+
+function personalNameMatches(text, allowIsolated = false) {
+  const matches = [
+    ...transactionalNameMatches(text),
+    ...contextualNameMatches(text),
+    ...enumeratedNameMatches(text),
+    ...conceptualSubjectNameMatches(text),
+  ];
+  if (matches.length === 0 && allowIsolated) {
+    matches.push(...isolatedNameMatches(text));
+  }
   return matches
     .sort((a, b) => a.start - b.start || b.end - a.end)
     .filter((item, index, list) =>
@@ -497,10 +624,67 @@ function personalNameMatches(text) {
     );
 }
 
-function hasResidualPersonalName(text) {
+function finalLooksNominalSegment(value) {
+  const source = String(value || "").normalize("NFC").trim();
+  if (!source || /^PERSON_[1-9]\d*$/u.test(source)) return false;
+  const withoutTitle = source.replace(/^(?:monsieur|madame|mme|m)\.?\s+/iu, "");
+  const units = withoutTitle.split(/\s+/u);
+  if (units.length < 1 || units.length > 5) return false;
+  return units.every((unit) =>
+    /^[\p{L}\p{M}][\p{L}\p{M}'’.-]*$/u.test(unit) &&
+    !isBusinessNameTerm(unit) &&
+    !["et", "avec", "puis"].includes(normalizeNameTerm(unit))
+  );
+}
+
+function finalResidualNameRisk(text) {
   if (typeof text !== "string") return false;
-  if (contextualNameMatches(text).length > 0) return true;
-  return isolatedNameMatches(text).length > 0;
+  const source = text.normalize("NFC").trim();
+  if (!source) return false;
+  if (finalLooksNominalSegment(source)) return true;
+
+  const placeholderOrName =
+    "(?:PERSON_[1-9]\\d*|[\\p{L}\\p{M}][\\p{L}\\p{M}'’.-]*(?:\\s+[\\p{L}\\p{M}][\\p{L}\\p{M}'’.-]*){0,4})";
+  const contexts = PERSONAL_NAME_CONTEXTS
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .sort((a, b) => b.length - a.length)
+    .join("|");
+  const contextual = new RegExp(
+    `(?:^|\\b)(?:${contexts})(?=\\s|[.:=,-]|$)\\s*(?:[.:=,-]\\s*)?(${placeholderOrName})`,
+    "giu"
+  );
+  for (const match of source.matchAll(contextual)) {
+    if (!/^PERSON_[1-9]\d*$/u.test(match[1]) && finalLooksNominalSegment(match[1])) {
+      return true;
+    }
+  }
+
+  const relations = TRANSACTION_RELATIONS
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const transaction = source.match(new RegExp(
+    `^(${placeholderOrName})\\s+(?:${relations})\\s+(${placeholderOrName})$`,
+    "iu"
+  ));
+  if (
+    transaction &&
+    [transaction[1], transaction[2]].some(
+      (value) => !/^PERSON_[1-9]\d*$/u.test(value) && finalLooksNominalSegment(value)
+    )
+  ) return true;
+
+  for (const connector of PERSONAL_ENUMERATION_CONNECTORS) {
+    const index = source.toLocaleLowerCase("fr").indexOf(connector);
+    if (index < 0) continue;
+    const left = source.slice(0, index).trim();
+    const right = source.slice(index + connector.length).trim();
+    if (
+      [left, right].some(
+        (value) => !/^PERSON_[1-9]\d*$/u.test(value) && finalLooksNominalSegment(value)
+      )
+    ) return true;
+  }
+  return false;
 }
 
 function sanitizeText(text, path, policy, state) {
@@ -546,7 +730,7 @@ function sanitizeText(text, path, policy, state) {
     }
   }
   if (!policy.allowPersonalNames && policy.pseudonymizeNames) {
-    for (const match of personalNameMatches(text)) {
+    for (const match of personalNameMatches(text, path === "userMessage")) {
       const alias = aliasName(match.value, state);
       replacements.push({
         start: match.start,
@@ -759,7 +943,7 @@ function inspectSanitizedPrivacyPayload(sanitizedInput) {
         state.containsBusinessSensitiveData = true;
       }
     }
-    if (hasResidualPersonalName(text)) state.containsPersonalData = true;
+    if (finalResidualNameRisk(text)) state.containsPersonalData = true;
   };
   const walk = (value, keyCategory = "NONE") => {
     if (SECRET_CATEGORIES.has(keyCategory)) state.containsSecrets = true;
@@ -790,7 +974,7 @@ function isRestorablePersonalName(alias, value) {
   ) return false;
   if (classifySensitiveKey(value) !== "NONE") return false;
   if (detectSensitiveText(value).length > 0) return false;
-  return isPersonalNameSyntax(value, false);
+  return isPersonalNameSyntax(value, false, true);
 }
 
 function derivePrivacySummary(result) {
@@ -818,11 +1002,18 @@ function validatePrivacyResult(result) {
       return { valid: false, errors: [{ path: "$", code: "INVALID_RESULT" }] };
     }
     if (inspectStructure(result)) add("$", "UNSAFE_KEY");
-    const exactKeys = [
+    const exactEnumerableKeys = [
       "schemaVersion", "allowed", "decision", "errorCode", "errors",
-      "sanitizedInput", "redactions", "restorationMap", "summary",
+      "sanitizedInput", "redactions", "summary",
     ];
-    if (JSON.stringify(Object.keys(result)) !== JSON.stringify(exactKeys)) add("$", "INVALID_RESULT");
+    const restorationDescriptor =
+      Object.getOwnPropertyDescriptor(result, "restorationMap");
+    if (
+      JSON.stringify(Object.keys(result)) !==
+        JSON.stringify(exactEnumerableKeys) ||
+      !restorationDescriptor ||
+      restorationDescriptor.enumerable
+    ) add("$", "INVALID_RESULT");
     if (result.schemaVersion !== KADI_PRIVACY_RESULT_VERSION) add("schemaVersion", "INVALID_SCHEMA");
     if (typeof result.allowed !== "boolean") add("allowed", "INVALID_RESULT");
     if (!DECISION_VALUES.has(result.decision)) add("decision", "INVALID_RESULT");

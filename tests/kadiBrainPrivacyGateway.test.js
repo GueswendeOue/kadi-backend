@@ -103,7 +103,6 @@ test("scenarios 8-16: exact independent empty structures", () => {
     errors: [],
     sanitizedInput: { userMessage: "", context: {} },
     redactions: [],
-    restorationMap: {},
     summary: {
       containsSecrets: false,
       containsPersonalDataBefore: false,
@@ -112,6 +111,8 @@ test("scenarios 8-16: exact independent empty structures", () => {
       dataMinimized: false,
     },
   });
+  assert.deepEqual(result1.restorationMap, {});
+  assert.equal(Object.keys(result1).includes("restorationMap"), false);
   for (const key of ["errors", "sanitizedInput", "redactions", "restorationMap", "summary"]) {
     assert.notStrictEqual(result1[key], result2[key]);
   }
@@ -395,6 +396,145 @@ test("free-form names: detection stays bounded on maximum-length input", () => {
   assert.equal(elapsedMs < 1000, true);
 });
 
+test("residual gaps: lowercase short names never remain provider-safe in clear", () => {
+  const messages = [
+    "jean pierre", "awa", "issa ouedraogo", "jean-pierre", "o'connor",
+    "o’connor", "élodie", "mme kaboré", "m. traoré",
+  ];
+  for (const message of messages) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage.includes(message), false, message);
+    assert.equal(result.decision, "ALLOWED_WITH_REDACTION", message);
+    assert.equal(isPrivacySafeForProvider(result), true, message);
+  }
+});
+
+test("residual gaps: transactional subjects and recipients are both protected", () => {
+  const cases = [
+    ["Awa a payé pour Fatou", "PERSON_1 a payé pour PERSON_2"],
+    ["Issa commande pour Paul", "PERSON_1 commande pour PERSON_2"],
+    ["Jean reçoit de Aminata", "PERSON_1 reçoit de PERSON_2"],
+    ["Élodie achète pour Kaboré", "PERSON_1 achète pour PERSON_2"],
+    ["O’Connor a livré à Fatou", "PERSON_1 a livré à PERSON_2"],
+  ];
+  for (const [message, expected] of cases) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, expected);
+    assert.equal(Object.keys(result.restorationMap).length, 2);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("residual gaps: personal enumerations and canonical apostrophes are protected", () => {
+  const cases = [
+    ["Jean-Pierre et Jean Pierre", "PERSON_1 et PERSON_2", 2],
+    ["Awa et Fatou", "PERSON_1 et PERSON_2", 2],
+    ["Client Awa et bénéficiaire Issa", "Client PERSON_1 et bénéficiaire PERSON_2", 2],
+    ["Monsieur Kaboré, Madame Traoré", "Monsieur PERSON_1, Madame PERSON_2", 2],
+    ["O’Connor & O'Connor", "PERSON_1 & PERSON_1", 1],
+  ];
+  for (const [message, expected, count] of cases) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, expected);
+    assert.equal(Object.keys(result.restorationMap).length, count);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+  const hyphenated = sanitizePrivacyInput(validInput({
+    userMessage: "Jean-Pierre et Jean Pierre",
+  }));
+  assert.notEqual(
+    hyphenated.sanitizedInput.userMessage.split(" et ")[0],
+    hyphenated.sanitizedInput.userMessage.split(" et ")[1]
+  );
+});
+
+test("residual gaps: independent final inspection closes a primary context miss", () => {
+  const result = sanitizePrivacyInput(validInput({
+    userMessage: "Créer une facture",
+    context: { publicNote: "jean pierre" },
+  }));
+  assert.equal(result.sanitizedInput.context.publicNote, "jean pierre");
+  assert.equal(result.allowed, true);
+  assert.equal(validatePrivacyResult(result).valid, false);
+  assert.equal(isPrivacySafeForProvider(result), false);
+});
+
+test("residual gaps: English beneficiary context preserves public structure", () => {
+  const result = sanitizePrivacyInput(validInput({
+    userMessage: "Beneficiary Alice",
+  }));
+  assert.equal(result.sanitizedInput.userMessage, "Beneficiary PERSON_1");
+  assert.deepEqual(result.restorationMap, { PERSON_1: "Alice" });
+  assert.equal(isPrivacySafeForProvider(result), true);
+});
+
+test("residual gaps: restoration data is local and excluded from default serialization", () => {
+  const result = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  assert.equal(result.restorationMap.PERSON_1, "Awa");
+  assert.equal(Object.keys(result).includes("restorationMap"), false);
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("restorationMap"), false);
+  assert.equal(serialized.includes("Awa"), false);
+  assert.equal(serialized.includes("PERSON_1"), true);
+});
+
+test("residual gaps: explicit secret and payment values block without disclosure", () => {
+  const cases = [
+    "token sk-test",
+    "clé API abc123",
+    "bearer eyJhbGciOiJIUzI1NiJ9",
+    "password azerty",
+    "otp 123456",
+    "numéro de carte 4111111111111111",
+    "CVV 123",
+    "date d’expiration 12/29",
+    "PIN 4321",
+    "compte bancaire BF001234567890",
+    "IBAN BF42TEST123456789",
+    "mobile money secret code 7890",
+  ];
+  for (const message of cases) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.allowed, false, message);
+    assert.equal(result.decision, "BLOCKED", message);
+    assert.equal(result.errorCode, "SECRET_DETECTED", message);
+    assert.equal(JSON.stringify(result).includes(message), false, message);
+  }
+});
+
+test("residual gaps: conceptual payment and bounded business conjunctions remain usable", () => {
+  const conceptual = sanitizePrivacyInput(validInput({
+    userMessage: "Jean avec donnée de paiement",
+  }));
+  assert.equal(
+    conceptual.sanitizedInput.userMessage,
+    "PERSON_1 avec donnée de paiement"
+  );
+  assert.equal(conceptual.summary.containsSecrets, false);
+  assert.equal(isPrivacySafeForProvider(conceptual), true);
+
+  for (const message of [
+    "ciment et sable", "Orange et Moov", "peinture Awa", "savon Awa",
+    "restaurant Chez Awa", "marque Awa", "modèle Jean", "tissu Kaboré",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.deepEqual(result.restorationMap, {});
+    assert.equal(isPrivacySafeForProvider(result), true, message);
+  }
+});
+
+test("residual gaps: aliases are request-scoped, user-scoped and deterministic", () => {
+  const awa = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  const fatou = sanitizePrivacyInput(validInput({ userMessage: "Client Fatou" }));
+  const awaAgain = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  assert.deepEqual(awa.restorationMap, { PERSON_1: "Awa" });
+  assert.deepEqual(fatou.restorationMap, { PERSON_1: "Fatou" });
+  assert.notStrictEqual(awa.restorationMap, fatou.restorationMap);
+  assert.equal(JSON.stringify(awa), JSON.stringify(awaAgain));
+  assert.deepEqual(awa.restorationMap, awaAgain.restorationMap);
+});
+
 test("scenarios 96-104: default removal and financial policy are enforced", () => {
   const result = sanitizePrivacyInput(validInput({
     userMessage: "Téléphone 70 12 34 56 email awa@example.com IFU 00012345 montant 125000 FCFA",
@@ -612,14 +752,17 @@ test("hardening: one name is pseudonymized with an exact local restoration map",
 });
 
 test("hardening: restoration map boundaries and allowed values are validated", () => {
-  const base = sanitizePrivacyInput(validInput());
   const exact = {};
   for (let index = 1; index <= KADI_PRIVACY_LIMITS.maxRestorationEntries; index += 1) {
     exact[`PERSON_${index}`] = `Personne ${"A".repeat(index)}`;
   }
-  assert.equal(validatePrivacyResult({ ...base, restorationMap: exact }).valid, true);
+  const exactResult = sanitizePrivacyInput(validInput());
+  exactResult.restorationMap = exact;
+  assert.equal(validatePrivacyResult(exactResult).valid, true);
   const excessive = { ...exact, PERSON_101: `Personne ${"A".repeat(101)}` };
-  assert.equal(validatePrivacyResult({ ...base, restorationMap: excessive }).valid, false);
+  const excessiveResult = sanitizePrivacyInput(validInput());
+  excessiveResult.restorationMap = excessive;
+  assert.equal(validatePrivacyResult(excessiveResult).valid, false);
 
   const forbidden = [
     "70 12 34 56",
@@ -634,7 +777,8 @@ test("hardening: restoration map boundaries and allowed values are validated", (
     "API key secret-value",
   ];
   for (const value of forbidden) {
-    const forged = { ...base, restorationMap: { PERSON_1: value } };
+    const forged = sanitizePrivacyInput(validInput());
+    forged.restorationMap = { PERSON_1: value };
     assert.equal(validatePrivacyResult(forged).valid, false);
     assert.equal(isPrivacySafeForProvider(forged), false);
   }
