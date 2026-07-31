@@ -76,6 +76,14 @@ const PUBLIC_RESULT = Object.freeze({
   timestamp: "2026-08-01T00:00:00.000Z",
 });
 
+const EXPECTED_OBSERVATION_KEYS = Object.freeze([
+  "shadowVersion", "status", "sourceType", "messageIdHash",
+  "providerStatus", "providerFailureKind", "parserValid", "parserFailureCode",
+  "intent", "confidenceBucket", "actionable", "missingFieldCount",
+  "blockingAmbiguityCount", "safetyFlags", "latencyBucket", "execution",
+  "timestamp",
+]);
+
 function textMessage(overrides = {}) {
   return {
     id: "wamid.fictitious-shadow",
@@ -96,6 +104,71 @@ async function flushLateDetached() {
 
 test.afterEach(() => {
   configureBrainRealShadowIntegration(null);
+});
+
+test("observation projection has exactly the canonical seventeen keys", () => {
+  const projected = projectBrainShadowResultForObservation(PUBLIC_RESULT);
+  assert.deepEqual(Object.keys(projected), EXPECTED_OBSERVATION_KEYS);
+  assert.equal(Object.keys(projected).length, 17);
+  assert.equal(projected.execution, "NONE");
+  for (const key of Object.keys(projected)) {
+    assert.equal(/^raw|session|prompt|stack|error|messageId$/u.test(key), false);
+  }
+});
+
+test("projection accepts only representative plain objects", async () => {
+  class ResultClass {}
+  const customPrototype = Object.create({ inherited: "PRIVATE" });
+  const hostileProxy = new Proxy({}, {
+    getPrototypeOf() { throw new Error("PRIVATE_PROXY"); },
+  });
+  const accepted = [
+    { ...PUBLIC_RESULT },
+    Object.assign(Object.create(null), PUBLIC_RESULT),
+    Object.freeze({ ...PUBLIC_RESULT }),
+    Object.seal({ ...PUBLIC_RESULT }),
+  ];
+  const rejected = [
+    new Date(), new Error("PRIVATE_ERROR"), [], new Map(), new Set(),
+    new ResultClass(), customPrototype, function result() {}, hostileProxy,
+  ];
+  for (const value of accepted) {
+    const projected = projectBrainShadowResultForObservation(value);
+    assert.deepEqual(Object.keys(projected), EXPECTED_OBSERVATION_KEYS);
+  }
+  for (const [index, value] of rejected.entries()) {
+    assert.equal(projectBrainShadowResultForObservation(value), null, String(index));
+    const observed = [];
+    configureBrainRealShadowIntegration({
+      mode: "shadow",
+      runner: { run: () => value },
+      onResult: (result) => observed.push(result),
+    });
+    assert.doesNotThrow(() => launchBrainRealShadowObservation({
+      text: "Créer une facture",
+      msg: textMessage({ id: `representative-${index}` }),
+      session: { step: "idle" },
+    }));
+    await flushDetached();
+    assert.equal(observed.length, 0);
+  }
+});
+
+test("counter projection keeps only integers in the inclusive range 0..100", () => {
+  const values = [undefined, null, -1, 0, 1, 99, 100, 101, 1.5,
+    NaN, Infinity, "2", {}, []];
+  for (const value of values) {
+    const projected = projectBrainShadowResultForObservation({
+      ...PUBLIC_RESULT,
+      missingFieldCount: value,
+      blockingAmbiguityCount: value,
+    });
+    const expected = Number.isInteger(value) && value >= 0 && value <= 100
+      ? value
+      : 0;
+    assert.equal(projected.missingFieldCount, expected);
+    assert.equal(projected.blockingAmbiguityCount, expected);
+  }
 });
 
 test("only exact shadow mode prepares an observation", () => {
@@ -462,6 +535,48 @@ test("hostile thenables cannot throw into legacy or create multiple observations
   }
 });
 
+test("multiple asynchronous thenable callbacks still produce one hook maximum", async () => {
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    for (const [index, thenable] of [
+      {
+        then(resolve, reject) {
+          setTimeout(() => resolve(PUBLIC_RESULT), 0);
+          setTimeout(() => resolve({ ...PUBLIC_RESULT, rawMessage: "PRIVATE_LATE" }), 1);
+          setTimeout(() => reject(new Error("PRIVATE_LATE_REJECT")), 2);
+        },
+      },
+      {
+        then(resolve, reject) {
+          reject(new Error("PRIVATE_FIRST_REJECT"));
+          setTimeout(() => resolve(PUBLIC_RESULT), 1);
+          setTimeout(() => reject(new Error("PRIVATE_SECOND_REJECT")), 2);
+        },
+      },
+    ].entries()) {
+      const observed = [];
+      configureBrainRealShadowIntegration({
+        mode: "shadow",
+        runner: { run: () => thenable },
+        onResult: (result) => observed.push(result),
+      });
+      assert.doesNotThrow(() => launchBrainRealShadowObservation({
+        text: "Créer une facture",
+        msg: textMessage({ id: `async-thenable-${index}` }),
+        session: { step: "idle" },
+      }));
+      await flushLateDetached();
+      assert.ok(observed.length <= 1);
+      assert.equal(JSON.stringify(observed).includes("PRIVATE_LATE"), false);
+    }
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+});
+
 test("malicious runner values never cross the canonical hook boundary", async () => {
   const maliciousObject = {
     ...PUBLIC_RESULT,
@@ -548,7 +663,7 @@ test("projection normalizes invalid enums, hash and counts without arbitrary rea
     intent: null,
     confidenceBucket: "NONE",
     actionable: false,
-    missingFieldCount: 100,
+    missingFieldCount: 0,
     blockingAmbiguityCount: 0,
     safetyFlags: { containsSensitiveData: true, requiresHumanReview: false },
     latencyBucket: "NONE",
@@ -641,6 +756,63 @@ test("constructor failure is latched until a new integration instance", () => {
   assert.equal(constructions, 2);
 });
 
+test("same-turn admissible messages construct one synchronous runner singleton", () => {
+  let constructions = 0;
+  const calls = [];
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runnerFactory() {
+      constructions += 1;
+      return { run(input) { calls.push(input.messageId); return PUBLIC_RESULT; } };
+    },
+  });
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture", msg: textMessage({ id: "same-turn-a" }),
+    session: { step: "idle" },
+  }), true);
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture", msg: textMessage({ id: "same-turn-b" }),
+    session: { step: "idle" },
+  }), true);
+  assert.equal(constructions, 1);
+  assert.deepEqual(calls, ["same-turn-a", "same-turn-b"]);
+});
+
+test("mode matrix keeps the engine closed except canonical shadow", () => {
+  const previousMode = process.env.KADI_BRAIN_MODE;
+  const previousLegacy = process.env.KADI_BRAIN_SHADOW_ENABLED;
+  const cases = [
+    [undefined, undefined, false], [undefined, "true", true],
+    ["off", undefined, false], ["shadow", undefined, true],
+    ["SHADOW", undefined, true], [" shadow ", undefined, true],
+    ["candidate", "true", false], ["active_allowlist", "true", false],
+    ["active", "true", false], ["invalid", "true", false],
+    [undefined, "false", false],
+  ];
+  try {
+    for (const [mode, legacy, expected] of cases) {
+      if (mode === undefined) delete process.env.KADI_BRAIN_MODE;
+      else process.env.KADI_BRAIN_MODE = mode;
+      if (legacy === undefined) delete process.env.KADI_BRAIN_SHADOW_ENABLED;
+      else process.env.KADI_BRAIN_SHADOW_ENABLED = legacy;
+      let calls = 0;
+      configureBrainRealShadowIntegration({
+        runner: { run: () => { calls += 1; return PUBLIC_RESULT; } },
+      });
+      assert.equal(launchBrainRealShadowObservation({
+        text: "Créer une facture", msg: textMessage({ id: `mode-${String(mode)}-${legacy}` }),
+        session: { step: "idle" },
+      }), expected);
+      assert.equal(calls, expected ? 1 : 0);
+    }
+  } finally {
+    if (previousMode === undefined) delete process.env.KADI_BRAIN_MODE;
+    else process.env.KADI_BRAIN_MODE = previousMode;
+    if (previousLegacy === undefined) delete process.env.KADI_BRAIN_SHADOW_ENABLED;
+    else process.env.KADI_BRAIN_SHADOW_ENABLED = previousLegacy;
+  }
+});
+
 test("successful constructor is a singleton and runner owns id handling", async () => {
   let constructions = 0;
   const ids = [];
@@ -697,6 +869,51 @@ test("sensitive session and draft values never reach flow context or hook", asyn
   assert.equal(serialized.includes("99991"), false);
   assert.equal(serialized.includes("99992"), false);
   assert.equal(serialized.includes("PRIVATE_ARTICLE"), false);
+});
+
+test("voice projection keeps only business text and bounded context", async () => {
+  const frozenSession = Object.freeze({
+    step: "doc_client",
+    mode: "facture",
+    clientName: "PRIVATE_CLIENT",
+    lastDocDraft: Object.freeze({
+      type: "facture", phone: "PRIVATE_PHONE", amount: 99999,
+    }),
+  });
+  let input;
+  let observed;
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: { run(value) { input = value; return PUBLIC_RESULT; } },
+    onResult(value) { observed = value; },
+  });
+  launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage({
+      id: "voice-🔒-original",
+      audioTranscript: {
+        raw: "PRIVATE_RAW_TRANSCRIPT",
+        mediaId: "PRIVATE_MEDIA_ID",
+        buffer: "PRIVATE_BUFFER",
+        url: "PRIVATE_URL",
+        detectedLanguages: ["fr"],
+      },
+    }),
+    session: frozenSession,
+  });
+  await flushDetached();
+  assert.equal(input.sourceType, "voice");
+  assert.equal(input.userMessage, "Créer une facture");
+  assert.equal(input.messageId, "voice-🔒-original");
+  assert.deepEqual(Object.keys(input.flowContext), [
+    "stepCategory", "activeFlow", "activeDocumentType", "hasActiveDraft",
+    "expectedFieldNames", "messageType",
+  ]);
+  const serialized = JSON.stringify({ input, observed });
+  for (const marker of [
+    "PRIVATE_RAW_TRANSCRIPT", "PRIVATE_MEDIA_ID", "PRIVATE_BUFFER",
+    "PRIVATE_URL", "PRIVATE_CLIENT", "PRIVATE_PHONE", "99999",
+  ]) assert.equal(serialized.includes(marker), false);
 });
 
 test("a delayed runner never blocks legacy continuation", async () => {

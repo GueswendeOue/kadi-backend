@@ -391,7 +391,7 @@ function allowedValue(value, allowed, fallback = null) {
 }
 
 function boundedResultCount(value) {
-  return Number.isInteger(value) && value >= 0 ? Math.min(value, 100) : 0;
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : 0;
 }
 
 function projectBrainShadowResultForObservation(value) {
