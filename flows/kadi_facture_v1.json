@@ -1,0 +1,690 @@
+{
+  "version": "7.3",
+  "routing_model": {
+    "CLIENT": ["ARTICLES_UN_TROIS"],
+    "ARTICLES_UN_TROIS": ["ARTICLES_QUATRE_SIX"],
+    "ARTICLES_QUATRE_SIX": ["OPTIONS"],
+    "OPTIONS": []
+  },
+  "screens": [
+    {
+      "id": "CLIENT",
+      "title": "Client",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "Dropdown",
+                "name": "client_type",
+                "label": "Type de client",
+                "required": true,
+                "data-source": [
+                  { "id": "individual", "title": "Particulier" },
+                  { "id": "professional", "title": "Professionnel" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "client_name",
+                "label": "Nom du client",
+                "input-type": "text",
+                "required": true,
+                "max-chars": 200
+              },
+              {
+                "type": "TextInput",
+                "name": "client_phone",
+                "label": "Téléphone du client",
+                "input-type": "phone",
+                "required": false,
+                "max-chars": 50
+              },
+              {
+                "type": "TextInput",
+                "name": "client_address",
+                "label": "Adresse du client",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "client_ifu",
+                "label": "IFU professionnel",
+                "helper-text": "IFU du client professionnel",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 100
+              },
+              {
+                "type": "TextInput",
+                "name": "client_registry_number",
+                "label": "RCCM ou registre",
+                "helper-text": "RCCM ou registre professionnel",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 150
+              },
+              {
+                "type": "TextInput",
+                "name": "invoice_subject",
+                "label": "Objet de la facture",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "DatePicker",
+                "name": "transaction_date",
+                "label": "Date de la vente ou prestation",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": { "type": "screen", "name": "ARTICLES_UN_TROIS" },
+                  "payload": {
+                    "client_type": "${form.client_type}",
+                    "client_name": "${form.client_name}",
+                    "client_phone": "${form.client_phone}",
+                    "client_address": "${form.client_address}",
+                    "client_ifu": "${form.client_ifu}",
+                    "client_registry_number": "${form.client_registry_number}",
+                    "invoice_subject": "${form.invoice_subject}",
+                    "transaction_date": "${form.transaction_date}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICLES_UN_TROIS",
+      "title": "Articles 1 à 3",
+      "data": {
+        "client_type": { "type": "string", "__example__": "individual" },
+        "client_name": { "type": "string", "__example__": "Client exemple" },
+        "client_phone": { "type": "string", "__example__": "70000000" },
+        "client_address": { "type": "string", "__example__": "Adresse exemple" },
+        "client_ifu": { "type": "string", "__example__": "IFU_EXEMPLE" },
+        "client_registry_number": { "type": "string", "__example__": "REGISTRE_EXEMPLE" },
+        "invoice_subject": { "type": "string", "__example__": "Prestation exemple" },
+        "transaction_date": { "type": "string", "__example__": "2026-01-15" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Article 1"
+              },
+              {
+                "type": "TextInput",
+                "name": "item_1_designation",
+                "label": "Désignation",
+                "input-type": "text",
+                "required": true,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_1_quantity",
+                "label": "Quantité",
+                "input-type": "number",
+                "required": true,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_1_unit",
+                "label": "Unité",
+                "required": true,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_1_unit_price",
+                "label": "Prix unitaire FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": true,
+                "max-chars": 15
+              },
+              {
+                "type": "TextHeading",
+                "text": "Article 2 (facultatif)"
+              },
+              {
+                "type": "TextInput",
+                "name": "item_2_designation",
+                "label": "Désignation",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_2_quantity",
+                "label": "Quantité",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_2_unit",
+                "label": "Unité",
+                "required": false,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_2_unit_price",
+                "label": "Prix unitaire FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 15
+              },
+              {
+                "type": "TextHeading",
+                "text": "Article 3 (facultatif)"
+              },
+              {
+                "type": "TextInput",
+                "name": "item_3_designation",
+                "label": "Désignation",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_3_quantity",
+                "label": "Quantité",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_3_unit",
+                "label": "Unité",
+                "required": false,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_3_unit_price",
+                "label": "Prix unitaire FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 15
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": { "type": "screen", "name": "ARTICLES_QUATRE_SIX" },
+                  "payload": {
+                    "client_type": "${data.client_type}",
+                    "client_name": "${data.client_name}",
+                    "client_phone": "${data.client_phone}",
+                    "client_address": "${data.client_address}",
+                    "client_ifu": "${data.client_ifu}",
+                    "client_registry_number": "${data.client_registry_number}",
+                    "invoice_subject": "${data.invoice_subject}",
+                    "transaction_date": "${data.transaction_date}",
+                    "item_1_designation": "${form.item_1_designation}",
+                    "item_1_quantity": "${form.item_1_quantity}",
+                    "item_1_unit": "${form.item_1_unit}",
+                    "item_1_unit_price": "${form.item_1_unit_price}",
+                    "item_2_designation": "${form.item_2_designation}",
+                    "item_2_quantity": "${form.item_2_quantity}",
+                    "item_2_unit": "${form.item_2_unit}",
+                    "item_2_unit_price": "${form.item_2_unit_price}",
+                    "item_3_designation": "${form.item_3_designation}",
+                    "item_3_quantity": "${form.item_3_quantity}",
+                    "item_3_unit": "${form.item_3_unit}",
+                    "item_3_unit_price": "${form.item_3_unit_price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICLES_QUATRE_SIX",
+      "title": "Articles 4 à 6",
+      "data": {
+        "client_type": { "type": "string", "__example__": "individual" },
+        "client_name": { "type": "string", "__example__": "Client exemple" },
+        "client_phone": { "type": "string", "__example__": "70000000" },
+        "client_address": { "type": "string", "__example__": "Adresse exemple" },
+        "client_ifu": { "type": "string", "__example__": "IFU_EXEMPLE" },
+        "client_registry_number": { "type": "string", "__example__": "REGISTRE_EXEMPLE" },
+        "invoice_subject": { "type": "string", "__example__": "Prestation exemple" },
+        "transaction_date": { "type": "string", "__example__": "2026-01-15" },
+        "item_1_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_1_quantity": { "type": "number", "__example__": 1 },
+        "item_1_unit": { "type": "string", "__example__": "unit" },
+        "item_1_unit_price": { "type": "number", "__example__": 1000 },
+        "item_2_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_2_quantity": { "type": "number", "__example__": 1 },
+        "item_2_unit": { "type": "string", "__example__": "unit" },
+        "item_2_unit_price": { "type": "number", "__example__": 1000 },
+        "item_3_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_3_quantity": { "type": "number", "__example__": 1 },
+        "item_3_unit": { "type": "string", "__example__": "unit" },
+        "item_3_unit_price": { "type": "number", "__example__": 1000 }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Articles facultatifs"
+              },
+              {
+                "type": "TextInput",
+                "name": "item_4_designation",
+                "label": "Désignation art. 4",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_4_quantity",
+                "label": "Quantité article 4",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_4_unit",
+                "label": "Unité article 4",
+                "required": false,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_4_unit_price",
+                "label": "Prix article 4 FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 15
+              },
+              {
+                "type": "TextInput",
+                "name": "item_5_designation",
+                "label": "Désignation art. 5",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_5_quantity",
+                "label": "Quantité article 5",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_5_unit",
+                "label": "Unité article 5",
+                "required": false,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_5_unit_price",
+                "label": "Prix article 5 FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 15
+              },
+              {
+                "type": "TextInput",
+                "name": "item_6_designation",
+                "label": "Désignation art. 6",
+                "input-type": "text",
+                "required": false,
+                "max-chars": 300
+              },
+              {
+                "type": "TextInput",
+                "name": "item_6_quantity",
+                "label": "Quantité article 6",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 20
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_6_unit",
+                "label": "Unité article 6",
+                "required": false,
+                "data-source": [
+                  { "id": "unit", "title": "Unité" },
+                  { "id": "piece", "title": "Pièce" },
+                  { "id": "lot", "title": "Lot" },
+                  { "id": "hour", "title": "Heure" },
+                  { "id": "day", "title": "Jour" },
+                  { "id": "kilogram", "title": "Kilogramme" },
+                  { "id": "meter", "title": "Mètre" },
+                  { "id": "service", "title": "Service" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "item_6_unit_price",
+                "label": "Prix article 6 FCFA",
+                "helper-text": "Prix unitaire en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 15
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": { "type": "screen", "name": "OPTIONS" },
+                  "payload": {
+                    "client_type": "${data.client_type}",
+                    "client_name": "${data.client_name}",
+                    "client_phone": "${data.client_phone}",
+                    "client_address": "${data.client_address}",
+                    "client_ifu": "${data.client_ifu}",
+                    "client_registry_number": "${data.client_registry_number}",
+                    "invoice_subject": "${data.invoice_subject}",
+                    "transaction_date": "${data.transaction_date}",
+                    "item_1_designation": "${data.item_1_designation}",
+                    "item_1_quantity": "${data.item_1_quantity}",
+                    "item_1_unit": "${data.item_1_unit}",
+                    "item_1_unit_price": "${data.item_1_unit_price}",
+                    "item_2_designation": "${data.item_2_designation}",
+                    "item_2_quantity": "${data.item_2_quantity}",
+                    "item_2_unit": "${data.item_2_unit}",
+                    "item_2_unit_price": "${data.item_2_unit_price}",
+                    "item_3_designation": "${data.item_3_designation}",
+                    "item_3_quantity": "${data.item_3_quantity}",
+                    "item_3_unit": "${data.item_3_unit}",
+                    "item_3_unit_price": "${data.item_3_unit_price}",
+                    "item_4_designation": "${form.item_4_designation}",
+                    "item_4_quantity": "${form.item_4_quantity}",
+                    "item_4_unit": "${form.item_4_unit}",
+                    "item_4_unit_price": "${form.item_4_unit_price}",
+                    "item_5_designation": "${form.item_5_designation}",
+                    "item_5_quantity": "${form.item_5_quantity}",
+                    "item_5_unit": "${form.item_5_unit}",
+                    "item_5_unit_price": "${form.item_5_unit_price}",
+                    "item_6_designation": "${form.item_6_designation}",
+                    "item_6_quantity": "${form.item_6_quantity}",
+                    "item_6_unit": "${form.item_6_unit}",
+                    "item_6_unit_price": "${form.item_6_unit_price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "OPTIONS",
+      "title": "Options",
+      "terminal": true,
+      "data": {
+        "client_type": { "type": "string", "__example__": "individual" },
+        "client_name": { "type": "string", "__example__": "Client exemple" },
+        "client_phone": { "type": "string", "__example__": "70000000" },
+        "client_address": { "type": "string", "__example__": "Adresse exemple" },
+        "client_ifu": { "type": "string", "__example__": "IFU_EXEMPLE" },
+        "client_registry_number": { "type": "string", "__example__": "REGISTRE_EXEMPLE" },
+        "invoice_subject": { "type": "string", "__example__": "Prestation exemple" },
+        "transaction_date": { "type": "string", "__example__": "2026-01-15" },
+        "item_1_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_1_quantity": { "type": "number", "__example__": 1 },
+        "item_1_unit": { "type": "string", "__example__": "unit" },
+        "item_1_unit_price": { "type": "number", "__example__": 1000 },
+        "item_2_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_2_quantity": { "type": "number", "__example__": 1 },
+        "item_2_unit": { "type": "string", "__example__": "unit" },
+        "item_2_unit_price": { "type": "number", "__example__": 1000 },
+        "item_3_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_3_quantity": { "type": "number", "__example__": 1 },
+        "item_3_unit": { "type": "string", "__example__": "unit" },
+        "item_3_unit_price": { "type": "number", "__example__": 1000 },
+        "item_4_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_4_quantity": { "type": "number", "__example__": 1 },
+        "item_4_unit": { "type": "string", "__example__": "unit" },
+        "item_4_unit_price": { "type": "number", "__example__": 1000 },
+        "item_5_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_5_quantity": { "type": "number", "__example__": 1 },
+        "item_5_unit": { "type": "string", "__example__": "unit" },
+        "item_5_unit_price": { "type": "number", "__example__": 1000 },
+        "item_6_designation": { "type": "string", "__example__": "Produit exemple" },
+        "item_6_quantity": { "type": "number", "__example__": 1 },
+        "item_6_unit": { "type": "string", "__example__": "unit" },
+        "item_6_unit_price": { "type": "number", "__example__": 1000 }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "form",
+            "children": [
+              {
+                "type": "Dropdown",
+                "name": "tax_status",
+                "label": "Situation de la taxe",
+                "required": true,
+                "data-source": [
+                  { "id": "not_applicable", "title": "Non applicable" },
+                  { "id": "exempt", "title": "Exonéré" },
+                  { "id": "taxable", "title": "Taxable" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "tax_rate",
+                "label": "Taux de taxe (%)",
+                "helper-text": "Taux de taxe en pourcentage, si taxable",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 6
+              },
+              {
+                "type": "TextInput",
+                "name": "discount_amount",
+                "label": "Remise en FCFA",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 16
+              },
+              {
+                "type": "TextInput",
+                "name": "amount_paid",
+                "label": "Montant déjà payé",
+                "input-type": "number",
+                "required": false,
+                "max-chars": 16
+              },
+              {
+                "type": "DatePicker",
+                "name": "due_date",
+                "label": "Date d’échéance",
+                "required": false
+              },
+              {
+                "type": "Dropdown",
+                "name": "payment_method",
+                "label": "Mode de paiement",
+                "required": false,
+                "data-source": [
+                  { "id": "cash", "title": "Espèces" },
+                  { "id": "mobile_money", "title": "Mobile Money" },
+                  { "id": "bank_transfer", "title": "Virement" },
+                  { "id": "cheque", "title": "Chèque" },
+                  { "id": "other", "title": "Autre" }
+                ]
+              },
+              {
+                "type": "TextArea",
+                "name": "payment_terms",
+                "label": "Conditions paiement",
+                "helper-text": "Conditions de paiement",
+                "required": false
+              },
+              {
+                "type": "TextArea",
+                "name": "invoice_note",
+                "label": "Note",
+                "required": false
+              },
+              {
+                "type": "Dropdown",
+                "name": "add_stamp",
+                "label": "Ajouter mon tampon",
+                "required": true,
+                "data-source": [
+                  { "id": "no", "title": "Non" },
+                  { "id": "yes", "title": "Oui" }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Envoyer à Kadi",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "client_type": "${data.client_type}",
+                    "client_name": "${data.client_name}",
+                    "client_phone": "${data.client_phone}",
+                    "client_address": "${data.client_address}",
+                    "client_ifu": "${data.client_ifu}",
+                    "client_registry_number": "${data.client_registry_number}",
+                    "invoice_subject": "${data.invoice_subject}",
+                    "transaction_date": "${data.transaction_date}",
+                    "item_1_designation": "${data.item_1_designation}",
+                    "item_1_quantity": "${data.item_1_quantity}",
+                    "item_1_unit": "${data.item_1_unit}",
+                    "item_1_unit_price": "${data.item_1_unit_price}",
+                    "item_2_designation": "${data.item_2_designation}",
+                    "item_2_quantity": "${data.item_2_quantity}",
+                    "item_2_unit": "${data.item_2_unit}",
+                    "item_2_unit_price": "${data.item_2_unit_price}",
+                    "item_3_designation": "${data.item_3_designation}",
+                    "item_3_quantity": "${data.item_3_quantity}",
+                    "item_3_unit": "${data.item_3_unit}",
+                    "item_3_unit_price": "${data.item_3_unit_price}",
+                    "item_4_designation": "${data.item_4_designation}",
+                    "item_4_quantity": "${data.item_4_quantity}",
+                    "item_4_unit": "${data.item_4_unit}",
+                    "item_4_unit_price": "${data.item_4_unit_price}",
+                    "item_5_designation": "${data.item_5_designation}",
+                    "item_5_quantity": "${data.item_5_quantity}",
+                    "item_5_unit": "${data.item_5_unit}",
+                    "item_5_unit_price": "${data.item_5_unit_price}",
+                    "item_6_designation": "${data.item_6_designation}",
+                    "item_6_quantity": "${data.item_6_quantity}",
+                    "item_6_unit": "${data.item_6_unit}",
+                    "item_6_unit_price": "${data.item_6_unit_price}",
+                    "tax_status": "${form.tax_status}",
+                    "tax_rate": "${form.tax_rate}",
+                    "discount_amount": "${form.discount_amount}",
+                    "amount_paid": "${form.amount_paid}",
+                    "due_date": "${form.due_date}",
+                    "payment_method": "${form.payment_method}",
+                    "payment_terms": "${form.payment_terms}",
+                    "invoice_note": "${form.invoice_note}",
+                    "add_stamp": "${form.add_stamp}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
