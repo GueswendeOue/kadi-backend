@@ -138,7 +138,7 @@ async function captureCliEquivalent(cli) {
 
 test("exports exact smoke constants and fresh dependencies", () => {
   assert.equal(smoke.KADI_GEMINI_SMOKE_VERSION, "kadi.gemini-isolated-smoke.v1");
-  assert.equal(smoke.KADI_GEMINI_SMOKE_MODEL, "gemini-2.5-flash");
+  assert.equal(smoke.KADI_GEMINI_SMOKE_MODEL, "gemini-3.6-flash");
   assert.equal(
     smoke.KADI_GEMINI_SMOKE_MESSAGE,
     "Créer une facture de 25000 FCFA pour PERSON_1"
@@ -259,7 +259,7 @@ test("canonical request is minimized, valid, and invokes the provider once", asy
   assert.equal(result.exitCode, 0);
   assert.equal(providerContract.validateProviderRequest(captured.providerRequest).valid, true);
   assert.equal(captured.providerRequest.provider, "GEMINI");
-  assert.equal(captured.providerRequest.model, "gemini-2.5-flash");
+  assert.equal(captured.providerRequest.model, "gemini-3.6-flash");
   assert.equal(captured.providerRequest.generation.temperature, 0);
   assert.deepEqual(captured.providerRequest.responseFormat, { type: "json_object" });
   assert.equal(Object.hasOwn(captured, "restorationMap"), false);
@@ -293,7 +293,7 @@ test("provider failure is minimized and is never retried", async () => {
     code: "GEMINI_SMOKE_PROVIDER_FAILED",
     publicResult: {
       smokeVersion: "kadi.gemini-isolated-smoke.v1",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       privacySafe: true,
       providerRequestValid: true,
       providerStatus: "FAILED",
@@ -446,7 +446,7 @@ test("public success output is exact, minimized, and contains no private pipelin
   const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
   assert.deepEqual(result.publicResult, {
     smokeVersion: "kadi.gemini-isolated-smoke.v1",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     privacySafe: true,
     providerRequestValid: true,
     providerStatus: "SUCCEEDED",

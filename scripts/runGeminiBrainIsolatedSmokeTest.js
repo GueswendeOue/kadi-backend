@@ -9,7 +9,7 @@ const responseParser = require("../kadiBrainResponseParser");
 const intentContract = require("../kadiBrainIntentContract");
 
 const KADI_GEMINI_SMOKE_VERSION = "kadi.gemini-isolated-smoke.v1";
-const KADI_GEMINI_SMOKE_MODEL = "gemini-2.5-flash";
+const KADI_GEMINI_SMOKE_MODEL = "gemini-3.6-flash";
 const KADI_GEMINI_SMOKE_MESSAGE =
   "Créer une facture de 25000 FCFA pour PERSON_1";
 
