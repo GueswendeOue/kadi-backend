@@ -657,11 +657,14 @@ function finalLooksNominalSegment(value) {
   const withoutTitle = source.replace(/^(?:monsieur|madame|mme|m)\.?\s+/iu, "");
   const units = withoutTitle.split(/\s+/u);
   if (units.length < 1 || units.length > 5) return false;
-  return units.every((unit) =>
-    /^[\p{L}\p{M}][\p{L}\p{M}'’.-]*$/u.test(unit) &&
-    !isBusinessNameTerm(unit) &&
-    !["et", "avec", "puis"].includes(normalizeNameTerm(unit))
-  );
+  return units.every((unit) => {
+    const lexicalUnit = unit.replace(/[.,;:!?]+$/u, "");
+    return (
+      /^[\p{L}\p{M}][\p{L}\p{M}'’.-]*$/u.test(unit) &&
+      !isBusinessNameTerm(lexicalUnit) &&
+      !["et", "avec", "puis"].includes(normalizeNameTerm(lexicalUnit))
+    );
+  });
 }
 
 function finalResidualNameRisk(text) {
@@ -723,6 +726,34 @@ function finalResidualNameRisk(text) {
       )
     ) return true;
   }
+  return false;
+}
+
+function finalResidualPaymentSecretRisk(text) {
+  if (typeof text !== "string") return false;
+  const source = text.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (!source) return false;
+
+  const account = source.match(
+    /(?:num[ée]ro de compte|n[°º] de compte|no de compte|compte bancaire|bank account|account (?:number|no|#))(?=\s|[:=])\s*[:=]?\s*([A-Z0-9][A-Z0-9.-]{3,})/iu
+  );
+  if (account && /\d/u.test(account[1])) return true;
+
+  if (
+    /(?:code secret (?:mobile money|orange money|moov money)|code mobile money|mobile money secret code|(?:orange money|moov money) pin|code pin mobile money)\s*[:=]?\s*\d{4,8}\b/iu
+      .test(source)
+  ) return true;
+
+  if (
+    /(?:access token|bearer(?: token)?|api key|cl[ée] api|secret key|private key|token)\s*[:=]?\s*[A-Z0-9][A-Z0-9._-]{2,}/iu
+      .test(source)
+  ) return true;
+
+  if (
+    /(?:mot de passe|password)\s*[:=]?\s*\S{3,}/iu.test(source) ||
+    /(?:pin|otp)\s*[:=]?\s*\d{4,8}\b/iu.test(source)
+  ) return true;
+
   return false;
 }
 
@@ -975,6 +1006,7 @@ function inspectSanitizedPrivacyPayload(sanitizedInput) {
     return state;
   }
   const inspectText = (text) => {
+    if (finalResidualPaymentSecretRisk(text)) state.containsSecrets = true;
     for (const detection of detectSensitiveText(text)) {
       if (SECRET_CATEGORIES.has(detection.category)) state.containsSecrets = true;
       else if (PERSONAL_CATEGORIES.has(detection.category)) state.containsPersonalData = true;

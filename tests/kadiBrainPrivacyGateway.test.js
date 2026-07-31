@@ -702,6 +702,98 @@ test("final payment gaps: serialization, determinism and frozen inputs stay clos
   assert.equal(JSON.stringify(first).includes("Aminata"), false);
 });
 
+test("independent final secrets: forged sanitized residuals fail closed", () => {
+  const residuals = [
+    "numéro de compte 1234567890",
+    "code secret mobile money 1234",
+    "token sk-test",
+    "clé API abc123",
+  ];
+  for (const userMessage of residuals) {
+    const forged = sanitizePrivacyInput(validInput({
+      userMessage: "Créer une facture",
+    }));
+    forged.sanitizedInput.userMessage = userMessage;
+    const validation = validatePrivacyResult(forged);
+    assert.equal(validation.valid, false, userMessage);
+    assert.equal(isPrivacySafeForProvider(forged), false, userMessage);
+    const publicFailure = {
+      privacySafe: false,
+      blocked: true,
+      reasonCode: validation.errors[0]?.code || "INVALID_RESULT",
+      category: "SECRET",
+      counts: { errors: validation.errors.length },
+    };
+    const serialized = JSON.stringify(publicFailure);
+    assert.equal(serialized.includes(userMessage), false, userMessage);
+    assert.equal(serialized.includes("1234567890"), false, userMessage);
+    assert.equal(serialized.includes("1234"), false, userMessage);
+    assert.equal(serialized.includes("sk-test"), false, userMessage);
+    assert.equal(serialized.includes("abc123"), false, userMessage);
+  }
+});
+
+test("independent final secrets: conceptual and business messages remain safe", () => {
+  for (const userMessage of [
+    "Comment ajouter un numéro de compte ?",
+    "J’ai oublié mon code secret Mobile Money.",
+    "Problème de paiement.",
+    "Statut du paiement.",
+    "Samsung et iPhone",
+    "Orange et Moov",
+    "facture et devis",
+    "téléphone et tablette",
+  ]) {
+    const forged = sanitizePrivacyInput(validInput({
+      userMessage: "Créer une facture",
+    }));
+    forged.sanitizedInput.userMessage = userMessage;
+    assert.equal(validatePrivacyResult(forged).valid, true, userMessage);
+    assert.equal(isPrivacySafeForProvider(forged), true, userMessage);
+  }
+});
+
+test("independent final secrets: implementation shares no primary decision mechanism", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "kadiBrainPrivacyGateway.js"),
+    "utf8"
+  );
+  const start = source.indexOf("function finalResidualPaymentSecretRisk");
+  const end = source.indexOf("\nfunction sanitizeText", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const finalInspectorSource = source.slice(start, end);
+  assert.doesNotMatch(finalInspectorSource, /detectSensitiveText/u);
+  assert.doesNotMatch(finalInspectorSource, /TEXT_PATTERNS/u);
+  assert.doesNotMatch(finalInspectorSource, /classifySensitiveKey/u);
+  assert.doesNotMatch(finalInspectorSource, /SECRET_CATEGORIES/u);
+  assert.match(finalInspectorSource, /normalize\("NFKC"\)/u);
+});
+
+test("independent final secrets: inspection is deterministic and request-local", () => {
+  const inspect = (userMessage) => {
+    const forged = sanitizePrivacyInput(validInput({
+      userMessage: "Créer une facture",
+    }));
+    forged.sanitizedInput.userMessage = userMessage;
+    return {
+      validation: validatePrivacyResult(forged),
+      privacySafe: isPrivacySafeForProvider(forged),
+    };
+  };
+  assert.deepEqual(
+    inspect("numéro de compte 1234567890"),
+    inspect("numéro de compte 1234567890")
+  );
+  const first = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  const second = sanitizePrivacyInput(validInput({ userMessage: "Client Awa" }));
+  assert.notStrictEqual(first.restorationMap, second.restorationMap);
+  assert.equal(Object.keys(first).includes("restorationMap"), false);
+  assert.equal("restorationMap" in { ...first }, false);
+  assert.equal("restorationMap" in structuredClone(first), false);
+  assert.equal(JSON.stringify(first).includes("restorationMap"), false);
+});
+
 test("scenarios 96-104: default removal and financial policy are enforced", () => {
   const result = sanitizePrivacyInput(validInput({
     userMessage: "Téléphone 70 12 34 56 email awa@example.com IFU 00012345 montant 125000 FCFA",
