@@ -13,6 +13,7 @@ const {
   parseInvoiceFlowReply,
   parseInvoiceFlowResponseJson,
 } = require("../kadiInvoiceFlowContract");
+const { calculateInvoiceFlowDraft } = require("../kadiInvoiceCalculator");
 
 const flowPath = path.join(__dirname, "..", "flows", "kadi_facture_v1.json");
 
@@ -193,7 +194,10 @@ test("every dynamic numeric payload targets a number declaration on the next scr
         if (!numericFieldPattern.test(field)) continue;
         propagatedNumericFields += 1;
         assert.equal(target.data[field].type, "number", `${screen.id} -> ${target.id}.${field}`);
-        if (expression === null) continue;
+        if (typeof expression === "number") {
+          assert.equal(Number.isFinite(expression), true);
+          continue;
+        }
         assert.match(expression, /^\$\{(?:form|data)\.[A-Za-z0-9_]+\}$/);
       }
     }
@@ -269,7 +273,7 @@ test("article routing choice reaches only destinations authorized by the routing
       assert.equal(Object.hasOwn(noFooter["on-click-action"].payload, field), true);
       assert.equal(
         noFooter["on-click-action"].payload[field],
-        suffix === "quantity" || suffix === "unit_price" ? null : ""
+        suffix === "quantity" || suffix === "unit_price" ? 0 : ""
       );
     }
   }
@@ -297,10 +301,6 @@ test("every navigate action uses a literal existing screen and a compatible data
         assert.ok(Object.hasOwn(targetData, key), `${screen.id} -> ${action.next.name}.${key}`);
         const value = action.payload[key];
         if (typeof value === "string" && value.startsWith("${")) continue;
-        if (value === null) {
-          assert.equal(targetData[key].type, "number", `${action.next.name}.${key}`);
-          continue;
-        }
         assert.equal(typeof value, targetData[key].type, `${action.next.name}.${key}`);
       }
     }
@@ -477,9 +477,9 @@ test("the no-more-items route ignores item four through six", () => {
   const emptyLaterItems = {};
   for (let index = 4; index <= 6; index += 1) {
     emptyLaterItems[`item_${index}_designation`] = "";
-    emptyLaterItems[`item_${index}_quantity`] = null;
+    emptyLaterItems[`item_${index}_quantity`] = 0;
     emptyLaterItems[`item_${index}_unit`] = "";
-    emptyLaterItems[`item_${index}_unit_price`] = null;
+    emptyLaterItems[`item_${index}_unit_price`] = 0;
   }
   const result = normalizeInvoiceFlowSubmission(
     baseSubmission({
@@ -489,6 +489,13 @@ test("the no-more-items route ignores item four through six", () => {
   );
   assert.equal(result.ok, true);
   assert.equal(result.value.items.length, 1);
+  assert.equal(result.value.items.some((item) => item.quantity === 0 || item.unit_price === 0), false);
+
+  const calculated = calculateInvoiceFlowDraft(result.value);
+  assert.equal(calculated.ok, true);
+  assert.equal(calculated.value.items.length, 1);
+  assert.equal(calculated.value.subtotal_excluding_tax, 15000);
+  assert.equal(calculated.value.grand_total, 15000);
 });
 
 test("article one, quantity, unit and price are validated without coercion", () => {
