@@ -187,6 +187,19 @@ const kadiBroadcast = require("./kadiBroadcast");
 const { isGlobalMenuText } = require("./kadiGlobalNav");
 const { getInteractiveReplyDetails } = require("./kadiInteractiveReply");
 const { makeKadiBrainShadow } = require("./kadiBrainShadow");
+const {
+  createKadiBrainRealShadowRunner,
+  KADI_BRAIN_REAL_SHADOW_LIMITS,
+} = require("./kadiBrainRealShadow");
+const {
+  BRAIN_MODES,
+  normalizeBrainMode,
+  resolveBrainMode,
+} = require("./kadiBrainConfig");
+const {
+  buildBrainRealShadowFlowContext,
+  isBrainShadowDeterministicStep,
+} = require("./kadiBrainFlowContext");
 
 // OCR
 const { kadiOcrEngine } = require("./kadiOcrEngine");
@@ -320,6 +333,46 @@ const brainShadow = makeKadiBrainShadow({
   timeoutMs: Number(process.env.KADI_BRAIN_TIMEOUT_MS || 5000),
 });
 
+let brainRealShadowIntegrationOverride = null;
+let defaultBrainRealShadowRunner = null;
+
+function configureBrainRealShadowIntegration(options = null) {
+  brainRealShadowIntegrationOverride =
+    options && typeof options === "object" && !Array.isArray(options)
+      ? {
+          runner: options.runner || null,
+          mode: options.mode,
+          onResult: typeof options.onResult === "function"
+            ? options.onResult
+            : null,
+        }
+      : null;
+  defaultBrainRealShadowRunner = null;
+}
+
+function resolveBrainRealShadowMode() {
+  if (
+    brainRealShadowIntegrationOverride &&
+    brainRealShadowIntegrationOverride.mode !== undefined
+  ) {
+    return normalizeBrainMode(brainRealShadowIntegrationOverride.mode);
+  }
+  return resolveBrainMode();
+}
+
+function getBrainRealShadowRunner() {
+  if (brainRealShadowIntegrationOverride?.runner) {
+    return brainRealShadowIntegrationOverride.runner;
+  }
+  if (!defaultBrainRealShadowRunner) {
+    defaultBrainRealShadowRunner = createKadiBrainRealShadowRunner({
+      mode: BRAIN_MODES.SHADOW,
+      apiKey: process.env.GEMINI_API_KEY,
+    });
+  }
+  return defaultBrainRealShadowRunner;
+}
+
 function isHardGlobalInterrupt(text = "") {
   return isGlobalMenuText(text);
 }
@@ -361,6 +414,69 @@ function isStructuredCaptureStep(step = "") {
     s.startsWith("intent_fix") ||
     s.startsWith("certified_invoice_")
   );
+}
+
+function isBrainRealShadowLocallyExcluded(text, msg, session) {
+  const normalized = norm(text).toLowerCase().trim();
+  if (!normalized || normalized.startsWith("/")) return true;
+  if (isHardGlobalInterrupt(text)) return true;
+  if (/\b(support|agent humain|administrateur)\b/u.test(normalized)) {
+    return true;
+  }
+  if (session?.adminPendingAction) return true;
+  if (isBrainShadowDeterministicStep(session?.step)) {
+    return true;
+  }
+  if (!msg || typeof msg !== "object") return true;
+  if (msg.type !== "text") return true;
+  return false;
+}
+
+function prepareBrainRealShadowInput({ text, msg, session, mode }) {
+  if (normalizeBrainMode(mode) !== BRAIN_MODES.SHADOW) return null;
+  if (isBrainRealShadowLocallyExcluded(text, msg, session)) return null;
+  if (
+    typeof text !== "string" ||
+    !text.trim() ||
+    Array.from(text).length >
+      KADI_BRAIN_REAL_SHADOW_LIMITS.maxMessageCodePoints ||
+    typeof msg?.id !== "string" ||
+    !msg.id.trim()
+  ) return null;
+  const sourceType = msg?.audioTranscript ? "voice" : "text";
+  return {
+    messageId: msg.id,
+    sourceType,
+    userMessage: text,
+    flowContext: buildBrainRealShadowFlowContext(session, sourceType),
+  };
+}
+
+function launchBrainRealShadowObservation({ text, msg, session }) {
+  const input = prepareBrainRealShadowInput({
+    text,
+    msg,
+    session,
+    mode: resolveBrainRealShadowMode(),
+  });
+  if (!input) return false;
+
+  let pending;
+  try {
+    pending = getBrainRealShadowRunner().run(input);
+  } catch {
+    return false;
+  }
+  Promise.resolve(pending)
+    .then((result) => {
+      const onResult = brainRealShadowIntegrationOverride?.onResult;
+      if (typeof onResult !== "function") return;
+      try {
+        Promise.resolve(onResult(result)).catch(() => {});
+      } catch {}
+    })
+    .catch(() => {});
+  return true;
 }
 
 function looksLikeProfessionIntroText(text = "") {
@@ -1107,30 +1223,9 @@ async function handleTextMessage(from, text, msg) {
   if (await handleCommand(from, text, { wa_id: from })) return true;
 
   const s = getSession(from);
-  try {
-    void brainShadow.observeText({
-      waId: from,
-      text,
-      messageId: msg?.id,
-      session: s,
-      inputType: msg?.audioTranscript ? "voice" : "text",
-      mediaFacts: msg?.audioTranscript
-        ? {
-            detectedLanguages: Array.isArray(msg.audioTranscript.detectedLanguages)
-              ? msg.audioTranscript.detectedLanguages.slice(0, 3)
-              : [],
-          }
-        : null,
-    }).catch((error) => {
-      logger.warn("brain_shadow", "observation skipped", {
-        errorType: error?.name || "unknown",
-      });
-    });
-  } catch (error) {
-    logger.warn("brain_shadow", "observation skipped", {
-      errorType: error?.name || "unknown",
-    });
-  }
+  // Gemini is the sole AI shadow in this mode. The historical OpenAI Shadow
+  // remains available in code for an explicit future Dual Brain step.
+  launchBrainRealShadowObservation({ text, msg, session: s });
   const inHistoryFlow = isHistoryStep(s?.step);
   const inStructuredFlow = isStructuredCaptureStep(s?.step);
   const wantsGlobalInterrupt = isHardGlobalInterrupt(text);
@@ -1439,4 +1534,8 @@ module.exports = {
   handleIncomingMessage,
   handleIncomingStatuses,
   processDevisFollowups,
+  configureBrainRealShadowIntegration,
+  buildBrainRealShadowFlowContext,
+  prepareBrainRealShadowInput,
+  launchBrainRealShadowObservation,
 };

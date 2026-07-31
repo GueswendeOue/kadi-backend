@@ -1,0 +1,519 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const Module = require("node:module");
+
+const universalDouble = new Proxy(function universalDouble() {
+  return universalDouble;
+}, {
+  get(target, property) {
+    if (property === "then") return undefined;
+    return universalDouble;
+  },
+  apply() {
+    return universalDouble;
+  },
+});
+
+const originalLoad = Module._load;
+const realEngineDependencies = new Set([
+  "./kadiBrainRealShadow",
+  "./kadiBrainConfig",
+  "./kadiBrainFlowContext",
+  "./kadiUtils",
+  "./kadiGlobalNav",
+]);
+Module._load = function loadWithIsolatedEngineDependencies(
+  request,
+  parent,
+  isMain
+) {
+  if (
+    parent?.filename?.endsWith(`${path.sep}kadiEngine.js`) &&
+    request.startsWith("./") &&
+    !realEngineDependencies.has(request)
+  ) return universalDouble;
+  return originalLoad.call(this, request, parent, isMain);
+};
+let engineExports;
+try {
+  engineExports = require("../kadiEngine");
+} finally {
+  Module._load = originalLoad;
+}
+
+const {
+  configureBrainRealShadowIntegration,
+  buildBrainRealShadowFlowContext,
+  prepareBrainRealShadowInput,
+  launchBrainRealShadowObservation,
+} = engineExports;
+
+const PUBLIC_RESULT = Object.freeze({
+  shadowVersion: "kadi.brain-real-shadow.v1",
+  status: "SUCCEEDED",
+  sourceType: "text",
+  messageIdHash: "abcdef0123456789",
+  providerStatus: "SUCCEEDED",
+  providerFailureKind: "NONE",
+  parserValid: true,
+  parserFailureCode: null,
+  intent: "CREATE_INVOICE",
+  confidenceBucket: "HIGH",
+  actionable: true,
+  missingFieldCount: 0,
+  blockingAmbiguityCount: 0,
+  safetyFlags: Object.freeze({
+    containsSensitiveData: false,
+    requiresHumanReview: false,
+  }),
+  latencyBucket: "LT_1S",
+  execution: "NONE",
+  timestamp: "2026-08-01T00:00:00.000Z",
+});
+
+function textMessage(overrides = {}) {
+  return {
+    id: "wamid.fictitious-shadow",
+    type: "text",
+    text: { body: "Créer une facture" },
+    ...overrides,
+  };
+}
+
+function flushDetached() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test.afterEach(() => {
+  configureBrainRealShadowIntegration(null);
+});
+
+test("only exact shadow mode prepares an observation", () => {
+  const base = {
+    text: "Créer une facture",
+    msg: textMessage(),
+    session: { step: "idle" },
+  };
+  for (const mode of [
+    undefined, null, "off", "candidate", "active_allowlist", "active",
+    "invalid",
+  ]) {
+    assert.equal(
+      prepareBrainRealShadowInput({ ...base, mode }),
+      null,
+      String(mode)
+    );
+  }
+  for (const mode of ["shadow", "SHADOW", " shadow "]) {
+    assert.equal(
+      prepareBrainRealShadowInput({ ...base, mode })?.sourceType,
+      "text"
+    );
+  }
+});
+
+test("text and transcribed voice produce the exact bounded runner input", () => {
+  const session = {
+    step: "doc_client",
+    mode: "facture",
+    lastDocDraft: {
+      type: "facture",
+      clientName: "PRIVATE_CLIENT",
+      items: [{ price: 25000 }],
+      phone: "PRIVATE_PHONE",
+    },
+    waId: "PRIVATE_WA_ID",
+  };
+  const text = prepareBrainRealShadowInput({
+    text: "Créer une facture",
+    msg: textMessage(),
+    session,
+    mode: "shadow",
+  });
+  const voice = prepareBrainRealShadowInput({
+    text: "Créer une facture",
+    msg: textMessage({
+      audioTranscript: {
+        raw: "PRIVATE_RAW_TRANSCRIPT",
+        mediaId: "PRIVATE_MEDIA_ID",
+        detectedLanguages: ["fr"],
+      },
+    }),
+    session,
+    mode: "shadow",
+  });
+  for (const value of [text, voice]) {
+    assert.deepEqual(Object.keys(value), [
+      "messageId", "sourceType", "userMessage", "flowContext",
+    ]);
+    assert.equal(value.messageId, "wamid.fictitious-shadow");
+    assert.equal(value.userMessage, "Créer une facture");
+    assert.deepEqual(Object.keys(value.flowContext), [
+      "stepCategory", "activeFlow", "activeDocumentType", "hasActiveDraft",
+      "expectedFieldNames", "messageType",
+    ]);
+    const serialized = JSON.stringify(value.flowContext);
+    for (const sentinel of [
+      "PRIVATE_CLIENT", "PRIVATE_PHONE", "PRIVATE_WA_ID",
+      "PRIVATE_RAW_TRANSCRIPT", "PRIVATE_MEDIA_ID", "25000",
+    ]) assert.equal(serialized.includes(sentinel), false);
+  }
+  assert.equal(text.sourceType, "text");
+  assert.equal(voice.sourceType, "voice");
+  assert.equal(voice.flowContext.messageType, "voice");
+});
+
+test("flow context uses only bounded categorical values and field names", () => {
+  const cases = [
+    [{ step: "idle" }, ["NONE", "NONE", null, false, []]],
+    [
+      { step: "doc_client", mode: "devis", lastDocDraft: {} },
+      ["DOCUMENT_COLLECTION", "QUOTE", "quote", true, ["clientName"]],
+    ],
+    [
+      { step: "item_price", mode: "facture", lastDocDraft: {} },
+      ["DOCUMENT_COLLECTION", "INVOICE", "invoice", true, ["itemPrice"]],
+    ],
+    [
+      { step: "history_search" },
+      ["OTHER", "HISTORY", null, false, []],
+    ],
+    [
+      { step: "profile" },
+      ["ONBOARDING", "PROFILE", null, false, []],
+    ],
+  ];
+  for (const [session, expected] of cases) {
+    const value = buildBrainRealShadowFlowContext(session, "text");
+    assert.deepEqual([
+      value.stepCategory,
+      value.activeFlow,
+      value.activeDocumentType,
+      value.hasActiveDraft,
+      value.expectedFieldNames,
+    ], expected);
+    assert.equal(value.messageType, "text");
+  }
+});
+
+test("non-text types and structurally invalid messages are excluded", () => {
+  const cases = [
+    { msg: null },
+    { msg: textMessage({ id: "" }) },
+    { msg: textMessage({ type: "image" }) },
+    { msg: textMessage({ type: "document" }) },
+    { msg: textMessage({ type: "interactive" }) },
+    { msg: textMessage({ type: "button" }) },
+    { msg: textMessage({ type: "status" }) },
+    { msg: textMessage({ type: "system" }) },
+    { msg: textMessage(), text: "" },
+    { msg: textMessage(), text: " " },
+    { msg: textMessage(), text: "x".repeat(12001) },
+  ];
+  for (const value of cases) {
+    assert.equal(prepareBrainRealShadowInput({
+      text: value.text ?? "Créer une facture",
+      msg: value.msg,
+      session: { step: "idle" },
+      mode: "shadow",
+    }), null);
+  }
+});
+
+test("admin, support, menu, payment and deterministic confirmations are excluded", () => {
+  const cases = [
+    ["/stats", { step: "idle" }],
+    ["support", { step: "idle" }],
+    ["agent humain", { step: "idle" }],
+    ["MENU", { step: "idle" }],
+    ["preuve envoyée", { step: "recharge_proof" }],
+    ["paiement", { step: "pispi_pending" }],
+    ["oui", { step: "doc_review" }],
+    ["continuer", { step: "doc_after_item_choice" }],
+    ["texte", { step: "idle", adminPendingAction: "broadcast" }],
+  ];
+  for (const [text, session] of cases) {
+    assert.equal(prepareBrainRealShadowInput({
+      text,
+      msg: textMessage(),
+      session,
+      mode: "shadow",
+    }), null);
+  }
+  for (const text of [
+    "Créer une facture", "Faire un devis", "Créer un reçu",
+    "Créer une décharge", "Rechercher mon document", "Bonjour",
+    "Corriger le client",
+  ]) {
+    assert.notEqual(prepareBrainRealShadowInput({
+      text,
+      msg: textMessage(),
+      session: { step: "doc_client", mode: "facture" },
+      mode: "shadow",
+    }), null);
+  }
+});
+
+test("ineligible engine observations make zero runner calls", () => {
+  let calls = 0;
+  const runner = { run: () => { calls += 1; return PUBLIC_RESULT; } };
+  for (const mode of [
+    undefined, "off", "candidate", "active_allowlist", "active", "invalid",
+  ]) {
+    configureBrainRealShadowIntegration({ mode, runner });
+    assert.equal(launchBrainRealShadowObservation({
+      text: "Créer une facture",
+      msg: textMessage(),
+      session: { step: "idle" },
+    }), false);
+  }
+  configureBrainRealShadowIntegration({ mode: "shadow", runner });
+  for (const [text, msg, session] of [
+    ["Créer une facture", textMessage({ type: "image" }), { step: "idle" }],
+    ["Créer une facture", textMessage({ type: "document" }), { step: "idle" }],
+    ["Créer une facture", textMessage({ type: "interactive" }), { step: "idle" }],
+    ["/stats", textMessage(), { step: "idle" }],
+    ["support", textMessage(), { step: "idle" }],
+    ["MENU", textMessage(), { step: "idle" }],
+    ["preuve", textMessage(), { step: "recharge_proof" }],
+  ]) {
+    assert.equal(
+      launchBrainRealShadowObservation({ text, msg, session }),
+      false
+    );
+  }
+  assert.equal(calls, 0);
+});
+
+test("eligible text and voice each launch exactly once", () => {
+  const inputs = [];
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: {
+      run(value) {
+        inputs.push(structuredClone(value));
+        return PUBLIC_RESULT;
+      },
+    },
+  });
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage({ id: "text-id" }),
+    session: { step: "idle" },
+  }), true);
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage({
+      id: "voice-id",
+      audioTranscript: { raw: "PRIVATE_RAW", mediaId: "PRIVATE_MEDIA" },
+    }),
+    session: { step: "doc_client", mode: "facture" },
+  }), true);
+  assert.equal(inputs.length, 2);
+  assert.deepEqual(inputs.map((value) => value.sourceType), ["text", "voice"]);
+  assert.deepEqual(inputs.map((value) => value.messageId), [
+    "text-id", "voice-id",
+  ]);
+  assert.equal(JSON.stringify(inputs).includes("PRIVATE_RAW"), false);
+  assert.equal(JSON.stringify(inputs).includes("PRIVATE_MEDIA"), false);
+});
+
+test("detached success cannot alter session or execute actionable output", async () => {
+  const calls = [];
+  const observed = [];
+  const session = Object.freeze({
+    step: "doc_client",
+    mode: "facture",
+    lastDocDraft: Object.freeze({ type: "facture" }),
+  });
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: {
+      run(input) {
+        calls.push(structuredClone(input));
+        return Promise.resolve(PUBLIC_RESULT);
+      },
+    },
+    onResult(result) {
+      observed.push(result);
+    },
+  });
+  const before = JSON.stringify(session);
+  assert.equal(launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage(),
+    session,
+  }), true);
+  assert.equal(calls.length, 1);
+  assert.equal(observed.length, 0);
+  await flushDetached();
+  assert.equal(observed.length, 1);
+  assert.strictEqual(observed[0], PUBLIC_RESULT);
+  assert.equal(observed[0].actionable, true);
+  assert.equal(observed[0].execution, "NONE");
+  assert.equal(JSON.stringify(session), before);
+});
+
+test("all bounded runner statuses leave the integration non-executing", async () => {
+  const statuses = [
+    "CONFIG_UNAVAILABLE", "PRIVACY_BLOCKED", "PROVIDER_FAILED",
+    "PARSE_FAILED", "TIMEOUT", "INTERNAL_FAILED",
+  ];
+  for (const status of statuses) {
+    const observed = [];
+    configureBrainRealShadowIntegration({
+      mode: "shadow",
+      runner: {
+        run: () => Promise.resolve({
+          ...PUBLIC_RESULT,
+          status,
+          actionable: false,
+          execution: "NONE",
+        }),
+      },
+      onResult: (result) => observed.push(result),
+    });
+    assert.equal(launchBrainRealShadowObservation({
+      text: "Créer une facture",
+      msg: textMessage({ id: `status-${status}` }),
+      session: { step: "idle" },
+    }), true);
+    await flushDetached();
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].status, status);
+    assert.equal(observed[0].execution, "NONE");
+  }
+});
+
+test("runner throws and early or late rejections are fully absorbed", async () => {
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    for (const [index, run] of [
+      () => { throw new Error("PRIVATE_SYNC"); },
+      () => Promise.reject(new Error("PRIVATE_REJECT")),
+      () => new Promise((resolve, reject) => {
+        setTimeout(() => reject(new Error("PRIVATE_LATE")), 5);
+      }),
+    ].entries()) {
+      configureBrainRealShadowIntegration({
+        mode: "shadow",
+        runner: { run },
+      });
+      launchBrainRealShadowObservation({
+        text: "Créer une facture",
+        msg: textMessage({ id: `failure-${index}` }),
+        session: { step: "idle" },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+});
+
+test("a delayed runner never blocks legacy continuation", async () => {
+  let release;
+  let settled = false;
+  let observations = 0;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: { run: () => delayed },
+    onResult: () => { observations += 1; },
+  });
+  const launched = launchBrainRealShadowObservation({
+    text: "Créer une facture",
+    msg: textMessage(),
+    session: { step: "idle" },
+  });
+  Promise.resolve(delayed).then(() => { settled = true; });
+  assert.equal(launched, true);
+  assert.equal(settled, false);
+  assert.equal(observations, 0);
+  release(PUBLIC_RESULT);
+  await flushDetached();
+  assert.equal(settled, true);
+  assert.equal(observations, 1);
+});
+
+test("the observability hook receives only the bounded runner result", async () => {
+  let hookValue;
+  configureBrainRealShadowIntegration({
+    mode: "shadow",
+    runner: { run: () => Promise.resolve(PUBLIC_RESULT) },
+    onResult: (result) => { hookValue = result; },
+  });
+  launchBrainRealShadowObservation({
+    text: "Créer une facture pour PRIVATE_CLIENT",
+    msg: textMessage({ id: "PRIVATE_MESSAGE_ID" }),
+    session: {
+      step: "doc_client",
+      waId: "PRIVATE_WA_ID",
+      lastDocDraft: { clientName: "PRIVATE_CLIENT" },
+    },
+  });
+  await flushDetached();
+  const serialized = JSON.stringify(hookValue);
+  for (const sentinel of [
+    "PRIVATE_CLIENT", "PRIVATE_MESSAGE_ID", "PRIVATE_WA_ID",
+  ]) assert.equal(serialized.includes(sentinel), false);
+  assert.deepEqual(hookValue, PUBLIC_RESULT);
+});
+
+test("runner-owned deduplication keeps one Provider effect per instance", async () => {
+  let providerEffects = 0;
+  const seen = new Set();
+  const runner = {
+    run({ messageId }) {
+      if (seen.has(messageId)) {
+        return Promise.resolve({
+          ...PUBLIC_RESULT,
+          status: "SKIPPED_DUPLICATE",
+        });
+      }
+      seen.add(messageId);
+      providerEffects += 1;
+      return Promise.resolve(PUBLIC_RESULT);
+    },
+  };
+  configureBrainRealShadowIntegration({ mode: "shadow", runner });
+  for (let index = 0; index < 2; index += 1) {
+    launchBrainRealShadowObservation({
+      text: "Créer une facture",
+      msg: textMessage(),
+      session: { step: "idle" },
+    });
+  }
+  await flushDetached();
+  assert.equal(providerEffects, 1);
+});
+
+test("engine source has one detached Gemini shadow and no historical double call", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "kadiEngine.js"),
+    "utf8"
+  );
+  const handlerStart = source.indexOf("async function handleTextMessage");
+  const handlerEnd = source.indexOf("async function handleInteractiveMessage");
+  const handler = source.slice(handlerStart, handlerEnd);
+  const launchIndex = handler.indexOf("launchBrainRealShadowObservation");
+  assert.ok(handler.indexOf("handleAdminCommand") < launchIndex);
+  assert.ok(handler.indexOf("safeHandleSupportText") < launchIndex);
+  assert.ok(handler.indexOf("isHardGlobalInterrupt") < launchIndex);
+  assert.ok(handler.indexOf("handleCommand") < launchIndex);
+  assert.equal(
+    (handler.match(/launchBrainRealShadowObservation\(/gu) || []).length,
+    1
+  );
+  assert.doesNotMatch(handler, /await\s+launchBrainRealShadowObservation/gu);
+  assert.doesNotMatch(handler, /brainShadow\.observeText/gu);
+  assert.doesNotMatch(handler, /result\.(?:intent|actionable|providerStatus)/gu);
+  assert.doesNotMatch(source, /console\.(?:log|warn|error).*brainRealShadow/giu);
+});
