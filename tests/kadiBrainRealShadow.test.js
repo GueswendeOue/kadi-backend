@@ -110,6 +110,14 @@ function dependencies(overrides = {}) {
   };
 }
 
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
+}
+
 test("runner is disabled by default and for every non-shadow mode", async () => {
   let calls = 0;
   for (const mode of [undefined, "off", "invalid", "candidate", "active_allowlist", "active"]) {
@@ -376,6 +384,10 @@ test("malicious and rejecting sinks cannot mutate the returned result", async ()
       Reflect.set(value, "status", "INJECTED");
       Reflect.set(value, "rawMessage", "PRIVATE_RAW");
       Reflect.set(value.safetyFlags, "foo", true);
+      Reflect.set(value, "safetyFlags", { injected: true });
+      Reflect.deleteProperty(value.safetyFlags, "containsSensitiveData");
+      Reflect.set(value.safetyFlags, "containsSensitiveData", true);
+      Reflect.set(value.safetyFlags, "requiresHumanReview", true);
       Reflect.deleteProperty(value, "execution");
     },
   })).run(input());
@@ -383,6 +395,9 @@ test("malicious and rejecting sinks cannot mutate the returned result", async ()
   assert.deepEqual(Object.keys(malicious), RESULT_KEYS);
   assert.equal(Object.hasOwn(malicious, "rawMessage"), false);
   assert.equal(Object.hasOwn(malicious.safetyFlags, "foo"), false);
+  assert.deepEqual(Object.keys(malicious.safetyFlags), [
+    "containsSensitiveData", "requiresHumanReview",
+  ]);
   assert.notStrictEqual(retained, malicious);
   assert.notStrictEqual(retained.safetyFlags, malicious.safetyFlags);
   assert.equal(Object.isFrozen(retained), true);
@@ -395,6 +410,39 @@ test("malicious and rejecting sinks cannot mutate the returned result", async ()
   })).run(input({ messageId: "sink-reject" }));
   assert.equal(rejected.status, "SUCCEEDED");
   assert.deepEqual(Object.keys(rejected), RESULT_KEYS);
+});
+
+test("a late resolving sink is awaited once without sharing or mutation", async () => {
+  let release;
+  let sinkCalls = 0;
+  let retained;
+  let settled = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let notifyStarted;
+  const started = new Promise((resolve) => { notifyStarted = resolve; });
+  const runPromise = createKadiBrainRealShadowRunner(dependencies({
+    resultSink: async (value) => {
+      sinkCalls += 1;
+      retained = value;
+      notifyStarted();
+      await gate;
+      Reflect.set(value, "status", "INJECTED_LATE");
+      Reflect.set(value.safetyFlags, "rawMessage", "PRIVATE_RAW");
+    },
+  })).run(input({ messageId: "late-sink" }));
+  runPromise.then(() => { settled = true; });
+  await started;
+  assert.equal(settled, false);
+  release();
+  const result = await runPromise;
+  assert.equal(sinkCalls, 1);
+  assert.notStrictEqual(retained, result);
+  assert.notStrictEqual(retained.safetyFlags, result.safetyFlags);
+  assert.equal(Object.isFrozen(retained), true);
+  assert.equal(Object.isFrozen(retained.safetyFlags), true);
+  assert.equal(result.status, "SUCCEEDED");
+  assert.equal(Object.hasOwn(result.safetyFlags, "rawMessage"), false);
+  assert.deepEqual(Object.keys(result), RESULT_KEYS);
 });
 
 test("late Provider outcomes stay observed after timeout", async () => {
@@ -428,19 +476,50 @@ test("late Provider outcomes stay observed after timeout", async () => {
 });
 
 test("invalid or rejecting timeout results fail closed", async () => {
+  const invalidValues = [
+    undefined,
+    null,
+    "invalid",
+    42,
+    true,
+    [],
+    {},
+    { timedOut: "true" },
+    { timedOut: false },
+    { unknownOnly: true },
+    { timedOut: false, value: null },
+    { timedOut: false, value: { kind: "UNKNOWN" } },
+  ];
+  for (const [index, invalidValue] of invalidValues.entries()) {
+    let providerCalls = 0;
+    let sinkCalls = 0;
+    const result = await createKadiBrainRealShadowRunner(dependencies({
+      provider: {
+        invoke: async () => {
+          providerCalls += 1;
+          return providerResponse(JSON.stringify(canonicalResolution()));
+        },
+      },
+      timeout: async () => invalidValue,
+      resultSink: () => { sinkCalls += 1; },
+    })).run(input({ messageId: `timeout-invalid-${index}` }));
+    assert.equal(result.status, "INTERNAL_FAILED");
+    assert.equal(result.execution, "NONE");
+    assert.equal(providerCalls, 1);
+    assert.equal(sinkCalls, 1);
+    assert.equal(JSON.stringify(result).includes("invalid"), false);
+  }
+
   for (const timeout of [
-    async () => null,
-    async () => ({}),
-    async () => ({ timedOut: "yes" }),
-    async () => ({ timedOut: false, value: null }),
-    async () => ({ timedOut: false, value: { kind: "UNKNOWN" } }),
-    async () => { throw new Error("PRIVATE_TIMEOUT"); },
+    async () => { throw new Error("PRIVATE_TIMEOUT_THROW"); },
+    async () => Promise.reject(new Error("PRIVATE_TIMEOUT_REJECT")),
   ]) {
     const result = await createKadiBrainRealShadowRunner(dependencies({
       timeout,
-    })).run(input({ messageId: "timeout-invalid" }));
+    })).run(input({ messageId: "timeout-exception" }));
     assert.equal(result.status, "INTERNAL_FAILED");
     assert.equal(result.execution, "NONE");
+    assert.equal(JSON.stringify(result).includes("PRIVATE"), false);
   }
 
   const rejectedProvider = await createKadiBrainRealShadowRunner(dependencies({
@@ -453,11 +532,75 @@ test("invalid or rejecting timeout results fail closed", async () => {
   assert.equal(rejectedProvider.execution, "NONE");
 });
 
+test("distinct Provider rejections are observed and bounded", async () => {
+  const strangeError = {};
+  Object.defineProperty(strangeError, "message", {
+    get() { throw new Error("PRIVATE_GETTER"); },
+  });
+  const cases = [
+    () => { throw new Error("PRIVATE_SYNC_THROW"); },
+    () => Promise.reject(new Error("PRIVATE_IMMEDIATE_REJECT")),
+    () => new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error("PRIVATE_ASYNC_REJECT")), 1);
+    }),
+    () => Promise.reject({
+      status: "FAILED",
+      failureKind: "AUTHENTICATION",
+      raw: "PRIVATE_CANONICAL_LIKE_ERROR",
+    }),
+    () => Promise.reject("PRIVATE_NON_CANONICAL"),
+    () => Promise.reject(strangeError),
+  ];
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    for (const [index, invoke] of cases.entries()) {
+      const result = await createKadiBrainRealShadowRunner(dependencies({
+        provider: { invoke },
+      })).run(input({ messageId: `provider-rejection-${index}` }));
+      assert.equal(result.status, "PROVIDER_FAILED");
+      assert.equal(result.providerFailureKind, "INTERNAL");
+      assert.equal(result.execution, "NONE");
+      assert.equal(JSON.stringify(result).includes("PRIVATE"), false);
+      assert.equal(Object.hasOwn(result, "stack"), false);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.removeListener("unhandledRejection", listener);
+  }
+});
+
 test("concurrent duplicates invoke one Provider and caches stay isolated", async () => {
   let calls = 0;
+  let privacyCalls = 0;
+  let promptCalls = 0;
+  let parserCalls = 0;
   let release;
   const delayed = new Promise((resolve) => { release = resolve; });
   const options = dependencies({
+    privacyGateway: {
+      ...privacyGateway,
+      sanitizePrivacyInput(value) {
+        privacyCalls += 1;
+        return privacyGateway.sanitizePrivacyInput(value);
+      },
+    },
+    promptBuilder: {
+      ...promptBuilder,
+      buildIntentResolutionMessages(value) {
+        promptCalls += 1;
+        return promptBuilder.buildIntentResolutionMessages(value);
+      },
+    },
+    responseParser: {
+      ...responseParser,
+      parseIntentResolutionResponse(value) {
+        parserCalls += 1;
+        return responseParser.parseIntentResolutionResponse(value);
+      },
+    },
     provider: {
       async invoke() {
         calls += 1;
@@ -472,6 +615,9 @@ test("concurrent duplicates invoke one Provider and caches stay isolated", async
   release();
   const results = await Promise.all([first, second]);
   assert.equal(calls, 1);
+  assert.equal(privacyCalls, 1);
+  assert.equal(promptCalls, 1);
+  assert.equal(parserCalls, 1);
   assert.deepEqual(
     results.map((result) => result.status).sort(),
     ["SKIPPED_DUPLICATE", "SUCCEEDED"]
@@ -498,6 +644,58 @@ test("concurrent duplicates invoke one Provider and caches stay isolated", async
   assert.equal(independentCalls, 2);
 });
 
+test("timeout first settlement wins and later settlement has no effect", async () => {
+  let sinkCalls = 0;
+  let parserCalls = 0;
+  let providerCalls = 0;
+  const timeout = (providerPromise) => new Promise((resolve) => {
+    resolve({ timedOut: true });
+    providerPromise.then((value) => {
+      resolve({ timedOut: false, value });
+    });
+  });
+  const result = await createKadiBrainRealShadowRunner(dependencies({
+    provider: {
+      invoke: async () => {
+        providerCalls += 1;
+        return providerResponse(JSON.stringify(canonicalResolution()));
+      },
+    },
+    responseParser: {
+      ...responseParser,
+      parseIntentResolutionResponse(value) {
+        parserCalls += 1;
+        return responseParser.parseIntentResolutionResponse(value);
+      },
+    },
+    timeout,
+    resultSink: () => { sinkCalls += 1; },
+  })).run(input({ messageId: "multiple-timeout-resolution" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.status, "TIMEOUT");
+  assert.equal(result.execution, "NONE");
+  assert.equal(providerCalls, 1);
+  assert.equal(parserCalls, 0);
+  assert.equal(sinkCalls, 1);
+});
+
+test("timeout mutation attempts cannot alter the canonical result", async () => {
+  let retainedPromise;
+  const result = await createKadiBrainRealShadowRunner(dependencies({
+    timeout(providerPromise) {
+      retainedPromise = providerPromise;
+      Reflect.set(providerPromise, "rawMessage", "PRIVATE_RAW");
+      Reflect.set(providerPromise, "status", "INJECTED");
+      return { timedOut: false, value: { kind: "UNKNOWN" } };
+    },
+  })).run(input({ messageId: "timeout-mutation" }));
+  assert.equal(Object.hasOwn(retainedPromise, "rawMessage"), true);
+  assert.equal(result.status, "INTERNAL_FAILED");
+  assert.equal(result.execution, "NONE");
+  assert.deepEqual(Object.keys(result), RESULT_KEYS);
+  assert.equal(JSON.stringify(result).includes("PRIVATE_RAW"), false);
+});
+
 test("failed attempts remain deduplicated within one runner instance", async () => {
   for (const scenario of [
     {
@@ -522,16 +720,90 @@ test("failed attempts remain deduplicated within one runner instance", async () 
         provider: { invoke: async () => providerResponse("invalid-json") },
       },
     },
+    {
+      firstStatus: "INTERNAL_FAILED",
+      input: input(),
+      overrides: { timeout: async () => null },
+    },
   ]) {
-    const runner = createKadiBrainRealShadowRunner(
-      dependencies(scenario.overrides)
-    );
-    assert.equal((await runner.run(scenario.input)).status, scenario.firstStatus);
+    let privacyCalls = 0;
+    let promptCalls = 0;
+    let providerCalls = 0;
+    let parserCalls = 0;
+    const originalProvider = scenario.overrides.provider || {
+      invoke: async () => providerResponse(
+        JSON.stringify(canonicalResolution())
+      ),
+    };
+    const runner = createKadiBrainRealShadowRunner(dependencies({
+      ...scenario.overrides,
+      privacyGateway: {
+        ...privacyGateway,
+        sanitizePrivacyInput(value) {
+          privacyCalls += 1;
+          return privacyGateway.sanitizePrivacyInput(value);
+        },
+      },
+      promptBuilder: {
+        ...promptBuilder,
+        buildIntentResolutionMessages(value) {
+          promptCalls += 1;
+          return promptBuilder.buildIntentResolutionMessages(value);
+        },
+      },
+      provider: {
+        async invoke(value) {
+          providerCalls += 1;
+          return originalProvider.invoke(value);
+        },
+      },
+      responseParser: {
+        ...responseParser,
+        parseIntentResolutionResponse(value) {
+          parserCalls += 1;
+          return responseParser.parseIntentResolutionResponse(value);
+        },
+      },
+    }));
+    const first = await runner.run(scenario.input);
+    assert.equal(first.status, scenario.firstStatus);
+    assert.equal(first.execution, "NONE");
+    const countsAfterFirst = {
+      privacyCalls, promptCalls, providerCalls, parserCalls,
+    };
     assert.equal(
       (await runner.run(scenario.input)).status,
       "SKIPPED_DUPLICATE"
     );
+    assert.deepEqual(
+      { privacyCalls, promptCalls, providerCalls, parserCalls },
+      countsAfterFirst
+    );
   }
+});
+
+test("INPUT_INVALID is not cached and the corrected message runs normally", async () => {
+  let providerCalls = 0;
+  const runner = createKadiBrainRealShadowRunner(dependencies({
+    provider: {
+      invoke: async () => {
+        providerCalls += 1;
+        return providerResponse(JSON.stringify(canonicalResolution()));
+      },
+    },
+  }));
+  const invalid = await runner.run(input({
+    messageId: "correctable-id",
+    userMessage: " ",
+  }));
+  assert.equal(invalid.status, "INPUT_INVALID");
+  assert.equal(invalid.execution, "NONE");
+  assert.equal(providerCalls, 0);
+
+  const corrected = await runner.run(input({ messageId: "correctable-id" }));
+  assert.equal(corrected.status, "SUCCEEDED");
+  assert.equal(corrected.execution, "NONE");
+  assert.equal(providerCalls, 1);
 });
 
 test("deduplication is bounded, deterministic, and instance-local", async () => {
@@ -568,6 +840,92 @@ test("deduplication is bounded, deterministic, and instance-local", async () => 
   await createKadiBrainRealShadowRunner(isolatedOptions).run(input());
   await createKadiBrainRealShadowRunner(isolatedOptions).run(input());
   assert.equal(isolatedCalls, 2);
+});
+
+test("frozen dependencies and intermediate results remain unmodified", async () => {
+  let privacyBefore;
+  let privacyAfter;
+  let promptBefore;
+  let promptAfter;
+  let requestBefore;
+  let requestAfter;
+  let providerBefore;
+  let providerAfter;
+  let parserBefore;
+  let parserAfter;
+
+  const frozenGateway = {
+    ...privacyGateway,
+    sanitizePrivacyInput(value) {
+      const result = privacyGateway.sanitizePrivacyInput(value);
+      privacyBefore = JSON.stringify(result);
+      deepFreeze(result);
+      privacyAfter = () => JSON.stringify(result);
+      return result;
+    },
+  };
+  const frozenPromptBuilder = {
+    ...promptBuilder,
+    buildIntentResolutionMessages(value) {
+      const result = promptBuilder.buildIntentResolutionMessages(value);
+      promptBefore = JSON.stringify(result);
+      deepFreeze(result);
+      promptAfter = () => JSON.stringify(result);
+      return result;
+    },
+  };
+  const frozenResponse = providerResponse(
+    JSON.stringify(canonicalResolution())
+  );
+  providerBefore = JSON.stringify(frozenResponse);
+  deepFreeze(frozenResponse);
+  providerAfter = () => JSON.stringify(frozenResponse);
+  const frozenParser = {
+    ...responseParser,
+    parseIntentResolutionResponse(value) {
+      const result = responseParser.parseIntentResolutionResponse(value);
+      parserBefore = JSON.stringify(result);
+      deepFreeze(result);
+      parserAfter = () => JSON.stringify(result);
+      return result;
+    },
+  };
+  const frozenDependencies = Object.freeze(dependencies({
+    privacyGateway: frozenGateway,
+    promptBuilder: frozenPromptBuilder,
+    responseParser: frozenParser,
+    provider: {
+      invoke: async ({ providerRequest }) => {
+        requestBefore = JSON.stringify(providerRequest);
+        deepFreeze(providerRequest);
+        requestAfter = () => JSON.stringify(providerRequest);
+        return frozenResponse;
+      },
+    },
+  }));
+  const frozenInput = deepFreeze(input({
+    messageId: "frozen-pipeline",
+    flowContext: {
+      stepCategory: "review",
+      activeFlow: "invoice",
+      activeDocumentType: "facture",
+      hasActiveDraft: true,
+      expectedFieldNames: ["clientName", "items"],
+      messageType: "text",
+    },
+  }));
+  const inputBefore = JSON.stringify(frozenInput);
+  const result = await createKadiBrainRealShadowRunner(
+    frozenDependencies
+  ).run(frozenInput);
+  assert.equal(result.status, "SUCCEEDED");
+  assert.equal(JSON.stringify(frozenInput), inputBefore);
+  assert.equal(privacyAfter(), privacyBefore);
+  assert.equal(promptAfter(), promptBefore);
+  assert.equal(requestAfter(), requestBefore);
+  assert.equal(providerAfter(), providerBefore);
+  assert.equal(parserAfter(), parserBefore);
+  assert.equal(result.execution, "NONE");
 });
 
 test("frozen inputs remain unchanged and output is deterministic", async () => {

@@ -72,8 +72,45 @@ test("shadow result projects every failure without raw input", () => {
     for (const sentinel of [
       "PRIVATE_MESSAGE_ID", "PRIVATE_RAW", "PRIVATE_CONTENT", "PRIVATE_NAME",
     ]) assert.equal(serialized.includes(sentinel), false);
+    assert.deepEqual(Object.keys(result), RESULT_KEYS);
+    assert.deepEqual(Object.keys(result.safetyFlags), [
+      "containsSensitiveData", "requiresHumanReview",
+    ]);
+    assert.equal(Object.isFrozen(result), true);
+    assert.equal(Object.isFrozen(result.safetyFlags), true);
+    assert.match(result.messageIdHash, /^[a-f0-9]{16}$/u);
     assert.equal(result.execution, "NONE");
   }
+});
+
+test("mapper drops every unknown field and keeps no external reference", () => {
+  const external = {
+    rawMessage: "PRIVATE_RAW",
+    prompt: { content: "PRIVATE_PROMPT" },
+    providerResponse: { content: "PRIVATE_PROVIDER" },
+    parserResult: { rawJson: "PRIVATE_JSON" },
+    restorationMap: { PERSON_1: "PRIVATE_NAME" },
+    stack: "PRIVATE_STACK",
+    arbitraryNestedObject: { secret: "PRIVATE_NESTED" },
+  };
+  const result = createKadiBrainShadowResult({
+    status: "SUCCEEDED",
+    sourceType: "text",
+    messageId: "PRIVATE_MESSAGE_ID",
+    safetyFlags: {
+      containsSensitiveData: false,
+      requiresHumanReview: false,
+    },
+    ...external,
+  });
+  assert.deepEqual(Object.keys(result), RESULT_KEYS);
+  for (const key of Object.keys(external)) {
+    assert.equal(Object.hasOwn(result, key), false);
+  }
+  assert.equal(JSON.stringify(result).includes("PRIVATE"), false);
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.safetyFlags), true);
+  assert.equal(result.execution, "NONE");
 });
 
 test("confidence and latency bucket boundaries are exact", () => {
@@ -189,6 +226,18 @@ test("mapper accepts frozen input and is deterministic with injected time", () =
   assert.throws(() => { first.status = "INJECTED"; }, TypeError);
   assert.throws(() => { first.injected = "raw-data"; }, TypeError);
   assert.throws(() => { first.safetyFlags.foo = true; }, TypeError);
+  assert.throws(() => {
+    first.safetyFlags = { injected: true };
+  }, TypeError);
+  assert.throws(() => {
+    delete first.safetyFlags.containsSensitiveData;
+  }, TypeError);
+  assert.throws(() => {
+    first.safetyFlags.containsSensitiveData = true;
+  }, TypeError);
+  assert.throws(() => {
+    first.safetyFlags.requiresHumanReview = true;
+  }, TypeError);
   assert.throws(() => { delete first.execution; }, TypeError);
   assert.deepEqual(Object.keys(first), RESULT_KEYS);
 });
