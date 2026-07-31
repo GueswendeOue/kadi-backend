@@ -107,14 +107,17 @@ const STRONG_PERSONAL_NAME_CONTEXTS = new Set([
 ]);
 const PERSONAL_NAME_BUSINESS_TERMS = new Set([
   "aide", "annuler", "article", "bonjour", "burkina", "ciment", "client",
-  "confirmer", "décharge", "decharge", "devis", "facture", "faso",
+  "confirmer", "compte", "bancaire", "créer", "creer", "décharge",
+  "decharge", "devis", "facture", "facturation", "faso",
   "fcfa", "gemi" + "ni", "kadi", "menu", "moov", "non", "orange",
   "ouagadougou", "pdf", "plomberie", "prix", "produit", "quantité",
   "quantite", "réparation", "reparation", "reçu", "recu", "samsung",
   "sable", "sacs", "service", "supa" + "base", "syscohada", "téléphone",
   "telephone", "total",
   "chez", "donnée", "donnee", "marque", "modèle", "modele", "paiement",
-  "peinture", "restaurant", "savon", "tissu",
+  "peinture", "restaurant", "savon", "tissu", "iphone", "tablette",
+  "ordinateur", "imprimante", "logiciel", "money", "pin", "problème",
+  "probleme", "proforma", "pour",
   "whatsapp", "oui",
 ]);
 const PERSONAL_NAME_CONNECTORS = new Set(["de", "du", "des", "d", "la", "le"]);
@@ -122,6 +125,8 @@ const PERSONAL_ENUMERATION_CONNECTORS = Object.freeze([" et ", " & ", " avec ", 
 const TRANSACTION_RELATIONS = Object.freeze([
   "a payé pour", "a paye pour", "commande pour", "reçoit de", "recoit de",
   "achète pour", "achete pour", "a livré à", "a livre a",
+  "a facturé", "a facture", "facture", "facturera", "doit facturer",
+  "est facturée par", "est facturee par",
 ]);
 const CONCEPTUAL_PERSONAL_TAILS = Object.freeze([
   "avec donnée de paiement", "avec donnee de paiement",
@@ -173,10 +178,13 @@ const TEXT_PATTERNS = Object.freeze([
   ["EMAIL", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu],
   ["PHONE", /(?:\+?226[\s.-]*)?(?:[02567]\d(?:[\s.-]*\d{2}){3})\b/gu],
   ["ADDRESS", /\b(?:adresse|domicile|livraison\s+[àa]|quartier|rue|avenue|secteur)(?=\s|:|$)\s*:?\s*[^,;\n]+/giu],
-  ["AUTH_SECRET", /\b(?:mot[\s-]*de[\s-]*passe|password|passcode|pin|otp|code[\s-]*de[\s-]*v[ée]rification|mobile[\s-]*money[\s-]*(?:pin|secret[\s-]*code))\b\s*[:=]?\s*\S+/giu],
+  ["AUTH_SECRET", /\b(?:mot[\s-]*de[\s-]*passe|password|passcode|code[\s-]*de[\s-]*v[ée]rification)\b\s*[:=]?\s*\S+/giu],
+  ["AUTH_SECRET", /\b(?:pin|otp)\b\s*[:=]?\s*\d{4,8}\b/giu],
+  ["AUTH_SECRET", /\b(?:(?:code[\s-]*secret|code)[\s-]*(?:mobile[\s-]*money|orange[\s-]*money|moov[\s-]*money)|mobile[\s-]*money[\s-]*secret[\s-]*code|(?:orange[\s-]*money|moov[\s-]*money)[\s-]*pin|code[\s-]*pin[\s-]*mobile[\s-]*money)\b\s*[:=]?\s*\d{4,8}\b/giu],
   ["ACCESS_SECRET", /\b(?:api[\s_-]*key|cl[ée][\s_-]*api|access[\s_-]*token|refresh[\s_-]*token|service[\s_-]*role[\s_-]*key|bearer(?:[\s_-]*token)?|secret[\s_-]*key|private[\s_-]*key)\b\s*[:=]?\s*[A-Z0-9][A-Z0-9._-]{2,}/giu],
   ["ACCESS_SECRET", /\btoken\b\s*[:=]?\s*(?:sk[-_][A-Z0-9._-]+|ey[A-Z0-9._-]{3,})/giu],
-  ["AUTH_SECRET", /\b(?:num[ée]ro[\s-]*de[\s-]*carte|card[\s-]*number|cvv|iban|compte[\s-]*bancaire|bank[\s-]*account|date[\s-]*d['’]?expiration)\b\s*[:=]?\s*[A-Z0-9][A-Z0-9\s./-]{2,}/giu],
+  ["AUTH_SECRET", /\b(?:num[ée]ro[\s-]*de[\s-]*carte|card[\s-]*number|cvv|iban|date[\s-]*d['’]?expiration)\b\s*[:=]?\s*[A-Z0-9][A-Z0-9\s./-]{2,}/giu],
+  ["AUTH_SECRET", /\b(?:num[ée]ro[\s-]*de[\s-]*compte|n[°º][\s-]*de[\s-]*compte|no[\s-]*de[\s-]*compte|compte[\s-]*bancaire|bank[\s-]*account|account[\s-]*(?:number|no|#))(?=\s|[:=])\s*[:=]?\s*(?=[A-Z0-9.-]*\d)[A-Z0-9][A-Z0-9.-]{3,}/giu],
   ["BUSINESS_IDENTIFIER", /\b(?:IFU|RCCM|tax[\s_-]*id|fiscal[\s_-]*id)\b\s*[:=]?\s*[A-Z0-9./-]+/giu],
   ["DOCUMENT_SENSITIVE", /\b(?:passport|carte[\s-]*d['’]?identit[ée]|national[\s_-]*id)\b\s*[:=]?\s*[A-Z0-9./-]+/giu],
   ["FINANCIAL", /\b(?:montant|total|prix|solde)\b\s*[:=]?\s*\d[\d\s.,]*(?:FCFA|XOF|€|\$)?/giu],
@@ -571,6 +579,24 @@ function transactionalNameMatches(text) {
   ];
 }
 
+function prefixedInvoicingNameMatches(text) {
+  const pattern =
+    /^\s*factur[ée]\s+par\s+([\p{L}\p{M}'’.-]+(?:\s+[\p{L}\p{M}'’.-]+){0,4})\s+pour\s+([\p{L}\p{M}'’.-]+(?:\s+[\p{L}\p{M}'’.-]+){0,4})\s*$/iu;
+  const match = String(text || "").match(pattern);
+  if (!match) return [];
+  const first = match[1].trim();
+  const second = match[2].trim();
+  if (!isLikelyShortNameValue(first) || !isLikelyShortNameValue(second)) {
+    return [];
+  }
+  const firstStart = text.indexOf(first);
+  const secondStart = text.lastIndexOf(second);
+  return [
+    { start: firstStart, end: firstStart + first.length, value: first },
+    { start: secondStart, end: secondStart + second.length, value: second },
+  ];
+}
+
 function enumeratedNameMatches(text) {
   const source = String(text || "").normalize("NFC").trim();
   for (const connector of PERSONAL_ENUMERATION_CONNECTORS) {
@@ -608,6 +634,7 @@ function conceptualSubjectNameMatches(text) {
 function personalNameMatches(text, allowIsolated = false) {
   const matches = [
     ...transactionalNameMatches(text),
+    ...prefixedInvoicingNameMatches(text),
     ...contextualNameMatches(text),
     ...enumeratedNameMatches(text),
     ...conceptualSubjectNameMatches(text),
@@ -670,6 +697,18 @@ function finalResidualNameRisk(text) {
     transaction &&
     [transaction[1], transaction[2]].some(
       (value) => !/^PERSON_[1-9]\d*$/u.test(value) && finalLooksNominalSegment(value)
+    )
+  ) return true;
+
+  const prefixedInvoice = source.match(
+    /^factur[ée]\s+par\s+(.+?)\s+pour\s+(.+)$/iu
+  );
+  if (
+    prefixedInvoice &&
+    [prefixedInvoice[1], prefixedInvoice[2]].some(
+      (value) =>
+        !/^PERSON_[1-9]\d*$/u.test(value) &&
+        finalLooksNominalSegment(value)
     )
   ) return true;
 

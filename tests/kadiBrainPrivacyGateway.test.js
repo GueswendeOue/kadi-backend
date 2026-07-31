@@ -535,6 +535,173 @@ test("residual gaps: aliases are request-scoped, user-scoped and deterministic",
   assert.deepEqual(awa.restorationMap, awaAgain.restorationMap);
 });
 
+test("final payment gaps: invoicing verbs protect every personal participant", () => {
+  const cases = [
+    ["Paul a facturé Aminata", "PERSON_1 a facturé PERSON_2"],
+    ["Paul facture Aminata", "PERSON_1 facture PERSON_2"],
+    ["Paul facturera Aminata", "PERSON_1 facturera PERSON_2"],
+    ["Paul doit facturer Aminata", "PERSON_1 doit facturer PERSON_2"],
+    ["Aminata est facturée par Paul", "PERSON_1 est facturée par PERSON_2"],
+    ["Facturé par Paul pour Aminata", "Facturé par PERSON_1 pour PERSON_2"],
+  ];
+  for (const [message, expected] of cases) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, expected);
+    assert.equal(Object.keys(result.restorationMap).length, 2);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("final payment gaps: invoice nouns never trigger the personal subject rule", () => {
+  for (const message of [
+    "facture", "facturation", "facture proforma", "facture et devis",
+    "logiciel de facturation",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.deepEqual(result.restorationMap, {});
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("final payment gaps: French, abbreviated and English account values block", () => {
+  const messages = [
+    "numéro de compte 1234567890",
+    "numero de compte 1234567890",
+    "n° de compte 1234567890",
+    "no de compte 1234567890",
+    "compte bancaire 1234567890",
+    "bank account 1234567890",
+    "account number 1234567890",
+    "account no 1234567890",
+    "account # 1234567890",
+  ];
+  for (const message of messages) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.decision, "BLOCKED", message);
+    assert.equal(result.errorCode, "SECRET_DETECTED", message);
+    assert.equal(result.allowed, false, message);
+    assert.equal(isPrivacySafeForProvider(result), false, message);
+    assert.equal(JSON.stringify(result).includes("1234567890"), false, message);
+  }
+  for (const message of [
+    "Comment ajouter un numéro de compte ?",
+    "J’ai un problème avec mon compte bancaire.",
+    "Où afficher le compte bancaire sur une facture ?",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.equal(result.summary.containsSecrets, false);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("final payment gaps: mobile money secret values block but concepts remain usable", () => {
+  const secrets = [
+    "code secret mobile money 1234",
+    "code secret Orange Money 1234",
+    "code secret Moov Money 1234",
+    "code mobile money 1234",
+    "mobile money secret code 1234",
+    "Orange Money PIN 1234",
+    "Moov Money PIN 1234",
+    "code PIN mobile money 1234",
+  ];
+  for (const message of secrets) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.decision, "BLOCKED", message);
+    assert.equal(result.errorCode, "SECRET_DETECTED", message);
+    assert.equal(isPrivacySafeForProvider(result), false, message);
+    assert.equal(JSON.stringify(result).includes("1234"), false, message);
+  }
+  for (const message of [
+    "J’ai oublié mon code secret mobile money.",
+    "Comment changer mon code Orange Money ?",
+    "Problème de PIN Mobile Money.",
+    "Kadi ne doit jamais demander mon code secret.",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.equal(result.summary.containsSecrets, false);
+    assert.equal(isPrivacySafeForProvider(result), true);
+  }
+});
+
+test("final payment gaps: secret blocking has priority over personal names", () => {
+  for (const [message, sentinel] of [
+    ["Paul, numéro de compte 1234567890", "1234567890"],
+    ["Awa code secret mobile money 1234", "1234"],
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.decision, "BLOCKED");
+    assert.equal(result.allowed, false);
+    assert.equal(isPrivacySafeForProvider(result), false);
+    assert.equal(JSON.stringify(result).includes(sentinel), false);
+    assert.deepEqual(result.restorationMap, {});
+  }
+});
+
+test("final payment gaps: bounded business conjunctions stay provider-safe", () => {
+  for (const message of [
+    "Samsung et iPhone", "Orange et Moov", "ciment et sable",
+    "plomberie et peinture", "facture et devis", "téléphone et tablette",
+    "ordinateur et imprimante",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage, message);
+    assert.deepEqual(result.restorationMap, {});
+    assert.equal(isPrivacySafeForProvider(result), true, message);
+  }
+  for (const message of [
+    "Awa et Fatou", "Jean et Paul", "O’Connor et Alice",
+    "Client Awa et bénéficiaire Issa",
+    "Monsieur Kaboré et Madame Traoré",
+  ]) {
+    const result = sanitizePrivacyInput(validInput({ userMessage: message }));
+    assert.equal(result.sanitizedInput.userMessage.includes("PERSON_"), true);
+    assert.equal(isPrivacySafeForProvider(result), true, message);
+  }
+});
+
+test("final payment gaps: independent final inspection catches every residual risk", () => {
+  for (const userMessage of [
+    "Paul a facturé Aminata",
+    "numéro de compte 1234567890",
+    "code secret mobile money 1234",
+  ]) {
+    const forged = sanitizePrivacyInput(validInput());
+    forged.sanitizedInput.userMessage = userMessage;
+    forged.summary.containsPersonalDataAfter = true;
+    assert.equal(validatePrivacyResult(forged).valid, false, userMessage);
+    assert.equal(isPrivacySafeForProvider(forged), false, userMessage);
+  }
+  const business = sanitizePrivacyInput(validInput({
+    userMessage: "Samsung et iPhone",
+  }));
+  assert.equal(validatePrivacyResult(business).valid, true);
+  assert.equal(isPrivacySafeForProvider(business), true);
+});
+
+test("final payment gaps: serialization, determinism and frozen inputs stay closed", () => {
+  const input = validInput({ userMessage: "Paul a facturé Aminata" });
+  Object.freeze(input.policy);
+  Object.freeze(input.context);
+  Object.freeze(input);
+  const before = JSON.stringify(input);
+  const first = sanitizePrivacyInput(input);
+  const second = sanitizePrivacyInput(input);
+  assert.equal(JSON.stringify(input), before);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.deepEqual(first.restorationMap, second.restorationMap);
+  assert.notStrictEqual(first.restorationMap, second.restorationMap);
+  assert.equal(Object.keys(first).includes("restorationMap"), false);
+  assert.equal("restorationMap" in { ...first }, false);
+  assert.equal("restorationMap" in structuredClone(first), false);
+  assert.equal(JSON.stringify(first).includes("restorationMap"), false);
+  assert.equal(JSON.stringify(first).includes("Paul"), false);
+  assert.equal(JSON.stringify(first).includes("Aminata"), false);
+});
+
 test("scenarios 96-104: default removal and financial policy are enforced", () => {
   const result = sanitizePrivacyInput(validInput({
     userMessage: "Téléphone 70 12 34 56 email awa@example.com IFU 00012345 montant 125000 FCFA",
