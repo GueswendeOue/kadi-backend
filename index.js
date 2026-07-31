@@ -2,6 +2,9 @@
 
 require("dotenv").config();
 const express = require("express");
+const {
+  evaluateWebhookVerification,
+} = require("./kadiRuntimeSecretBoundary");
 
 const { supabase } = require("./supabaseClient");
 
@@ -48,7 +51,7 @@ console.log("🟢 KADI booting...");
 // ===============================
 const app = express();
 const PORT = process.env.PORT || 10000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "kadi_verify_12345";
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const SERVER_BOOT_AT = Date.now();
 
 // ===============================
@@ -398,8 +401,15 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  const verification = evaluateWebhookVerification({
+    mode,
+    receivedToken: token,
+    challenge,
+    configuredToken: VERIFY_TOKEN,
+  });
+
+  if (verification.accepted) {
+    return res.status(200).send(verification.challenge);
   }
 
   return res.sendStatus(403);

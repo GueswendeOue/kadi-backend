@@ -1,15 +1,72 @@
-const path = require("path");
-const dotenv = require("dotenv");
+"use strict";
 
-const result = dotenv.config({ path: path.join(__dirname, ".env") });
+const RUNTIME_ENV_NAMES = Object.freeze([
+  "VERIFY_TOKEN",
+  "WHATSAPP_TOKEN",
+  "APP_SECRET",
+  "WHATSAPP_2FA_PIN",
+  "WHATSAPP_PHONE_NUMBER_ID",
+  "PHONE_NUMBER_ID",
+  "WHATSAPP_WABA_ID",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_OCR_JSON_BASE64",
+  "GOOGLE_OCR_JSON",
+  "GCP_SA_JSON_B64",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+]);
 
-console.log("dotenv error =", result.error || null);
-console.log("parsed keys =", result.parsed ? Object.keys(result.parsed) : null);
-console.log("parsed VERIFY_TOKEN =", result.parsed?.VERIFY_TOKEN);
-console.log("process.env.VERIFY_TOKEN =", process.env.VERIFY_TOKEN);
+function getOwnDataValue(source, name) {
+  if (!source || (typeof source !== "object" && typeof source !== "function")) {
+    return undefined;
+  }
 
-// Bonus: cherche une clé avec espace
-if (result.parsed) {
-  const weird = Object.keys(result.parsed).filter(k => k.toLowerCase().includes("verify"));
-  console.log("verify-like keys =", weird);
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, name);
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  } catch (_) {
+    return undefined;
+  }
 }
+
+function buildEnvPresenceReport(source) {
+  const report = Object.create(null);
+
+  for (const name of RUNTIME_ENV_NAMES) {
+    const value = getOwnDataValue(source, name);
+    report[name] =
+      typeof value === "string" && value.trim().length > 0 ? "SET" : "MISSING";
+  }
+
+  return Object.freeze(report);
+}
+
+function printEnvPresenceReport(report, writeLine = console.log) {
+  if (typeof writeLine !== "function") {
+    return;
+  }
+
+  for (const name of RUNTIME_ENV_NAMES) {
+    const status = report?.[name] === "SET" ? "SET" : "MISSING";
+    writeLine(`${name}: ${status}`);
+  }
+}
+
+function runCli() {
+  require("dotenv").config();
+  printEnvPresenceReport(buildEnvPresenceReport(process.env));
+}
+
+if (require.main === module) {
+  runCli();
+}
+
+module.exports = {
+  RUNTIME_ENV_NAMES,
+  buildEnvPresenceReport,
+  printEnvPresenceReport,
+};
