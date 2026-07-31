@@ -20,6 +20,13 @@ function resolutionJson() {
   resolution.entities.clientName = "PERSON_1";
   resolution.entities.amount = 25000;
   resolution.entities.currency = "XOF";
+  resolution.entities.items = [{
+    description: "ITEM_1",
+    quantity: 1,
+    unit: "piece",
+    unitPrice: 25000,
+    total: 25000,
+  }];
   resolution.requestedAction = {
     type: "CREATE_INVOICE",
     target: "invoice",
@@ -258,6 +265,123 @@ test("realistic structured Gemini fixtures parse with local actionability only",
   }
 });
 
+test("success exposes only the Parser's local actionability across blocking cases", async () => {
+  const complete = promptBuilder.createCanonicalIntentResponseExample();
+  const cases = [];
+  const addCase = (name, change) => {
+    const fixture = promptBuilder.createCanonicalIntentResponseExample();
+    change(fixture);
+    cases.push([name, fixture]);
+  };
+  addCase("missing fields", (value) => {
+    value.missingFields = ["clientName"];
+  });
+  addCase("blocking ambiguity", (value) => {
+    value.ambiguities = [{
+      field: "documentType",
+      options: ["invoice", "receipt"],
+      message: "Choose one document type.",
+      blocking: true,
+    }];
+  });
+  addCase("low confidence", (value) => {
+    value.confidence = 0.74;
+  });
+  addCase("safety block", (value) => {
+    value.safety.requiresHumanReview = true;
+    value.safety.reason = "Review required.";
+  });
+  addCase("empty items", (value) => {
+    value.entities.items = [];
+  });
+  addCase("incorrect document type", (value) => {
+    value.entities.documentType = "receipt";
+  });
+  addCase("greeting", (value) => {
+    Object.assign(value, intentContract.createEmptyIntentResolution(), {
+      intent: "GREETING",
+      confidence: 0.99,
+      language: "fr",
+    });
+  });
+  addCase("unknown", (value) => {
+    Object.assign(value, intentContract.createEmptyIntentResolution(), {
+      intent: "UNKNOWN",
+      confidence: 0.99,
+      language: "fr",
+    });
+  });
+
+  for (const [name, fixture] of [["complete", complete], ...cases]) {
+    let calls = 0;
+    const response = successfulProviderResponse();
+    response.content = JSON.stringify(fixture);
+    const setup = harness({
+      createProvider: () => ({
+        async invoke() {
+          calls += 1;
+          return response;
+        },
+      }),
+    });
+    const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+    assert.equal(result.exitCode, 0, name);
+    assert.equal(result.publicResult.parserValid, true, name);
+    assert.equal(result.publicResult.actionable, name === "complete", name);
+    assert.equal(result.publicResult.execution, "NONE", name);
+    assert.equal(calls, 1, name);
+    assert.deepEqual(Object.keys(result.publicResult), [
+      "smokeVersion", "model", "privacySafe", "providerRequestValid",
+      "providerStatus", "providerResponseValid", "parserValid", "intent",
+      "actionable", "execution", "usage",
+    ]);
+  }
+});
+
+test("model-provided actionable cannot override a frozen local Parser result", async () => {
+  const rawContent = JSON.stringify({
+    schemaVersion: "kadi.intent.v1",
+    intent: "CREATE_INVOICE",
+    actionable: true,
+  });
+  const response = successfulProviderResponse();
+  response.content = rawContent;
+  Object.freeze(response.usage);
+  Object.freeze(response.metadata);
+  Object.freeze(response);
+  const parsed = Object.freeze({
+    ok: true,
+    validation: Object.freeze({ valid: true }),
+    resolution: Object.freeze({ intent: "CREATE_INVOICE" }),
+    actionable: false,
+  });
+  let calls = 0;
+  const setup = harness({
+    dependencies: {
+      parseIntentResolutionResponse(content) {
+        assert.equal(content, rawContent);
+        return parsed;
+      },
+    },
+    createProvider: () => ({
+      async invoke() {
+        calls += 1;
+        return response;
+      },
+    }),
+  });
+  const beforeParsed = JSON.stringify(parsed);
+  const beforeResponse = JSON.stringify(response);
+  const first = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  const second = await smoke.runGeminiIsolatedSmokeTest(setup.options);
+  assert.equal(first.publicResult.actionable, false);
+  assert.equal(first.publicResult.execution, "NONE");
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(JSON.stringify(parsed), beforeParsed);
+  assert.equal(JSON.stringify(response), beforeResponse);
+  assert.equal(calls, 2);
+});
+
 test("simulated privacy rejection prevents client and provider creation", async () => {
   const setup = harness({
     dependencies: {
@@ -472,7 +596,7 @@ test("parser success reports CREATE_INVOICE but execution remains NONE", async (
   const result = await smoke.runGeminiIsolatedSmokeTest(setup.options);
   assert.equal(result.publicResult.parserValid, true);
   assert.equal(result.publicResult.intent, "CREATE_INVOICE");
-  assert.equal(result.publicResult.actionable, false);
+  assert.equal(result.publicResult.actionable, true);
   assert.equal(result.publicResult.execution, "NONE");
 });
 
@@ -559,7 +683,7 @@ test("public success output is exact, minimized, and contains no private pipelin
     providerResponseValid: true,
     parserValid: true,
     intent: "CREATE_INVOICE",
-    actionable: false,
+    actionable: true,
     execution: "NONE",
     usage: { inputUnits: 12, outputUnits: 8, totalUnits: 20 },
   });

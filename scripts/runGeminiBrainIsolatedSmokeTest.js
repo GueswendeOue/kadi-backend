@@ -282,7 +282,7 @@ async function runGeminiIsolatedSmokeTest(options = {}) {
       providerResponseValid: true,
       parserValid: true,
       intent: parsed.resolution.intent,
-      actionable: false,
+      actionable: parsed.actionable === true,
       execution: "NONE",
       usage: {
         inputUnits: providerResponse.usage.inputUnits,
