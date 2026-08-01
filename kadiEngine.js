@@ -1291,7 +1291,7 @@ async function handleInteractiveMessage(from, msg) {
 // ===============================
 // Main routing
 // ===============================
-async function handleIncomingMessage(value) {
+async function handleIncomingMessage(value, options = {}) {
   const messages = value?.messages || [];
   if (!messages.length) return;
 
@@ -1308,6 +1308,16 @@ async function handleIncomingMessage(value) {
         resolveOwnerKey(identity);
 
         await ensureWelcomeCredits(from);
+
+        if (msg.type === "text" && options.invoiceFlowTrigger) {
+          const triggered = await options.invoiceFlowTrigger.run({
+            from,
+            text: msg?.text?.body || "",
+            messageId: msg?.id || null,
+            ownerRef: resolveOwnerKey(identity),
+          });
+          if (triggered) return;
+        }
 
         if (msg.type !== "text") {
           const handledSupport = await safeHandleSupportIncomingMessage(from, msg);

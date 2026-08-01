@@ -481,6 +481,13 @@ async function sendDocument({ to, mediaId, filename, caption }) {
   });
 }
 
+async function sendFlow(payload) {
+  if (!payload || payload.type !== "interactive" || payload.interactive?.type !== "flow") {
+    throw new Error("sendFlow: payload invalide");
+  }
+  return postJsonMessage(payload, 15000, "sendFlow");
+}
+
 async function sendImage({ to, mediaId, caption }) {
   const payload = {
     messaging_product: "whatsapp",
@@ -546,6 +553,7 @@ module.exports = {
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
+  sendFlow,
   sendImage,
   sendImageByLink,
   extractStatusesFromWebhookValue,

@@ -21,10 +21,12 @@ const {
 } = require("./kadiEngine");
 
 const { sendText } = require("./kadiMessaging");
+const { sendFlow } = require("./kadiMessaging");
 const { createInvoiceFlowEndpoint } = require("./kadiInvoiceFlowEndpoint");
 const { createInvoiceCartService } = require("./kadiInvoiceCartService");
 const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepository");
 const { createInvoiceFlowSessionService, createSupabaseInvoiceFlowSessionRepository } = require("./kadiInvoiceFlowSession");
+const { createInvoiceFlowDraftTrigger } = require("./kadiInvoiceFlowDraftTrigger");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
@@ -132,6 +134,10 @@ const WEEKLY_REPORT_MINUTE = Number(process.env.KADI_WEEKLY_REPORT_MINUTE || 0);
 const KADI_ADMIN_WA = process.env.KADI_ADMIN_WA || "";
 
 const INVOICE_FLOW_ENABLED = envEnabled(process.env.KADI_INVOICE_FLOW_ENABLED);
+const INVOICE_FLOW_MODE = String(process.env.KADI_INVOICE_FLOW_MODE || "draft").trim().toLowerCase();
+const INVOICE_FLOW_TEST_RECIPIENTS = process.env.KADI_INVOICE_FLOW_TEST_RECIPIENTS || "";
+const INVOICE_FLOW_TEST_TRIGGER = process.env.KADI_INVOICE_FLOW_TEST_TRIGGER || "";
+const INVOICE_FLOW_SESSION_TTL_MINUTES = Number(process.env.KADI_INVOICE_FLOW_SESSION_TTL_MINUTES || 30);
 
 // ===============================
 // WEEKLY REPORT CONTROL
@@ -397,15 +403,29 @@ app.get("/health", (_, res) => {
 
 // Dynamic invoice Flow endpoint. Disabled unless explicitly enabled; activation
 // requires an externally supplied private key and an application-specific owner resolver.
+let invoiceFlowTrigger = null;
 const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
   ? (() => {
     const draftRepository = createSupabaseInvoiceDraftRepository(supabase);
+    const cartService = createInvoiceCartService({ repository: draftRepository });
     const flowSessionService = createInvoiceFlowSessionService({
       repository: createSupabaseInvoiceFlowSessionRepository(supabase),
       draftRepository,
     });
+    invoiceFlowTrigger = createInvoiceFlowDraftTrigger({
+      enabled: INVOICE_FLOW_ENABLED,
+      recipients: INVOICE_FLOW_TEST_RECIPIENTS,
+      triggerText: INVOICE_FLOW_TEST_TRIGGER,
+      flowId: process.env.KADI_INVOICE_FLOW_ID,
+      flowMode: INVOICE_FLOW_MODE,
+      ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
+      cartService,
+      flowSessionService,
+      sendFlow,
+      sendText,
+    });
     return createInvoiceFlowEndpoint({
-      cartService: createInvoiceCartService({ repository: draftRepository }),
+      cartService,
       flowSessionService,
       cryptoConfig: {
         privateKey: process.env.KADI_FLOW_PRIVATE_KEY,
@@ -480,7 +500,7 @@ app.post(
           }
 
           if (value.messages?.length) {
-            handleIncomingMessage(value).catch((e) => {
+            handleIncomingMessage(value, { invoiceFlowTrigger }).catch((e) => {
               console.error("💥 handleIncomingMessage error:", e);
             });
           }

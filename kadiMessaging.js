@@ -9,6 +9,7 @@ const {
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
+  sendFlow,
 } = require("./whatsappApi");
 
 module.exports = {
@@ -20,4 +21,5 @@ module.exports = {
   downloadMediaToBuffer,
   uploadMediaBuffer,
   sendDocument,
+  sendFlow,
 };
