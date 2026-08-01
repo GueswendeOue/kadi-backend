@@ -32,15 +32,15 @@ function hasRoutingCycle(routingModel) {
   return Object.keys(routingModel).some(visit);
 }
 
-test("dynamic KADI_FACTURE_V1 declares four strictly forward-only screens", () => {
+test("dynamic KADI_FACTURE_V1 declares the editable review screen", () => {
   const flow = loadFlow();
   assert.equal(flow.version, "7.3");
   assert.equal(flow.data_api_version, "3.0");
-  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"]);
+  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DOCUMENT_ESTIMATE"]);
   assert.deepEqual(flow.routing_model, {
-    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["DOCUMENT_ESTIMATE"], DOCUMENT_ESTIMATE: [],
+    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["CLIENT", "ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"], DOCUMENT_ESTIMATE: [],
   });
-  assert.equal(hasRoutingCycle(flow.routing_model), false);
+  assert.equal(hasRoutingCycle(flow.routing_model), true);
   assert.equal(Object.hasOwn(flow.routing_model, "ARTICLE_DECISION"), false);
   assert.equal(flow.screens.some(({ id }) => id === "ARTICLE_DECISION"), false);
   assert.equal(flow.routing_model.ARTICLE_CART.includes("ARTICLE_CART"), false);
@@ -62,11 +62,11 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   const cartComponents = flatten(cart.layout.children);
   const cartFooters = cartComponents.filter(({ type }) => type === "Footer");
   assert.equal(cartFooters.length, 1);
-  assert.equal(cartFooters[0].label, "Continuer");
+  assert.equal(cartFooters[0].label, "Enregistrer l’article");
   assert.equal(cartFooters[0]["on-click-action"].name, "data_exchange");
   const decision = cartComponents.find(({ name }) => name === "article_decision");
   assert.equal(decision.required, true);
-  assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add", "finish"]);
+  assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add_another", "finish_items"]);
   assert.equal(cartComponents.some((component) => Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
@@ -76,7 +76,7 @@ test("all dynamic navigation is data_exchange and contains no phone-side totals"
   const flow = loadFlow();
   const source = fs.readFileSync(flowPath, "utf8");
   const footers = components(flow).filter(({ type }) => type === "Footer");
-  assert.deepEqual(footers.slice(0, -1).map((footer) => footer["on-click-action"].name), ["data_exchange", "data_exchange", "data_exchange"]);
+  assert.deepEqual(footers.slice(0, -1).map((footer) => footer["on-click-action"].name), ["data_exchange", "data_exchange", "data_exchange", "data_exchange"]);
   assert.equal(footers.at(-1)["on-click-action"].name, "complete");
   assert.doesNotMatch(source, /endpoint_uri|WHATSAPP_TOKEN|APP_SECRET|OPENAI_API_KEY|SUPABASE_SERVICE/i);
   for (const footer of footers) {
@@ -139,9 +139,14 @@ test("Flow labels and safe option defaults satisfy WhatsApp validation", () => {
   const optionComponents = flatten(options.layout.children);
   assert.equal(optionComponents.find(({ name }) => name === "payment_terms").label, "Conditions paiement");
   assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "tax_status"), "init-value"), false);
-  assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "add_stamp"), "init-value"), false);
+  assert.equal(optionComponents.some(({ name }) => name === "add_stamp"), false);
   assert.equal(optionComponents.find(({ name }) => name === "tax_status").required, false);
-  assert.equal(optionComponents.find(({ name }) => name === "add_stamp").required, false);
+});
+
+test("Flow MVP has no stamp or client-selectable issue date", () => {
+  const source = fs.readFileSync(flowPath, "utf8");
+  assert.doesNotMatch(source, /add_stamp|Ajouter le tampon|transaction_date|invoice_date|document_date|issued_at/);
+  assert.equal(loadFlow().screens.find(({ id }) => id === "REVIEW_INVOICE_DRAFT").title, "Vérifier la facture");
 });
 
 test("nfm_reply legacy parser remains available in parallel", () => {

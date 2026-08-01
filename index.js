@@ -27,6 +27,7 @@ const { createInvoiceCartService } = require("./kadiInvoiceCartService");
 const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepository");
 const { createInvoiceFlowSessionService, createSupabaseInvoiceFlowSessionRepository } = require("./kadiInvoiceFlowSession");
 const { createInvoiceFlowDraftTrigger } = require("./kadiInvoiceFlowDraftTrigger");
+const { createInvoiceFlowCompletionHandler } = require("./kadiInvoiceFlowCompletion");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
@@ -404,6 +405,7 @@ app.get("/health", (_, res) => {
 // Dynamic invoice Flow endpoint. Disabled unless explicitly enabled; activation
 // requires an externally supplied private key and an application-specific owner resolver.
 let invoiceFlowTrigger = null;
+let invoiceFlowCompletion = null;
 const invoiceFlowTriggerOptions = {
   enabled: INVOICE_FLOW_ENABLED,
   recipients: INVOICE_FLOW_TEST_RECIPIENTS,
@@ -429,6 +431,7 @@ const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
       sendFlow,
       sendText,
     });
+    invoiceFlowCompletion = createInvoiceFlowCompletionHandler({ flowSessionService, sendText });
     return createInvoiceFlowEndpoint({
       cartService,
       flowSessionService,
@@ -522,7 +525,7 @@ app.post(
           }
 
           if (value.messages?.length) {
-            handleIncomingMessage(value, { invoiceFlowTrigger }).catch((e) => {
+            handleIncomingMessage(value, { invoiceFlowTrigger, invoiceFlowCompletion }).catch((e) => {
               console.error("💥 handleIncomingMessage error:", e);
             });
           }

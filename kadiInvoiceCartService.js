@@ -63,7 +63,7 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     return concurrent ? { ok: true, value: concurrent, duplicate: true } : created;
   }
 
-  async function loadOwned(draftId, ownerRef, flowToken) {
+  async function loadOwned(draftId, ownerRef, flowToken, { allowConfirmed = false } = {}) {
     if (typeof draftId !== "string" || typeof ownerRef !== "string") return { ok: false, error: "DRAFT_ACCESS_DENIED" };
     const draft = await repository.get(draftId);
     if (!draft || draft.owner_ref !== ownerRef || draft.flow_token_ref !== flowTokenReference(flowToken)) {
@@ -76,17 +76,17 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     ) return { ok: false, error: "DRAFT_INVALID" };
     const expiry = Date.parse(draft.expires_at);
     if (!Number.isFinite(expiry) || expiry <= now()) return { ok: false, error: "DRAFT_EXPIRED" };
-    if (["cancelled", "expired", "confirmed"].includes(draft.status)) {
+    if (["cancelled", "expired"].includes(draft.status) || (draft.status === "confirmed" && !allowConfirmed)) {
       return { ok: false, error: "DRAFT_CLOSED" };
     }
     return { ok: true, value: draft };
   }
 
-  async function mutate({ draftId, ownerRef, flowToken, actionKey, apply }) {
+  async function mutate({ draftId, ownerRef, flowToken, actionKey, apply, allowConfirmed = false }) {
     if (typeof actionKey !== "string" || !actionKey.trim() || actionKey.length > 200) {
       return { ok: false, error: "ACTION_KEY_INVALID" };
     }
-    const loaded = await loadOwned(draftId, ownerRef, flowToken);
+    const loaded = await loadOwned(draftId, ownerRef, flowToken, { allowConfirmed });
     if (!loaded.ok) return loaded;
     const current = loaded.value;
     if (current.processed_action_keys.includes(actionKey)) {
@@ -101,7 +101,7 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     next.updated_at = new Date(now()).toISOString();
     const saved = await repository.save(next, current.version);
     if (saved.ok || saved.error !== "DRAFT_VERSION_CONFLICT") return saved;
-    const concurrent = await loadOwned(draftId, ownerRef, flowToken);
+    const concurrent = await loadOwned(draftId, ownerRef, flowToken, { allowConfirmed });
     if (concurrent.ok && concurrent.value.processed_action_keys.includes(actionKey)) {
       return { ok: true, value: concurrent.value, duplicate: true };
     }
@@ -151,7 +151,38 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     }});
   }
 
-  return Object.freeze({ addItem, createDraft, finishItems, loadOwned, setClient, setOptions, maxItems });
+  function updateItem({ itemIndex, ...args }) {
+    return mutate({ ...args, apply(draft) {
+      if (draft.status !== "collecting_items") return { ok: false, error: "DRAFT_STATE_INVALID" };
+      if (!Number.isSafeInteger(itemIndex) || itemIndex < 0 || itemIndex >= draft.items.length) return { ok: false, error: "ITEM_INDEX_INVALID" };
+      const normalized = normalizeInvoiceItem(args.item);
+      if (!normalized.ok) return normalized;
+      draft.items[itemIndex] = normalized.value;
+      return { ok: true };
+    }});
+  }
+
+  function deleteItem({ itemIndex, ...args }) {
+    return mutate({ ...args, apply(draft) {
+      if (draft.status !== "collecting_items") return { ok: false, error: "DRAFT_STATE_INVALID" };
+      if (!Number.isSafeInteger(itemIndex) || itemIndex < 0 || itemIndex >= draft.items.length) return { ok: false, error: "ITEM_INDEX_INVALID" };
+      draft.items.splice(itemIndex, 1);
+      if (draft.items.length === 0) draft.status = "collecting_items";
+      return { ok: true };
+    }});
+  }
+
+  function finalizeDraft(args) {
+    return mutate({ ...args, allowConfirmed: true, apply(draft) {
+      if (draft.status === "confirmed") return { ok: true };
+      if (draft.status !== "ready_for_quote") return { ok: false, error: "DRAFT_STATE_INVALID" };
+      draft.options = { ...(draft.options || {}), finalization: structuredClone(args.finalization) };
+      draft.status = "confirmed";
+      return { ok: true };
+    }});
+  }
+
+  return Object.freeze({ addItem, createDraft, deleteItem, finalizeDraft, finishItems, loadOwned, setClient, setOptions, updateItem, maxItems });
 }
 
 module.exports = { DRAFT_STATUSES, createInvoiceCartService, flowTokenReference };

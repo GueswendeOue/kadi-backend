@@ -47,6 +47,8 @@ const OPTION_FIELDS = Object.freeze([
 
 const ALLOWED_RESPONSE_FIELDS = Object.freeze([
   "flow_token",
+  "draft_id",
+  "review_action",
   ...CLIENT_FIELDS,
   ...ITEM_FIELDS,
   "has_more_items",

@@ -4,14 +4,15 @@
   "routing_model": {
     "CLIENT": ["ARTICLE_CART"],
     "ARTICLE_CART": ["OPTIONS"],
-    "OPTIONS": ["DOCUMENT_ESTIMATE"],
+    "OPTIONS": ["REVIEW_INVOICE_DRAFT"],
+    "REVIEW_INVOICE_DRAFT": ["CLIENT", "ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"],
     "DOCUMENT_ESTIMATE": []
   },
   "screens": [
     {
       "id": "CLIENT",
       "title": "Client",
-      "data": {"draft_id": {"type": "string", "__example__": "draft-example"}},
+      "data": {"draft_id": {"type": "string", "__example__": "draft-example"}, "return_to_review": {"type": "string", "__example__": "false"}, "client_type": {"type": "string", "__example__": "individual"}, "client_name": {"type": "string", "__example__": ""}, "client_phone": {"type": "string", "__example__": ""}, "client_address": {"type": "string", "__example__": ""}, "client_ifu": {"type": "string", "__example__": ""}, "client_registry_number": {"type": "string", "__example__": ""}, "invoice_subject": {"type": "string", "__example__": ""}},
       "layout": {
         "type": "SingleColumnLayout",
         "children": [{
@@ -19,14 +20,13 @@
           "name": "client_form",
           "children": [
             {"type": "RadioButtonsGroup", "name": "client_type", "label": "Type de client", "required": true, "data-source": [{"id": "individual", "title": "Particulier"}, {"id": "professional", "title": "Professionnel"}]},
-            {"type": "TextInput", "name": "client_name", "label": "Nom du client", "input-type": "text", "required": true},
-            {"type": "TextInput", "name": "client_phone", "label": "Téléphone", "input-type": "phone", "required": false},
-            {"type": "TextInput", "name": "client_address", "label": "Adresse", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "client_ifu", "label": "IFU", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "client_registry_number", "label": "RCCM ou registre", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "invoice_subject", "label": "Objet", "input-type": "text", "required": false},
-            {"type": "DatePicker", "name": "transaction_date", "label": "Date de vente", "required": false},
-            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_client", "draft_id": "${data.draft_id}", "client_type": "${form.client_type}", "client_name": "${form.client_name}", "client_phone": "${form.client_phone}", "client_address": "${form.client_address}", "client_ifu": "${form.client_ifu}", "client_registry_number": "${form.client_registry_number}", "invoice_subject": "${form.invoice_subject}", "transaction_date": "${form.transaction_date}"}}}
+            {"type": "TextInput", "name": "client_name", "label": "Nom du client", "input-type": "text", "required": true, "init-value": "${data.client_name}"},
+            {"type": "TextInput", "name": "client_phone", "label": "Téléphone", "input-type": "phone", "required": false, "init-value": "${data.client_phone}"},
+            {"type": "TextInput", "name": "client_address", "label": "Adresse", "input-type": "text", "required": false, "init-value": "${data.client_address}"},
+            {"type": "TextInput", "name": "client_ifu", "label": "IFU", "input-type": "text", "required": false, "init-value": "${data.client_ifu}"},
+            {"type": "TextInput", "name": "client_registry_number", "label": "RCCM ou registre", "input-type": "text", "required": false, "init-value": "${data.client_registry_number}"},
+            {"type": "TextInput", "name": "invoice_subject", "label": "Objet", "input-type": "text", "required": false, "init-value": "${data.invoice_subject}"},
+            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_client", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "client_type": "${form.client_type}", "client_name": "${form.client_name}", "client_phone": "${form.client_phone}", "client_address": "${form.client_address}", "client_ifu": "${form.client_ifu}", "client_registry_number": "${form.client_registry_number}", "invoice_subject": "${form.invoice_subject}"}}}
           ]
         }]
       }
@@ -37,7 +37,18 @@
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
         "item_count": {"type": "string", "__example__": "0"},
-        "items_summary": {"type": "string", "__example__": "Aucun article ajouté"},
+        "item_number_text": {"type": "string", "__example__": "Article 1"},
+        "current_item_id": {"type": "string", "__example__": "draft-example:item:1"},
+        "saved_item_count_text": {"type": "string", "__example__": "0 articles enregistrés"},
+        "saved_items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
+        "saved_subtotal_text": {"type": "string", "__example__": "0 FCFA"},
+        "item_description": {"type": "string", "__example__": ""},
+        "item_quantity": {"type": "string", "__example__": "1"},
+        "item_unit": {"type": "string", "__example__": ""},
+        "item_unit_price": {"type": "string", "__example__": ""},
+        "article_decision": {"type": "string", "__example__": ""},
+        "return_to_review": {"type": "string", "__example__": "false"},
+        "items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
         "provisional_subtotal": {"type": "string", "__example__": "0 FCFA"}
       },
       "layout": {
@@ -46,19 +57,20 @@
           "type": "Form",
           "name": "item_form",
           "children": [
-            {"type": "TextHeading", "text": "Articles ajoutés"},
+            {"type": "TextHeading", "text": "${data.item_number_text}"},
             {"type": "TextBody", "text": "Ajoutez les produits ou services à facturer."},
-            {"type": "TextBody", "text": "${data.item_count}"},
+            {"type": "TextSubheading", "text": "Articles déjà enregistrés"},
+            {"type": "TextBody", "text": "${data.saved_item_count_text}"},
             {"type": "TextSubheading", "text": "Résumé des articles"},
-            {"type": "TextBody", "text": "${data.items_summary}"},
+            {"type": "TextBody", "text": "${data.saved_items_summary}"},
             {"type": "TextSubheading", "text": "Sous-total provisoire"},
-            {"type": "TextBody", "text": "${data.provisional_subtotal}"},
+            {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
             {"type": "TextInput", "name": "item_description", "label": "Désignation", "input-type": "text", "required": true},
             {"type": "TextInput", "name": "item_quantity", "label": "Quantité", "input-type": "number", "required": true},
             {"type": "Dropdown", "name": "item_unit", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
             {"type": "TextInput", "name": "item_unit_price", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-            {"type": "RadioButtonsGroup", "name": "article_decision", "label": "Que souhaitez-vous faire ?", "required": true, "data-source": [{"id":"add","title":"Ajouter un autre article"},{"id":"finish","title":"Terminer les articles"}]},
-            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "description": "${form.item_description}", "quantity": "${form.item_quantity}", "unit": "${form.item_unit}", "unit_price": "${form.item_unit_price}", "decision": "${form.article_decision}"}}}
+            {"type": "RadioButtonsGroup", "name": "article_decision", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"Passer au résumé"}]},
+            {"type": "Footer", "label": "Enregistrer l’article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "current_item_id": "${data.current_item_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description}", "quantity": "${form.item_quantity}", "unit": "${form.item_unit}", "unit_price": "${form.item_unit_price}", "decision": "${form.article_decision}"}}}
           ]
         }]
       }
@@ -68,7 +80,14 @@
       "title": "Options",
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "string", "__example__": "0"}
+        "item_count": {"type": "string", "__example__": "0"},
+        "return_to_review": {"type": "string", "__example__": "false"},
+        "tax_status": {"type": "string", "__example__": "not_applicable"},
+        "tax_rate": {"type": "string", "__example__": ""},
+        "discount_amount": {"type": "string", "__example__": "0"},
+        "amount_paid": {"type": "string", "__example__": "0"},
+        "payment_terms": {"type": "string", "__example__": ""},
+        "note": {"type": "string", "__example__": ""}
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -77,18 +96,52 @@
           "name": "options_form",
           "children": [
             {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": false, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
-            {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
-            {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
-            {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
+            {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false, "init-value": "${data.tax_rate}"},
+            {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false, "init-value": "${data.discount_amount}"},
+            {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false, "init-value": "${data.amount_paid}"},
             {"type": "DatePicker", "name": "due_date", "label": "Date d'échéance", "required": false},
             {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
-            {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
+            {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false, "init-value": "${data.payment_terms}"},
             {"type": "TextArea", "name": "note", "label": "Note", "required": false},
-            {"type": "RadioButtonsGroup", "name": "add_stamp", "label": "Ajouter le tampon ?", "required": false, "data-source": [{"id":"no","title":"Non"},{"id":"yes","title":"Oui"}]},
-            {"type": "Footer", "label": "Estimer le document", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}", "add_stamp": "${form.add_stamp}"}}}
+            {"type": "Footer", "label": "Vérifier la facture", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}"}}}
           ]
         }]
       }
+    },
+    {
+      "id": "REVIEW_INVOICE_DRAFT",
+      "title": "Vérifier la facture",
+      "data": {
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "issuer_name": {"type": "string", "__example__": "Profil entreprise non renseigné"},
+        "client_type": {"type": "string", "__example__": "Particulier"},
+        "client_name": {"type": "string", "__example__": "Ben"},
+        "client_phone": {"type": "string", "__example__": "Non renseigné"},
+        "client_address": {"type": "string", "__example__": "Non renseignée"},
+        "items_summary": {"type": "string", "__example__": "1. Ordinateur — 1 × Unité × 150 000 FCFA = 150 000 FCFA"},
+        "subtotal_text": {"type": "string", "__example__": "150 000 FCFA"},
+        "discount_text": {"type": "string", "__example__": "0 FCFA"},
+        "tax_text": {"type": "string", "__example__": "Aucune taxe"},
+        "total_text": {"type": "string", "__example__": "150 000 FCFA"},
+        "page_count_text": {"type": "string", "__example__": "À calculer"},
+        "page_count_mode_text": {"type": "string", "__example__": "Mode de pagination non confirmé"},
+        "payment_terms": {"type": "string", "__example__": "Non renseignées"},
+        "note": {"type": "string", "__example__": "Aucune note"},
+        "due_date": {"type": "string", "__example__": "Aucune échéance"},
+        "credit_cost_text": {"type": "string", "__example__": "Aucun débit"},
+        "estimate_notice": {"type": "string", "__example__": "Aucun crédit n’a encore été débité."}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "review_form", "children": [
+        {"type": "TextHeading", "text": "Vérifier la facture"},
+        {"type": "TextSubheading", "text": "Émetteur"}, {"type": "TextBody", "text": "${data.issuer_name}"},
+        {"type": "TextSubheading", "text": "Client"}, {"type": "TextBody", "text": "${data.client_type}"}, {"type": "TextBody", "text": "${data.client_name}"}, {"type": "TextBody", "text": "${data.client_phone}"}, {"type": "TextBody", "text": "${data.client_address}"},
+        {"type": "TextSubheading", "text": "Articles et services"}, {"type": "TextBody", "text": "${data.items_summary}"},
+        {"type": "TextSubheading", "text": "Totaux"}, {"type": "TextBody", "text": "${data.subtotal_text}"}, {"type": "TextBody", "text": "${data.discount_text}"}, {"type": "TextBody", "text": "${data.tax_text}"}, {"type": "TextBody", "text": "${data.total_text}"}, {"type": "TextBody", "text": "${data.page_count_text}"}, {"type": "TextBody", "text": "${data.page_count_mode_text}"},
+        {"type": "TextSubheading", "text": "Informations complémentaires"}, {"type": "TextBody", "text": "${data.payment_terms}"}, {"type": "TextBody", "text": "${data.note}"}, {"type": "TextBody", "text": "${data.due_date}"},
+        {"type": "TextSubheading", "text": "Coût"}, {"type": "TextBody", "text": "${data.credit_cost_text}"}, {"type": "TextBody", "text": "${data.estimate_notice}"},
+        {"type": "RadioButtonsGroup", "name": "review_action", "label": "Que voulez-vous faire ?", "required": true, "data-source": [{"id":"modify_client","title":"Modifier le client"},{"id":"modify_items","title":"Modifier les articles"},{"id":"modify_options","title":"Modifier les options"},{"id":"confirm_generate","title":"Confirmer et générer"}]},
+        {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "review_action", "draft_id": "${data.draft_id}", "review_action": "${form.review_action}"}}}
+      ]}]}
     },
     {
       "id": "DOCUMENT_ESTIMATE",

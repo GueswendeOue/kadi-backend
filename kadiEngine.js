@@ -1325,6 +1325,10 @@ async function handleIncomingMessage(value, options = {}) {
         }
 
         if (msg.type !== "text") {
+          if (msg.type === "interactive" && options.invoiceFlowCompletion) {
+            const completionResult = await options.invoiceFlowCompletion({ from, message: msg, value, identity });
+            if (completionResult?.handled === true) return;
+          }
           const handledSupport = await safeHandleSupportIncomingMessage(from, msg);
           if (handledSupport) return;
         }

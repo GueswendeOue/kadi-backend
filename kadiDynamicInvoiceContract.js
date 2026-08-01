@@ -184,7 +184,7 @@ function normalizeOptions(input = {}) {
   if (!terms.ok || !note.ok) return fail("OPTION_TEXT_INVALID");
   if (!dueDate.ok) return dueDate;
   const addStamp = read(descriptors, "add_stamp");
-  if (addStamp !== "yes" && addStamp !== "no") return fail("STAMP_CHOICE_INVALID");
+  if (addStamp !== undefined && addStamp !== null && addStamp !== "" && addStamp !== "yes" && addStamp !== "no") return fail("STAMP_CHOICE_INVALID");
   return ok(Object.freeze({
     tax_status: taxStatus,
     tax_rate_basis_points: taxRateBasisPoints,
