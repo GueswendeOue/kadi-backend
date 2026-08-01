@@ -33,10 +33,10 @@
     },
     {
       "id": "ARTICLE_CART",
-      "title": "Panier facture",
+      "title": "Articles et services",
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "number", "__example__": 0},
+        "item_count": {"type": "string", "__example__": "0"},
         "items_summary": {"type": "string", "__example__": "Aucun article ajouté"},
         "provisional_subtotal": {"type": "string", "__example__": "0 FCFA"}
       },
@@ -47,8 +47,9 @@
           "name": "item_form",
           "children": [
             {"type": "TextHeading", "text": "Articles ajoutés"},
+            {"type": "TextBody", "text": "Ajoutez les produits ou services à facturer."},
             {"type": "TextBody", "text": "${data.item_count}"},
-            {"type": "TextSubheading", "text": "Résumé"},
+            {"type": "TextSubheading", "text": "Résumé des articles"},
             {"type": "TextBody", "text": "${data.items_summary}"},
             {"type": "TextSubheading", "text": "Sous-total provisoire"},
             {"type": "TextBody", "text": "${data.provisional_subtotal}"},
@@ -67,7 +68,7 @@
       "title": "Options",
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "number", "__example__": 1}
+        "item_count": {"type": "string", "__example__": "0"}
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -95,7 +96,7 @@
       "terminal": true,
       "success": true,
       "data": {
-        "item_count": {"type": "number", "__example__": 1},
+        "item_count": {"type": "string", "__example__": "0"},
         "page_count_text": {"type": "string", "__example__": "À calculer"},
         "credit_cost_text": {"type": "string", "__example__": "Aucun débit"},
         "amount_fcfa_text": {"type": "string", "__example__": "À confirmer"},

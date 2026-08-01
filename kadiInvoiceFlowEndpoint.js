@@ -27,6 +27,7 @@ function actionKey(body, suffix) {
 }
 
 function draftData(draft) {
+  const itemCount = draft.items.length;
   const subtotal = draft.items.reduce(
     (sum, item) => sum + ((BigInt(item.quantity_millis) * BigInt(item.unit_price) + 500n) / 1000n),
     0n
@@ -38,16 +39,17 @@ function draftData(draft) {
   const summaryPrefix = draft.items.length > recentItems.length ? "… · " : "";
   return {
     draft_id: draft.draft_id,
-    item_count: draft.items.length,
+    item_count: String(itemCount),
     items_summary: draft.items.length ? `${summaryPrefix}${recentItems.join(" · ")}`.slice(0, 240) : "Aucun article ajouté",
     provisional_subtotal: subtotalText,
   };
 }
 
 function estimateData(estimate, itemCount) {
+  const numericItemCount = Number.isSafeInteger(itemCount) && itemCount >= 0 ? itemCount : 0;
   const value = estimate?.ok === true ? estimate.value : estimate;
   if (!value) return {
-    item_count: itemCount,
+    item_count: String(numericItemCount),
     page_count_text: "À calculer",
     page_count_mode_text: "Renderer final non exécuté",
     credit_cost_text: "Aucun débit",
@@ -59,7 +61,7 @@ function estimateData(estimate, itemCount) {
     ? value.page_count
     : null;
   return {
-    item_count: itemCount,
+    item_count: String(numericItemCount),
     page_count_text: pageCount ? String(pageCount) : "À calculer",
     page_count_mode_text: value.page_count_mode === "final_renderer"
       ? "Comptage issu du renderer PDF Kadi final"
@@ -136,7 +138,8 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       }
       const finished = await cartService.finishItems({ ...common, actionKey: actionKey(body, `finish-items:${data.action_id || data.item_count}`) });
       if (!finished.ok) return { ok: false, status: 400, error: finished.error };
-      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: finished.value.items.length } }, stage: "action_data_exchange" };
+      const itemCount = finished.value.items.length;
+      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: String(itemCount) } }, stage: "action_data_exchange" };
     }
     if (data.intent === "save_options") {
       const options = {

@@ -94,6 +94,23 @@ test("screen data declarations have type-compatible examples", () => {
   }
 });
 
+test("Flow item_count data is string-typed with a string zero example", () => {
+  const flow = loadFlow();
+  for (const screenId of ["ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"]) {
+    const definition = flow.screens.find(({ id }) => id === screenId).data.item_count;
+    assert.equal(definition.type, "string");
+    assert.equal(definition.__example__, "0");
+  }
+});
+
+test("Flow visible article titles use the updated French UX copy", () => {
+  const cart = loadFlow().screens.find(({ id }) => id === "ARTICLE_CART");
+  assert.equal(cart.title, "Articles et services");
+  const texts = flatten(cart.layout.children).map((component) => component.text).filter(Boolean);
+  assert.ok(texts.includes("Ajoutez les produits ou services à facturer."));
+  assert.ok(texts.includes("Résumé des articles"));
+});
+
 test("dynamic data bindings are declared and use standalone references", () => {
   const flow = loadFlow();
   const declarations = new Map(flow.screens.map((screen) => [screen.id, new Set(Object.keys(screen.data || {}))]));

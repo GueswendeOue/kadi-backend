@@ -33,7 +33,8 @@ test("add returns a refreshed empty ARTICLE_CART summary and retry does not dupl
   const request = { action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "add" } };
   const added = await api.handle(request);
   assert.equal(added.value.screen, "ARTICLE_CART");
-  assert.equal(added.value.data.item_count, 1);
+  assert.equal(added.value.data.item_count, "1");
+  assert.equal(typeof added.value.data.item_count, "string");
   assert.match(added.value.data.items_summary, /1 × Service/);
   assert.equal(added.value.data.provisional_subtotal, "1 000 FCFA");
   assert.equal(added.value.data.item_description, undefined);
@@ -42,7 +43,7 @@ test("add returns a refreshed empty ARTICLE_CART summary and retry does not dupl
   assert.equal(added.value.data.item_unit_price, undefined);
   assert.equal(added.value.data.article_decision, undefined);
   const retried = await api.handle(request);
-  assert.equal(retried.value.data.item_count, 1);
+  assert.equal(retried.value.data.item_count, "1");
 });
 
 test("finish adds the last item once, advances to OPTIONS and rejects an empty submission", async () => {
@@ -53,10 +54,10 @@ test("finish adds the last item once, advances to OPTIONS and rejects an empty s
   const finishRequest = { action: "data_exchange", flow_token: "finish-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "finish" } };
   const finish = await api.handle(finishRequest);
   assert.equal(finish.value.screen, "OPTIONS");
-  assert.equal(finish.value.data.item_count, 1);
+  assert.equal(finish.value.data.item_count, "1");
   const retried = await api.handle(finishRequest);
   assert.equal(retried.value.screen, "OPTIONS");
-  assert.equal(retried.value.data.item_count, 1);
+  assert.equal(retried.value.data.item_count, "1");
 
   const emptyInit = await api.handle({ action: "INIT", flow_token: "empty-finish-token", version: "3.0" });
   await api.handle({ action: "data_exchange", flow_token: "empty-finish-token", version: "3.0", data: { intent: "save_client", draft_id: emptyInit.value.data.draft_id, client_type: "individual", client_name: "Awa" } });
@@ -110,6 +111,8 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
     intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Ben",
   } });
   assert.deepEqual(Object.keys(client.value.data).sort(), ["draft_id", "item_count", "items_summary", "provisional_subtotal"].sort());
+  assert.equal(client.value.data.item_count, "0");
+  assert.equal(typeof client.value.data.item_count, "string");
   const cart = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
     intent: "submit_article", draft_id: draftId, item_count: 0, description: "Ordinateur", quantity: 1, unit: "unit", unit_price: 50000, decision: "finish",
   } });
@@ -121,11 +124,30 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
   assert.equal(estimatedInvoice.tax_status, "not_applicable");
   assert.equal(estimatedInvoice.add_stamp, false);
   assert.deepEqual(estimate.value.data, {
-    item_count: 1,
+    item_count: "1",
     page_count_text: "1",
     page_count_mode_text: "Comptage issu du renderer PDF Kadi final",
     credit_cost_text: "0",
     amount_fcfa_text: "50000 FCFA",
     estimate_notice: "Estimation locale uniquement : aucun débit et aucun envoi PDF.",
   });
+});
+
+test("Flow item_count remains a string for two internal numeric items", async () => {
+  const api = endpoint();
+  const init = await api.handle({ action: "INIT", flow_token: "two-items-token" });
+  const draftId = init.value.data.draft_id;
+  await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: {
+    intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Ben",
+  } });
+  const first = await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: {
+    intent: "submit_article", draft_id: draftId, item_count: 0, description: "Ordinateur", quantity: 1, unit: "unit", unit_price: 50000, decision: "add",
+  } });
+  assert.equal(first.value.data.item_count, "1");
+  const second = await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: {
+    intent: "submit_article", draft_id: draftId, item_count: 1, description: "Souris", quantity: 1, unit: "piece", unit_price: 5000, decision: "finish",
+  } });
+  assert.equal(second.value.screen, "OPTIONS");
+  assert.equal(second.value.data.item_count, "2");
+  assert.equal(typeof second.value.data.item_count, "string");
 });
