@@ -70,6 +70,11 @@ function estimateData(estimate, itemCount) {
   };
 }
 
+function normalizeOptionValue(value, fallback) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || fallback;
+}
+
 function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, estimateDocument, cryptoConfig = null } = {}) {
   if (!cartService || (typeof ownerResolver !== "function" && typeof flowSessionService?.resolveInvoiceFlowSession !== "function")) throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
 
@@ -134,7 +139,17 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: finished.value.items.length } }, stage: "action_data_exchange" };
     }
     if (data.intent === "save_options") {
-      const options = { tax_status: data.tax_status, tax_rate: data.tax_rate, discount_amount: data.discount_amount, amount_paid: data.amount_paid, due_date: data.due_date, payment_method: data.payment_method, payment_terms: data.payment_terms, note: data.note, add_stamp: data.add_stamp };
+      const options = {
+        tax_status: normalizeOptionValue(data.tax_status, "not_applicable"),
+        tax_rate: data.tax_rate,
+        discount_amount: data.discount_amount,
+        amount_paid: data.amount_paid,
+        due_date: data.due_date,
+        payment_method: data.payment_method,
+        payment_terms: data.payment_terms,
+        note: data.note,
+        add_stamp: normalizeOptionValue(data.add_stamp, "no"),
+      };
       const updated = await cartService.setOptions({ ...common, actionKey: actionKey(body, "options"), options });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
       const submission = {

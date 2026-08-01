@@ -75,7 +75,7 @@
           "type": "Form",
           "name": "options_form",
           "children": [
-            {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": true, "init-value": "not_applicable", "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
+            {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": false, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
             {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
             {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
             {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
@@ -83,7 +83,7 @@
             {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
             {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
             {"type": "TextArea", "name": "note", "label": "Note", "required": false},
-            {"type": "RadioButtonsGroup", "name": "add_stamp", "label": "Ajouter le tampon ?", "required": true, "init-value": "no", "data-source": [{"id":"no","title":"Non"},{"id":"yes","title":"Oui"}]},
+            {"type": "RadioButtonsGroup", "name": "add_stamp", "label": "Ajouter le tampon ?", "required": false, "data-source": [{"id":"no","title":"Non"},{"id":"yes","title":"Oui"}]},
             {"type": "Footer", "label": "Estimer le document", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}", "add_stamp": "${form.add_stamp}"}}}
           ]
         }]

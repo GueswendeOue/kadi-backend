@@ -102,7 +102,8 @@ test("endpoint preserves client metadata and reports a side-effect-free final-re
 });
 
 test("synthetic Ben invoice path returns complete bound data with empty optional options", async () => {
-  const api = endpoint({ estimateDocument: async () => ({ page_count: 1, page_count_mode: "final_renderer", credit_cost: 0, amount_fcfa: 50000 }) });
+  let estimatedInvoice = null;
+  const api = endpoint({ estimateDocument: async (invoice) => { estimatedInvoice = invoice; return { page_count: 1, page_count_mode: "final_renderer", credit_cost: 0, amount_fcfa: 50000 }; } });
   const init = await api.handle({ action: "INIT", flow_token: "journey-token" });
   const draftId = init.value.data.draft_id;
   const client = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
@@ -114,9 +115,11 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
   } });
   assert.equal(cart.value.screen, "OPTIONS");
   const estimate = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
-    intent: "save_options", draft_id: draftId, tax_status: "not_applicable", add_stamp: "no",
+    intent: "save_options", draft_id: draftId,
   } });
   assert.equal(estimate.value.screen, "DOCUMENT_ESTIMATE");
+  assert.equal(estimatedInvoice.tax_status, "not_applicable");
+  assert.equal(estimatedInvoice.add_stamp, false);
   assert.deepEqual(estimate.value.data, {
     item_count: 1,
     page_count_text: "1",

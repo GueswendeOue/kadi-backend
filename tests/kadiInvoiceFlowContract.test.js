@@ -69,7 +69,7 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add", "finish"]);
   assert.equal(cartComponents.some((component) => Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
-  assert.equal(all.filter((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")).length, 2);
+  assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {
@@ -121,8 +121,10 @@ test("Flow labels and safe option defaults satisfy WhatsApp validation", () => {
   const options = flow.screens.find(({ id }) => id === "OPTIONS");
   const optionComponents = flatten(options.layout.children);
   assert.equal(optionComponents.find(({ name }) => name === "payment_terms").label, "Conditions paiement");
-  assert.equal(optionComponents.find(({ name }) => name === "tax_status")["init-value"], "not_applicable");
-  assert.equal(optionComponents.find(({ name }) => name === "add_stamp")["init-value"], "no");
+  assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "tax_status"), "init-value"), false);
+  assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "add_stamp"), "init-value"), false);
+  assert.equal(optionComponents.find(({ name }) => name === "tax_status").required, false);
+  assert.equal(optionComponents.find(({ name }) => name === "add_stamp").required, false);
 });
 
 test("nfm_reply legacy parser remains available in parallel", () => {
