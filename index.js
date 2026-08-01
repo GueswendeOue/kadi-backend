@@ -21,6 +21,11 @@ const {
 } = require("./kadiEngine");
 
 const { sendText } = require("./kadiMessaging");
+const { createInvoiceFlowEndpoint } = require("./kadiInvoiceFlowEndpoint");
+const { createInvoiceCartService } = require("./kadiInvoiceCartService");
+const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepository");
+const { createInvoiceFlowSessionService, createSupabaseInvoiceFlowSessionRepository } = require("./kadiInvoiceFlowSession");
+const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
 const {
@@ -125,6 +130,8 @@ const WEEKLY_REPORT_HOUR = Number(process.env.KADI_WEEKLY_REPORT_HOUR || 9);
 const WEEKLY_REPORT_MINUTE = Number(process.env.KADI_WEEKLY_REPORT_MINUTE || 0);
 
 const KADI_ADMIN_WA = process.env.KADI_ADMIN_WA || "";
+
+const INVOICE_FLOW_ENABLED = envEnabled(process.env.KADI_INVOICE_FLOW_ENABLED);
 
 // ===============================
 // WEEKLY REPORT CONTROL
@@ -386,6 +393,32 @@ app.get("/health", (_, res) => {
     ok: true,
     ts: new Date().toISOString(),
   });
+});
+
+// Dynamic invoice Flow endpoint. Disabled unless explicitly enabled; activation
+// requires an externally supplied private key and an application-specific owner resolver.
+const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
+  ? (() => {
+    const draftRepository = createSupabaseInvoiceDraftRepository(supabase);
+    const flowSessionService = createInvoiceFlowSessionService({
+      repository: createSupabaseInvoiceFlowSessionRepository(supabase),
+      draftRepository,
+    });
+    return createInvoiceFlowEndpoint({
+      cartService: createInvoiceCartService({ repository: draftRepository }),
+      flowSessionService,
+      cryptoConfig: {
+        privateKey: process.env.KADI_FLOW_PRIVATE_KEY,
+        passphrase: process.env.KADI_FLOW_PRIVATE_KEY_PASSPHRASE,
+      },
+    });
+  })()
+  : { handleEncryptedRaw: async () => ({ ok: false, status: 404, error: "FLOW_ENDPOINT_DISABLED" }) };
+mountInvoiceFlowRoute(app, {
+  endpoint: invoiceFlowEndpoint,
+  enabled: INVOICE_FLOW_ENABLED,
+  path: FLOW_ENDPOINT_PATH,
+  production: process.env.NODE_ENV === "production",
 });
 
 app.get(
