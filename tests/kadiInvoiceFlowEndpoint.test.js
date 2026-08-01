@@ -100,3 +100,32 @@ test("endpoint preserves client metadata and reports a side-effect-free final-re
   assert.equal(estimateData({ debit_performed: true }, 1), null);
   assert.equal(estimateData({ sent: true }, 1), null);
 });
+
+test("synthetic Ben invoice path returns complete bound data with empty optional options", async () => {
+  let estimatedInvoice = null;
+  const api = endpoint({ estimateDocument: async (invoice) => { estimatedInvoice = invoice; return { page_count: 1, page_count_mode: "final_renderer", credit_cost: 0, amount_fcfa: 50000 }; } });
+  const init = await api.handle({ action: "INIT", flow_token: "journey-token" });
+  const draftId = init.value.data.draft_id;
+  const client = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
+    intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Ben",
+  } });
+  assert.deepEqual(Object.keys(client.value.data).sort(), ["draft_id", "item_count", "items_summary", "provisional_subtotal"].sort());
+  const cart = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
+    intent: "submit_article", draft_id: draftId, item_count: 0, description: "Ordinateur", quantity: 1, unit: "unit", unit_price: 50000, decision: "finish",
+  } });
+  assert.equal(cart.value.screen, "OPTIONS");
+  const estimate = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
+    intent: "save_options", draft_id: draftId,
+  } });
+  assert.equal(estimate.value.screen, "DOCUMENT_ESTIMATE");
+  assert.equal(estimatedInvoice.tax_status, "not_applicable");
+  assert.equal(estimatedInvoice.add_stamp, false);
+  assert.deepEqual(estimate.value.data, {
+    item_count: 1,
+    page_count_text: "1",
+    page_count_mode_text: "Comptage issu du renderer PDF Kadi final",
+    credit_cost_text: "0",
+    amount_fcfa_text: "50000 FCFA",
+    estimate_notice: "Estimation locale uniquement : aucun débit et aucun envoi PDF.",
+  });
+});

@@ -94,6 +94,39 @@ test("screen data declarations have type-compatible examples", () => {
   }
 });
 
+test("dynamic data bindings are declared and use standalone references", () => {
+  const flow = loadFlow();
+  const declarations = new Map(flow.screens.map((screen) => [screen.id, new Set(Object.keys(screen.data || {}))]));
+  const reference = /^\$\{data\.([A-Za-z_][A-Za-z0-9_]*)\}$/;
+  const dynamic = /\$\{data\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  for (const screen of flow.screens) {
+    for (const component of flatten(screen.layout.children)) {
+      for (const value of Object.values(component)) {
+        if (typeof value !== "string") continue;
+        for (const match of value.matchAll(dynamic)) {
+          assert.ok(reference.test(value), `${screen.id} mixes static text with ${match[0]}`);
+          assert.ok(declarations.get(screen.id).has(match[1]), `${screen.id}.${match[1]}`);
+        }
+      }
+    }
+  }
+});
+
+test("Flow labels and safe option defaults satisfy WhatsApp validation", () => {
+  const flow = loadFlow();
+  const components = flow.screens.flatMap((screen) => flatten(screen.layout.children));
+  for (const component of components.filter(({ type }) => type === "TextInput")) {
+    assert.ok(component.label.length <= 20, component.name);
+  }
+  const options = flow.screens.find(({ id }) => id === "OPTIONS");
+  const optionComponents = flatten(options.layout.children);
+  assert.equal(optionComponents.find(({ name }) => name === "payment_terms").label, "Conditions paiement");
+  assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "tax_status"), "init-value"), false);
+  assert.equal(Object.hasOwn(optionComponents.find(({ name }) => name === "add_stamp"), "init-value"), false);
+  assert.equal(optionComponents.find(({ name }) => name === "tax_status").required, false);
+  assert.equal(optionComponents.find(({ name }) => name === "add_stamp").required, false);
+});
+
 test("nfm_reply legacy parser remains available in parallel", () => {
   const payload = { client_type: "individual", client_name: "Awa", item_1_designation: "Service", item_1_quantity: 1, item_1_unit: "service", item_1_unit_price: 1000, tax_status: "not_applicable", discount_amount: 0, amount_paid: 0, add_stamp: "no" };
   const message = { type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: JSON.stringify(payload) } } };

@@ -76,6 +76,7 @@ function createInvoiceFlowHttpHandler({ endpoint, enabled = false, production = 
         https: req.secure || forwardedProto === "https",
         requestId,
         logger,
+        cryptoLogger: (id, fields) => console.log("KADI_FLOW_CRYPTO", { request_id: id, ...fields }),
       });
       if (!result.ok) {
         logger(requestId, { stage: "failed", status_code: result.status || 400, error_code: result.error || "FLOW_REQUEST_FAILED" });

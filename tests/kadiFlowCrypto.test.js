@@ -24,6 +24,35 @@ test("synthetic Meta envelope decrypts and response verifies with flipped IV", (
   const decipher = crypto.createDecipheriv("aes-128-gcm", f.key, flipIv(f.iv));
   decipher.setAuthTag(bytes.subarray(-16));
   assert.deepEqual(JSON.parse(Buffer.concat([decipher.update(bytes.subarray(0, -16)), decipher.final()])), { data: { status: "active" } });
+  assert.equal(typeof encrypted.value, "string");
+  assert.equal(encrypted.value.length % 4, 0);
+  assert.match(encrypted.value, /^[A-Za-z0-9+/]+={0,2}$/);
+  assert.ok((encrypted.value.match(/=+$/) || [""])[0].length <= 2);
+});
+
+test("response encryption uses the exact per-request AES and flipped IV", () => {
+  const logs = [];
+  const keyA = crypto.randomBytes(16);
+  const ivA = crypto.randomBytes(16);
+  const keyB = crypto.randomBytes(16);
+  const ivB = crypto.randomBytes(16);
+  const response = { screen: "ARTICLE_CART", data: { item_count: 1 } };
+  const first = encryptFlowResponse(response, { aesKey: keyA, initialVector: ivA, requestId: "a", logger: (_id, fields) => logs.push(fields) });
+  const second = encryptFlowResponse({ error_msg: "invalid" }, { aesKey: keyB, initialVector: ivB, requestId: "b", logger: (_id, fields) => logs.push(fields) });
+  for (const [encrypted, key, iv, expected] of [[first, keyA, ivA, response], [second, keyB, ivB, { error_msg: "invalid" }]]) {
+    assert.equal(encrypted.ok, true);
+    const bytes = Buffer.from(encrypted.value, "base64");
+    assert.equal(bytes.length >= 16, true);
+    const decipher = crypto.createDecipheriv("aes-128-gcm", key, flipIv(iv));
+    decipher.setAuthTag(bytes.subarray(-16));
+    const clear = Buffer.concat([decipher.update(bytes.subarray(0, -16)), decipher.final()]);
+    assert.deepEqual(JSON.parse(clear.toString("utf8")), expected);
+  }
+  assert.deepEqual(logs.map((entry) => [entry.aes_key_bytes, entry.request_iv_bytes, entry.response_iv_bytes, entry.auth_tag_bytes]), [[16, 16, 16, 16], [16, 16, 16, 16]]);
+});
+
+test("IV flipping is bytewise bitwise-NOT and not a reused context", () => {
+  assert.deepEqual([...flipIv(Buffer.from([0x00, 0x01, 0x7f, 0x80, 0xff]))], [0xff, 0xfe, 0x80, 0x7f, 0x00]);
 });
 
 test("missing key, oversized and malformed requests fail closed", () => {
