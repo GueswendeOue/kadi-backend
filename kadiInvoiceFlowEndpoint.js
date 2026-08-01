@@ -76,16 +76,17 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
   async function handle(decryptedBody, requestContext = {}) {
     const body = safeRecord(decryptedBody);
     if (!body || !ACTIONS.has(body.action)) return { ok: false, status: 400, error: "FLOW_REQUEST_INVALID" };
-    if (body.action === "ping") return { ok: true, value: { data: { status: "active" } } };
+    if (body.action === "ping") return { ok: true, value: { data: { status: "active" } }, stage: "action_ping" };
     if (typeof body.flow_token !== "string") return { ok: false, status: 400, error: "FLOW_TOKEN_INVALID" };
 
     let ownerRef = null;
     let sessionDraftId = null;
     if (flowSessionService) {
       const session = await flowSessionService.resolveInvoiceFlowSession(body.flow_token);
-      if (!session.ok) return { ok: false, status: 403, error: session.error };
+      if (!session.ok) return { ok: false, status: 427, error: session.error };
       ownerRef = session.value.ownerRef;
       sessionDraftId = session.value.draftId;
+      requestContext.logger?.(requestContext.requestId, { stage: "flow_session_valid", status_code: 0 });
     } else {
       ownerRef = await ownerResolver(requestContext);
       if (typeof ownerRef !== "string" || !ownerRef) return { ok: false, status: 403, error: "FLOW_CONTEXT_INVALID" };
@@ -96,7 +97,7 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
         ? await cartService.loadOwned(sessionDraftId, ownerRef, body.flow_token)
         : await cartService.createDraft({ ownerRef, flowToken: body.flow_token });
       if (!created.ok) return { ok: false, status: 400, error: created.error };
-      return { ok: true, value: { screen: "CLIENT", data: { draft_id: created.value.draft_id } }, draft: created.value };
+      return { ok: true, value: { screen: "CLIENT", data: { draft_id: created.value.draft_id } }, draft: created.value, stage: "action_init" };
     }
 
     const data = safeRecord(body.data);
@@ -116,7 +117,7 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       };
       const updated = await cartService.setClient({ ...common, actionKey: actionKey(body, `client:${common.draftId}`), client });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) } };
+      return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) }, stage: "action_data_exchange" };
     }
     if (data.intent === "submit_article") {
       if (data.decision !== "add" && data.decision !== "finish") {
@@ -126,11 +127,11 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       const updated = await cartService.addItem({ ...common, actionKey: actionKey(body, `item:${data.action_id || data.item_count}`), item });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
       if (data.decision === "add") {
-        return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) } };
+        return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) }, stage: "action_data_exchange" };
       }
       const finished = await cartService.finishItems({ ...common, actionKey: actionKey(body, `finish-items:${data.action_id || data.item_count}`) });
       if (!finished.ok) return { ok: false, status: 400, error: finished.error };
-      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: finished.value.items.length } } };
+      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: finished.value.items.length } }, stage: "action_data_exchange" };
     }
     if (data.intent === "save_options") {
       const options = { tax_status: data.tax_status, tax_rate: data.tax_rate, discount_amount: data.discount_amount, amount_paid: data.amount_paid, due_date: data.due_date, payment_method: data.payment_method, payment_terms: data.payment_terms, note: data.note, add_stamp: data.add_stamp };
@@ -151,7 +152,7 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       const estimate = typeof estimateDocument === "function" ? await estimateDocument(calculated.value) : null;
       const estimateScreenData = estimateData(estimate, updated.value.items.length);
       if (!estimateScreenData) return { ok: false, status: 500, error: "ESTIMATE_SIDE_EFFECT_FORBIDDEN" };
-      return { ok: true, value: { screen: "DOCUMENT_ESTIMATE", data: estimateScreenData } };
+      return { ok: true, value: { screen: "DOCUMENT_ESTIMATE", data: estimateScreenData }, stage: "action_data_exchange" };
     }
     return { ok: false, status: 400, error: "FLOW_DATA_INVALID" };
   }
@@ -161,12 +162,18 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       return { ok: false, status: 400, error: "FLOW_HTTPS_REQUIRED" };
     }
     const decrypted = decryptFlowRequest(envelope, cryptoConfig || {});
-    if (!decrypted.ok) return { ok: false, status: 421, error: decrypted.error };
+    if (!decrypted.ok) return { ok: false, status: decrypted.error === "FLOW_PRIVATE_KEY_MISMATCH" ? 421 : 400, error: decrypted.error };
+    requestContext.logger?.(requestContext.requestId, { stage: "decrypt_valid", status_code: 0 });
     const response = await handle(decrypted.value, requestContext);
-    if (!response.ok) return response;
-    const encrypted = encryptFlowResponse(response.value, decrypted.context);
+    requestContext.logger?.(requestContext.requestId, { stage: response.stage || "action_data_exchange", status_code: response.ok ? 0 : response.status || 400, error_code: response.ok ? undefined : response.error });
+    const payload = response.ok ? response.value : { error_msg: "Le formulaire n’est plus disponible." };
+    const encrypted = encryptFlowResponse(payload, decrypted.context);
+    if (encrypted.ok) {
+      requestContext.logger?.(requestContext.requestId, { stage: response.ok ? "business_response_ready" : "failed", status_code: response.ok ? 0 : response.status || 427, error_code: response.ok ? undefined : response.error });
+      requestContext.logger?.(requestContext.requestId, { stage: "response_encrypted", status_code: response.ok ? 200 : response.status || 427 });
+    }
     return encrypted.ok
-      ? { ok: true, status: 200, content_type: "text/plain", value: encrypted.value }
+      ? { ok: true, status: response.ok ? 200 : response.status || 427, content_type: "text/plain", value: encrypted.value, error: response.ok ? undefined : response.error }
       : { ok: false, status: 500, error: encrypted.error };
   }
 

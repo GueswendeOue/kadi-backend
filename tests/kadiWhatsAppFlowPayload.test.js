@@ -32,7 +32,7 @@ test("draft payload follows the current interactive Flow message contract", () =
   assert.equal(parameters.mode, "draft");
   assert.equal(parameters.flow_action, "navigate");
   assert.equal(parameters.flow_action_payload.screen, "CLIENT");
-  assert.equal(parameters.flow_cta, "Remplir la facture");
+    assert.equal(parameters.flow_cta, "Ouvrir le formulaire");
   assert.equal(parameters.flow_id, validArgs.flowId);
   assert.equal(parameters.flow_token, validArgs.flowToken);
 });
