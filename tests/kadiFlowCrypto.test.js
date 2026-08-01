@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { MAX_ENVELOPE_BYTES, decryptFlowRequest, encryptFlowResponse, flipIv, parseEncryptedEnvelopeJson } = require("../kadiFlowCrypto");
+const { MAX_ENVELOPE_BYTES, decryptFlowRequest, encryptFlowResponse, flipIv, parseEncryptedEnvelopeJson, verifyFlowRequestSignature } = require("../kadiFlowCrypto");
 
 function fixture(payload) {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });
@@ -33,4 +33,14 @@ test("missing key, oversized and malformed requests fail closed", () => {
   assert.equal(parseEncryptedEnvelopeJson("{").ok, false);
   assert.equal(parseEncryptedEnvelopeJson("x".repeat(MAX_ENVELOPE_BYTES + 1)).error, "FLOW_REQUEST_TOO_LARGE");
   assert.equal(parseEncryptedEnvelopeJson("[]").ok, false);
+});
+
+test("Flow signature uses the exact raw body and fails closed for malformed lengths", () => {
+  const body = '{"encrypted_aes_key":"a","encrypted_flow_data":"b","initial_vector":"c"}';
+  const secret = "synthetic-app-secret";
+  const digest = crypto.createHmac("sha256", secret).update(body).digest("hex");
+  assert.equal(verifyFlowRequestSignature(body, `sha256=${digest}`, secret), true);
+  assert.equal(verifyFlowRequestSignature(body, "sha256=00", secret), false);
+  assert.equal(verifyFlowRequestSignature(body, undefined, secret), false);
+  assert.equal(verifyFlowRequestSignature(body, `sha256=${digest}`, ""), false);
 });

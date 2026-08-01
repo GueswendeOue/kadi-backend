@@ -439,6 +439,14 @@ mountInvoiceFlowRoute(app, {
   enabled: INVOICE_FLOW_ENABLED,
   path: FLOW_ENDPOINT_PATH,
   production: process.env.NODE_ENV === "production",
+  appSecret: process.env.APP_SECRET,
+});
+console.log("KADI_FLOW_ENDPOINT_READY", {
+  enabled: INVOICE_FLOW_ENABLED,
+  path: FLOW_ENDPOINT_PATH,
+  private_key: process.env.KADI_FLOW_PRIVATE_KEY ? "SET" : "MISSING",
+  passphrase: process.env.KADI_FLOW_PRIVATE_KEY_PASSPHRASE ? "SET" : "MISSING",
+  app_secret: process.env.APP_SECRET ? "SET" : "MISSING",
 });
 
 app.get(

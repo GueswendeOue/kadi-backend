@@ -12,7 +12,7 @@ Cette fondation locale n'est reliée ni au webhook actif, ni au portefeuille, ni
 - Le buffer reste en mémoire : aucun débit, aucun envoi, aucune entrée d'historique et aucun artefact temporaire. Le résultat interdit explicitement tout débit de production dans cette fondation.
 - La politique tarifaire doit toujours être injectée explicitement.
 
-Variables documentées : `KADI_INVOICE_FLOW_ENABLED`, `KADI_INVOICE_FLOW_ID`, `KADI_INVOICE_FLOW_MODE`, `KADI_INVOICE_FLOW_ENDPOINT_URL`, `KADI_INVOICE_FLOW_ENDPOINT_PATH`, `KADI_INVOICE_MAX_ITEMS`, `KADI_FLOW_PRIVATE_KEY`, `KADI_FLOW_PRIVATE_KEY_PASSPHRASE`.
+Variables documentées : `KADI_INVOICE_FLOW_ENABLED`, `KADI_INVOICE_FLOW_ID`, `KADI_INVOICE_FLOW_MODE`, `KADI_INVOICE_FLOW_ENDPOINT_URL`, `KADI_INVOICE_FLOW_ENDPOINT_PATH`, `KADI_INVOICE_FLOW_TEST_RECIPIENTS`, `KADI_INVOICE_FLOW_TEST_TRIGGER`, `KADI_INVOICE_FLOW_SESSION_TTL_MINUTES`, `KADI_INVOICE_MAX_ITEMS`, `KADI_FLOW_PRIVATE_KEY`, `KADI_FLOW_PRIVATE_KEY_PASSPHRASE`.
 
 La route HTTP locale est `POST /data_exchange` (modifiable uniquement via `KADI_INVOICE_FLOW_ENDPOINT_PATH`) et reste désactivée tant que `KADI_INVOICE_FLOW_ENABLED` n'est pas explicitement `true`.
 

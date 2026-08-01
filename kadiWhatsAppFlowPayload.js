@@ -45,7 +45,7 @@ function buildDraftInvoiceFlowMessage(args) {
           flow_message_version: FLOW_MESSAGE_VERSION,
           flow_token: flowToken,
           flow_id: flowId,
-          flow_cta: "Remplir la facture",
+          flow_cta: "Ouvrir le formulaire",
           flow_action: "navigate",
           flow_action_payload: { screen: "CLIENT" },
         },
