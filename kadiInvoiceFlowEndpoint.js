@@ -161,7 +161,10 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
     if (requestContext.production === true && requestContext.https !== true) {
       return { ok: false, status: 400, error: "FLOW_HTTPS_REQUIRED" };
     }
-    const decrypted = decryptFlowRequest(envelope, cryptoConfig || {});
+    const decrypted = decryptFlowRequest(envelope, cryptoConfig || {}, {
+      requestId: requestContext.requestId,
+      logger: requestContext.cryptoLogger,
+    });
     if (!decrypted.ok) return { ok: false, status: decrypted.error === "FLOW_PRIVATE_KEY_MISMATCH" ? 421 : 400, error: decrypted.error };
     requestContext.logger?.(requestContext.requestId, { stage: "decrypt_valid", status_code: 0 });
     const response = await handle(decrypted.value, requestContext);

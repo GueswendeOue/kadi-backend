@@ -45,10 +45,12 @@ function decodeBase64(value, maximum) {
 }
 
 function flipIv(iv) {
-  return Buffer.from(iv, (byte) => byte ^ 0xff);
+  const flippedIv = [];
+  for (const pair of iv.entries()) flippedIv.push(~pair[1]);
+  return Buffer.from(flippedIv);
 }
 
-function decryptFlowRequest(envelope, { privateKey, passphrase } = {}) {
+function decryptFlowRequest(envelope, { privateKey, passphrase } = {}, { requestId = null, logger = null } = {}) {
   try {
     if (!envelope || Object.getPrototypeOf(envelope) !== Object.prototype || typeof privateKey !== "string" || !privateKey) {
       return { ok: false, error: "FLOW_CRYPTO_UNAVAILABLE" };
@@ -72,7 +74,7 @@ function decryptFlowRequest(envelope, { privateKey, passphrase } = {}) {
     decipher.setAuthTag(encryptedData.subarray(-TAG_LENGTH));
     const clear = Buffer.concat([decipher.update(encryptedData.subarray(0, -TAG_LENGTH)), decipher.final()]);
     if (clear.length > MAX_ENVELOPE_BYTES) return { ok: false, error: "FLOW_REQUEST_TOO_LARGE" };
-    return { ok: true, value: JSON.parse(clear.toString("utf8")), context: { aesKey: key, initialVector: iv } };
+    return { ok: true, value: JSON.parse(clear.toString("utf8")), context: { aesKey: key, initialVector: iv, requestId, logger } };
   } catch {
     return { ok: false, error: "FLOW_DECRYPT_FAILED" };
   }
@@ -87,7 +89,18 @@ function encryptFlowResponse(response, context) {
     if (clear.length > MAX_ENVELOPE_BYTES) return { ok: false, error: "FLOW_RESPONSE_TOO_LARGE" };
     const cipher = crypto.createCipheriv("aes-128-gcm", context.aesKey, flipIv(context.initialVector));
     const encrypted = Buffer.concat([cipher.update(clear), cipher.final(), cipher.getAuthTag()]);
-    return { ok: true, value: encrypted.toString("base64") };
+    const value = encrypted.toString("base64");
+    context.logger?.(context.requestId, {
+      stage: "response_encrypted",
+      aes_key_bytes: context.aesKey.length,
+      request_iv_bytes: context.initialVector.length,
+      response_iv_bytes: flipIv(context.initialVector).length,
+      auth_tag_bytes: TAG_LENGTH,
+      encrypted_payload_bytes: encrypted.length,
+      base64_length: value.length,
+      base64_padding_count: (value.match(/=+$/) || [""])[0].length,
+    });
+    return { ok: true, value };
   } catch {
     return { ok: false, error: "FLOW_ENCRYPT_FAILED" };
   }
