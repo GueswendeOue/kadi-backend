@@ -28,6 +28,13 @@ function createInMemoryInvoiceDraftRepository() {
       drafts.set(draft.draft_id, clone(draft));
       return { ok: true, value: clone(draft) };
     },
+    async bindFlowToken(draftId, ownerRef, flowTokenRef) {
+      const current = drafts.get(draftId);
+      if (!current || current.owner_ref !== ownerRef) return { ok: false, error: "DRAFT_ACCESS_DENIED" };
+      current.flow_token_ref = flowTokenRef;
+      drafts.set(draftId, clone(current));
+      return { ok: true, value: clone(current) };
+    },
   });
 }
 
@@ -67,6 +74,16 @@ function createSupabaseInvoiceDraftRepository(client) {
         .maybeSingle();
       if (error) return { ok: false, error: "DRAFT_SAVE_FAILED" };
       return data ? { ok: true, value: data } : { ok: false, error: "DRAFT_VERSION_CONFLICT" };
+    },
+    async bindFlowToken(draftId, ownerRef, flowTokenRef) {
+      const { data, error } = await client
+        .from("kadi_invoice_flow_drafts")
+        .update({ flow_token_ref: flowTokenRef })
+        .eq("draft_id", draftId)
+        .eq("owner_ref", ownerRef)
+        .select()
+        .maybeSingle();
+      return error || !data ? { ok: false, error: "DRAFT_ACCESS_DENIED" } : { ok: true, value: data };
     },
   });
 }

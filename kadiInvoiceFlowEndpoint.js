@@ -70,26 +70,38 @@ function estimateData(estimate, itemCount) {
   };
 }
 
-function createInvoiceFlowEndpoint({ cartService, ownerResolver, issuerResolver = null, estimateDocument, cryptoConfig = null } = {}) {
-  if (!cartService || typeof ownerResolver !== "function") throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
+function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, estimateDocument, cryptoConfig = null } = {}) {
+  if (!cartService || (typeof ownerResolver !== "function" && typeof flowSessionService?.resolveInvoiceFlowSession !== "function")) throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
 
   async function handle(decryptedBody, requestContext = {}) {
     const body = safeRecord(decryptedBody);
     if (!body || !ACTIONS.has(body.action)) return { ok: false, status: 400, error: "FLOW_REQUEST_INVALID" };
     if (body.action === "ping") return { ok: true, value: { data: { status: "active" } } };
-    const ownerRef = await ownerResolver(requestContext);
-    if (typeof ownerRef !== "string" || !ownerRef) return { ok: false, status: 403, error: "FLOW_CONTEXT_INVALID" };
     if (typeof body.flow_token !== "string") return { ok: false, status: 400, error: "FLOW_TOKEN_INVALID" };
 
+    let ownerRef = null;
+    let sessionDraftId = null;
+    if (flowSessionService) {
+      const session = await flowSessionService.resolveInvoiceFlowSession(body.flow_token);
+      if (!session.ok) return { ok: false, status: 403, error: session.error };
+      ownerRef = session.value.ownerRef;
+      sessionDraftId = session.value.draftId;
+    } else {
+      ownerRef = await ownerResolver(requestContext);
+      if (typeof ownerRef !== "string" || !ownerRef) return { ok: false, status: 403, error: "FLOW_CONTEXT_INVALID" };
+    }
+
     if (body.action === "INIT") {
-      const created = await cartService.createDraft({ ownerRef, flowToken: body.flow_token });
+      const created = sessionDraftId
+        ? await cartService.loadOwned(sessionDraftId, ownerRef, body.flow_token)
+        : await cartService.createDraft({ ownerRef, flowToken: body.flow_token });
       if (!created.ok) return { ok: false, status: 400, error: created.error };
       return { ok: true, value: { screen: "CLIENT", data: { draft_id: created.value.draft_id } }, draft: created.value };
     }
 
     const data = safeRecord(body.data);
     if (!data || !INTENTS.has(data.intent)) return { ok: false, status: 400, error: "FLOW_DATA_INVALID" };
-    const common = { draftId: data.draft_id, ownerRef, flowToken: body.flow_token };
+    const common = { draftId: sessionDraftId || data.draft_id, ownerRef, flowToken: body.flow_token };
 
     if (data.intent === "save_client") {
       const client = {
@@ -102,7 +114,7 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver, issuerResolver 
         invoice_subject: data.invoice_subject,
         transaction_date: data.transaction_date,
       };
-      const updated = await cartService.setClient({ ...common, actionKey: actionKey(body, `client:${data.draft_id}`), client });
+      const updated = await cartService.setClient({ ...common, actionKey: actionKey(body, `client:${common.draftId}`), client });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
       return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) } };
     }
