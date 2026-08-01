@@ -6,13 +6,14 @@ const { flowTokenReference } = require("./kadiInvoiceCartService");
 const FLOW_TOKEN_BYTES = 32;
 const FLOW_TOKEN_MAX_LENGTH = 256;
 const ACTIVE_STATUS = "active";
+const FLOW_TOKEN_PATTERN = /^kadi_invoice_v1:[a-f0-9]{32}:[0-9]{10,13}$/;
 
 function hashFlowToken(token) {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
 }
 
 function validFlowToken(token) {
-  return typeof token === "string" && token.length >= 32 && token.length <= FLOW_TOKEN_MAX_LENGTH && /^[A-Za-z0-9_-]+$/.test(token);
+  return typeof token === "string" && token.length <= FLOW_TOKEN_MAX_LENGTH && FLOW_TOKEN_PATTERN.test(token);
 }
 
 function createInMemoryInvoiceFlowSessionRepository() {
@@ -65,7 +66,7 @@ function createInvoiceFlowSessionService({ repository, draftRepository = null, n
     }
     const expiry = Date.parse(expiresAt);
     if (!Number.isFinite(expiry) || expiry <= now()) return { ok: false, error: "FLOW_SESSION_EXPIRY_INVALID" };
-    const flowToken = crypto.randomBytes(FLOW_TOKEN_BYTES).toString("base64url");
+    const flowToken = `kadi_invoice_v1:${crypto.randomBytes(16).toString("hex")}:${now()}`;
     const session = {
       flow_token_hash: hashFlowToken(flowToken),
       owner_ref: ownerRef.trim(),

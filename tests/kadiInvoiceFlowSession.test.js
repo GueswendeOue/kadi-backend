@@ -8,18 +8,19 @@ const { createInMemoryInvoiceDraftRepository } = require("../kadiInvoiceDraftRep
 const { createInMemoryInvoiceFlowSessionRepository, createInvoiceFlowSessionService } = require("../kadiInvoiceFlowSession");
 
 async function fixture() {
+  let clock = Date.now();
   const draftRepository = createInMemoryInvoiceDraftRepository();
   const cartService = createInvoiceCartService({ repository: draftRepository });
-  const flowSessionService = createInvoiceFlowSessionService({ repository: createInMemoryInvoiceFlowSessionRepository(), draftRepository });
+  const flowSessionService = createInvoiceFlowSessionService({ repository: createInMemoryInvoiceFlowSessionRepository(), draftRepository, now: () => clock });
   const draft = await cartService.createDraft({ ownerRef: "owner-a", flowToken: "initial-synthetic-token" });
-  const session = await flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: draft.value.draft_id, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const session = await flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: draft.value.draft_id, expiresAt: new Date(clock + 60_000).toISOString() });
   const endpoint = createInvoiceFlowEndpoint({ cartService, flowSessionService });
-  return { cartService, flowSessionService, draft: draft.value, session: session.value, endpoint };
+  return { cartService, flowSessionService, draft: draft.value, session: session.value, endpoint, advance(ms) { clock += ms; } };
 }
 
 test("creates an opaque session without PII and binds owner and draft", async () => {
   const f = await fixture();
-  assert.match(f.session.flow_token, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(f.session.flow_token, /^kadi_invoice_v1:[a-f0-9]{32}:[0-9]{10,13}$/);
   assert.equal(f.session.flow_token.includes("owner-a"), false);
   const resolved = await f.flowSessionService.resolveInvoiceFlowSession(f.session.flow_token);
   assert.deepEqual(resolved.value, { ownerRef: "owner-a", draftId: f.draft.draft_id, flowTokenHash: f.session.flow_token_hash });
@@ -38,11 +39,11 @@ test("valid data_exchange resolves identity from token and ignores client draft 
 
 test("unknown, malformed, expired and revoked tokens fail closed", async () => {
   const f = await fixture();
-  assert.equal((await f.endpoint.handle({ action: "INIT", flow_token: "unknown-token-value-12345678901234567890" })).error, "FLOW_TOKEN_UNKNOWN");
+  assert.equal((await f.endpoint.handle({ action: "INIT", flow_token: "kadi_invoice_v1:00000000000000000000000000000000:1735689600000" })).error, "FLOW_TOKEN_UNKNOWN");
   assert.equal((await f.endpoint.handle({ action: "INIT", flow_token: "!" })).error, "FLOW_TOKEN_INVALID");
 
-  const expired = await f.flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: f.draft.draft_id, expiresAt: new Date(Date.now() + 1).toISOString() });
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  const expired = await f.flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: f.draft.draft_id, expiresAt: new Date(Date.now() + 1_000).toISOString() });
+  f.advance(2_000);
   assert.equal((await f.flowSessionService.resolveInvoiceFlowSession(expired.value.flow_token)).error, "FLOW_TOKEN_EXPIRED");
 
   assert.equal((await f.flowSessionService.revokeInvoiceFlowSession(f.session.flow_token)).ok, true);
