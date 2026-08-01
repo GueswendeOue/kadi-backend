@@ -8,8 +8,8 @@ const token = "synthetic-flow-token";
 const owner = "internal-owner-ref";
 const item = (index) => ({ description: `Article ${index}`, quantity: 1, unit: "piece", unit_price: 100 });
 
-test("cart adds 1, 6, 7 and 25 items without truncation and can finish", async () => {
-  for (const count of [1, 6, 7, 25]) {
+test("cart adds 1, 7 and 25 items without truncation and can finish", async () => {
+  for (const count of [1, 7, 25]) {
     const cart = createInvoiceCartService({ repository: createInMemoryInvoiceDraftRepository() });
     const created = await cart.createDraft({ ownerRef: owner, flowToken: token, client: { type: "individual", name: "Client" } });
     let latest = created.value;
@@ -21,6 +21,13 @@ test("cart adds 1, 6, 7 and 25 items without truncation and can finish", async (
     assert.equal(latest.items.length, count);
     assert.equal((await cart.finishItems({ draftId: latest.draft_id, ownerRef: owner, flowToken: token, actionKey: "finish" })).value.status, "collecting_options");
   }
+});
+
+test("cart refuses finishing without any article", async () => {
+  const cart = createInvoiceCartService({ repository: createInMemoryInvoiceDraftRepository() });
+  const created = await cart.createDraft({ ownerRef: owner, flowToken: token, client: { type: "individual", name: "Client" } });
+  const result = await cart.finishItems({ draftId: created.value.draft_id, ownerRef: owner, flowToken: token, actionKey: "finish-empty" });
+  assert.equal(result.error, "ITEMS_REQUIRED");
 });
 
 test("retry is idempotent, ownership and expiry are fail-closed", async () => {

@@ -2,9 +2,8 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "CLIENT": ["ARTICLE"],
-    "ARTICLE": ["ARTICLE_DECISION"],
-    "ARTICLE_DECISION": ["ARTICLE", "OPTIONS"],
+    "CLIENT": ["ARTICLE_CART"],
+    "ARTICLE_CART": ["OPTIONS"],
     "OPTIONS": ["DOCUMENT_ESTIMATE"],
     "DOCUMENT_ESTIMATE": []
   },
@@ -33,11 +32,13 @@
       }
     },
     {
-      "id": "ARTICLE",
-      "title": "Ajouter un article",
+      "id": "ARTICLE_CART",
+      "title": "Panier facture",
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "number", "__example__": 0}
+        "item_count": {"type": "number", "__example__": 0},
+        "items_summary": {"type": "string", "__example__": "Aucun article ajouté"},
+        "provisional_subtotal": {"type": "string", "__example__": "0 FCFA"}
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -45,35 +46,15 @@
           "type": "Form",
           "name": "item_form",
           "children": [
+            {"type": "TextHeading", "text": "${data.item_count} article(s) ajouté(s)"},
+            {"type": "TextBody", "text": "Résumé : ${data.items_summary}"},
+            {"type": "TextBody", "text": "Sous-total provisoire : ${data.provisional_subtotal}"},
             {"type": "TextInput", "name": "item_description", "label": "Désignation", "input-type": "text", "required": true},
             {"type": "TextInput", "name": "item_quantity", "label": "Quantité", "input-type": "number", "required": true},
             {"type": "Dropdown", "name": "item_unit", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
             {"type": "TextInput", "name": "item_unit_price", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-            {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "add_item", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "description": "${form.item_description}", "quantity": "${form.item_quantity}", "unit": "${form.item_unit}", "unit_price": "${form.item_unit_price}"}}}
-          ]
-        }]
-      }
-    },
-    {
-      "id": "ARTICLE_DECISION",
-      "title": "Articles",
-      "data": {
-        "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "number", "__example__": 1},
-        "last_item_summary": {"type": "string", "__example__": "1 × Article"},
-        "provisional_subtotal": {"type": "string", "__example__": "1 000 FCFA"}
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [{
-          "type": "Form",
-          "name": "decision_form",
-          "children": [
-            {"type": "TextHeading", "text": "${data.item_count} article(s) ajouté(s)"},
-            {"type": "TextBody", "text": "Dernier : ${data.last_item_summary}"},
-            {"type": "TextBody", "text": "Sous-total provisoire : ${data.provisional_subtotal}"},
             {"type": "RadioButtonsGroup", "name": "article_decision", "label": "Que souhaitez-vous faire ?", "required": true, "data-source": [{"id":"add","title":"Ajouter un autre article"},{"id":"finish","title":"Terminer les articles"}]},
-            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "decide_articles", "draft_id": "${data.draft_id}", "decision": "${form.article_decision}"}}}
+            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "description": "${form.item_description}", "quantity": "${form.item_quantity}", "unit": "${form.item_unit}", "unit_price": "${form.item_unit_price}", "decision": "${form.article_decision}"}}}
           ]
         }]
       }

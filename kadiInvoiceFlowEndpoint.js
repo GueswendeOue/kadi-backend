@@ -6,7 +6,7 @@ const { decryptFlowRequest, encryptFlowResponse, parseEncryptedEnvelopeJson } = 
 const { flowTokenReference } = require("./kadiInvoiceCartService");
 
 const ACTIONS = new Set(["ping", "INIT", "data_exchange"]);
-const INTENTS = new Set(["save_client", "add_item", "decide_articles", "save_options"]);
+const INTENTS = new Set(["save_client", "submit_article", "save_options"]);
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function safeRecord(value) {
@@ -27,7 +27,6 @@ function actionKey(body, suffix) {
 }
 
 function draftData(draft) {
-  const last = draft.items.at(-1);
   const subtotal = draft.items.reduce(
     (sum, item) => sum + ((BigInt(item.quantity_millis) * BigInt(item.unit_price) + 500n) / 1000n),
     0n
@@ -35,10 +34,12 @@ function draftData(draft) {
   const subtotalText = subtotal <= BigInt(Number.MAX_SAFE_INTEGER)
     ? `${Number(subtotal).toLocaleString("fr-FR")} FCFA`
     : "À calculer";
+  const recentItems = draft.items.slice(-3).map((item) => `${item.quantity} × ${item.description}`);
+  const summaryPrefix = draft.items.length > recentItems.length ? "… · " : "";
   return {
     draft_id: draft.draft_id,
     item_count: draft.items.length,
-    last_item_summary: last ? `${last.quantity} × ${last.description}`.slice(0, 120) : "",
+    items_summary: draft.items.length ? `${summaryPrefix}${recentItems.join(" · ")}`.slice(0, 240) : "Aucun article ajouté",
     provisional_subtotal: subtotalText,
   };
 }
@@ -103,24 +104,21 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver, issuerResolver 
       };
       const updated = await cartService.setClient({ ...common, actionKey: actionKey(body, `client:${data.draft_id}`), client });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      return { ok: true, value: { screen: "ARTICLE", data: { draft_id: updated.value.draft_id, item_count: updated.value.items.length } } };
+      return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) } };
     }
-    if (data.intent === "add_item") {
+    if (data.intent === "submit_article") {
+      if (data.decision !== "add" && data.decision !== "finish") {
+        return { ok: false, status: 400, error: "ARTICLE_ACTION_INVALID" };
+      }
       const item = { description: data.description, quantity: data.quantity, unit: data.unit, unit_price: data.unit_price };
       const updated = await cartService.addItem({ ...common, actionKey: actionKey(body, `item:${data.action_id || data.item_count}`), item });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      return { ok: true, value: { screen: "ARTICLE_DECISION", data: draftData(updated.value) } };
-    }
-    if (data.intent === "decide_articles") {
       if (data.decision === "add") {
-        const loaded = await cartService.loadOwned(common.draftId, ownerRef, body.flow_token);
-        if (!loaded.ok) return { ok: false, status: 400, error: loaded.error };
-        return { ok: true, value: { screen: "ARTICLE", data: { draft_id: loaded.value.draft_id, item_count: loaded.value.items.length } } };
+        return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(updated.value) } };
       }
-      if (data.decision !== "finish") return { ok: false, status: 400, error: "ARTICLE_DECISION_INVALID" };
-      const updated = await cartService.finishItems({ ...common, actionKey: actionKey(body, "finish-items") });
-      if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: updated.value.draft_id, item_count: updated.value.items.length } } };
+      const finished = await cartService.finishItems({ ...common, actionKey: actionKey(body, `finish-items:${data.action_id || data.item_count}`) });
+      if (!finished.ok) return { ok: false, status: 400, error: finished.error };
+      return { ok: true, value: { screen: "OPTIONS", data: { draft_id: finished.value.draft_id, item_count: finished.value.items.length } } };
     }
     if (data.intent === "save_options") {
       const options = { tax_status: data.tax_status, tax_rate: data.tax_rate, discount_amount: data.discount_amount, amount_paid: data.amount_paid, due_date: data.due_date, payment_method: data.payment_method, payment_terms: data.payment_terms, note: data.note, add_stamp: data.add_stamp };

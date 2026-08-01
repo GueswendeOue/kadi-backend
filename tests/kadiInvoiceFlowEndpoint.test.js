@@ -24,18 +24,44 @@ test("endpoint supports official ping and INIT without a network server", async 
   assert.equal(typeof init.value.data.draft_id, "string");
 });
 
-test("endpoint adds one item, returns an empty ARTICLE form and can finish", async () => {
+test("add returns a refreshed empty ARTICLE_CART summary and retry does not duplicate", async () => {
   const api = endpoint();
   const init = await api.handle({ action: "INIT", flow_token: "synthetic-token", version: "3.0" });
   const draftId = init.value.data.draft_id;
   const client = await api.handle({ action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Awa" } });
-  assert.equal(client.value.screen, "ARTICLE");
-  const added = await api.handle({ action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "add_item", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000 } });
-  assert.equal(added.value.screen, "ARTICLE_DECISION");
-  const again = await api.handle({ action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "decide_articles", draft_id: draftId, decision: "add" } });
-  assert.deepEqual(again.value.data, { draft_id: draftId, item_count: 1 });
-  const finish = await api.handle({ action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "decide_articles", draft_id: draftId, decision: "finish" } });
+  assert.equal(client.value.screen, "ARTICLE_CART");
+  const request = { action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "add" } };
+  const added = await api.handle(request);
+  assert.equal(added.value.screen, "ARTICLE_CART");
+  assert.equal(added.value.data.item_count, 1);
+  assert.match(added.value.data.items_summary, /1 × Service/);
+  assert.equal(added.value.data.provisional_subtotal, "1 000 FCFA");
+  assert.equal(added.value.data.item_description, undefined);
+  assert.equal(added.value.data.item_quantity, undefined);
+  assert.equal(added.value.data.item_unit, undefined);
+  assert.equal(added.value.data.item_unit_price, undefined);
+  assert.equal(added.value.data.article_decision, undefined);
+  const retried = await api.handle(request);
+  assert.equal(retried.value.data.item_count, 1);
+});
+
+test("finish adds the last item once, advances to OPTIONS and rejects an empty submission", async () => {
+  const api = endpoint();
+  const init = await api.handle({ action: "INIT", flow_token: "finish-token", version: "3.0" });
+  const draftId = init.value.data.draft_id;
+  await api.handle({ action: "data_exchange", flow_token: "finish-token", version: "3.0", data: { intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Awa" } });
+  const finishRequest = { action: "data_exchange", flow_token: "finish-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "finish" } };
+  const finish = await api.handle(finishRequest);
   assert.equal(finish.value.screen, "OPTIONS");
+  assert.equal(finish.value.data.item_count, 1);
+  const retried = await api.handle(finishRequest);
+  assert.equal(retried.value.screen, "OPTIONS");
+  assert.equal(retried.value.data.item_count, 1);
+
+  const emptyInit = await api.handle({ action: "INIT", flow_token: "empty-finish-token", version: "3.0" });
+  await api.handle({ action: "data_exchange", flow_token: "empty-finish-token", version: "3.0", data: { intent: "save_client", draft_id: emptyInit.value.data.draft_id, client_type: "individual", client_name: "Awa" } });
+  const emptyFinish = await api.handle({ action: "data_exchange", flow_token: "empty-finish-token", version: "3.0", data: { intent: "submit_article", draft_id: emptyInit.value.data.draft_id, item_count: 0, decision: "finish" } });
+  assert.equal(emptyFinish.ok, false);
 });
 
 test("endpoint rejects malformed roots, dangerous keys and foreign context", async () => {
@@ -61,10 +87,7 @@ test("endpoint preserves client metadata and reports a side-effect-free final-re
     invoice_subject: "Conseil", transaction_date: "2026-07-31",
   } });
   await api.handle({ action: "data_exchange", flow_token: "metadata-token", version: "3.0", data: {
-    intent: "add_item", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000,
-  } });
-  await api.handle({ action: "data_exchange", flow_token: "metadata-token", version: "3.0", data: {
-    intent: "decide_articles", draft_id: draftId, decision: "finish",
+    intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "finish",
   } });
   const result = await api.handle({ action: "data_exchange", flow_token: "metadata-token", version: "3.0", data: {
     intent: "save_options", draft_id: draftId, tax_status: "not_applicable", discount_amount: 0,
