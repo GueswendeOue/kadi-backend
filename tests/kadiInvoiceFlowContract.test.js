@@ -69,7 +69,7 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add", "finish"]);
   assert.equal(cartComponents.some((component) => Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
-  assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
+  assert.equal(all.filter((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")).length, 2);
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {
@@ -92,6 +92,37 @@ test("screen data declarations have type-compatible examples", () => {
       if (definition.type === "number") assert.equal(Number.isFinite(definition.__example__), true);
     }
   }
+});
+
+test("dynamic data bindings are declared and use standalone references", () => {
+  const flow = loadFlow();
+  const declarations = new Map(flow.screens.map((screen) => [screen.id, new Set(Object.keys(screen.data || {}))]));
+  const reference = /^\$\{data\.([A-Za-z_][A-Za-z0-9_]*)\}$/;
+  const dynamic = /\$\{data\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  for (const screen of flow.screens) {
+    for (const component of flatten(screen.layout.children)) {
+      for (const value of Object.values(component)) {
+        if (typeof value !== "string") continue;
+        for (const match of value.matchAll(dynamic)) {
+          assert.ok(reference.test(value), `${screen.id} mixes static text with ${match[0]}`);
+          assert.ok(declarations.get(screen.id).has(match[1]), `${screen.id}.${match[1]}`);
+        }
+      }
+    }
+  }
+});
+
+test("Flow labels and safe option defaults satisfy WhatsApp validation", () => {
+  const flow = loadFlow();
+  const components = flow.screens.flatMap((screen) => flatten(screen.layout.children));
+  for (const component of components.filter(({ type }) => type === "TextInput")) {
+    assert.ok(component.label.length <= 20, component.name);
+  }
+  const options = flow.screens.find(({ id }) => id === "OPTIONS");
+  const optionComponents = flatten(options.layout.children);
+  assert.equal(optionComponents.find(({ name }) => name === "payment_terms").label, "Conditions paiement");
+  assert.equal(optionComponents.find(({ name }) => name === "tax_status")["init-value"], "not_applicable");
+  assert.equal(optionComponents.find(({ name }) => name === "add_stamp")["init-value"], "no");
 });
 
 test("nfm_reply legacy parser remains available in parallel", () => {

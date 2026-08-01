@@ -46,9 +46,12 @@
           "type": "Form",
           "name": "item_form",
           "children": [
-            {"type": "TextHeading", "text": "${data.item_count} article(s) ajouté(s)"},
-            {"type": "TextBody", "text": "Résumé : ${data.items_summary}"},
-            {"type": "TextBody", "text": "Sous-total provisoire : ${data.provisional_subtotal}"},
+            {"type": "TextHeading", "text": "Articles ajoutés"},
+            {"type": "TextBody", "text": "${data.item_count}"},
+            {"type": "TextSubheading", "text": "Résumé"},
+            {"type": "TextBody", "text": "${data.items_summary}"},
+            {"type": "TextSubheading", "text": "Sous-total provisoire"},
+            {"type": "TextBody", "text": "${data.provisional_subtotal}"},
             {"type": "TextInput", "name": "item_description", "label": "Désignation", "input-type": "text", "required": true},
             {"type": "TextInput", "name": "item_quantity", "label": "Quantité", "input-type": "number", "required": true},
             {"type": "Dropdown", "name": "item_unit", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
@@ -72,15 +75,15 @@
           "type": "Form",
           "name": "options_form",
           "children": [
-            {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": true, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
+            {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": true, "init-value": "not_applicable", "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
             {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
             {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
             {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
             {"type": "DatePicker", "name": "due_date", "label": "Date d'échéance", "required": false},
             {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
-            {"type": "TextInput", "name": "payment_terms", "label": "Conditions de paiement", "input-type": "text", "required": false},
+            {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
             {"type": "TextArea", "name": "note", "label": "Note", "required": false},
-            {"type": "RadioButtonsGroup", "name": "add_stamp", "label": "Ajouter le tampon ?", "required": true, "data-source": [{"id":"no","title":"Non"},{"id":"yes","title":"Oui"}]},
+            {"type": "RadioButtonsGroup", "name": "add_stamp", "label": "Ajouter le tampon ?", "required": true, "init-value": "no", "data-source": [{"id":"no","title":"Non"},{"id":"yes","title":"Oui"}]},
             {"type": "Footer", "label": "Estimer le document", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}", "add_stamp": "${form.add_stamp}"}}}
           ]
         }]
@@ -106,11 +109,16 @@
           "name": "estimate_form",
           "children": [
             {"type":"TextHeading","text":"Votre estimation"},
-            {"type":"TextBody","text":"Articles : ${data.item_count}"},
-            {"type":"TextBody","text":"Pages : ${data.page_count_text}"},
-            {"type":"TextBody","text":"Source : ${data.page_count_mode_text}"},
-            {"type":"TextBody","text":"Crédits proposés : ${data.credit_cost_text}"},
-            {"type":"TextBody","text":"Montant : ${data.amount_fcfa_text}"},
+            {"type":"TextSubheading","text":"Articles"},
+            {"type":"TextBody","text":"${data.item_count}"},
+            {"type":"TextSubheading","text":"Pages"},
+            {"type":"TextBody","text":"${data.page_count_text}"},
+            {"type":"TextSubheading","text":"Source"},
+            {"type":"TextBody","text":"${data.page_count_mode_text}"},
+            {"type":"TextSubheading","text":"Crédits proposés"},
+            {"type":"TextBody","text":"${data.credit_cost_text}"},
+            {"type":"TextSubheading","text":"Montant"},
+            {"type":"TextBody","text":"${data.amount_fcfa_text}"},
             {"type":"TextBody","text":"${data.estimate_notice}"},
             {"type":"Footer","label":"Retourner dans WhatsApp","on-click-action":{"name":"complete","payload":{"status":"estimate_ready"}}}
           ]
