@@ -13,19 +13,22 @@ function readTrackedSource(relativePath) {
 
 test("index uses the fail-closed webhook verification boundary without a literal fallback", () => {
   const source = readTrackedSource("index.js");
+  const receiverSource = readTrackedSource("kadiFlowMonitoringWebhook.js");
   const hasDirectRead = /const\s+VERIFY_TOKEN\s*=\s*process\.env\.VERIFY_TOKEN\s*;/.test(
     source
   );
   const hasFallback = /process\.env\.VERIFY_TOKEN\s*(?:\|\||\?\?)/.test(source);
   const usesBoundary = /evaluateWebhookVerification\s*\(\s*\{/.test(source);
   const keepsPostWebhook = /app\.post\s*\(\s*["']\/webhook["']/.test(source);
-  const keepsAck = source.includes("EVENT_RECEIVED");
+  const usesWebhookReceiver = /createWhatsAppWebhookReceiver\s*\(\s*\{/.test(source);
+  const keepsAck = receiverSource.includes('res.status(200).send("EVENT_RECEIVED")');
   const keepsHealth = /app\.get\s*\(\s*["']\/health["']/.test(source);
 
   assert.equal(hasDirectRead, true);
   assert.equal(hasFallback, false);
   assert.equal(usesBoundary, true);
   assert.equal(keepsPostWebhook, true);
+  assert.equal(usesWebhookReceiver, true);
   assert.equal(keepsAck, true);
   assert.equal(keepsHealth, true);
 });

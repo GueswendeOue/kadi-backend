@@ -28,6 +28,7 @@ const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepo
 const { createInvoiceFlowSessionService, createSupabaseInvoiceFlowSessionRepository } = require("./kadiInvoiceFlowSession");
 const { createInvoiceFlowDraftTrigger } = require("./kadiInvoiceFlowDraftTrigger");
 const { createInvoiceFlowCompletionHandler } = require("./kadiInvoiceFlowCompletion");
+const { createWhatsAppWebhookReceiver } = require("./kadiFlowMonitoringWebhook");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
@@ -504,37 +505,14 @@ app.post(
       verifyRequestSignature(req, res, buf);
     },
   }),
-  (req, res) => {
-    res.status(200).send("EVENT_RECEIVED");
-
-    try {
-      const body = req.body;
-      if (body.object !== "whatsapp_business_account") return;
-
-      for (const entry of body.entry || []) {
-        for (const change of entry.changes || []) {
-          const value = change.value;
-          if (!value) continue;
-
-          const statuses = extractStatusesFromWebhookValue(value);
-
-          if (statuses.length) {
-            handleIncomingStatuses(statuses).catch((e) => {
-              console.error("💥 handleIncomingStatuses error:", e);
-            });
-          }
-
-          if (value.messages?.length) {
-            handleIncomingMessage(value, { invoiceFlowTrigger, invoiceFlowCompletion }).catch((e) => {
-              console.error("💥 handleIncomingMessage error:", e);
-            });
-          }
-        }
-      }
-    } catch (e) {
-      console.error("💥 Webhook fatal error:", e);
-    }
-  }
+  createWhatsAppWebhookReceiver({
+    extractStatusesFromWebhookValue,
+    handleIncomingStatuses,
+    handleIncomingMessage,
+    invoiceFlowTrigger,
+    invoiceFlowCompletion,
+    logger: console,
+  })
 );
 
 // ===============================
