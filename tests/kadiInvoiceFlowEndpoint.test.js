@@ -40,28 +40,34 @@ test("terminal estimate bindings stay safe when business values are absent", () 
   }
 });
 
-test("add returns a refreshed empty ARTICLE_CART summary and retry does not duplicate", async () => {
+test("add returns Article 2 with Form reset values while preserving the first item summary", async () => {
   const api = endpoint();
   const init = await api.handle({ action: "INIT", flow_token: "synthetic-token", version: "3.0" });
   const draftId = init.value.data.draft_id;
   const client = await api.handle({ action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Awa" } });
   assert.equal(client.value.screen, "ARTICLE_CART");
-  const request = { action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Service", quantity: 1, unit: "piece", unit_price: 1000, decision: "add" } };
+  const request = { action: "data_exchange", flow_token: "synthetic-token", version: "3.0", data: { intent: "submit_article", draft_id: draftId, item_count: 0, description: "Ordinateur", quantity: 1, unit: "unit", unit_price: 150000, decision: "add" } };
   const added = await api.handle(request);
   assert.equal(added.value.screen, "ARTICLE_CART");
   assert.equal(added.value.data.item_count, "1");
   assert.equal(typeof added.value.data.item_count, "string");
-  assert.match(added.value.data.items_summary, /Service — 1 ×/);
-  assert.equal(added.value.data.provisional_subtotal, "1 000 FCFA");
-  assert.equal(added.value.data.item_description, "");
-  assert.equal(added.value.data.item_quantity, "1");
+  assert.match(added.value.data.items_summary, /Ordinateur — 1 ×/);
+  assert.match(added.value.data.saved_items_summary, /Ordinateur — 1 ×/);
+  assert.equal(added.value.data.provisional_subtotal, "150 000 FCFA");
+  assert.equal(added.value.data.saved_subtotal_text, "150 000 FCFA");
+  assert.deepEqual(added.value.data.article_form_init_values, {
+    item_description: "",
+    item_quantity: "1",
+    item_unit_price: "",
+  });
+  assert.equal(Object.values(added.value.data.article_form_init_values).every((value) => typeof value === "string"), true);
   assert.equal(added.value.data.item_unit, "");
-  assert.equal(added.value.data.item_unit_price, "");
   assert.equal(added.value.data.article_decision, "");
   assert.equal(added.value.data.item_number_text, "Article 2");
   assert.equal(added.value.data.saved_item_count_text, "1 article enregistré");
   const retried = await api.handle(request);
   assert.equal(retried.value.data.item_count, "1");
+  assert.deepEqual(retried.value.data.article_form_init_values, added.value.data.article_form_init_values);
 });
 
 test("finish adds the last item once, advances to OPTIONS and rejects an empty submission", async () => {
@@ -130,8 +136,8 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
     intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Ben",
   } });
   assert.deepEqual(Object.keys(client.value.data).sort(), [
-    "article_decision", "current_item_id", "draft_id", "item_count", "item_description", "item_number_text",
-    "item_quantity", "item_unit", "item_unit_price", "items_summary",
+    "article_decision", "article_form_init_values", "current_item_id", "draft_id", "item_count", "item_number_text",
+    "item_unit", "items_summary",
     "provisional_subtotal", "return_to_review", "saved_item_count_text", "saved_items_summary", "saved_subtotal_text",
   ].sort());
   assert.equal(client.value.data.item_count, "0");

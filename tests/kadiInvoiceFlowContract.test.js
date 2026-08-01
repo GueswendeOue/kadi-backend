@@ -67,15 +67,23 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   const decision = cartComponents.find(({ name }) => name === "article_decision");
   assert.equal(decision.required, true);
   assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add_another", "finish_items"]);
-  assert.equal(cartComponents.find(({ name }) => name === "item_description")["init-value"], "${data.item_description}");
-  assert.equal(cartComponents.find(({ name }) => name === "item_quantity")["init-value"], "${data.item_quantity}");
-  assert.equal(cartComponents.find(({ name }) => name === "item_unit_price")["init-value"], "${data.item_unit_price}");
+  assert.equal(all.some((component) => Object.hasOwn(component, "init-value")), false);
+  assert.equal(all.some((component) => component.type === "TextInput" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
-  for (const component of all.filter((component) => Object.hasOwn(component, "init-value"))) {
-    assert.equal(component.type, "TextInput", component.name);
-    assert.match(component["init-value"], /^\$\{data\.[A-Za-z_][A-Za-z0-9_]*\}$/);
-  }
+
+  const formsWithInitValues = all.filter((component) => Object.hasOwn(component, "init-values"));
+  assert.equal(formsWithInitValues.length, 1);
+  assert.equal(formsWithInitValues[0].type, "Form");
+  assert.equal(formsWithInitValues[0].name, "item_form");
+  assert.equal(formsWithInitValues[0]["init-values"], "${data.article_form_init_values}");
+  assert.equal(all.some((component) => component.type !== "Form" && Object.hasOwn(component, "init-values")), false);
+
+  const initDefinition = cart.data.article_form_init_values;
+  assert.equal(initDefinition.type, "object");
+  assert.deepEqual(Object.keys(initDefinition.properties), ["item_description", "item_quantity", "item_unit_price"]);
+  assert.deepEqual(initDefinition.__example__, { item_description: "", item_quantity: "1", item_unit_price: "" });
+  assert.equal(Object.values(initDefinition.__example__).every((value) => typeof value === "string"), true);
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {

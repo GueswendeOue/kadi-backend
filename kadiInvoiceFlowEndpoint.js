@@ -53,6 +53,11 @@ function draftData(draft, { returnToReview = false } = {}) {
   const summaryPrefix = draft.items.length > recentItems.length ? "… · " : "";
   const savedSummary = draft.items.length ? `${summaryPrefix}${recentItems.join(" · ")}`.slice(0, 240) : "Aucun article enregistré";
   const savedCountText = itemCount === 1 ? "1 article enregistré" : `${itemCount} articles enregistrés`;
+  const articleFormInitValues = {
+    item_description: "",
+    item_quantity: "1",
+    item_unit_price: "",
+  };
   return {
     draft_id: draft.draft_id,
     item_count: String(itemCount),
@@ -61,10 +66,8 @@ function draftData(draft, { returnToReview = false } = {}) {
     saved_item_count_text: savedCountText,
     saved_items_summary: savedSummary,
     saved_subtotal_text: subtotalText,
-    item_description: "",
-    item_quantity: "1",
+    article_form_init_values: articleFormInitValues,
     item_unit: "",
-    item_unit_price: "",
     article_decision: "",
     return_to_review: returnToReview ? "true" : "false",
     items_summary: savedSummary,
