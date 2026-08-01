@@ -31,7 +31,7 @@ function fixture(overrides = {}) {
     flowId: "1972040430119125",
     cartService,
     flowSessionService,
-    sendFlow: async (payload) => { sent.push(payload); },
+    sendFlow: async (payload) => { sent.push(payload); return { accepted: true, messageId: "wamid-flow-1" }; },
     sendText: async (to, text) => { texts.push({ to, text }); },
     now: () => 1735689600000,
     ...overrides,
@@ -41,13 +41,15 @@ function fixture(overrides = {}) {
 
 test("allowlisted exact trigger accepts case and surrounding spaces", async () => {
   const f = fixture();
-  assert.equal(await f.trigger.run({ from: "+226 706 260 55", text: "  TEST FACTURE FLOW  ", ownerRef: "owner-a", messageId: "wamid-1" }), true);
+  const result = await f.trigger.run({ from: "+226 706 260 55", text: "  TEST   FACTURE FLOW  ", ownerRef: "owner-a", messageId: "wamid-1" });
+  assert.equal(result.handled, true);
   assert.equal(f.sent.length, 1);
   const payload = f.sent[0];
   assert.equal(payload.to, "22670626055");
   assert.equal(payload.interactive.action.parameters.mode, "draft");
   assert.equal(payload.interactive.action.parameters.flow_id, "1972040430119125");
   assert.equal(payload.interactive.action.parameters.flow_action_payload.screen, "CLIENT");
+  assert.equal(payload.interactive.action.parameters.flow_cta, "Ouvrir le formulaire");
   assert.match(payload.interactive.action.parameters.flow_token, /^kadi_invoice_v1:[a-f0-9]{32}:/);
   assert.equal(f.texts.length, 0);
 });
@@ -59,7 +61,7 @@ test("disabled, other recipient and other message preserve the old path", async 
     { from: "22670626055", text: "Autre message", ownerRef: "owner-a" },
   ]) {
     const f = fixture({ enabled: args.from === "22670626055" && args.text !== "Test facture Flow" });
-    assert.equal(await f.trigger.run(args), false);
+    assert.equal((await f.trigger.run(args)).handled, false);
     assert.equal(f.sent.length, 0);
   }
 });
@@ -75,7 +77,15 @@ test("same webhook message is idempotent and no owner or draft identity is sent"
 
 test("send failure revokes the session and never claims success", async () => {
   const f = fixture({ sendFlow: async () => { throw new Error("META_REJECTED"); } });
-  assert.equal(await f.trigger.run({ from: "22670626055", text: "Test facture Flow", ownerRef: "owner-a", messageId: "wamid-fail" }), true);
+  assert.equal((await f.trigger.run({ from: "22670626055", text: "Test facture Flow", ownerRef: "owner-a", messageId: "wamid-fail" })).handled, true);
   assert.equal(f.revoked.length, 1);
+  assert.equal(f.texts.length, 1);
+});
+
+test("invalid configuration handles the exact allowlisted trigger without entering the old path", async () => {
+  const f = fixture({ flowId: "", triggerText: "Test facture Flow" });
+  const result = await f.trigger.run({ from: "22670626055", text: "Test facture Flow", ownerRef: "owner-a", messageId: "wamid-config" });
+  assert.deepEqual(result, { handled: true, outcome: "failed", reason: "CONFIG_INVALID" });
+  assert.equal(f.sent.length, 0);
   assert.equal(f.texts.length, 1);
 });

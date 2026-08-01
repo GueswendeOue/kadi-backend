@@ -37,7 +37,7 @@ function buildDraftInvoiceFlowMessage(args) {
     type: "interactive",
     interactive: {
       type: "flow",
-      body: { text: "Renseignez les informations de votre facture." },
+      body: { text: "Préparez votre facture avec le formulaire guidé Kadi." },
       action: {
         name: "flow",
         parameters: {

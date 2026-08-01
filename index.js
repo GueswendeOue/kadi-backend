@@ -404,6 +404,16 @@ app.get("/health", (_, res) => {
 // Dynamic invoice Flow endpoint. Disabled unless explicitly enabled; activation
 // requires an externally supplied private key and an application-specific owner resolver.
 let invoiceFlowTrigger = null;
+const invoiceFlowTriggerOptions = {
+  enabled: INVOICE_FLOW_ENABLED,
+  recipients: INVOICE_FLOW_TEST_RECIPIENTS,
+  triggerText: INVOICE_FLOW_TEST_TRIGGER,
+  flowId: process.env.KADI_INVOICE_FLOW_ID,
+  flowMode: INVOICE_FLOW_MODE,
+  ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
+  sendFlow,
+  sendText,
+};
 const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
   ? (() => {
     const draftRepository = createSupabaseInvoiceDraftRepository(supabase);
@@ -413,12 +423,7 @@ const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
       draftRepository,
     });
     invoiceFlowTrigger = createInvoiceFlowDraftTrigger({
-      enabled: INVOICE_FLOW_ENABLED,
-      recipients: INVOICE_FLOW_TEST_RECIPIENTS,
-      triggerText: INVOICE_FLOW_TEST_TRIGGER,
-      flowId: process.env.KADI_INVOICE_FLOW_ID,
-      flowMode: INVOICE_FLOW_MODE,
-      ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
+      ...invoiceFlowTriggerOptions,
       cartService,
       flowSessionService,
       sendFlow,
@@ -434,6 +439,7 @@ const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
     });
   })()
   : { handleEncryptedRaw: async () => ({ ok: false, status: 404, error: "FLOW_ENDPOINT_DISABLED" }) };
+if (!invoiceFlowTrigger) invoiceFlowTrigger = createInvoiceFlowDraftTrigger(invoiceFlowTriggerOptions);
 mountInvoiceFlowRoute(app, {
   endpoint: invoiceFlowEndpoint,
   enabled: INVOICE_FLOW_ENABLED,
@@ -447,6 +453,14 @@ console.log("KADI_FLOW_ENDPOINT_READY", {
   private_key: process.env.KADI_FLOW_PRIVATE_KEY ? "SET" : "MISSING",
   passphrase: process.env.KADI_FLOW_PRIVATE_KEY_PASSPHRASE ? "SET" : "MISSING",
   app_secret: process.env.APP_SECRET ? "SET" : "MISSING",
+});
+console.log("KADI_FLOW_TRIGGER_READY", {
+  enabled: INVOICE_FLOW_ENABLED,
+  flow_id: process.env.KADI_INVOICE_FLOW_ID ? "SET" : "MISSING",
+  mode: ["draft", "published"].includes(INVOICE_FLOW_MODE) ? INVOICE_FLOW_MODE : "missing",
+  recipients_count: new Set(String(INVOICE_FLOW_TEST_RECIPIENTS).split(",").map((value) => String(value || "").replace(/[^0-9]/g, "")).filter(Boolean)).size,
+  trigger_configured: Boolean(String(INVOICE_FLOW_TEST_TRIGGER || "").trim()),
+  session_ttl_minutes: Number.isFinite(INVOICE_FLOW_SESSION_TTL_MINUTES) && INVOICE_FLOW_SESSION_TTL_MINUTES > 0 ? INVOICE_FLOW_SESSION_TTL_MINUTES : 30,
 });
 
 app.get(

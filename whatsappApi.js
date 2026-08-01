@@ -39,6 +39,13 @@ function logInfo(context, message, meta = {}) {
 }
 
 function logError(context, error, meta = {}) {
+  if (context === "sendFlow") {
+    console.error(`[WA/ERROR/${context}]`, error?.message || "META_SEND_FAILED", {
+      status: error?.status || null,
+      code: error?.meta?.code || null,
+    });
+    return;
+  }
   console.error(`[WA/ERROR/${context}]`, error?.message || error, {
     ...meta,
     status: error?.status || null,
