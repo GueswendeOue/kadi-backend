@@ -38,7 +38,7 @@ function createInvoiceFlowCompletionHandler({ flowSessionService, sendText, logg
     }
     if (messageId) seen.add(messageId);
     log({ response_json_valid: true, draft_id_present: Boolean(payload.draft_id), duplicate: false, outcome: "handled", reason: "FLOW_COMPLETION_ACCEPTED" });
-    if (typeof sendText === "function") await sendText(from, "Votre brouillon est enregistré. Aucun crédit n’a été débité.").catch(() => {});
+    if (typeof sendText === "function") await sendText(from, "✅ J’ai bien reçu les informations de votre facture. Voulez-vous relire, modifier ou générer le document ?").catch(() => {});
     return { handled: true, outcome: "handled" };
   };
 }

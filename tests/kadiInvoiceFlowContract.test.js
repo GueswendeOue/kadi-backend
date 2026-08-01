@@ -38,9 +38,9 @@ test("dynamic KADI_FACTURE_V1 declares the editable review screen", () => {
   assert.equal(flow.data_api_version, "3.0");
   assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DOCUMENT_ESTIMATE"]);
   assert.deepEqual(flow.routing_model, {
-    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["CLIENT", "ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"], DOCUMENT_ESTIMATE: [],
+    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["DOCUMENT_ESTIMATE"], DOCUMENT_ESTIMATE: [],
   });
-  assert.equal(hasRoutingCycle(flow.routing_model), true);
+  assert.equal(hasRoutingCycle(flow.routing_model), false);
   assert.equal(Object.hasOwn(flow.routing_model, "ARTICLE_DECISION"), false);
   assert.equal(flow.screens.some(({ id }) => id === "ARTICLE_DECISION"), false);
   assert.equal(flow.routing_model.ARTICLE_CART.includes("ARTICLE_CART"), false);
@@ -62,14 +62,20 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   const cartComponents = flatten(cart.layout.children);
   const cartFooters = cartComponents.filter(({ type }) => type === "Footer");
   assert.equal(cartFooters.length, 1);
-  assert.equal(cartFooters[0].label, "Enregistrer l’article");
+  assert.equal(cartFooters[0].label, "Ajouter cet article");
   assert.equal(cartFooters[0]["on-click-action"].name, "data_exchange");
   const decision = cartComponents.find(({ name }) => name === "article_decision");
   assert.equal(decision.required, true);
   assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add_another", "finish_items"]);
-  assert.equal(cartComponents.some((component) => Object.hasOwn(component, "init-value")), false);
+  assert.equal(cartComponents.find(({ name }) => name === "item_description")["init-value"], "${data.item_description}");
+  assert.equal(cartComponents.find(({ name }) => name === "item_quantity")["init-value"], "${data.item_quantity}");
+  assert.equal(cartComponents.find(({ name }) => name === "item_unit_price")["init-value"], "${data.item_unit_price}");
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
+  for (const component of all.filter((component) => Object.hasOwn(component, "init-value"))) {
+    assert.equal(component.type, "TextInput", component.name);
+    assert.match(component["init-value"], /^\$\{data\.[A-Za-z_][A-Za-z0-9_]*\}$/);
+  }
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {
@@ -143,10 +149,17 @@ test("Flow labels and safe option defaults satisfy WhatsApp validation", () => {
   assert.equal(optionComponents.find(({ name }) => name === "tax_status").required, false);
 });
 
+test("every TextBody has an explicit text binding or safe literal", () => {
+  for (const component of components(loadFlow()).filter(({ type }) => type === "TextBody")) {
+    assert.equal(typeof component.text, "string");
+    assert.ok(component.text.length > 0);
+  }
+});
+
 test("Flow MVP has no stamp or client-selectable issue date", () => {
   const source = fs.readFileSync(flowPath, "utf8");
   assert.doesNotMatch(source, /add_stamp|Ajouter le tampon|transaction_date|invoice_date|document_date|issued_at/);
-  assert.equal(loadFlow().screens.find(({ id }) => id === "REVIEW_INVOICE_DRAFT").title, "Vérifier la facture");
+  assert.equal(loadFlow().screens.find(({ id }) => id === "REVIEW_INVOICE_DRAFT").title, "Vérifiez les informations");
 });
 
 test("nfm_reply legacy parser remains available in parallel", () => {

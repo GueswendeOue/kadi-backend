@@ -24,6 +24,22 @@ test("endpoint supports official ping and INIT without a network server", async 
   assert.equal(typeof init.value.data.draft_id, "string");
 });
 
+test("terminal estimate bindings stay safe when business values are absent", () => {
+  for (const estimate of [null, undefined, {}, { page_count: null, credit_cost: undefined, amount_fcfa: null }]) {
+    const data = estimateData(estimate, 0);
+    assert.equal(typeof data.item_count_text, "string");
+    assert.equal(typeof data.page_count_text, "string");
+    assert.equal(typeof data.source_text, "string");
+    assert.equal(typeof data.credit_cost_text, "string");
+    assert.equal(typeof data.amount_fcfa_text, "string");
+    assert.ok(data.item_count_text.length > 0);
+    assert.ok(data.page_count_text.length > 0);
+    assert.ok(data.source_text.length > 0);
+    assert.ok(data.credit_cost_text.length > 0);
+    assert.ok(data.amount_fcfa_text.length > 0);
+  }
+});
+
 test("add returns a refreshed empty ARTICLE_CART summary and retry does not duplicate", async () => {
   const api = endpoint();
   const init = await api.handle({ action: "INIT", flow_token: "synthetic-token", version: "3.0" });
@@ -42,6 +58,8 @@ test("add returns a refreshed empty ARTICLE_CART summary and retry does not dupl
   assert.equal(added.value.data.item_unit, "");
   assert.equal(added.value.data.item_unit_price, "");
   assert.equal(added.value.data.article_decision, "");
+  assert.equal(added.value.data.item_number_text, "Article 2");
+  assert.equal(added.value.data.saved_item_count_text, "1 article enregistré");
   const retried = await api.handle(request);
   assert.equal(retried.value.data.item_count, "1");
 });
@@ -132,6 +150,8 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
   assert.equal(estimate.value.data.total_text, "50 000 FCFA");
   const final = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
   assert.equal(final.value.screen, "DOCUMENT_ESTIMATE");
+  assert.equal(final.value.data.item_count_text, "1 article");
+  assert.equal(final.value.data.source_text, "Brouillon Flow");
   assert.match(final.value.data.message, /brouillon de facture a été enregistré/);
 });
 
@@ -163,6 +183,8 @@ test("Flow item_count remains a string for two internal numeric items", async ()
   assert.equal(estimated.subtotal_excluding_tax, 300000);
   const final = await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
   assert.equal(final.value.screen, "DOCUMENT_ESTIMATE");
+  assert.equal(final.value.data.item_count_text, "2 articles");
+  assert.equal(final.value.data.source_text, "Brouillon Flow");
 });
 
 test("review actions preserve the draft and server-finalize only in draft mode", async () => {

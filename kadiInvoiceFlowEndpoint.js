@@ -74,9 +74,12 @@ function draftData(draft, { returnToReview = false } = {}) {
 
 function estimateData(estimate, itemCount) {
   const numericItemCount = Number.isSafeInteger(itemCount) && itemCount >= 0 ? itemCount : 0;
+  const itemCountText = numericItemCount === 1 ? "1 article" : `${numericItemCount} articles`;
   const value = estimate?.ok === true ? estimate.value : estimate;
   if (!value) return {
     item_count: String(numericItemCount),
+    item_count_text: itemCountText,
+    source_text: "Brouillon Flow",
     page_count_text: "À calculer",
     page_count_mode_text: "Renderer final non exécuté",
     credit_cost_text: "Aucun débit",
@@ -89,6 +92,8 @@ function estimateData(estimate, itemCount) {
     : null;
   return {
     item_count: String(numericItemCount),
+    item_count_text: itemCountText,
+    source_text: "Brouillon Flow",
     page_count_text: pageCount ? String(pageCount) : "À calculer",
     page_count_mode_text: value.page_count_mode === "final_renderer"
       ? "Comptage issu du renderer PDF Kadi final"
@@ -252,7 +257,21 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
         const finalization = { issued_at_utc: issuedAt.toISOString(), issued_at_timezone: "Africa/Ouagadougou", issued_at_local: formatIssuedAtLocal(issuedAt), issued_at_source: "server", finalized_at: new Date().toISOString() };
         const finalized = await cartService.finalizeDraft({ ...common, actionKey: actionKey(body, "confirm_generate"), finalization });
         if (!finalized.ok) return { ok: false, status: 400, error: finalized.error };
-        return { ok: true, value: { screen: "DOCUMENT_ESTIMATE", data: { message: "✅ Votre brouillon de facture a été enregistré. Les informations ont été reçues correctement.", issued_at_local: finalization.issued_at_local, estimate_notice: "Aucun crédit n’a été débité et aucun PDF définitif n’a été généré." } }, stage: "action_data_exchange" };
+        const finalizedItemCount = Array.isArray(finalized.value?.items)
+          ? finalized.value.items.length
+          : (Array.isArray(loaded.value.items) ? loaded.value.items.length : 0);
+        return { ok: true, value: { screen: "DOCUMENT_ESTIMATE", data: {
+          message: "✅ Votre brouillon de facture a été enregistré. Les informations ont été reçues correctement.",
+          issued_at_local: finalization.issued_at_local,
+          item_count: String(finalizedItemCount),
+          item_count_text: finalizedItemCount === 1 ? "1 article" : `${finalizedItemCount} articles`,
+          page_count_text: "À calculer",
+          source_text: "Brouillon Flow",
+          page_count_mode_text: "Brouillon Flow",
+          credit_cost_text: "Aucun débit",
+          amount_fcfa_text: "À confirmer",
+          estimate_notice: "Aucun crédit n’a été débité et aucun PDF définitif n’a été généré."
+        } }, stage: "action_data_exchange" };
       }
       return { ok: false, status: 400, error: "REVIEW_ACTION_INVALID" };
     }

@@ -18,6 +18,7 @@ test("Flow completion is handled before the legacy interactive fallback and is i
   assert.equal(second.handled, true);
   assert.equal(second.duplicate, true);
   assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "✅ J’ai bien reçu les informations de votre facture. Voulez-vous relire, modifier ou générer le document ?");
 });
 
 test("invalid Flow completion is not treated as a legacy command", async () => {
