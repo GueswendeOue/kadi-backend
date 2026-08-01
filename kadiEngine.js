@@ -1291,6 +1291,16 @@ async function handleInteractiveMessage(from, msg) {
 // ===============================
 // Main routing
 // ===============================
+async function runInvoiceFlowTrigger({ trigger, msg, value, identity }) {
+  if (!trigger || msg?.type !== "text") return { handled: false, outcome: "ignored", reason: "NOT_TEXT" };
+  return trigger.run({
+    from: msg?.from,
+    text: msg?.text?.body || "",
+    messageId: msg?.id || null,
+    ownerRef: resolveOwnerKey(identity || extractMetaIdentity(value)),
+  });
+}
+
 async function handleIncomingMessage(value, options = {}) {
   const messages = value?.messages || [];
   if (!messages.length) return;
@@ -1310,13 +1320,8 @@ async function handleIncomingMessage(value, options = {}) {
         await ensureWelcomeCredits(from);
 
         if (msg.type === "text" && options.invoiceFlowTrigger) {
-          const triggered = await options.invoiceFlowTrigger.run({
-            from,
-            text: msg?.text?.body || "",
-            messageId: msg?.id || null,
-            ownerRef: resolveOwnerKey(identity),
-          });
-          if (triggered) return;
+          const triggerResult = await runInvoiceFlowTrigger({ trigger: options.invoiceFlowTrigger, msg, value, identity });
+          if (triggerResult?.handled === true) return;
         }
 
         if (msg.type !== "text") {
@@ -1390,6 +1395,7 @@ async function safeRecordActivity(waId) {
 
 module.exports = {
   handleIncomingMessage,
+  runInvoiceFlowTrigger,
   handleIncomingStatuses,
   processDevisFollowups,
 };
