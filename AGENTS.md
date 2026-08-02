@@ -279,6 +279,8 @@ Références canoniques :
 * `docs/kadi_conversational_product_vision.md`
 * `docs/kadi_flow_architecture.md`
 * `docs/kadi_preview_generation_billing.md`
+* `docs/kadi_voice_experience.md`
+* `docs/kadi_ai_brain_architecture.md`
 
 ## 14. Personnalité et langage
 
@@ -325,3 +327,17 @@ Si le solde est insuffisant : ne rien débiter, conserver le brouillon et ouvrir
 ## 18. Release gate des Flows
 
 Ne publier aucun Flow avant validation de la conversation d'entrée, des cartes WhatsApp, titres, boutons et transitions, des entrées texte/vocal/photo, des informations manquantes, corrections, aperçu, calcul du coût, recharge, génération finale, historique, absence de débit en `DRAFT` et tests mobiles sur plusieurs tailles d'écran.
+
+## 19. Identité vocale et cerveau multimodal
+
+Kadi possède une identité vocale féminine, ouest-africaine, naturelle, chaleureuse, professionnelle, claire, calme et rassurante. Elle reste non caricaturale et sans accent artificiellement exagéré. Toute voix clonée ou reproduite depuis une personne réelle exige un consentement explicite, vérifiable et conservé selon une procédure approuvée.
+
+Le texte validé est toujours la réponse canonique : moteur métier Kadi → texte validé → moteur déterministe de politique vocale → synthèse éventuelle → envoi du texte et, si autorisé, de l'audio. L'audio n'ajoute aucune information, ne modifie aucune donnée métier et ne confirme jamais un paiement, débit ou document que le backend n'a pas validé.
+
+Le texte est le mode par défaut. Une préférence persistante choisit `TEXT_ONLY`, `TEXT_AND_VOICE` ou `VOICE_WHEN_HELPFUL`, cette dernière étant la valeur recommandée par défaut. Ne pas vocaliser automatiquement les données sensibles, confirmations courtes, erreurs techniques ou contenus difficiles à vérifier oralement.
+
+Le cerveau multimodal peut utiliser OpenAI et Gemini derrière des interfaces configurables. Aucun parcours métier ne dépend directement d'un fournisseur. Le backend Kadi reste la seule autorité pour calculs, crédits, paiements, états, numéros, dates, génération et livraison. Un seul fournisseur vocal sert une réponse normale ; benchmark, shadow, canary ou fallback exigent un cadre explicitement autorisé.
+
+Gemini est le moteur principal prévu pour la vision, l’OCR intelligent, la compréhension documentaire et l’extraction structurée à partir des images et PDF. Toute sortie Gemini doit être validée par le backend Kadi avant persistance ou utilisation métier.
+
+Les champs incertains, illisibles ou contradictoires doivent être signalés et jamais inventés. Ils ne peuvent pas être persistés comme données confirmées. Kadi doit demander une confirmation ciblée ou les présenter dans un écran de correction.
