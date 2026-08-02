@@ -1,5 +1,7 @@
 "use strict";
 
+const { validateMediaInput } = require("./kadiV1MediaContracts");
+
 const BRAIN_MODALITIES = Object.freeze(["TEXT", "TRANSCRIPTION", "IMAGE", "DOCUMENT"]);
 const BRAIN_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 const BRAIN_INTENTS = Object.freeze([
@@ -61,6 +63,7 @@ const EXTRACTED_FIELD_KEYS = new Set([
   "document_number_read",
   "currency",
   "total_read",
+  "document_type",
 ]);
 const AUTHORITY_FIELDS = new Set([
   "debit",
@@ -79,8 +82,12 @@ const AUTHORITY_FIELDS = new Set([
 const CANDIDATE_KEYS = new Set(["value", "status", "confidence", "source_reference"]);
 const UNCERTAINTY_KEYS = new Set(["field", "reason", "candidate_value", "confidence", "source_reference"]);
 const PROVIDER_METADATA_KEYS = new Set(["provider", "model", "request_ref", "latency_ms"]);
-const MEDIA_KEYS = new Set(["mime_type", "content", "content_ref"]);
-const ITEM_KEYS = new Set(["item_id", "description", "label", "quantity", "unit", "unit_price"]);
+const MEDIA_KEYS = new Set([
+  "mime_type", "content", "content_ref", "media_id", "owner_ref", "source_type",
+  "byte_size", "checksum", "page_count", "correlation_id", "storage_reference",
+  "received_at", "expires_at",
+]);
+const ITEM_KEYS = new Set(["item_id", "description", "label", "quantity", "unit", "unit_price", "confidence", "status", "source_reference"]);
 const SIMPLE_OBJECT_KEYS = new Set([
   "name", "phone", "address", "email", "ifu", "rccm", "label", "value", "rate", "type",
 ]);
@@ -155,8 +162,14 @@ function validateBrainRequest(rawRequest) {
       return fail("BRAIN_MEDIA_INVALID");
     }
     const hasContent = Buffer.isBuffer(media.content) && media.content.length > 0;
-    const hasReference = validBoundedString(media.content_ref, 300);
+    const hasReference = validBoundedString(media.content_ref, 300) || (
+      validBoundedString(media.media_id, 200) && validBoundedString(media.owner_ref, 200)
+    );
     if (!hasContent && !hasReference) return fail("BRAIN_MEDIA_CONTENT_REQUIRED");
+    if (media.media_id != null) {
+      const contract = validateMediaInput(media);
+      if (!contract.ok) return fail(contract.error);
+    }
   }
   return ok(Object.freeze({
     ...rawRequest,
@@ -184,6 +197,9 @@ function validateItems(value) {
     if (item.unit_price != null && (!Number.isFinite(item.unit_price) || item.unit_price < 0)) return false;
     if (item.unit != null && !validBoundedString(item.unit, 50)) return false;
     if (item.item_id != null && !validBoundedString(item.item_id, 200)) return false;
+    if (item.confidence != null && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) return false;
+    if (item.status != null && !FIELD_STATUSES.includes(item.status)) return false;
+    if (item.source_reference != null && !validBoundedString(item.source_reference, 300)) return false;
     return true;
   });
 }
