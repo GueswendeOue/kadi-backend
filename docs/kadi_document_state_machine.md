@@ -110,3 +110,44 @@ Un échec conserve : dernier état sûr, version, étape, clé idempotente appli
 | Édition post-génération | nouvelle version ou document correctif | duplication comme nouveau document |
 
 Ces recommandations exigent validation produit, financière et technique avant implémentation.
+
+## Machine d'états utilisateur pour l'onboarding
+
+Cette machine est distincte de l'état d'un document. Les états recommandés sont :
+
+| État utilisateur | Sens |
+|---|---|
+| `NEW_USER` | aucun profil minimal persistant pour ce `wa_id` |
+| `ONBOARDING_IN_PROGRESS` | profil minimal créé, informations facultatives encore possibles |
+| `ONBOARDING_COMPLETED` | onboarding courant terminé |
+| `REONBOARDING_ELIGIBLE` | utilisateur existant pouvant revoir l'accompagnement, sans nouveau bonus |
+| `REACTIVATION_ELIGIBLE` | utilisateur inactif pouvant être accompagné à son retour, sans nouveau bonus |
+
+`welcome_credits_granted` est un invariant persistant indépendant de ces états. Une fois vrai, aucune transition ne le remet à faux et aucune reprise ne recrée `WELCOME_CREDITS`.
+
+### Événements d'onboarding
+
+| Événement | Préconditions | Effet persistant ou externe | Idempotence et non-rejeu |
+|---|---|---|---|
+| `USER_PROFILE_CREATED` | `NEW_USER`, `wa_id` valide, profil minimal absent | créer le profil minimal et passer à `ONBOARDING_IN_PROGRESS` | une création logique par `wa_id` |
+| `WELCOME_CREDITS_GRANTED` | profil créé, bonus jamais accordé | atomiquement : ledger `WELCOME_CREDITS` de 5 et `welcome_credits_granted=true` | clé `welcome_credits:<wa_id>` ; jamais rejoué |
+| `WELCOME_TEXT_SENT` | bonus confirmé, texte canonique disponible | envoyer l'accueil et annoncer les 5 crédits | dédupliquer le premier accueil ; ne jamais annoncer avant le bonus |
+| `WELCOME_VOICE_ATTEMPTED` | texte envoyé, premier accueil | tenter le vocal fidèle sans bloquer la suite | clé `welcome_voice:<wa_id>:v1` distincte du bonus ; échec récupérable |
+| `ONBOARDING_STARTED` | profil minimal et bonus établis, texte envoyé | ouvrir l'accompagnement progressif | rejouable sans bonus ni second accueil |
+| `ONBOARDING_COMPLETED` | exigences d'onboarding courant satisfaites | état `ONBOARDING_COMPLETED` | événement rejouable sans second effet |
+| `ONBOARDING_RESUMED` | état incomplet ou interruption | reprendre au prochain manque | ne rejoue ni bonus ni vocal automatique |
+| `USER_REACTIVATED` | utilisateur existant éligible | reprendre l'accompagnement | ne rejoue jamais le bonus |
+
+L'opération `WELCOME_CREDITS_GRANTED` et la mise à jour du marqueur doivent partager une transaction atomique ou une garantie équivalente. Le solde courant n'est jamais une preuve d'éligibilité au bonus.
+
+Ordre nominal : `USER_PROFILE_CREATED` → `WELCOME_CREDITS_GRANTED` → `WELCOME_TEXT_SENT` → `WELCOME_VOICE_ATTEMPTED` → `ONBOARDING_STARTED` → `ONBOARDING_COMPLETED`. L'échec de `WELCOME_VOICE_ATTEMPTED` conserve profil et bonus, n'empêche pas `ONBOARDING_STARTED` et ne permet jamais de rejouer `WELCOME_CREDITS_GRANTED`.
+
+### Transitions interdites
+
+* Attribuer le bonus depuis une action client seule ou depuis le Flow.
+* Réattribuer après consommation, ré-onboarding, réactivation, double clic ou webhook répété.
+* Marquer le bonus accordé sans écriture de ledger correspondante, ou l'inverse.
+* Bloquer le bonus jusqu'à la fin de toutes les informations facultatives.
+* Attribuer automatiquement 5 crédits à tous les utilisateurs historiques.
+* Annoncer les 5 crédits avant le succès de `WELCOME_CREDITS_GRANTED`.
+* Utiliser la réussite ou l'échec du vocal pour décider de l'éligibilité au bonus.

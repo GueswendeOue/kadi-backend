@@ -34,16 +34,23 @@ Annuler conserve le brouillon sauf règle métier approuvée contraire. Une sess
 
 | Élément | Contrat |
 |---|---|
-| Objectif | obtenir progressivement le minimum pour rendre Kadi utile |
-| Écrans | bienvenue, profil minimal, confirmation |
-| Reçoit | profil existant et champs réellement manquants |
-| Affiche | bénéfice immédiat et une question à la fois |
-| Retourne | données de profil confirmées ou décision de continuer plus tard |
-| Validations | format, consentement et unicité selon règles approuvées |
-| Action serveur | mettre à jour le profil sans écraser une valeur validée |
-| Destination | conversation initiale, MENU ou document demandé |
-| Annulation | conserver les données valides et permettre la découverte |
-| Session expirée | reprendre au prochain champ manquant |
+| Objectif | accueillir, créer le profil minimal et permettre une découverte immédiate de Kadi |
+| Écrans | bienvenue, profil minimal, préférence vocale et confirmation facultative |
+| Reçoit | `wa_id` résolu côté serveur, état utilisateur, profil existant, `welcome_credits_granted`, préférence vocale et champs réellement manquants |
+| Affiche | texte canonique de bienvenue, annonce des 5 crédits, texte/vocal/photo et une seule action « Commencer » |
+| Retourne | données de profil confirmées, préférence vocale ou décision de continuer plus tard |
+| Validations | identité `wa_id`, statut d'onboarding, formats, consentement et unicité selon règles approuvées |
+| Action serveur | exécuter `USER_PROFILE_CREATED` puis attribuer atomiquement une seule fois 5 crédits via le ledger `WELCOME_CREDITS` et `welcome_credits_granted` |
+| Confirmation bonus | confirmer le bonus uniquement après succès serveur ; le Flow ne crédite jamais le portefeuille |
+| Accueil | après `WELCOME_CREDITS_GRANTED`, envoyer le texte, tenter le vocal de façon non bloquante, puis démarrer l'onboarding |
+| Échec vocal | conserver profil, bonus et texte ; enregistrer un échec récupérable et permettre un retry audio dédupliqué |
+| Destination | conversation initiale, MENU ou première création de document |
+| Annulation | conserver profil, bonus déjà accordé et données valides ; ne pas réattribuer |
+| Session expirée | reprendre au prochain champ manquant sans rejouer le bonus ni le vocal automatique |
+
+L'attribution utilise une clé conceptuelle unique `welcome_credits:<wa_id>`. Le vocal utilise une clé indépendante telle que `welcome_voice:<wa_id>:v1`, qui n'influence jamais l'éligibilité. Webhook répété, double clic, reprise, ré-onboarding ou réactivation retournent le résultat existant. Profil minimal créé, crédits accordés et onboarding complété restent trois faits persistants distincts.
+
+Ordre de référence : `USER_PROFILE_CREATED` → `WELCOME_CREDITS_GRANTED` → `WELCOME_TEXT_SENT` → `WELCOME_VOICE_ATTEMPTED` → `ONBOARDING_STARTED` → `ONBOARDING_COMPLETED`. Les champs facultatifs ne bloquent ni le profil minimal ni le bonus.
 
 ### MENU
 

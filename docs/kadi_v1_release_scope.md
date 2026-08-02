@@ -21,7 +21,7 @@ La facture actuelle reste une preuve technique jusqu'à validation de toute l'ex
 
 | Capacité | Résultat utilisateur minimal |
 |---|---|
-| Onboarding progressif | découvrir immédiatement Kadi et compléter seulement le profil nécessaire |
+| Onboarding progressif | premier accueil texte et court vocal, 5 crédits attribués une fois côté serveur, action unique « Commencer », puis profil facultatif progressif |
 | Accueil et menu | comprendre quoi demander et accéder aux quatre raccourcis validés |
 | Compréhension naturelle | demander un document avec ses propres mots |
 | Texte | transmettre toutes les informations en conversation |
@@ -56,6 +56,8 @@ La facture actuelle reste une preuve technique jusqu'à validation de toute l'ex
 | Suggestions de correction ciblées | réduire les reprises complètes | aucune valeur incertaine imposée |
 
 Une capacité recommandée peut être désactivée au lancement seulement si le parcours reste cohérent, accessible et conforme au release gate.
+
+La ligne « Réponses vocales sélectives » concerne les réponses ordinaires. Le court vocal du premier accueil est obligatoire pour l'expérience cible et suit la règle de repli non bloquante vers le texte.
 
 ## Améliorations post-V1
 
@@ -104,6 +106,7 @@ La V1 n'est prête que si :
 10. les interfaces sont validées sur plusieurs tailles d'écran et conditions réseau ;
 11. aucun Flow n'est publié partiellement pour contourner un défaut d'expérience ;
 12. les critères de `docs/kadi_user_journey_acceptance_criteria.md` sont satisfaits.
+13. le premier accueil annonce les 5 crédits seulement après leur attribution atomique et reste utilisable si le vocal échoue.
 
 ## Hors périmètre implicite
 
@@ -113,7 +116,6 @@ La V1 ne promet pas silencieusement : fiscalité automatisée, conformité jurid
 
 | Sujet | Recommandation | Alternative 1 | Alternative 2 |
 |---|---|---|---|
-| Premier accueil | phrase courte avec texte, vocal et photo | accueil orienté valeur | accueil orienté premier document |
 | Menu | quatre actions canoniques | menu réduit à trois actions | menu enrichi après usage |
 | Nom du contenu | « Produits ou services » dans la conversation | « Articles » dans les écrans compacts | « Éléments » pour la décharge uniquement |
 | Bouton d'aperçu | « Voir l'aperçu » | « Voir le document » | « Continuer » si la carte explique l'étape |

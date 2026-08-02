@@ -32,6 +32,18 @@ Statuts de preuve recommandés : `PASS`, `FAIL`, `BLOCKED` et `NOT_RUN`, accompa
 | START-005 | utilisateur envoie texte, vocal ou photo | aucune modalité n'est présentée comme un produit séparé |
 | START-006 | onboarding interrompu | valeurs validées conservées et reprise au prochain manque |
 | START-007 | préférence vocale modifiée | modification effective sans recommencer l'onboarding |
+| START-008 | nouvel utilisateur éligible | exactement 5 crédits et une seule écriture `WELCOME_CREDITS` |
+| START-009 | deux webhooks identiques ou double clic | une seule attribution avec `welcome_credits:<wa_id>` |
+| START-010 | onboarding rouvert ou repris | solde inchangé et aucun nouveau bonus |
+| START-011 | cinq crédits consommés | utilisateur jamais rendu éligible à nouveau |
+| START-012 | message de bienvenue | bonus annoncé seulement après attribution serveur réussie |
+| START-013 | premier accueil | texte, court vocal fidèle et action unique « Commencer » |
+| START-014 | fournisseur vocal indisponible | texte et onboarding continuent, profil et crédits conservés |
+| START-015 | retry du vocal | clé audio indépendante et aucun nouveau crédit |
+| START-016 | utilisateur existant | aucun crédit automatique sans migration historique auditée |
+| START-017 | comparer texte et vocal d'accueil | mêmes informations métier et même valeur de 5 crédits |
+| START-018 | solde nul d'un utilisateur existant | aucune déduction d'éligibilité depuis le seul solde |
+| START-019 | préférence vocale modifiée | aucun changement du marqueur ni nouvelle attribution |
 
 ## Compréhension naturelle et informations manquantes
 
@@ -255,7 +267,6 @@ La release peut être proposée seulement si :
 
 | Sujet | Recommandation | Alternative 1 | Alternative 2 |
 |---|---|---|---|
-| Accueil exact | catalogue section A | variante plus courte | variante centrée sur le premier document |
 | Terme contenu | conversation « produits ou services », écran « article » | « élément » | vocabulaire par type uniquement |
 | Durée vocale | seuil issu du benchmark | limite fixe | segmentation automatique |
 | Historique | pagination configurable | cinq derniers | dix derniers |

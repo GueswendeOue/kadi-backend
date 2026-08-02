@@ -10,21 +10,34 @@ La photo et le vocal sont des manières d'envoyer des informations. Ils ne figur
 
 ## A. Onboarding
 
+**Message canonique de premier accueil**
+
+> Bienvenue chez Kadi
+>
+> Je vous aide à préparer vos factures, devis, reçus et décharges directement sur WhatsApp.
+>
+> Vous pouvez m'écrire, m'envoyer un vocal ou une photo.
+>
+> 5 crédits viennent de vous être offerts pour commencer.
+
 | Élément | Texte canonique |
 |---|---|
-| Message avant ouverture | « Bonjour, je suis Kadi. Vous pouvez m'écrire, m'envoyer un vocal ou une photo. Dites-moi simplement le document que vous voulez préparer. » |
+| Message de premier accueil | texte canonique ci-dessus |
 | Titre de carte | « Bienvenue chez Kadi » |
-| Corps | « Préparez vos documents administratifs simplement, dans cette conversation. » |
-| Pied de page | « Vous pourrez compléter votre profil plus tard. » |
+| Corps | le message canonique ci-dessus, envoyé seulement après confirmation serveur des 5 crédits |
+| Pied de page | aucun au premier accueil |
 | Bouton d'ouverture | « Commencer » |
 | Titre d'écran | « Faisons connaissance » |
 | Aide | « Indiquez seulement les informations nécessaires pour commencer. » |
 | Champs | « Votre nom ou activité » ; « Nom de l'entreprise » si utile |
 | Options | aucune option technique ; choix de préférence vocale seulement si validé |
-| Boutons | « Continuer » ; « Plus tard » |
+| Action du premier accueil | « Commencer » uniquement |
+| Boutons dans l'onboarding progressif | « Continuer » ; « Plus tard » |
 | Confirmation | « Merci. Que voulez-vous préparer aujourd'hui ? » |
 | Erreur récupérable | « Je n'ai pas pu enregistrer cette information. Vérifiez-la et réessayez. » |
 | Reprise après expiration | « Vos informations déjà enregistrées sont conservées. Reprenons la dernière étape. » |
+
+Le message est envoyé uniquement après confirmation serveur de l'attribution. Le court vocal reprend exactement le message de premier accueil. Son échec ne bloque ni le texte ni l'onboarding et ne modifie jamais les crédits. Un nouvel essai audio ne réannonce pas le bonus comme une nouvelle attribution.
 
 ## B. Accueil
 
@@ -442,7 +455,6 @@ Kadi extrait les informations visibles et distingue valeurs confirmables, incert
 
 | Sujet | Recommandation | Alternative 1 | Alternative 2 |
 |---|---|---|---|
-| Premier accueil | texte de la section A | « Bonjour, je suis Kadi. Que préparons-nous ? » | accueil centré sur le premier document |
 | Nom générique | « Produits ou services » | « Articles » dans les espaces courts | « Éléments » seulement hors commerce |
 | Aperçu | « Voir l'aperçu » | « Voir le document » | « Continuer » |
 | Annulation | « Conserver pour plus tard » | « Arrêter » avec confirmation | « Reprendre plus tard » |

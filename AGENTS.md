@@ -281,6 +281,7 @@ Références canoniques :
 * `docs/kadi_preview_generation_billing.md`
 * `docs/kadi_voice_experience.md`
 * `docs/kadi_ai_brain_architecture.md`
+* `docs/kadi_onboarding_and_welcome_credits.md`
 
 ## 14. Personnalité et langage
 
@@ -341,3 +342,13 @@ Le cerveau multimodal peut utiliser OpenAI et Gemini derrière des interfaces co
 Gemini est le moteur principal prévu pour la vision, l’OCR intelligent, la compréhension documentaire et l’extraction structurée à partir des images et PDF. Toute sortie Gemini doit être validée par le backend Kadi avant persistance ou utilisation métier.
 
 Les champs incertains, illisibles ou contradictoires doivent être signalés et jamais inventés. Ils ne peuvent pas être persistés comme données confirmées. Kadi doit demander une confirmation ciblée ou les présenter dans un écran de correction.
+
+## 20. Onboarding et crédits de bienvenue
+
+Au premier usage d'un nouvel utilisateur éligible, Kadi envoie un texte de bienvenue et un court vocal fidèle au même texte, présente les entrées texte, vocal et photo, annonce exactement 5 crédits offerts et propose une seule action : « Commencer ». Le texte reste canonique ; le vocal n'ajoute aucune information et n'est envoyé automatiquement qu'au premier accueil. L'annonce du bonus intervient uniquement après confirmation serveur de son attribution.
+
+Chaque nouvel utilisateur reçoit exactement 5 crédits, une seule fois. Le backend est l'unique autorité : après création réussie du profil minimal identifié par le `wa_id`, il inscrit atomiquement un mouvement de ledger `WELCOME_CREDITS` et passe `welcome_credits_granted` à `true`, avec la clé d'idempotence `welcome_credits:<wa_id>`. Aucun Flow, retry, double clic, ré-onboarding, reprise ou réactivation ne peut réattribuer le bonus.
+
+Ordre obligatoire : `USER_PROFILE_CREATED` → `WELCOME_CREDITS_GRANTED` → `WELCOME_TEXT_SENT` → `WELCOME_VOICE_ATTEMPTED` → `ONBOARDING_STARTED` → `ONBOARDING_COMPLETED`. Le profil minimal et le bonus ne dépendent pas des champs facultatifs. L'échec du vocal ne retire pas les crédits, n'annule pas le profil et ne bloque pas l'onboarding. Un nouvel essai audio utilise une clé distincte telle que `welcome_voice:<wa_id>:v1`, sans aucune incidence sur l'éligibilité au bonus.
+
+Ne jamais déduire l'absence du bonus depuis le solde courant. Pour les utilisateurs existants, toute régularisation future doit vérifier le ledger historique, `welcome_credits_granted`, les anciens bonus, la date de création du profil et les écritures de crédit existantes avant décision ; aucune attribution globale automatique n'est autorisée.

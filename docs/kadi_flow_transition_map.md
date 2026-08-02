@@ -23,6 +23,29 @@ CONVERSATION
 
 Le menu peut rejoindre CONVERSATION, HISTORIQUE, SOLDE ou AIDE. Il ne devient jamais un passage obligatoire après une intention déjà comprise.
 
+## Premier accueil et reprise d'onboarding
+
+```text
+NOUVEL UTILISATEUR
+  -> USER_PROFILE_CREATED
+  -> WELCOME_CREDITS_GRANTED (5 crédits, clé welcome_credits:<wa_id>)
+  -> WELCOME_TEXT_SENT
+  -> WELCOME_VOICE_ATTEMPTED (non bloquant, clé welcome_voice:<wa_id>:v1)
+  -> FLOW ONBOARDING
+  -> MENU OU PREMIÈRE CRÉATION DE DOCUMENT
+
+INTERRUPTION
+  -> profil et bonus conservés
+  -> ONBOARDING_RESUMED
+  -> aucun nouveau bonus
+
+RÉACTIVATION
+  -> message de reprise
+  -> aucun nouveau bonus
+```
+
+Le texte n'annonce les 5 crédits qu'après leur attribution confirmée par le backend. Un échec vocal n'annule ni le profil ni le bonus et n'empêche jamais l'ouverture de l'onboarding.
+
 ## Transitions principales
 
 | De | Événement | Contrôles serveur | Vers | Texte visible de transition |

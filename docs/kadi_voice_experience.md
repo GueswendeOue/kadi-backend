@@ -152,11 +152,23 @@ Les montants, sigles et noms peuvent utiliser une représentation de prononciati
 
 **Texte**
 
-> Bonjour, je suis Kadi. Vous pouvez m'écrire, m'envoyer un vocal ou une photo. Dites-moi simplement le document que vous voulez préparer.
+> Bienvenue chez Kadi
+>
+> Je vous aide à préparer vos factures, devis, reçus et décharges directement sur WhatsApp.
+>
+> Vous pouvez m'écrire, m'envoyer un vocal ou une photo.
+>
+> 5 crédits viennent de vous être offerts pour commencer.
 
 **Audio**
 
-Version naturelle et fidèle du même texte, sans ajout.
+Version courte, féminine, naturelle, chaleureuse et professionnelle, fidèle au même texte et sans ajout. Elle annonce exactement les 5 crédits après confirmation serveur de leur attribution et reste accompagnée du texte.
+
+Ce vocal est envoyé automatiquement uniquement au premier accueil. Une reprise, un ré-onboarding ou une réactivation n'entraîne pas un nouvel envoi automatique ; l'utilisateur peut toutefois demander ensuite une explication vocale. Aucune donnée sensible n'est lue.
+
+La tentative vocale ne bloque jamais le premier accueil. Si le fournisseur est indisponible, Kadi envoie le texte, conserve le profil et les crédits, enregistre un échec récupérable et poursuit l'onboarding. Un retry audio autorisé utilise une clé distincte, par exemple `welcome_voice:<wa_id>:v1`. Cette clé ne décide jamais de l'attribution des crédits et un retry audio ne peut pas recréditer le portefeuille.
+
+Une formulation courte en mooré pourra être étudiée après benchmark et validation locale. La documentation ne promet ni disponibilité ni qualité avant cette validation.
 
 ### B. Résumé de facture
 

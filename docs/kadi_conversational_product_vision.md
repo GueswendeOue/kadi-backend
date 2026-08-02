@@ -31,6 +31,22 @@ Elle évite les longues listes lorsque l'utilisateur doit simplement répondre �
 
 ## Réponses de référence
 
+### Premier accueil
+
+**Texte canonique**
+
+> Bienvenue chez Kadi
+>
+> Je vous aide à préparer vos factures, devis, reçus et décharges directement sur WhatsApp.
+>
+> Vous pouvez m'écrire, m'envoyer un vocal ou une photo.
+>
+> 5 crédits viennent de vous être offerts pour commencer.
+
+**Action unique :** « Commencer ».
+
+Un court vocal féminin, naturel, chaleureux et professionnel reprend fidèlement ce texte lors du premier accueil. Ce texte et son vocal ne sont envoyés qu'après confirmation serveur de l'attribution. L'attribution des crédits appartient au backend et ne dépend jamais de l'écoute du vocal ou d'une action du Flow.
+
 ### Démarrer un document
 
 > **Utilisateur :** Je veux créer une facture.
@@ -107,6 +123,12 @@ Si plusieurs valeurs sont ambiguës mais liées, Kadi peut les résumer brièvem
 Kadi reformule le résultat plutôt que les détails techniques. Une correction conserve toutes les autres informations et revient vers une vérification actualisée. Une interaction reconnue reçoit une seule réponse : aucun doublon, aucune relance de menu et aucune réponse générative supplémentaire.
 
 Les opérations sensibles — débit, génération finale et livraison — nécessitent une confirmation explicite et sont idempotentes.
+
+## Progression de l'onboarding
+
+Le profil minimal, l'attribution des crédits de bienvenue et la fin de l'onboarding sont trois événements distincts. Les 5 crédits sont accordés une seule fois après création réussie du profil minimal, sans attendre les informations facultatives. Une interruption conserve l'avancement ; la reprise, le ré-onboarding et la réactivation ne recréent jamais le bonus.
+
+L'ordre de référence est : profil minimal créé, crédits accordés, texte envoyé, vocal tenté, onboarding commencé puis complété. Si le vocal échoue, le texte et l'onboarding continuent ; les crédits restent acquis et tout nouvel essai audio est dédupliqué indépendamment du bonus.
 
 ## Gestion des erreurs
 
