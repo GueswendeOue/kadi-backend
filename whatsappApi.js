@@ -38,12 +38,108 @@ function logInfo(context, message, meta = {}) {
   console.log(`[WA/INFO/${context}]`, message, meta);
 }
 
+const FLOW_LOG_MAX_DEPTH = 3;
+const FLOW_LOG_MAX_ITEMS = 20;
+const FLOW_LOG_MAX_INPUT_LENGTH = 4000;
+const FLOW_LOG_MAX_VALUE_LENGTH = 500;
+const FLOW_LOG_SENSITIVE_KEY = /^(?:authorization|access[_-]?token|token|secret|headers?|config|request|response|body|payload|to|recipient|phone(?:_number)?|wa_id|flow[_-]?token|draft[_-]?id|client|address|adresse|email|articles?)$/i;
+
+function redactFlowDiagnosticText(value) {
+  try {
+    if (value == null) return null;
+    return String(value)
+      .slice(0, FLOW_LOG_MAX_INPUT_LENGTH)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+      .replace(/\b(?:authorization|access[_-]?token|token|secret)\s*[:=]\s*[^\s,;}]+/gi, "$1=[REDACTED]")
+      .replace(/([?&](?:access[_-]?token|token|key|secret)=)[^&#\s]+/gi, "$1[REDACTED]")
+      .replace(/\bkadi_invoice_v1:[A-Za-z0-9_-]+:[0-9]+\b/g, "[REDACTED_FLOW_TOKEN]")
+      .replace(/\bEA[A-Za-z0-9_-]{18,}\b/g, "[REDACTED_ACCESS_TOKEN]")
+      .replace(/\b(?:draft[_-]?id|draftId)\s*[:=]\s*[^\s,;}]+/gi, "draft_id=[REDACTED]")
+      .replace(/\b(?:flow[_-]?token|flowToken)\s*[:=]\s*[^\s,;}]+/gi, "flow_token=[REDACTED]")
+      .replace(/\b(?:to|recipient|phone|wa_id|client|address|adresse|email|article)\s*[:=]\s*[^\s,;}]+/gi, "$1=[REDACTED]")
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+      .replace(/\b[0-9]{8,20}\b/g, "[REDACTED_NUMBER]")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, FLOW_LOG_MAX_VALUE_LENGTH);
+  } catch {
+    return "[REDACTED_UNSAFE_VALUE]";
+  }
+}
+
+function redactFlowDiagnosticValue(value, depth = 0, seen = new WeakSet()) {
+  try {
+    if (value == null || typeof value !== "object") return redactFlowDiagnosticText(value);
+    if (depth >= FLOW_LOG_MAX_DEPTH) return "[REDACTED_DEPTH_LIMIT]";
+    if (seen.has(value)) return "[REDACTED_CIRCULAR]";
+    seen.add(value);
+    const output = Array.isArray(value) ? [] : {};
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Object.keys(descriptors).slice(0, FLOW_LOG_MAX_ITEMS)) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, "value")) {
+        output[key] = "[REDACTED_ACCESSOR]";
+      } else if (FLOW_LOG_SENSITIVE_KEY.test(key)) {
+        output[key] = "[REDACTED]";
+      } else {
+        output[key] = redactFlowDiagnosticValue(descriptor.value, depth + 1, seen);
+      }
+    }
+    return redactFlowDiagnosticText(JSON.stringify(output));
+  } catch {
+    return "[REDACTED_UNSAFE_VALUE]";
+  }
+}
+
+function ownDiagnosticValue(value, key) {
+  try {
+    if (value == null || (typeof value !== "object" && typeof value !== "function")) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeFlowSendErrorLog(error, meta = {}) {
+  try {
+    const errorMeta = ownDiagnosticValue(error, "meta") || {};
+    const status = ownDiagnosticValue(error, "status");
+    const code = ownDiagnosticValue(errorMeta, "code");
+    const subcode = ownDiagnosticValue(errorMeta, "subcode");
+    const message = ownDiagnosticValue(errorMeta, "message") || ownDiagnosticValue(error, "message") || "META_SEND_FAILED";
+    const flowId = ownDiagnosticValue(meta, "flow_id");
+    const targetScreen = ownDiagnosticValue(meta, "target_screen");
+    const mode = ownDiagnosticValue(meta, "mode");
+    return {
+      status: Number.isInteger(status) ? status : null,
+      type: redactFlowDiagnosticValue(ownDiagnosticValue(errorMeta, "type")),
+      code: Number.isInteger(code) ? code : null,
+      error_subcode: Number.isInteger(subcode) ? subcode : null,
+      message: redactFlowDiagnosticValue(message),
+      details: redactFlowDiagnosticValue(ownDiagnosticValue(errorMeta, "details")),
+      error_user_title: redactFlowDiagnosticValue(ownDiagnosticValue(errorMeta, "error_user_title")),
+      error_user_msg: redactFlowDiagnosticValue(ownDiagnosticValue(errorMeta, "error_user_msg")),
+      fbtrace_id: redactFlowDiagnosticValue(ownDiagnosticValue(errorMeta, "fbtrace_id")),
+      flow_id: /^\d{1,40}$/.test(String(flowId || "")) ? String(flowId) : null,
+      target_screen: /^[A-Z][A-Z0-9_]{1,63}$/.test(String(targetScreen || "")) ? String(targetScreen) : null,
+      mode: ["draft", "published"].includes(mode) ? mode : null,
+    };
+  } catch {
+    return {
+      status: null, type: null, code: null, error_subcode: null,
+      message: "META_SEND_FAILED", details: null, error_user_title: null,
+      error_user_msg: null, fbtrace_id: null, flow_id: null,
+      target_screen: null, mode: null,
+    };
+  }
+}
+
 function logError(context, error, meta = {}) {
   if (context === "sendFlow") {
-    console.error(`[WA/ERROR/${context}]`, error?.message || "META_SEND_FAILED", {
-      status: error?.status || null,
-      code: error?.meta?.code || null,
-    });
+    const safe = safeFlowSendErrorLog(error, meta);
+    console.error(`[WA/ERROR/${context}]`, safe.message, safe);
     return;
   }
   console.error(`[WA/ERROR/${context}]`, error?.message || error, {
@@ -127,6 +223,10 @@ function buildMetaApiError(error) {
     code,
     subcode,
     type: metaError?.type || null,
+    message,
+    details: metaError?.error_data?.details || null,
+    error_user_title: metaError?.error_user_title || null,
+    error_user_msg: metaError?.error_user_msg || null,
     fbtrace_id: metaError?.fbtrace_id || null,
     error_data: metaError?.error_data || null,
   };
@@ -492,7 +592,12 @@ async function sendFlow(payload) {
   if (!payload || payload.type !== "interactive" || payload.interactive?.type !== "flow") {
     throw new Error("sendFlow: payload invalide");
   }
-  return postJsonMessage(payload, 15000, "sendFlow");
+  const parameters = payload.interactive?.action?.parameters || {};
+  return postJsonMessage(payload, 15000, "sendFlow", {
+    flow_id: parameters.flow_id,
+    target_screen: parameters.flow_action_payload?.screen,
+    mode: parameters.mode,
+  });
 }
 
 async function sendImage({ to, mediaId, caption }) {
@@ -550,6 +655,9 @@ function extractStatusesFromWebhookValue(value) {
 }
 
 module.exports = {
+  buildMetaApiError,
+  redactFlowDiagnosticValue,
+  safeFlowSendErrorLog,
   verifyRequestSignature,
   sendText,
   sendTypingIndicator,

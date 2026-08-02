@@ -82,6 +82,7 @@ test("send failure revokes the session and never claims success", async () => {
   assert.equal((await f.trigger.run({ from: "22670626055", text: "Test facture Flow", ownerRef: "owner-a", messageId: "wamid-fail" })).handled, true);
   assert.equal(f.revoked.length, 1);
   assert.equal(f.texts.length, 1);
+  assert.equal(f.texts[0].text, "⚠️ Le formulaire de facture n’a pas pu être envoyé.");
 });
 
 test("invalid configuration handles the exact allowlisted trigger without entering the old path", async () => {
