@@ -87,6 +87,11 @@ function createSupabaseV1DocumentRepository(client) {
       currency: row.currency,
       issued_at: row.issued_at,
       document_number: row.document_number,
+      preview: row.preview,
+      generation_quote: row.generation_quote,
+      generation_cost: row.generation_cost,
+      recoverable_failure: row.recoverable_failure,
+      cancelled_at: row.cancelled_at,
       events: (eventRows || []).map((event) => ({
         type: event.event_type,
         from_state: event.from_state,
