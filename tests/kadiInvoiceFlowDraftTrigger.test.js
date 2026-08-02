@@ -8,6 +8,7 @@ function fixture(overrides = {}) {
   const sent = [];
   const texts = [];
   const revoked = [];
+  const createdSessions = [];
   let draftCount = 0;
   const cartService = {
     async createDraft(args) {
@@ -16,8 +17,9 @@ function fixture(overrides = {}) {
     },
   };
   const flowSessionService = {
-    async createInvoiceFlowSession({ ownerRef, draftId }) {
-      return { ok: true, value: { flow_token: "kadi_invoice_v1:abcdef0123456789abcdef0123456789:1735689600000", ownerRef, draftId } };
+    async createInvoiceFlowSession(args) {
+      createdSessions.push(args);
+      return { ok: true, value: { flow_token: "kadi_invoice_v1:abcdef0123456789abcdef0123456789:1735689600000", ...args } };
     },
     async revokeInvoiceFlowSession(flowToken) {
       revoked.push(flowToken);
@@ -36,7 +38,7 @@ function fixture(overrides = {}) {
     now: () => 1735689600000,
     ...overrides,
   });
-  return { trigger, sent, texts, revoked, cartService };
+  return { trigger, sent, texts, revoked, createdSessions, cartService };
 }
 
 test("allowlisted exact trigger accepts case and surrounding spaces", async () => {
@@ -48,9 +50,10 @@ test("allowlisted exact trigger accepts case and surrounding spaces", async () =
   assert.equal(payload.to, "22670626055");
   assert.equal(payload.interactive.action.parameters.mode, "draft");
   assert.equal(payload.interactive.action.parameters.flow_id, "1972040430119125");
-  assert.equal(payload.interactive.action.parameters.flow_action_payload.screen, "CLIENT");
-  assert.equal(payload.interactive.action.parameters.flow_action_payload.data.draft_id, "draft-1");
-  assert.equal(payload.interactive.action.parameters.flow_action_payload.data.flow_token, payload.interactive.action.parameters.flow_token);
+  assert.equal(payload.interactive.action.parameters.flow_action, "data_exchange");
+  assert.equal(Object.hasOwn(payload.interactive.action.parameters, "flow_action_payload"), false);
+  assert.equal(f.createdSessions.length, 1);
+  assert.equal(f.createdSessions[0].targetScreen, "CLIENT");
   assert.equal(payload.interactive.action.parameters.flow_cta, "Ouvrir le formulaire");
   assert.match(payload.interactive.action.parameters.flow_token, /^kadi_invoice_v1:[a-f0-9]{32}:/);
   assert.equal(f.texts.length, 0);

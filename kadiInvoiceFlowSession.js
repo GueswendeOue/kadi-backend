@@ -7,6 +7,16 @@ const FLOW_TOKEN_BYTES = 32;
 const FLOW_TOKEN_MAX_LENGTH = 256;
 const ACTIVE_STATUS = "active";
 const FLOW_TOKEN_PATTERN = /^kadi_invoice_v1:[a-f0-9]{32}:[0-9]{10,13}$/;
+const INVOICE_FLOW_TARGET_SCREENS = Object.freeze([
+  "CLIENT",
+  "ARTICLE_ENTRY",
+  "OPTIONS",
+  "REVIEW_INVOICE_DRAFT",
+  "EDIT_CLIENT",
+  "EDIT_ITEMS",
+  "EDIT_OPTIONS",
+]);
+const INVOICE_FLOW_TARGET_SCREEN_SET = new Set(INVOICE_FLOW_TARGET_SCREENS);
 
 function hashFlowToken(token) {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
@@ -14,6 +24,10 @@ function hashFlowToken(token) {
 
 function validFlowToken(token) {
   return typeof token === "string" && token.length <= FLOW_TOKEN_MAX_LENGTH && FLOW_TOKEN_PATTERN.test(token);
+}
+
+function validTargetScreen(screen) {
+  return typeof screen === "string" && INVOICE_FLOW_TARGET_SCREEN_SET.has(screen);
 }
 
 function createInMemoryInvoiceFlowSessionRepository() {
@@ -60,10 +74,12 @@ function createSupabaseInvoiceFlowSessionRepository(client) {
 function createInvoiceFlowSessionService({ repository, draftRepository = null, now = () => Date.now() } = {}) {
   if (!repository) throw new TypeError("FLOW_SESSION_REPOSITORY_REQUIRED");
 
-  async function createInvoiceFlowSession({ ownerRef, draftId, expiresAt }) {
+  async function createInvoiceFlowSession({ ownerRef, draftId, targetScreen, returnToReview = false, expiresAt }) {
     if (typeof ownerRef !== "string" || !ownerRef.trim() || typeof draftId !== "string" || !draftId.trim()) {
       return { ok: false, error: "FLOW_SESSION_CONTEXT_INVALID" };
     }
+    if (!validTargetScreen(targetScreen)) return { ok: false, error: "FLOW_SESSION_TARGET_INVALID" };
+    if (typeof returnToReview !== "boolean") return { ok: false, error: "FLOW_SESSION_CONTEXT_INVALID" };
     const expiry = Date.parse(expiresAt);
     if (!Number.isFinite(expiry) || expiry <= now()) return { ok: false, error: "FLOW_SESSION_EXPIRY_INVALID" };
     const flowToken = `kadi_invoice_v1:${crypto.randomBytes(16).toString("hex")}:${now()}`;
@@ -71,6 +87,8 @@ function createInvoiceFlowSessionService({ repository, draftRepository = null, n
       flow_token_hash: hashFlowToken(flowToken),
       owner_ref: ownerRef.trim(),
       draft_id: draftId.trim(),
+      target_screen: targetScreen,
+      return_to_review: returnToReview,
       status: ACTIVE_STATUS,
       created_at: new Date(now()).toISOString(),
       expires_at: new Date(expiry).toISOString(),
@@ -92,7 +110,15 @@ function createInvoiceFlowSessionService({ repository, draftRepository = null, n
     if (!session) return { ok: false, error: "FLOW_TOKEN_UNKNOWN" };
     if (session.status !== ACTIVE_STATUS || session.revoked_at || session.consumed_at) return { ok: false, error: "FLOW_TOKEN_REVOKED" };
     if (!Number.isFinite(Date.parse(session.expires_at)) || Date.parse(session.expires_at) <= now()) return { ok: false, error: "FLOW_TOKEN_EXPIRED" };
-    return { ok: true, value: { ownerRef: session.owner_ref, draftId: session.draft_id, flowTokenHash: session.flow_token_hash } };
+    if (session.target_screen == null || session.target_screen === "") return { ok: false, error: "FLOW_SESSION_TARGET_MISSING" };
+    if (!validTargetScreen(session.target_screen)) return { ok: false, error: "FLOW_SESSION_TARGET_INVALID" };
+    return { ok: true, value: {
+      ownerRef: session.owner_ref,
+      draftId: session.draft_id,
+      targetScreen: session.target_screen,
+      returnToReview: session.return_to_review === true,
+      flowTokenHash: session.flow_token_hash,
+    } };
   }
 
   async function revokeInvoiceFlowSession(flowToken) {
@@ -106,9 +132,11 @@ function createInvoiceFlowSessionService({ repository, draftRepository = null, n
 module.exports = {
   FLOW_TOKEN_BYTES,
   FLOW_TOKEN_MAX_LENGTH,
+  INVOICE_FLOW_TARGET_SCREENS,
   createInMemoryInvoiceFlowSessionRepository,
   createInvoiceFlowSessionService,
   createSupabaseInvoiceFlowSessionRepository,
   hashFlowToken,
+  validTargetScreen,
   validFlowToken,
 };

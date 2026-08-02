@@ -4,13 +4,7 @@ const crypto = require("node:crypto");
 const { parseInvoiceFlowReply } = require("./kadiInvoiceFlowContract");
 const { buildDraftInvoiceFlowMessage } = require("./kadiWhatsAppFlowPayload");
 const {
-  articleEntryData,
-  editClientData,
-  editItemsData,
-  editOptionsData,
   formatFcfa,
-  optionsData,
-  reviewData,
   subtotalAmount,
 } = require("./kadiInvoiceFlowScreens");
 
@@ -63,9 +57,15 @@ function createInvoiceFlowCompletionHandler({
   const seen = new Set();
   const inFlight = new Map();
 
-  async function openNext({ from, ownerRef, draft, currentFlowToken, screen, dataFactory, text, cta }) {
+  async function openNext({ from, ownerRef, draft, currentFlowToken, screen, returnToReview = false, text, cta }) {
     const expiresAt = new Date(now() + ttlMinutes * 60 * 1000).toISOString();
-    const created = await flowSessionService.createInvoiceFlowSession({ ownerRef, draftId: draft.draft_id, expiresAt });
+    const created = await flowSessionService.createInvoiceFlowSession({
+      ownerRef,
+      draftId: draft.draft_id,
+      targetScreen: screen,
+      returnToReview,
+      expiresAt,
+    });
     if (!created.ok) return { ok: false, error: created.error };
     const nextFlowToken = created.value.flow_token;
     try {
@@ -73,9 +73,6 @@ function createInvoiceFlowCompletionHandler({
         to: String(from || "").replace(/[^0-9]/g, ""),
         flowId,
         flowToken: nextFlowToken,
-        screen,
-        data: dataFactory(nextFlowToken),
-        bodyText: text,
         cta,
       });
       if (typeof sendText === "function") await sendText(from, text);
@@ -128,9 +125,9 @@ function createInvoiceFlowCompletionHandler({
       }
 
       const common = { draftId: session.value.draftId, ownerRef: session.value.ownerRef, flowToken: payload.flow_token };
-      const open = (draft, screen, dataFactory, text, cta) => openNext({
+      const open = (draft, screen, text, cta, options = {}) => openNext({
         from, ownerRef: session.value.ownerRef, draft, currentFlowToken: payload.flow_token, screen,
-        dataFactory: (token) => dataFactory(draft, token), text, cta,
+        returnToReview: options.returnToReview === true, text, cta,
       });
       let next = null;
       let mutation = null;
@@ -139,8 +136,8 @@ function createInvoiceFlowCompletionHandler({
         const method = payload.outcome === "client_corrected" ? cartService.correctClient : cartService.setClient;
         mutation = await method({ ...common, actionKey: actionKey(null, payload, payload.outcome), client: clientFromPayload(payload) });
         if (mutation.ok && !mutation.duplicate) next = payload.outcome === "client_saved"
-          ? await open(mutation.value, "ARTICLE_ENTRY", articleEntryData, "C’est noté. Qu’ajoutons-nous maintenant ?", "Ajouter le suivant")
-          : await open(mutation.value, "REVIEW_INVOICE_DRAFT", reviewData, "C’est noté. Vérifions les informations.", "Vérifier");
+          ? await open(mutation.value, "ARTICLE_ENTRY", "C’est noté. Qu’ajoutons-nous maintenant ?", "Ajouter le suivant")
+          : await open(mutation.value, "REVIEW_INVOICE_DRAFT", "C’est noté. Vérifions les informations.", "Vérifier");
       } else if (payload.outcome === "add_another_item" || payload.outcome === "items_finished") {
         const correction = payload.return_to_review === "true";
         const addMethod = correction && typeof cartService.addCorrectionItem === "function" ? cartService.addCorrectionItem : cartService.addItem;
@@ -154,18 +151,18 @@ function createInvoiceFlowCompletionHandler({
           if (mutation.duplicate && payload.outcome === "add_another_item") {
             // A completed add step must never emit the following message twice.
           } else if (correction) {
-            if (!mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", reviewData, "C’est noté. Vérifions les informations.", "Vérifier");
+            if (!mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", "C’est noté. Vérifions les informations.", "Vérifier");
           } else if (payload.outcome === "add_another_item" && !mutation.duplicate) {
-            next = await open(mutation.value, "ARTICLE_ENTRY", articleEntryData, `C’est noté. J’ai ajouté ${payload.designation}. Qu’ajoutons-nous maintenant ?`, "Ajouter le suivant");
+            next = await open(mutation.value, "ARTICLE_ENTRY", `C’est noté. J’ai ajouté ${payload.designation}. Qu’ajoutons-nous maintenant ?`, "Ajouter le suivant");
           } else if (payload.outcome === "items_finished") {
             const finished = await cartService.finishItems({ ...common, actionKey: actionKey(null, payload, `finish:${payload.submission_id}`) });
             mutation = finished;
-            if (finished.ok && !finished.duplicate) next = await open(finished.value, "OPTIONS", optionsData, "Parfait. J’ai bien enregistré les produits et services. Vérifions maintenant les derniers détails.", "Continuer");
+            if (finished.ok && !finished.duplicate) next = await open(finished.value, "OPTIONS", "Parfait. J’ai bien enregistré les produits et services. Vérifions maintenant les derniers détails.", "Continuer");
           }
         }
       } else if (payload.outcome === "options_saved" || payload.outcome === "options_corrected") {
         mutation = await cartService.setOptions({ ...common, actionKey: actionKey(null, payload, payload.outcome), options: optionsFromPayload(payload) });
-        if (mutation.ok && !mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", reviewData, "C’est noté. Vérifions les informations.", "Vérifier");
+        if (mutation.ok && !mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", "C’est noté. Vérifions les informations.", "Vérifier");
       } else if (payload.outcome === "item_corrected") {
         mutation = await cartService.updateCorrectionItem({
           ...common,
@@ -174,15 +171,15 @@ function createInvoiceFlowCompletionHandler({
           quantity: payload.edit_quantity,
           unitPrice: payload.edit_unit_price,
         });
-        if (mutation.ok && !mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", reviewData, "C’est noté. Vérifions les informations.", "Vérifier");
+        if (mutation.ok && !mutation.duplicate) next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", "C’est noté. Vérifions les informations.", "Vérifier");
       } else if (["modify_client", "modify_items", "modify_options", "edit_items_add_item", "edit_items_done"].includes(payload.outcome)) {
         mutation = await cartService.loadOwned(common.draftId, common.ownerRef, common.flowToken);
         if (mutation.ok) {
-          if (payload.outcome === "modify_client") next = await open(mutation.value, "EDIT_CLIENT", editClientData, "D’accord, corrigeons les informations du client.", "Corriger");
-          if (payload.outcome === "modify_items") next = await open(mutation.value, "EDIT_ITEMS", editItemsData, "D’accord, corrigeons les produits et services.", "Corriger");
-          if (payload.outcome === "modify_options") next = await open(mutation.value, "EDIT_OPTIONS", editOptionsData, "D’accord, corrigeons les autres détails.", "Corriger");
-          if (payload.outcome === "edit_items_add_item") next = await open(mutation.value, "ARTICLE_ENTRY", (draft, token) => articleEntryData(draft, token, { returnToReview: true }), "D’accord, ajoutons ce qui manque.", "Ajouter");
-          if (payload.outcome === "edit_items_done") next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", reviewData, "C’est noté. Vérifions les informations.", "Vérifier");
+          if (payload.outcome === "modify_client") next = await open(mutation.value, "EDIT_CLIENT", "D’accord, corrigeons les informations du client.", "Corriger");
+          if (payload.outcome === "modify_items") next = await open(mutation.value, "EDIT_ITEMS", "D’accord, corrigeons les produits et services.", "Corriger");
+          if (payload.outcome === "modify_options") next = await open(mutation.value, "EDIT_OPTIONS", "D’accord, corrigeons les autres détails.", "Corriger");
+          if (payload.outcome === "edit_items_add_item") next = await open(mutation.value, "ARTICLE_ENTRY", "D’accord, ajoutons ce qui manque.", "Ajouter", { returnToReview: true });
+          if (payload.outcome === "edit_items_done") next = await open(mutation.value, "REVIEW_INVOICE_DRAFT", "C’est noté. Vérifions les informations.", "Vérifier");
         }
       } else if (payload.outcome === "finalize_draft") {
         const finalization = { issued_at_utc: new Date(now()).toISOString(), issued_at_timezone: "Africa/Ouagadougou", issued_at_source: "server", finalized_at: new Date(now()).toISOString() };

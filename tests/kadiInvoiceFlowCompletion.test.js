@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createInvoiceFlowCompletionHandler } = require("../kadiInvoiceFlowCompletion");
+const { createInvoiceFlowEndpoint } = require("../kadiInvoiceFlowEndpoint");
 const { createInvoiceCartService } = require("../kadiInvoiceCartService");
 const { createInMemoryInvoiceDraftRepository } = require("../kadiInvoiceDraftRepository");
 const { createInMemoryInvoiceFlowSessionRepository, createInvoiceFlowSessionService } = require("../kadiInvoiceFlowSession");
@@ -15,7 +16,8 @@ async function orchestrationFixture() {
   const cartService = createInvoiceCartService({ repository: draftRepository, now: () => nowValue });
   const flowSessionService = createInvoiceFlowSessionService({ repository: createInMemoryInvoiceFlowSessionRepository(), draftRepository, now: () => nowValue });
   const draft = await cartService.createDraft({ ownerRef: "owner-a", flowToken: "initial-seed" });
-  const session = await flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: draft.value.draft_id, expiresAt: new Date(nowValue + 60_000).toISOString() });
+  const session = await flowSessionService.createInvoiceFlowSession({ ownerRef: "owner-a", draftId: draft.value.draft_id, targetScreen: "CLIENT", expiresAt: new Date(nowValue + 60_000).toISOString() });
+  const endpoint = createInvoiceFlowEndpoint({ cartService, flowSessionService, webhookOrchestration: true });
   const sentFlows = [];
   const sentTexts = [];
   const handler = createInvoiceFlowCompletionHandler({
@@ -23,7 +25,15 @@ async function orchestrationFixture() {
     cartService,
     flowId: "1972040430119125",
     ttlMinutes: 30,
-    sendFlow: async (payload) => { sentFlows.push(payload); return { accepted: true, messageId: `sent-${sentFlows.length}` }; },
+    sendFlow: async (payload) => {
+      const parameters = payload.interactive.action.parameters;
+      assert.equal(parameters.flow_action, "data_exchange");
+      assert.equal(Object.hasOwn(parameters, "flow_action_payload"), false);
+      assert.equal(payload.interactive.body.text, "Préparez votre facture avec le formulaire guidé Kadi.");
+      assert.doesNotMatch(JSON.stringify(payload), /draft_id|client_name|items_summary|Ordinateur|Souris|Clavier/);
+      sentFlows.push(payload);
+      return { accepted: true, messageId: `sent-${sentFlows.length}` };
+    },
     sendText: async (to, text) => { sentTexts.push({ to, text }); },
     logger: { log: () => {} },
     now: () => nowValue,
@@ -32,7 +42,12 @@ async function orchestrationFixture() {
     from: "22670000000",
     message: { id, type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: JSON.stringify(response) } } },
   });
-  return { cartService, draftRepository, draftId: draft.value.draft_id, handler, reply, sentFlows, sentTexts, session: session.value };
+  const init = async (flowToken) => {
+    const result = await endpoint.handle({ action: "INIT", flow_token: flowToken, version: "3.0" });
+    assert.equal(result.ok, true);
+    return result.value;
+  };
+  return { cartService, draftRepository, draftId: draft.value.draft_id, handler, reply, sentFlows, sentTexts, session: session.value, init };
 }
 
 test("engine runs nfm_reply completion before every legacy interactive or conversational route", () => {
@@ -102,7 +117,7 @@ test("three short article sessions build fresh Article 2 and 3 payloads without 
   const f = await orchestrationFixture();
   const client = await f.reply("client-1", { outcome: "client_saved", flow_token: f.session.flow_token, draft_id: f.draftId, client_type: "individual", client_name: "Ben" });
   assert.equal(client.next_screen, "ARTICLE_ENTRY");
-  const article1Data = f.sentFlows.at(-1).interactive.action.parameters.flow_action_payload.data;
+  const article1Data = (await f.init(client.next_flow_token)).data;
   assert.equal(article1Data.item_number_text, "Produit ou service 1");
 
   const first = await f.reply("article-1", { outcome: "add_another_item", flow_token: client.next_flow_token, draft_id: f.draftId, current_item_id: article1Data.current_item_id, submission_id: article1Data.submission_id, designation: "Ordinateur", quantity: "1", unit: "unit", unit_price: "150000", return_to_review: "false" });
@@ -111,7 +126,7 @@ test("three short article sessions build fresh Article 2 and 3 payloads without 
     outcome: "add_another_item", draft_id: f.draftId, next_item_number: "2", submission_id: article1Data.submission_id,
   });
   assert.notEqual(first.next_flow_token, client.next_flow_token);
-  const article2Data = f.sentFlows.at(-1).interactive.action.parameters.flow_action_payload.data;
+  const article2Data = (await f.init(first.next_flow_token)).data;
   assert.equal(article2Data.item_number_text, "Produit ou service 2");
   assert.deepEqual(article2Data.article_form_init_values, { designation: "", quantity: "1", unit_price: "" });
   assert.equal(Object.hasOwn(article2Data.article_form_init_values, "unit"), false);
@@ -131,7 +146,7 @@ test("three short article sessions build fresh Article 2 and 3 payloads without 
   assert.equal(second.next_screen, "ARTICLE_ENTRY");
   assert.equal(second.next_item_number, "3");
   assert.equal(new Set([client.next_flow_token, first.next_flow_token, second.next_flow_token]).size, 3);
-  const article3Data = f.sentFlows.at(-1).interactive.action.parameters.flow_action_payload.data;
+  const article3Data = (await f.init(second.next_flow_token)).data;
   assert.equal(article3Data.item_number_text, "Produit ou service 3");
   assert.deepEqual(article3Data.article_form_init_values, { designation: "", quantity: "1", unit_price: "" });
   assert.equal(new Set([article1Data.submission_id, article2Data.submission_id, article3Data.submission_id]).size, 3);
@@ -164,7 +179,7 @@ test("three short article sessions build fresh Article 2 and 3 payloads without 
 test("review corrections open fresh sessions and preserve unrelated draft data", async () => {
   const f = await orchestrationFixture();
   const client = await f.reply("c1", { outcome: "client_saved", flow_token: f.session.flow_token, draft_id: f.draftId, client_type: "individual", client_name: "Ben" });
-  const articleData = f.sentFlows.at(-1).interactive.action.parameters.flow_action_payload.data;
+  const articleData = (await f.init(client.next_flow_token)).data;
   const finished = await f.reply("a1", { outcome: "items_finished", flow_token: client.next_flow_token, draft_id: f.draftId, current_item_id: articleData.current_item_id, submission_id: articleData.submission_id, designation: "Service", quantity: "1", unit: "unit", unit_price: "1000", return_to_review: "false" });
   const options = await f.reply("o1", { outcome: "options_saved", flow_token: finished.next_flow_token, draft_id: f.draftId, tax_status: "not_applicable", discount_amount: "0", amount_paid: "0", payment_terms: "Comptant" });
   assert.equal(options.next_screen, "REVIEW_INVOICE_DRAFT");
@@ -180,7 +195,7 @@ test("review corrections open fresh sessions and preserve unrelated draft data",
 
   const editItems = await f.reply("r-items", { outcome: "modify_items", flow_token: correctedClient.next_flow_token, draft_id: f.draftId });
   assert.equal(editItems.next_screen, "EDIT_ITEMS");
-  const editableItems = f.sentFlows.at(-1).interactive.action.parameters.flow_action_payload.data.editable_items;
+  const editableItems = (await f.init(editItems.next_flow_token)).data.editable_items;
   assert.equal(editableItems.length, 1);
   const itemsCorrected = await f.reply("edit-items", { outcome: "item_corrected", flow_token: editItems.next_flow_token, draft_id: f.draftId, edit_item_id: editableItems[0].id, edit_quantity: "2", edit_unit_price: "1500" });
   assert.equal(itemsCorrected.next_screen, "REVIEW_INVOICE_DRAFT");

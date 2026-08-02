@@ -5,6 +5,14 @@ const { isPlainRecord } = require("./kadiDynamicInvoiceContract");
 const { calculateInvoiceFlowDraft } = require("./kadiInvoiceCalculator");
 const { decryptFlowRequest, encryptFlowResponse, parseEncryptedEnvelopeJson } = require("./kadiFlowCrypto");
 const { flowTokenReference } = require("./kadiInvoiceCartService");
+const {
+  articleEntryData,
+  editClientData,
+  editItemsData,
+  editOptionsData,
+  optionsData,
+  reviewData: shortSessionReviewData,
+} = require("./kadiInvoiceFlowScreens");
 
 const ACTIONS = new Set(["ping", "INIT", "data_exchange"]);
 const INTENTS = new Set(["save_client", "submit_article", "save_options", "review_action", "update_item", "delete_item"]);
@@ -142,6 +150,17 @@ function normalizeOptionValue(value, fallback) {
   return normalized || fallback;
 }
 
+function initialScreenData(targetScreen, draft, flowToken, { returnToReview = false } = {}) {
+  if (targetScreen === "CLIENT") return { flow_token: flowToken, draft_id: draft.draft_id };
+  if (targetScreen === "ARTICLE_ENTRY") return articleEntryData(draft, flowToken, { returnToReview });
+  if (targetScreen === "OPTIONS") return optionsData(draft, flowToken);
+  if (targetScreen === "REVIEW_INVOICE_DRAFT") return shortSessionReviewData(draft, flowToken);
+  if (targetScreen === "EDIT_CLIENT") return editClientData(draft, flowToken);
+  if (targetScreen === "EDIT_ITEMS") return editItemsData(draft, flowToken);
+  if (targetScreen === "EDIT_OPTIONS") return editOptionsData(draft, flowToken);
+  return null;
+}
+
 function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, cryptoConfig = null, webhookOrchestration = false } = {}) {
   if (!cartService || (typeof ownerResolver !== "function" && typeof flowSessionService?.resolveInvoiceFlowSession !== "function")) throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
 
@@ -153,11 +172,15 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
 
     let ownerRef = null;
     let sessionDraftId = null;
+    let sessionTargetScreen = null;
+    let sessionReturnToReview = false;
     if (flowSessionService) {
       const session = await flowSessionService.resolveInvoiceFlowSession(body.flow_token);
       if (!session.ok) return { ok: false, status: 427, error: session.error };
       ownerRef = session.value.ownerRef;
       sessionDraftId = session.value.draftId;
+      sessionTargetScreen = session.value.targetScreen;
+      sessionReturnToReview = session.value.returnToReview === true;
       requestContext.logger?.(requestContext.requestId, { stage: "flow_session_valid", status_code: 0 });
     } else {
       ownerRef = await ownerResolver(requestContext);
@@ -165,6 +188,18 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
     }
 
     if (body.action === "INIT") {
+      if (flowSessionService) {
+        const loaded = await cartService.loadOwned(sessionDraftId, ownerRef, body.flow_token);
+        if (!loaded.ok) return { ok: false, status: 400, error: loaded.error };
+        const data = initialScreenData(sessionTargetScreen, loaded.value, body.flow_token, { returnToReview: sessionReturnToReview });
+        if (!data) return { ok: false, status: 427, error: "FLOW_SESSION_TARGET_INVALID" };
+        return {
+          ok: true,
+          value: { screen: sessionTargetScreen, data },
+          draft: loaded.value,
+          stage: "action_init",
+        };
+      }
       const created = sessionDraftId
         ? await cartService.loadOwned(sessionDraftId, ownerRef, body.flow_token)
         : await cartService.createDraft({ ownerRef, flowToken: body.flow_token });
@@ -305,4 +340,4 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
   return Object.freeze({ handle, handleEncrypted, handleEncryptedRaw });
 }
 
-module.exports = { ACTIONS, INTENTS, articleScreenId, createInvoiceFlowEndpoint, normalizeArticleSubmission, safeRecord };
+module.exports = { ACTIONS, INTENTS, articleScreenId, createInvoiceFlowEndpoint, initialScreenData, normalizeArticleSubmission, safeRecord };
