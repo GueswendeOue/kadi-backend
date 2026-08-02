@@ -402,6 +402,22 @@ function validateForReview(document) {
   return ok(document);
 }
 
+function restoreDocumentSnapshot(rawSnapshot) {
+  const snapshot = ownValues(rawSnapshot);
+  if (!snapshot) return fail("DOCUMENT_SNAPSHOT_INVALID");
+  if (!DOCUMENT_TYPES.includes(snapshot.document_type)) return fail("DOCUMENT_TYPE_INVALID");
+  if (!DOCUMENT_STATES.includes(snapshot.status)) return fail("DOCUMENT_STATE_INVALID");
+  if (!validIdentifier(snapshot.document_id) || !Number.isSafeInteger(snapshot.version) || snapshot.version < 1) {
+    return fail("DOCUMENT_SNAPSHOT_INVALID");
+  }
+  if (!Array.isArray(snapshot.events)) return fail("DOCUMENT_EVENTS_INVALID");
+  try {
+    return ok(deepFreeze(deepCopy(snapshot)));
+  } catch {
+    return fail("DOCUMENT_SNAPSHOT_INVALID");
+  }
+}
+
 function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
   if (typeof clock !== "function") throw new TypeError("DOCUMENT_CLOCK_REQUIRED");
 
@@ -555,7 +571,13 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
     }));
   }
 
-  return Object.freeze({ createDocument, modifyDocument, transitionDocument, validateForReview });
+  return Object.freeze({
+    createDocument,
+    modifyDocument,
+    restoreDocument: restoreDocumentSnapshot,
+    transitionDocument,
+    validateForReview,
+  });
 }
 
 module.exports = {
@@ -567,5 +589,6 @@ module.exports = {
   DOCUMENT_TYPES,
   calculateCommonTotals,
   createDocumentDomain,
+  restoreDocumentSnapshot,
   validateForReview,
 };
