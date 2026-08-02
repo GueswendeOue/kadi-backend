@@ -267,3 +267,61 @@ Les messages destinés aux utilisateurs de Kadi doivent :
 * ne pas afficher `flow_token`, `payload`, `draft_id`, `nfm_reply` ou autres termes internes ;
 * éviter les doubles réponses ;
 * éviter « Tapez MENU » après une interaction Flow reconnue.
+
+## 13. North Star conversationnelle
+
+Kadi est une assistante administrative conversationnelle WhatsApp pour les micro-entrepreneurs, commerçants, artisans et prestataires. L'utilisateur échange naturellement par texte, vocal ou photo. Kadi comprend le besoin, extrait les données, puis demande uniquement les informations manquantes avant de faire vérifier, corriger, prévisualiser et confirmer le document.
+
+Les Meta Flows sont une infrastructure de vérification. Leurs frontières techniques doivent rester invisibles : l'utilisateur doit avoir l'impression de dialoguer avec une seule assistante, jamais d'utiliser plusieurs logiciels.
+
+Références canoniques :
+
+* `docs/kadi_conversational_product_vision.md`
+* `docs/kadi_flow_architecture.md`
+* `docs/kadi_preview_generation_billing.md`
+
+## 14. Personnalité et langage
+
+Toute réponse utilisateur doit être naturelle, humaine, chaleureuse, professionnelle, courte, claire et rassurante. Elle contient idéalement une information principale, une seule prochaine action et au maximum une question utile.
+
+Ne jamais exposer à l'utilisateur : `Flow`, `session`, `payload`, brouillon technique, `OpenAI`, `OCR`, `endpoint`, erreur interne ou « commande non reconnue ». Ne plus utiliser « Créer guidé », « Photo » ou « Menu » comme actions principales : la photo et le vocal sont des modes d'entrée.
+
+Entrée de référence :
+
+> **Utilisateur :** Je veux créer une facture.
+>
+> **Kadi :** Bien sûr. Envoyez-moi le nom du client, les produits ou services, les quantités et les prix. Vous pouvez écrire, envoyer un vocal ou une photo.
+
+Si une information manque, poser une seule question précise à la fois.
+
+## 15. Architecture produit cible
+
+Prévoir les familles de Flows suivantes : `ONBOARDING`, `MENU`, `DOCUMENT CLIENT`, `DOCUMENT ITEMS`, `DOCUMENT OPTIONS`, `DOCUMENT REVIEW`, `EDIT CLIENT`, `EDIT ITEMS`, `EDIT OPTIONS`, `DOCUMENT PREVIEW`, `GENERATION CONFIRMATION`, `RECHARGE`, `HISTORY / SEARCH` et les Flows propres aux décharges.
+
+Facture, devis et reçu partagent autant que possible un pipeline piloté par `document_type`. La décharge conserve son modèle métier propre. Les sept Flows facture actuels restent la base technique fonctionnelle jusqu'à l'approbation d'une refonte ; ne pas les remplacer ou les refactorer sans spécification approuvée.
+
+Le menu cible privilégie : « Préparer un document », « Retrouver un document », « Mon solde » et « Aide ». Il reste un raccourci ; le langage naturel est l'entrée principale. L'onboarding est progressif et ne demande que le nécessaire sans retarder la découverte de la valeur de Kadi.
+
+## 16. Aperçu, génération et facturation
+
+Après vérification, ouvrir un aperçu dédié affichant le type, l'émetteur, le client ou bénéficiaire, les articles ou l'objet, quantités, prix, taxes, remise, notes, sous-total, total, date automatique et numéro du document. Proposer seulement : « Modifier les informations », « Préparer le PDF » et « Enregistrer pour plus tard ». L'aperçu ne débite aucun crédit.
+
+Après « Préparer le PDF » : produire un rendu temporaire non livré, compter les pages réelles, calculer le coût exact, afficher coût et solde, puis demander une confirmation explicite. Après confirmation seulement, une opération idempotente débite une fois, persiste le document final et livre le PDF.
+
+Si le solde est insuffisant : ne rien débiter, conserver le brouillon et ouvrir la recharge. Les packs et tarifs proviennent d'une configuration centrale ; les crédits ne sont ajoutés qu'après confirmation vérifiée du paiement.
+
+## 17. Règles produit non négociables
+
+* Aucune fonctionnalité ni aucun coût de tampon.
+* `issued_at` est produit côté serveur, avec les secondes ; aucune date manuelle.
+* Aucun débit et aucun PDF final en mode `DRAFT`.
+* Le sous-total est recalculé depuis les articles sauvegardés.
+* `items.length` représente uniquement le nombre d'articles.
+* Toute correction d'article utilise le `item_id` serveur.
+* Toute opération sensible est idempotente.
+* Aucune clé, aucun token ni secret dans Git, les logs ou les rapports.
+* Aucun ID Meta volatile dans le code applicatif : utiliser des variables d'environnement.
+
+## 18. Release gate des Flows
+
+Ne publier aucun Flow avant validation de la conversation d'entrée, des cartes WhatsApp, titres, boutons et transitions, des entrées texte/vocal/photo, des informations manquantes, corrections, aperçu, calcul du coût, recharge, génération finale, historique, absence de débit en `DRAFT` et tests mobiles sur plusieurs tailles d'écran.
