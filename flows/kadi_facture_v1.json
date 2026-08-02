@@ -2,6 +2,8 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
+    "KADI_SESSION_ROOT": ["SESSION_RECOVERY", "CLIENT", "ARTICLE_ENTRY", "OPTIONS", "REVIEW_INVOICE_DRAFT", "EDIT_CLIENT", "EDIT_ITEMS", "EDIT_OPTIONS"],
+    "SESSION_RECOVERY": [],
     "CLIENT": [],
     "ARTICLE_ENTRY": [],
     "OPTIONS": [],
@@ -11,6 +13,31 @@
     "EDIT_OPTIONS": []
   },
   "screens": [
+    {
+      "id": "KADI_SESSION_ROOT",
+      "title": "Reprenons votre document",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {"type": "TextHeading", "text": "Reprenons votre document."},
+          {"type": "TextBody", "text": "Retournez dans WhatsApp pour continuer votre brouillon."},
+          {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "navigate", "next": {"type": "screen", "name": "SESSION_RECOVERY"}, "payload": {}}}
+        ]
+      }
+    },
+    {
+      "id": "SESSION_RECOVERY",
+      "title": "Reprenons votre document",
+      "terminal": true,
+      "success": false,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {"type": "TextBody", "text": "Votre brouillon reste disponible dans WhatsApp."},
+          {"type": "Footer", "label": "Retourner dans WhatsApp", "on-click-action": {"name": "complete", "payload": {}}}
+        ]
+      }
+    },
     {
       "id": "CLIENT",
       "title": "Client",

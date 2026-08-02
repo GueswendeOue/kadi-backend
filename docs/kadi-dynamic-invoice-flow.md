@@ -3,7 +3,8 @@
 Le parcours de facture utilise plusieurs ouvertures courtes du même Flow et conserve un seul brouillon côté serveur. Il n'est relié ni au portefeuille ni à l'envoi PDF.
 
 - Flow JSON `7.3`, protocole de données `3.0`.
-- Le `routing_model` est strictement acyclique : ses sept écrans d'entrée indépendants n'ont aucune transition interne. Chaque écran termine sa session avec `complete`.
+- Le `routing_model` est un graphe Meta connecté et strictement acyclique. `KADI_SESSION_ROOT` est son unique racine structurelle et pointe uniquement vers des écrans terminaux. Il n'est jamais ciblé par le backend.
+- Si cette racine est ouverte accidentellement, son unique action `navigate` mène à `SESSION_RECOVERY`, qui ferme proprement le Flow avec un texte humain. Les sept écrans métier restent directement ouverts avec `flow_action_payload.screen` et terminent chacun leur session avec `complete`.
 - Le webhook traite `interactive.nfm_reply` avant les anciens routeurs. Il enregistre l'action, crée un jeton unique, puis ouvre la prochaine session avec `flow_action_payload.screen` et `flow_action_payload.data`.
 - `ARTICLE_ENTRY` remplace les formulaires A/B. Chaque nouvel article reçoit une nouvelle instance de cet écran avec un Form direct, un résumé recalculé et des champs neufs (`designation: ""`, `quantity: "1"`, `unit_price: ""`; unité et décision sans sélection).
 - « J'ajoute autre chose » ajoute l'article exactement une fois puis rouvre `ARTICLE_ENTRY`. Cette succession n'impose aucune limite fonctionnelle de deux ou trois articles ; la limite technique configurable du document reste à 100.
