@@ -291,7 +291,9 @@ function baseAggregate(input, now) {
   const currency = normalizeCurrency(input.currency);
   if (!currency.ok) return currency;
   if (!validIdentifier(input.document_id)) return fail("DOCUMENT_ID_INVALID");
-  if (!validIdentifier(input.issuer_profile_id)) return fail("DOCUMENT_ISSUER_INVALID");
+  if (input.issuer_profile_id != null && !validIdentifier(input.issuer_profile_id)) {
+    return fail("DOCUMENT_ISSUER_INVALID");
+  }
   const timestamp = now();
   if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) {
     return fail("DOCUMENT_CLOCK_INVALID");
@@ -302,7 +304,7 @@ function baseAggregate(input, now) {
     document_purpose: DOCUMENT_PURPOSES[input.document_type],
     status: "COLLECTING",
     version: 1,
-    issuer_profile_id: input.issuer_profile_id,
+    issuer_profile_id: input.issuer_profile_id ?? null,
     currency: currency.value,
     preview: null,
     generation_quote: null,
@@ -372,6 +374,8 @@ function normalizeCommonContent(input) {
     subtotal: totals.value.subtotal,
     taxes: totals.value.taxes,
     discount: totals.value.discount,
+    discount_amount: totals.value.discount,
+    tax_rate_basis_points: input.document_type === "RECU" ? 0 : (input.tax_rate_basis_points ?? 0),
     total: totals.value.total,
     notes: input.notes,
     payment_terms: input.payment_terms,
