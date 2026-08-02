@@ -2,16 +2,24 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { MAX_RESPONSE_JSON_BYTES, isInvoiceFlowReply, normalizeInvoiceFlowSubmission, parseInvoiceFlowReply, parseInvoiceFlowResponseJson } = require("../kadiInvoiceFlowContract");
+const { INVOICE_FLOW_TARGET_SCREENS } = require("../kadiInvoiceFlowSession");
 
 const flowPath = path.join(__dirname, "..", "flows", "kadi_facture_v1.json");
 const loadFlow = () => JSON.parse(fs.readFileSync(flowPath, "utf8"));
-const ROOT_SCREEN = "KADI_SESSION_ROOT";
-const RECOVERY_SCREEN = "SESSION_RECOVERY";
 const DIRECT_ENTRY_SCREENS = ["CLIENT", "ARTICLE_ENTRY", "OPTIONS", "REVIEW_INVOICE_DRAFT", "EDIT_CLIENT", "EDIT_ITEMS", "EDIT_OPTIONS"];
-const SCREEN_ORDER = [ROOT_SCREEN, RECOVERY_SCREEN, ...DIRECT_ENTRY_SCREENS];
+const BUSINESS_SCREEN_HASHES = {
+  CLIENT: "747a4993a5ec4ac9b1e16e8fb4b1aab0cb10f7c42b2388df2921a1bcd5574d6e",
+  ARTICLE_ENTRY: "210c878aab2d1252a90c6ead11c47dc33b96f19ad2d8db2e4dd097274333e0a8",
+  OPTIONS: "26d72fdb963d02a2bbe9f311e4cc245ebccb3a11925d6e55b21565c6f918635b",
+  REVIEW_INVOICE_DRAFT: "40f01c74c08bad95c19d8481095fe3559f0b9d787f284d23809f359763125a5c",
+  EDIT_CLIENT: "aa80321d5dbb0abf08679238f4b385087d2de38e23b3ee92ac4b1316e4dd562e",
+  EDIT_ITEMS: "42546d506d6cc393b5885062ec25e964573f8355182d75b448a4bd64a048d4b8",
+  EDIT_OPTIONS: "45793172a532776797ef9bbf33980f02e5c0c06bd93cd67333eb718801c48d9c",
+};
 
 function flatten(values) {
   return values.flatMap((value) => [
@@ -27,46 +35,22 @@ function components(flow) {
   return flow.screens.flatMap((screen) => flatten(screen.layout.children));
 }
 
-function validateRoutingGraph(flow, expectedEntry = ROOT_SCREEN) {
+function validateRoutingGraph(flow, expectedEntries = DIRECT_ENTRY_SCREENS) {
   const orderedIds = flow.screens.map(({ id }) => id);
   const ids = new Set(orderedIds);
-  const routes = flow.routing_model || {};
-  if ([...ids].some((id) => !Object.hasOwn(routes, id))) return { ok: false, error: "ROUTE_MISSING" };
+  const routes = flow.routing_model;
+  if (!routes || Array.isArray(routes) || typeof routes !== "object") return { ok: false, error: "ROUTING_MODEL_INVALID" };
   if (Object.keys(routes).some((id) => !ids.has(id))) return { ok: false, error: "ROUTE_SOURCE_UNKNOWN" };
   const inbound = new Map([...ids].map((id) => [id, 0]));
+  let edgeCount = 0;
   for (const [from, targets] of Object.entries(routes)) {
     if (!Array.isArray(targets)) return { ok: false, error: "ROUTE_TARGETS_INVALID" };
     for (const target of targets) {
       if (!ids.has(target)) return { ok: false, error: "ROUTE_TARGET_UNKNOWN" };
       if (target === from) return { ok: false, error: "ROUTE_SELF_CYCLE" };
+      edgeCount += 1;
       inbound.set(target, inbound.get(target) + 1);
     }
-  }
-
-  const undirected = new Map([...ids].map((id) => [id, new Set()]));
-  for (const [from, targets] of Object.entries(routes)) {
-    for (const target of targets) {
-      undirected.get(from).add(target);
-      undirected.get(target).add(from);
-    }
-  }
-  const componentById = new Map();
-  let connectedComponentCount = 0;
-  for (const start of orderedIds) {
-    if (componentById.has(start)) continue;
-    connectedComponentCount += 1;
-    const pending = [start];
-    while (pending.length) {
-      const id = pending.pop();
-      if (componentById.has(id)) continue;
-      componentById.set(id, connectedComponentCount);
-      pending.push(...undirected.get(id));
-    }
-  }
-  if (connectedComponentCount !== 1) {
-    const rootComponent = componentById.get(orderedIds[0]);
-    const disconnected = orderedIds.filter((id) => componentById.get(id) !== rootComponent);
-    return { ok: false, error: `DISCONNECTED_SCREENS:${disconnected.join(", ")}` };
   }
 
   const visiting = new Set();
@@ -75,51 +59,27 @@ function validateRoutingGraph(flow, expectedEntry = ROOT_SCREEN) {
     if (visiting.has(id)) return false;
     if (visited.has(id)) return true;
     visiting.add(id);
-    for (const target of routes[id]) if (!visit(target)) return false;
+    for (const target of routes[id] || []) if (!visit(target)) return false;
     visiting.delete(id);
     visited.add(id);
     return true;
   }
   if ([...ids].some((id) => !visit(id))) return { ok: false, error: "ROUTE_CYCLE" };
   const entries = [...inbound].filter(([, count]) => count === 0).map(([id]) => id);
-  if (entries.length !== 1) return { ok: false, error: "ENTRY_SCREEN_COUNT_INVALID" };
-  if (expectedEntry && entries[0] !== expectedEntry) return { ok: false, error: "ENTRY_SCREEN_INVALID" };
-
-  const reachable = new Set();
-  const pending = [entries[0]];
-  while (pending.length) {
-    const id = pending.pop();
-    if (reachable.has(id)) continue;
-    reachable.add(id);
-    pending.push(...routes[id]);
-  }
-  const unreachable = orderedIds.filter((id) => !reachable.has(id));
-  if (unreachable.length) return { ok: false, error: `UNREACHABLE_SCREENS:${unreachable.join(", ")}` };
+  const entriesWithIncoming = expectedEntries.filter((id) => !ids.has(id) || inbound.get(id) !== 0);
+  if (entriesWithIncoming.length) return { ok: false, error: `DYNAMIC_ENTRY_HAS_INCOMING:${entriesWithIncoming.join(", ")}` };
 
   const screenById = new Map(flow.screens.map((screen) => [screen.id, screen]));
   for (const id of orderedIds) {
-    if (screenById.get(id).terminal && routes[id].length) return { ok: false, error: "TERMINAL_HAS_OUTBOUND_ROUTE" };
+    if (screenById.get(id).terminal && (routes[id] || []).length) return { ok: false, error: "TERMINAL_HAS_OUTBOUND_ROUTE" };
   }
-  const terminalMemo = new Map();
-  function allPathsReachTerminal(id) {
-    if (terminalMemo.has(id)) return terminalMemo.get(id);
-    const screen = screenById.get(id);
-    if (screen.terminal) return true;
-    if (!routes[id].length) return false;
-    const result = routes[id].every(allPathsReachTerminal);
-    terminalMemo.set(id, result);
-    return result;
-  }
-  const withoutTerminalPath = orderedIds.filter((id) => !allPathsReachTerminal(id));
-  if (withoutTerminalPath.length) return { ok: false, error: `NO_TERMINAL_PATH:${withoutTerminalPath.join(", ")}` };
   return {
     ok: true,
-    entry: entries[0],
-    connectedComponentCount,
+    entries,
     entryScreenCount: entries.length,
+    edgeCount,
     cycleCount: 0,
     unknownTargetCount: 0,
-    unreachableScreenCount: unreachable.length,
   };
 }
 
@@ -134,42 +94,34 @@ function formsInConditionalBranches(values) {
   });
 }
 
-test("KADI_FACTURE_V1 has one connected structural root while preserving direct short-session screens", () => {
+test("KADI_FACTURE_V1 exposes seven independent dynamic INIT entry screens", () => {
   const flow = loadFlow();
   assert.equal(flow.version, "7.3");
   assert.equal(flow.data_api_version, "3.0");
-  assert.deepEqual(flow.screens.map(({ id }) => id), SCREEN_ORDER);
+  assert.deepEqual(flow.screens.map(({ id }) => id), DIRECT_ENTRY_SCREENS);
+  assert.deepEqual(INVOICE_FLOW_TARGET_SCREENS, DIRECT_ENTRY_SCREENS);
   assert.deepEqual(validateRoutingGraph(flow), {
     ok: true,
-    entry: ROOT_SCREEN,
-    connectedComponentCount: 1,
-    entryScreenCount: 1,
+    entries: DIRECT_ENTRY_SCREENS,
+    entryScreenCount: 7,
+    edgeCount: 0,
     cycleCount: 0,
     unknownTargetCount: 0,
-    unreachableScreenCount: 0,
   });
-  assert.deepEqual(flow.routing_model[ROOT_SCREEN], [RECOVERY_SCREEN, ...DIRECT_ENTRY_SCREENS]);
-  assert.equal(DIRECT_ENTRY_SCREENS.every((id) => flow.routing_model[id].length === 0), true);
-  assert.equal(flow.routing_model.ARTICLE_ENTRY.includes("ARTICLE_ENTRY"), false);
-  assert.deepEqual(flow.routing_model.REVIEW_INVOICE_DRAFT, []);
+  assert.deepEqual(flow.routing_model, {});
+  assert.equal(flow.screens.some(({ id }) => id === "KADI_SESSION_ROOT" || id === "SESSION_RECOVERY"), false);
 });
 
-test("routing validator rejects missing, unknown, cyclic, disconnected and non-terminating graphs", () => {
+test("dynamic routing validator rejects unknown, cyclic, incoming and terminal outbound routes", () => {
   const synthetic = (routing, terminals = []) => ({ screens: Object.keys(routing).map((id) => ({ id, terminal: terminals.includes(id) })), routing_model: routing });
-  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: {} }, "A").error, "ROUTE_MISSING");
-  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: { A: [], EXTRA: [] } }, "A").error, "ROUTE_SOURCE_UNKNOWN");
-  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: { A: ["MISSING"] } }, "A").error, "ROUTE_TARGET_UNKNOWN");
-  assert.equal(validateRoutingGraph(synthetic({ A: ["A"] }), "A").error, "ROUTE_SELF_CYCLE");
-  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: ["A"] }), "A").error, "ROUTE_CYCLE");
-  assert.equal(validateRoutingGraph(synthetic({ A: ["C"], B: ["C"], C: [] }, ["C"]), "A").error, "ENTRY_SCREEN_COUNT_INVALID");
-  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: [] }, []), "A").error, "NO_TERMINAL_PATH:A, B");
-  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: [] }, ["A", "B"]), "A").error, "TERMINAL_HAS_OUTBOUND_ROUTE");
-});
-
-test("routing validator reports every screen disconnected by the former empty model", () => {
-  const synthetic = (routing, terminals = []) => ({ screens: Object.keys(routing).map((id) => ({ id, terminal: terminals.includes(id) })), routing_model: routing });
-  const disconnected = synthetic({ CLIENT: [], ARTICLE_ENTRY: [], OPTIONS: [], REVIEW_INVOICE_DRAFT: [], EDIT_CLIENT: [], EDIT_ITEMS: [], EDIT_OPTIONS: [] }, DIRECT_ENTRY_SCREENS);
-  assert.equal(validateRoutingGraph(disconnected, "CLIENT").error, "DISCONNECTED_SCREENS:ARTICLE_ENTRY, OPTIONS, REVIEW_INVOICE_DRAFT, EDIT_CLIENT, EDIT_ITEMS, EDIT_OPTIONS");
+  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: null }, ["A"]).error, "ROUTING_MODEL_INVALID");
+  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: { EXTRA: [] } }, ["A"]).error, "ROUTE_SOURCE_UNKNOWN");
+  assert.equal(validateRoutingGraph({ screens: [{ id: "A", terminal: true }], routing_model: { A: ["MISSING"] } }, ["A"]).error, "ROUTE_TARGET_UNKNOWN");
+  assert.equal(validateRoutingGraph(synthetic({ A: ["A"] }), ["A"]).error, "ROUTE_SELF_CYCLE");
+  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: ["A"] }), ["A", "B"]).error, "ROUTE_CYCLE");
+  assert.equal(validateRoutingGraph(synthetic({ ROOT: ["A"], A: [] }, ["A"]), ["A"]).error, "DYNAMIC_ENTRY_HAS_INCOMING:A");
+  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: [] }, ["A", "B"]), ["A", "B"]).error, "DYNAMIC_ENTRY_HAS_INCOMING:B");
+  assert.equal(validateRoutingGraph(synthetic({ A: ["B"], B: [] }, ["A"]), ["A"]).error, "TERMINAL_HAS_OUTBOUND_ROUTE");
 });
 
 test("ARTICLE_ENTRY has one direct Form and fresh standalone input defaults", () => {
@@ -197,25 +149,8 @@ test("no Form is nested under If or Switch and no component uses init-value", ()
   assert.equal(components(flow).some((component) => component.type !== "Form" && Object.hasOwn(component, "init-values")), false);
 });
 
-test("structural root recovers safely and every business screen still completes its short session", () => {
+test("every dynamic entry screen completes its independent short session", () => {
   const flow = loadFlow();
-  const root = flow.screens.find(({ id }) => id === ROOT_SCREEN);
-  const rootFooter = flatten(root.layout.children).find(({ type }) => type === "Footer");
-  assert.notEqual(root.terminal, true);
-  assert.equal(rootFooter["on-click-action"].name, "navigate");
-  assert.deepEqual(rootFooter["on-click-action"].next, { type: "screen", name: RECOVERY_SCREEN });
-  const rootVisibleCopy = flatten(root.layout.children)
-    .flatMap((component) => [component.text, component.label, component.title])
-    .filter((value) => typeof value === "string");
-  assert.doesNotMatch(rootVisibleCopy.join("\n"), /routing|session|payload|erreur technique/i);
-
-  const recovery = flow.screens.find(({ id }) => id === RECOVERY_SCREEN);
-  const recoveryFooter = flatten(recovery.layout.children).find(({ type }) => type === "Footer");
-  assert.equal(recovery.terminal, true);
-  assert.equal(recovery.success, false);
-  assert.equal(recoveryFooter["on-click-action"].name, "complete");
-  assert.deepEqual(recoveryFooter["on-click-action"].payload, {});
-
   for (const screen of flow.screens.filter(({ id }) => DIRECT_ENTRY_SCREENS.includes(id))) {
     assert.equal(screen.terminal, true, screen.id);
     assert.equal(screen.success, true, screen.id);
@@ -225,8 +160,16 @@ test("structural root recovers safely and every business screen still completes 
     assert.equal(footers[0]["on-click-action"].payload.flow_token, "${data.flow_token}", screen.id);
     assert.equal(footers[0]["on-click-action"].payload.draft_id, "${data.draft_id}", screen.id);
   }
-  assert.equal(flow.screens.filter(({ terminal }) => terminal).length, 8);
+  assert.equal(flow.screens.filter(({ terminal }) => terminal).length, 7);
   assert.equal(components(flow).some((component) => component["on-click-action"]?.name === "data_exchange"), false);
+});
+
+test("business screen definitions remain byte-for-byte structurally unchanged", () => {
+  const flow = loadFlow();
+  for (const screen of flow.screens) {
+    const digest = crypto.createHash("sha256").update(JSON.stringify(screen)).digest("hex");
+    assert.equal(digest, BUSINESS_SCREEN_HASHES[screen.id], screen.id);
+  }
 });
 
 test("article screen uses human copy and returns complete add/finish outcomes", () => {
