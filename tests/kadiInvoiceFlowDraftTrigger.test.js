@@ -49,6 +49,8 @@ test("allowlisted exact trigger accepts case and surrounding spaces", async () =
   assert.equal(payload.interactive.action.parameters.mode, "draft");
   assert.equal(payload.interactive.action.parameters.flow_id, "1972040430119125");
   assert.equal(payload.interactive.action.parameters.flow_action_payload.screen, "CLIENT");
+  assert.equal(payload.interactive.action.parameters.flow_action_payload.data.draft_id, "draft-1");
+  assert.equal(payload.interactive.action.parameters.flow_action_payload.data.flow_token, payload.interactive.action.parameters.flow_token);
   assert.equal(payload.interactive.action.parameters.flow_cta, "Ouvrir le formulaire");
   assert.match(payload.interactive.action.parameters.flow_token, /^kadi_invoice_v1:[a-f0-9]{32}:/);
   assert.equal(f.texts.length, 0);

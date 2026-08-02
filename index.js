@@ -20,8 +20,7 @@ const {
   processDevisFollowups,
 } = require("./kadiEngine");
 
-const { sendText } = require("./kadiMessaging");
-const { sendFlow } = require("./kadiMessaging");
+const { sendFlow, sendText } = require("./kadiMessaging");
 const { createInvoiceFlowEndpoint } = require("./kadiInvoiceFlowEndpoint");
 const { createInvoiceCartService } = require("./kadiInvoiceCartService");
 const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepository");
@@ -432,10 +431,18 @@ const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
       sendFlow,
       sendText,
     });
-    invoiceFlowCompletion = createInvoiceFlowCompletionHandler({ flowSessionService, sendText });
+    invoiceFlowCompletion = createInvoiceFlowCompletionHandler({
+      flowSessionService,
+      cartService,
+      flowId: process.env.KADI_INVOICE_FLOW_ID,
+      ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
+      sendFlow,
+      sendText,
+    });
     return createInvoiceFlowEndpoint({
       cartService,
       flowSessionService,
+      webhookOrchestration: true,
       cryptoConfig: {
         privateKey: process.env.KADI_FLOW_PRIVATE_KEY,
         passphrase: process.env.KADI_FLOW_PRIVATE_KEY_PASSPHRASE,

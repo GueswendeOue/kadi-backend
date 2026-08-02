@@ -2,208 +2,18 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "CLIENT": ["ARTICLE_CART_A", "REVIEW_INVOICE_DRAFT"],
-    "ARTICLE_CART_A": ["ARTICLE_CART_B", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
-    "ARTICLE_CART_B": ["ARTICLE_CART_A", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
-    "OPTIONS": ["REVIEW_INVOICE_DRAFT"],
-    "REVIEW_INVOICE_DRAFT": ["CLIENT", "ARTICLE_CART_A", "ARTICLE_CART_B", "OPTIONS", "DRAFT_SAVED"],
-    "DRAFT_SAVED": []
+    "CLIENT": [],
+    "ARTICLE_ENTRY": [],
+    "OPTIONS": [],
+    "REVIEW_INVOICE_DRAFT": [],
+    "EDIT_CLIENT": [],
+    "EDIT_ITEMS": [],
+    "EDIT_OPTIONS": []
   },
   "screens": [
     {
       "id": "CLIENT",
       "title": "Client",
-      "data": {"draft_id": {"type": "string", "__example__": "draft-example"}, "return_to_review": {"type": "string", "__example__": "false"}, "client_type": {"type": "string", "__example__": "individual"}, "client_name": {"type": "string", "__example__": ""}, "client_phone": {"type": "string", "__example__": ""}, "client_address": {"type": "string", "__example__": ""}, "client_ifu": {"type": "string", "__example__": ""}, "client_registry_number": {"type": "string", "__example__": ""}, "invoice_subject": {"type": "string", "__example__": ""}},
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [{
-          "type": "Form",
-          "name": "client_form",
-          "children": [
-            {"type": "RadioButtonsGroup", "name": "client_type", "label": "Type de client", "required": true, "data-source": [{"id": "individual", "title": "Particulier"}, {"id": "professional", "title": "Professionnel"}]},
-            {"type": "TextInput", "name": "client_name", "label": "Nom du client", "input-type": "text", "required": true},
-            {"type": "TextInput", "name": "client_phone", "label": "Téléphone", "input-type": "phone", "required": false},
-            {"type": "TextInput", "name": "client_address", "label": "Adresse", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "client_ifu", "label": "IFU", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "client_registry_number", "label": "RCCM ou registre", "input-type": "text", "required": false},
-            {"type": "TextInput", "name": "invoice_subject", "label": "Objet", "input-type": "text", "required": false},
-            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_client", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "client_type": "${form.client_type}", "client_name": "${form.client_name}", "client_phone": "${form.client_phone}", "client_address": "${form.client_address}", "client_ifu": "${form.client_ifu}", "client_registry_number": "${form.client_registry_number}", "invoice_subject": "${form.invoice_subject}"}}}
-          ]
-        }]
-      }
-    },
-    {
-      "id": "ARTICLE_CART_A",
-      "title": "Articles et services",
-      "data": {
-        "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "string", "__example__": "0"},
-        "item_index": {"type": "string", "__example__": "1"},
-        "item_number_text": {"type": "string", "__example__": "Article 1"},
-        "current_item_id": {"type": "string", "__example__": "draft-example:item:1"},
-        "submission_id": {"type": "string", "__example__": "draft-example:item:1"},
-        "saved_item_count_text": {"type": "string", "__example__": "0 articles enregistrés"},
-        "saved_items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
-        "saved_subtotal_text": {"type": "string", "__example__": "0 FCFA"},
-        "article_form_init_values": {
-          "type": "object",
-          "properties": {
-            "designation_a": {"type": "string"},
-            "quantity_a": {"type": "string"},
-            "unit_price_a": {"type": "string"}
-          },
-          "__example__": {"designation_a": "", "quantity_a": "1", "unit_price_a": ""}
-        },
-        "return_to_review": {"type": "string", "__example__": "false"},
-        "items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
-        "provisional_subtotal": {"type": "string", "__example__": "0 FCFA"}
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {"type": "TextHeading", "text": "${data.item_number_text}"},
-          {"type": "TextBody", "text": "Ajoutez un produit ou un service à la fois."},
-          {"type": "TextSubheading", "text": "Déjà ajoutés"},
-          {"type": "TextBody", "text": "${data.saved_item_count_text}"},
-          {"type": "TextSubheading", "text": "Ce que vous avez déjà ajouté"},
-          {"type": "TextBody", "text": "${data.saved_items_summary}"},
-          {"type": "TextSubheading", "text": "Total pour le moment"},
-          {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
-          {
-            "type": "Form",
-            "name": "item_form_a",
-            "init-values": "${data.article_form_init_values}",
-            "children": [
-              {"type": "TextInput", "name": "designation_a", "label": "Désignation", "input-type": "text", "required": true},
-              {"type": "TextInput", "name": "quantity_a", "label": "Quantité", "input-type": "number", "required": true},
-              {"type": "Dropdown", "name": "unit_a", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
-              {"type": "TextInput", "name": "unit_price_a", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-              {"type": "RadioButtonsGroup", "name": "article_decision_a", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
-              {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "designation": "${form.designation_a}", "quantity": "${form.quantity_a}", "unit": "${form.unit_a}", "unit_price": "${form.unit_price_a}", "article_decision": "${form.article_decision_a}"}}}
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "ARTICLE_CART_B",
-      "title": "Articles et services",
-      "data": {
-        "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "string", "__example__": "1"},
-        "item_index": {"type": "string", "__example__": "2"},
-        "item_number_text": {"type": "string", "__example__": "Article 2"},
-        "current_item_id": {"type": "string", "__example__": "draft-example:item:2"},
-        "submission_id": {"type": "string", "__example__": "draft-example:item:2"},
-        "saved_item_count_text": {"type": "string", "__example__": "1 article enregistré"},
-        "saved_items_summary": {"type": "string", "__example__": "Ordinateur — 1 × 150 000 FCFA"},
-        "saved_subtotal_text": {"type": "string", "__example__": "150 000 FCFA"},
-        "article_form_init_values": {
-          "type": "object",
-          "properties": {
-            "designation_b": {"type": "string"},
-            "quantity_b": {"type": "string"},
-            "unit_price_b": {"type": "string"}
-          },
-          "__example__": {"designation_b": "", "quantity_b": "1", "unit_price_b": ""}
-        },
-        "return_to_review": {"type": "string", "__example__": "false"},
-        "items_summary": {"type": "string", "__example__": "Ordinateur — 1 × 150 000 FCFA"},
-        "provisional_subtotal": {"type": "string", "__example__": "150 000 FCFA"}
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {"type": "TextHeading", "text": "${data.item_number_text}"},
-          {"type": "TextBody", "text": "Ajoutez un produit ou un service à la fois."},
-          {"type": "TextSubheading", "text": "Déjà ajoutés"},
-          {"type": "TextBody", "text": "${data.saved_item_count_text}"},
-          {"type": "TextSubheading", "text": "Ce que vous avez déjà ajouté"},
-          {"type": "TextBody", "text": "${data.saved_items_summary}"},
-          {"type": "TextSubheading", "text": "Total pour le moment"},
-          {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
-          {
-            "type": "Form",
-            "name": "item_form_b",
-            "init-values": "${data.article_form_init_values}",
-            "children": [
-              {"type": "TextInput", "name": "designation_b", "label": "Désignation", "input-type": "text", "required": true},
-              {"type": "TextInput", "name": "quantity_b", "label": "Quantité", "input-type": "number", "required": true},
-              {"type": "Dropdown", "name": "unit_b", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
-              {"type": "TextInput", "name": "unit_price_b", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-              {"type": "RadioButtonsGroup", "name": "article_decision_b", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
-              {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "designation": "${form.designation_b}", "quantity": "${form.quantity_b}", "unit": "${form.unit_b}", "unit_price": "${form.unit_price_b}", "article_decision": "${form.article_decision_b}"}}}
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "OPTIONS",
-      "title": "Options",
-      "data": {
-        "draft_id": {"type": "string", "__example__": "draft-example"},
-        "item_count": {"type": "string", "__example__": "0"},
-        "return_to_review": {"type": "string", "__example__": "false"},
-        "tax_status": {"type": "string", "__example__": "not_applicable"},
-        "tax_rate": {"type": "string", "__example__": ""},
-        "discount_amount": {"type": "string", "__example__": "0"},
-        "amount_paid": {"type": "string", "__example__": "0"},
-        "payment_terms": {"type": "string", "__example__": ""},
-        "note": {"type": "string", "__example__": ""}
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [{
-          "type": "Form",
-          "name": "options_form",
-          "children": [
-            {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": false, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
-            {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
-            {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
-            {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
-            {"type": "DatePicker", "name": "due_date", "label": "Date d'échéance", "required": false},
-            {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
-            {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
-            {"type": "TextArea", "name": "note", "label": "Note", "required": false},
-            {"type": "Footer", "label": "Vérifiez les informations", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}"}}}
-          ]
-        }]
-      }
-    },
-    {
-      "id": "REVIEW_INVOICE_DRAFT",
-      "title": "Vérifiez les informations",
-      "data": {
-        "draft_id": {"type": "string", "__example__": "draft-example"},
-        "issuer_name": {"type": "string", "__example__": "Profil entreprise non renseigné"},
-        "client_type": {"type": "string", "__example__": "Particulier"},
-        "client_name": {"type": "string", "__example__": "Ben"},
-        "client_phone": {"type": "string", "__example__": "Non renseigné"},
-        "client_address": {"type": "string", "__example__": "Non renseignée"},
-        "items_summary": {"type": "string", "__example__": "1. Ordinateur — 1 × Unité × 150 000 FCFA = 150 000 FCFA"},
-        "subtotal_text": {"type": "string", "__example__": "150 000 FCFA"},
-        "discount_text": {"type": "string", "__example__": "0 FCFA"},
-        "tax_text": {"type": "string", "__example__": "Aucune taxe"},
-        "total_text": {"type": "string", "__example__": "150 000 FCFA"},
-        "payment_terms": {"type": "string", "__example__": "Non renseignées"},
-        "note": {"type": "string", "__example__": "Aucune note"},
-        "due_date": {"type": "string", "__example__": "Aucune échéance"}
-      },
-      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "review_form", "children": [
-        {"type": "TextHeading", "text": "Tout est bon ?"},
-        {"type": "TextSubheading", "text": "Émetteur"}, {"type": "TextBody", "text": "${data.issuer_name}"},
-        {"type": "TextSubheading", "text": "Client"}, {"type": "TextBody", "text": "${data.client_type}"}, {"type": "TextBody", "text": "${data.client_name}"}, {"type": "TextBody", "text": "${data.client_phone}"}, {"type": "TextBody", "text": "${data.client_address}"},
-        {"type": "TextSubheading", "text": "Articles et services"}, {"type": "TextBody", "text": "${data.items_summary}"},
-        {"type": "TextSubheading", "text": "Totaux"}, {"type": "TextBody", "text": "${data.subtotal_text}"}, {"type": "TextBody", "text": "${data.discount_text}"}, {"type": "TextBody", "text": "${data.tax_text}"}, {"type": "TextBody", "text": "${data.total_text}"},
-        {"type": "TextSubheading", "text": "Informations complémentaires"}, {"type": "TextBody", "text": "${data.payment_terms}"}, {"type": "TextBody", "text": "${data.note}"}, {"type": "TextBody", "text": "${data.due_date}"},
-        {"type": "RadioButtonsGroup", "name": "review_action", "label": "Que voulez-vous faire ?", "required": true, "data-source": [{"id":"modify_client","title":"Corriger le client"},{"id":"modify_items","title":"Corriger les produits et services"},{"id":"modify_options","title":"Corriger les autres détails"},{"id":"confirm_generate","title":"Oui, enregistrer le brouillon"}]},
-        {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "review_action", "draft_id": "${data.draft_id}", "review_action": "${form.review_action}"}}}
-      ]}]}
-    },
-    {
-      "id": "DRAFT_SAVED",
-      "title": "C’est bien enregistré",
       "terminal": true,
       "success": true,
       "data": {
@@ -212,12 +22,187 @@
       },
       "layout": {
         "type": "SingleColumnLayout",
+        "children": [{
+          "type": "Form",
+          "name": "client_form",
+          "children": [
+            {"type": "TextHeading", "text": "À qui facturez-vous ?"},
+            {"type": "RadioButtonsGroup", "name": "client_type", "label": "Type de client", "required": true, "data-source": [{"id": "individual", "title": "Particulier"}, {"id": "professional", "title": "Professionnel"}]},
+            {"type": "TextInput", "name": "client_name", "label": "Nom du client", "input-type": "text", "required": true},
+            {"type": "TextInput", "name": "client_phone", "label": "Téléphone", "input-type": "phone", "required": false},
+            {"type": "TextInput", "name": "client_address", "label": "Adresse", "input-type": "text", "required": false},
+            {"type": "TextInput", "name": "client_ifu", "label": "IFU", "input-type": "text", "required": false},
+            {"type": "TextInput", "name": "client_registry_number", "label": "RCCM ou registre", "input-type": "text", "required": false},
+            {"type": "TextInput", "name": "invoice_subject", "label": "Objet", "input-type": "text", "required": false},
+            {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "complete", "payload": {"outcome": "client_saved", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "client_type": "${form.client_type}", "client_name": "${form.client_name}", "client_phone": "${form.client_phone}", "client_address": "${form.client_address}", "client_ifu": "${form.client_ifu}", "client_registry_number": "${form.client_registry_number}", "invoice_subject": "${form.invoice_subject}"}}}
+          ]
+        }]
+      }
+    },
+    {
+      "id": "ARTICLE_ENTRY",
+      "title": "Articles et services",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "item_number_text": {"type": "string", "__example__": "Produit ou service 1"},
+        "saved_item_count_text": {"type": "string", "__example__": "0 article enregistré"},
+        "saved_items_summary": {"type": "string", "__example__": "Rien pour le moment"},
+        "saved_subtotal_text": {"type": "string", "__example__": "0 FCFA"},
+        "current_item_id": {"type": "string", "__example__": "draft-example:item:1"},
+        "submission_id": {"type": "string", "__example__": "draft-example:item:1"},
+        "return_to_review": {"type": "string", "__example__": "false"},
+        "article_form_init_values": {
+          "type": "object",
+          "properties": {
+            "designation": {"type": "string"},
+            "quantity": {"type": "string"},
+            "unit_price": {"type": "string"}
+          },
+          "__example__": {"designation": "", "quantity": "1", "unit_price": ""}
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
         "children": [
-          {"type":"TextHeading","text":"C’est bien enregistré"},
-          {"type":"TextBody","text":"Votre brouillon de facture a bien été enregistré. Aucun crédit n’a été débité."},
-          {"type":"Footer","label":"Retourner dans WhatsApp","on-click-action":{"name":"complete","payload":{"status":"draft_saved","flow_token":"${data.flow_token}","draft_id":"${data.draft_id}"}}}
+          {"type": "TextHeading", "text": "${data.item_number_text}"},
+          {"type": "TextBody", "text": "Qu’avez-vous vendu ou réalisé ?"},
+          {"type": "TextSubheading", "text": "Déjà ajoutés"},
+          {"type": "TextBody", "text": "${data.saved_item_count_text}"},
+          {"type": "TextBody", "text": "${data.saved_items_summary}"},
+          {"type": "TextSubheading", "text": "Total pour le moment"},
+          {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
+          {
+            "type": "Form",
+            "name": "article_form",
+            "init-values": "${data.article_form_init_values}",
+            "children": [
+              {"type": "TextInput", "name": "designation", "label": "Désignation", "input-type": "text", "required": true},
+              {"type": "TextInput", "name": "quantity", "label": "Quantité", "input-type": "number", "required": true},
+              {"type": "Dropdown", "name": "unit", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
+              {"type": "TextInput", "name": "unit_price", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
+              {"type": "RadioButtonsGroup", "name": "article_decision", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another_item","title":"J’ajoute autre chose"},{"id":"items_finished","title":"C’est tout"}]},
+              {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "complete", "payload": {"outcome": "${form.article_decision}", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "designation": "${form.designation}", "quantity": "${form.quantity}", "unit": "${form.unit}", "unit_price": "${form.unit_price}"}}}
+            ]
+          }
         ]
       }
+    },
+    {
+      "id": "OPTIONS",
+      "title": "Autres détails",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "options_form", "children": [
+        {"type": "TextHeading", "text": "Derniers détails"},
+        {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": false, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
+        {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
+        {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
+        {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
+        {"type": "DatePicker", "name": "due_date", "label": "Date d'échéance", "required": false},
+        {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
+        {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
+        {"type": "TextArea", "name": "invoice_note", "label": "Note", "required": false},
+        {"type": "Footer", "label": "Vérifier le brouillon", "on-click-action": {"name": "complete", "payload": {"outcome": "options_saved", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "invoice_note": "${form.invoice_note}"}}}
+      ]}]}
+    },
+    {
+      "id": "REVIEW_INVOICE_DRAFT",
+      "title": "Vérifiez les informations",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "issuer_name": {"type": "string", "__example__": "Profil entreprise non renseigné"},
+        "client_summary": {"type": "string", "__example__": "Ben"},
+        "items_summary": {"type": "string", "__example__": "1. Ordinateur — 1 × 50 000 FCFA"},
+        "total_text": {"type": "string", "__example__": "50 000 FCFA"},
+        "options_summary": {"type": "string", "__example__": "Aucune taxe"}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "review_form", "children": [
+        {"type": "TextHeading", "text": "Tout est bon ?"},
+        {"type": "TextSubheading", "text": "Émetteur"}, {"type": "TextBody", "text": "${data.issuer_name}"},
+        {"type": "TextSubheading", "text": "Client"}, {"type": "TextBody", "text": "${data.client_summary}"},
+        {"type": "TextSubheading", "text": "Produits et services"}, {"type": "TextBody", "text": "${data.items_summary}"},
+        {"type": "TextSubheading", "text": "Total"}, {"type": "TextBody", "text": "${data.total_text}"},
+        {"type": "TextSubheading", "text": "Autres détails"}, {"type": "TextBody", "text": "${data.options_summary}"},
+        {"type": "RadioButtonsGroup", "name": "review_action", "label": "Que souhaitez-vous faire ?", "required": true, "data-source": [{"id":"modify_client","title":"Corriger le client"},{"id":"modify_items","title":"Corriger les produits et services"},{"id":"modify_options","title":"Corriger les autres détails"},{"id":"finalize_draft","title":"Oui, enregistrer le brouillon"}]},
+        {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "complete", "payload": {"outcome": "${form.review_action}", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}"}}}
+      ]}]}
+    },
+    {
+      "id": "EDIT_CLIENT",
+      "title": "Corriger le client",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "client_form_init_values": {"type": "object", "properties": {"client_type": {"type": "string"}, "client_name": {"type": "string"}, "client_phone": {"type": "string"}, "client_address": {"type": "string"}, "client_ifu": {"type": "string"}, "client_registry_number": {"type": "string"}, "invoice_subject": {"type": "string"}}, "__example__": {"client_type": "individual", "client_name": "Ben", "client_phone": "", "client_address": "", "client_ifu": "", "client_registry_number": "", "invoice_subject": ""}}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "edit_client_form", "init-values": "${data.client_form_init_values}", "children": [
+        {"type": "TextHeading", "text": "D’accord, corrigeons cela."},
+        {"type": "RadioButtonsGroup", "name": "client_type", "label": "Type de client", "required": true, "data-source": [{"id":"individual","title":"Particulier"},{"id":"professional","title":"Professionnel"}]},
+        {"type": "TextInput", "name": "client_name", "label": "Nom du client", "input-type": "text", "required": true},
+        {"type": "TextInput", "name": "client_phone", "label": "Téléphone", "input-type": "phone", "required": false},
+        {"type": "TextInput", "name": "client_address", "label": "Adresse", "input-type": "text", "required": false},
+        {"type": "TextInput", "name": "client_ifu", "label": "IFU", "input-type": "text", "required": false},
+        {"type": "TextInput", "name": "client_registry_number", "label": "RCCM ou registre", "input-type": "text", "required": false},
+        {"type": "TextInput", "name": "invoice_subject", "label": "Objet", "input-type": "text", "required": false},
+        {"type": "Footer", "label": "Enregistrer la correction", "on-click-action": {"name": "complete", "payload": {"outcome": "client_corrected", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "client_type": "${form.client_type}", "client_name": "${form.client_name}", "client_phone": "${form.client_phone}", "client_address": "${form.client_address}", "client_ifu": "${form.client_ifu}", "client_registry_number": "${form.client_registry_number}", "invoice_subject": "${form.invoice_subject}"}}}
+      ]}]}
+    },
+    {
+      "id": "EDIT_ITEMS",
+      "title": "Corriger les articles",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "items_summary": {"type": "string", "__example__": "1. Ordinateur — 1 × 50 000 FCFA"},
+        "total_text": {"type": "string", "__example__": "50 000 FCFA"},
+        "editable_items": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}}}, "__example__": [{"id": "draft-example:item:1", "title": "1. Ordinateur"}]}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "edit_items_form", "children": [
+        {"type": "TextHeading", "text": "D’accord, corrigeons cela."},
+        {"type": "TextBody", "text": "${data.items_summary}"},
+        {"type": "TextBody", "text": "${data.total_text}"},
+        {"type": "Dropdown", "name": "edit_item_id", "label": "Article à corriger", "required": true, "data-source": "${data.editable_items}"},
+        {"type": "TextInput", "name": "edit_quantity", "label": "Nouvelle quantité", "input-type": "number", "required": true},
+        {"type": "TextInput", "name": "edit_unit_price", "label": "Nouveau prix unitaire", "input-type": "number", "required": true},
+        {"type": "Footer", "label": "Enregistrer la correction", "on-click-action": {"name": "complete", "payload": {"outcome": "item_corrected", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "edit_item_id": "${form.edit_item_id}", "edit_quantity": "${form.edit_quantity}", "edit_unit_price": "${form.edit_unit_price}"}}}
+      ]}]}
+    },
+    {
+      "id": "EDIT_OPTIONS",
+      "title": "Corriger les détails",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "options_form_init_values": {"type": "object", "properties": {"tax_status": {"type": "string"}, "tax_rate": {"type": "string"}, "discount_amount": {"type": "string"}, "amount_paid": {"type": "string"}, "due_date": {"type": "string"}, "payment_method": {"type": "string"}, "payment_terms": {"type": "string"}, "invoice_note": {"type": "string"}}, "__example__": {"tax_status": "not_applicable", "tax_rate": "", "discount_amount": "0", "amount_paid": "0", "due_date": "", "payment_method": "", "payment_terms": "", "invoice_note": ""}}
+      },
+      "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "edit_options_form", "init-values": "${data.options_form_init_values}", "children": [
+        {"type": "TextHeading", "text": "D’accord, corrigeons cela."},
+        {"type": "RadioButtonsGroup", "name": "tax_status", "label": "Situation fiscale", "required": false, "data-source": [{"id":"not_applicable","title":"Non applicable"},{"id":"exempt","title":"Exonéré"},{"id":"taxable","title":"Taxable"}]},
+        {"type": "TextInput", "name": "tax_rate", "label": "Taux de taxe (%)", "input-type": "number", "required": false},
+        {"type": "TextInput", "name": "discount_amount", "label": "Remise FCFA", "input-type": "number", "required": false},
+        {"type": "TextInput", "name": "amount_paid", "label": "Montant payé", "input-type": "number", "required": false},
+        {"type": "DatePicker", "name": "due_date", "label": "Date d'échéance", "required": false},
+        {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
+        {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
+        {"type": "TextArea", "name": "invoice_note", "label": "Note", "required": false},
+        {"type": "Footer", "label": "Enregistrer la correction", "on-click-action": {"name": "complete", "payload": {"outcome": "options_corrected", "flow_token": "${data.flow_token}", "draft_id": "${data.draft_id}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "invoice_note": "${form.invoice_note}"}}}
+      ]}]}
     }
   ]
 }

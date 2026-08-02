@@ -56,3 +56,21 @@ test("technical item limit is configurable and never truncates", async () => {
   assert.equal((await cart.addItem({ ...common, actionKey: "2", item: item(2) })).ok, true);
   assert.equal((await cart.addItem({ ...common, actionKey: "3", item: item(3) })).error, "ITEM_LIMIT_REACHED");
 });
+
+test("correction updates one server-stable item id without appending or trusting an index", async () => {
+  const cart = createInvoiceCartService({ repository: createInMemoryInvoiceDraftRepository() });
+  const created = await cart.createDraft({ ownerRef: owner, flowToken: token, client: { type: "individual", name: "Client" } });
+  const common = { draftId: created.value.draft_id, ownerRef: owner, flowToken: token };
+  const first = await cart.addItem({ ...common, actionKey: "add-1", itemId: `${created.value.draft_id}:item:1`, item: item(1) });
+  const second = await cart.addItem({ ...common, actionKey: "add-2", itemId: `${created.value.draft_id}:item:2`, item: item(2) });
+  const targetId = second.value.items[1].item_id;
+  const corrected = await cart.updateCorrectionItem({ ...common, actionKey: "correct-2", itemId: targetId, quantity: "3", unitPrice: "250" });
+  const retry = await cart.updateCorrectionItem({ ...common, actionKey: "correct-2", itemId: targetId, quantity: "3", unitPrice: "250" });
+  assert.equal(corrected.value.items.length, 2);
+  assert.equal(corrected.value.items[0].quantity, first.value.items[0].quantity);
+  assert.equal(corrected.value.items[1].item_id, targetId);
+  assert.equal(corrected.value.items[1].quantity, 3);
+  assert.equal(corrected.value.items[1].unit_price, 250);
+  assert.equal(retry.duplicate, true);
+  assert.equal((await cart.updateCorrectionItem({ ...common, actionKey: "foreign", itemId: "foreign:item", quantity: "1", unitPrice: "1" })).error, "ITEM_NOT_FOUND");
+});

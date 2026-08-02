@@ -119,14 +119,45 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     }});
   }
 
+  function correctClient(args) {
+    return mutate({ ...args, apply(draft) {
+      if (!['collecting_client', 'collecting_items', 'collecting_options', 'ready_for_quote'].includes(draft.status)) {
+        return { ok: false, error: "DRAFT_STATE_INVALID" };
+      }
+      const normalized = normalizeClient(args.client);
+      if (!normalized.ok) return normalized;
+      draft.client = normalized.value;
+      return { ok: true };
+    }});
+  }
+
   function addItem(args) {
     return mutate({ ...args, apply(draft) {
       if (draft.status !== "collecting_items") return { ok: false, error: "DRAFT_STATE_INVALID" };
       if (draft.items.length >= maxItems) return { ok: false, error: "ITEM_LIMIT_REACHED" };
       const normalized = normalizeInvoiceItem(args.item);
       if (!normalized.ok) return normalized;
-      draft.items.push(normalized.value);
+      const itemId = typeof args.itemId === "string" && /^[A-Za-z0-9:_-]{1,200}$/.test(args.itemId)
+        ? args.itemId
+        : `${draft.draft_id}:item:${draft.items.length + 1}`;
+      draft.items.push({ ...normalized.value, item_id: itemId });
       draft.status = "collecting_items";
+      return { ok: true };
+    }});
+  }
+
+  function addCorrectionItem(args) {
+    return mutate({ ...args, apply(draft) {
+      if (!['collecting_items', 'collecting_options', 'ready_for_quote'].includes(draft.status)) {
+        return { ok: false, error: "DRAFT_STATE_INVALID" };
+      }
+      if (draft.items.length >= maxItems) return { ok: false, error: "ITEM_LIMIT_REACHED" };
+      const normalized = normalizeInvoiceItem(args.item);
+      if (!normalized.ok) return normalized;
+      const itemId = typeof args.itemId === "string" && /^[A-Za-z0-9:_-]{1,200}$/.test(args.itemId)
+        ? args.itemId
+        : `${draft.draft_id}:item:${draft.items.length + 1}`;
+      draft.items.push({ ...normalized.value, item_id: itemId });
       return { ok: true };
     }});
   }
@@ -136,6 +167,30 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
       if (draft.status !== "collecting_items") return { ok: false, error: "DRAFT_STATE_INVALID" };
       if (draft.items.length < 1) return { ok: false, error: "ITEMS_REQUIRED" };
       draft.status = "collecting_options";
+      return { ok: true };
+    }});
+  }
+
+  function updateCorrectionItem(args) {
+    return mutate({ ...args, apply(draft) {
+      if (!["collecting_items", "collecting_options", "ready_for_quote"].includes(draft.status)) {
+        return { ok: false, error: "DRAFT_STATE_INVALID" };
+      }
+      if (typeof args.itemId !== "string" || !args.itemId) return { ok: false, error: "ITEM_ID_INVALID" };
+      const itemIndex = draft.items.findIndex((item, index) =>
+        (item.item_id || `${draft.draft_id}:item:${index + 1}`) === args.itemId
+      );
+      if (itemIndex < 0) return { ok: false, error: "ITEM_NOT_FOUND" };
+      const current = draft.items[itemIndex];
+      const normalized = normalizeInvoiceItem({
+        item_id: args.itemId,
+        description: current.description,
+        quantity: args.quantity,
+        unit: current.unit,
+        unit_price: args.unitPrice,
+      });
+      if (!normalized.ok) return normalized;
+      draft.items[itemIndex] = normalized.value;
       return { ok: true };
     }});
   }
@@ -182,7 +237,7 @@ function createInvoiceCartService({ repository, now = () => Date.now(), ttlMs = 
     }});
   }
 
-  return Object.freeze({ addItem, createDraft, deleteItem, finalizeDraft, finishItems, loadOwned, setClient, setOptions, updateItem, maxItems });
+  return Object.freeze({ addCorrectionItem, addItem, correctClient, createDraft, deleteItem, finalizeDraft, finishItems, loadOwned, setClient, setOptions, updateCorrectionItem, updateItem, maxItems });
 }
 
 module.exports = { DRAFT_STATUSES, createInvoiceCartService, flowTokenReference };

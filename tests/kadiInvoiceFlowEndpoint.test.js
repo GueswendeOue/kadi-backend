@@ -21,6 +21,15 @@ test("endpoint supports official ping and INIT without a network server", async 
   assert.equal(init.ok, true);
   assert.equal(init.value.screen, "CLIENT");
   assert.equal(typeof init.value.data.draft_id, "string");
+  assert.equal(init.value.data.flow_token, "synthetic-token");
+
+  const orchestrated = endpoint({ webhookOrchestration: true });
+  const orchestratedInit = await orchestrated.handle({ action: "INIT", flow_token: "orchestrated-token", version: "3.0" });
+  const rejected = await orchestrated.handle({ action: "data_exchange", flow_token: "orchestrated-token", version: "3.0", data: { intent: "save_client", draft_id: orchestratedInit.value.data.draft_id } });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.error, "FLOW_WEBHOOK_ORCHESTRATION_REQUIRED");
+  assert.equal(rejected.value, undefined);
 });
 
 test("add returns Article 2 with Form reset values while preserving the first item summary", async () => {

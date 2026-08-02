@@ -94,7 +94,7 @@ function parseScaledNumber(value, decimals, maximum, allowZero) {
 function normalizeInvoiceItem(input) {
   const descriptors = ownDataDescriptors(input);
   if (!descriptors) return fail("ITEM_INVALID");
-  const allowed = new Set(["description", "designation", "quantity", "unit", "unit_price"]);
+  const allowed = new Set(["item_id", "description", "designation", "quantity", "unit", "unit_price"]);
   if (Object.keys(descriptors).some((key) => !allowed.has(key))) return fail("ITEM_FIELD_UNKNOWN");
 
   const description = cleanText(
@@ -110,7 +110,13 @@ function normalizeInvoiceItem(input) {
   const unitPrice = parseScaledNumber(read(descriptors, "unit_price"), 0, MAX_ITEM_UNIT_PRICE, true);
   if (!unitPrice.ok) return fail("ITEM_UNIT_PRICE_INVALID");
 
+  const itemId = read(descriptors, "item_id");
+  if (itemId != null && (typeof itemId !== "string" || !/^[A-Za-z0-9:_-]{1,200}$/.test(itemId))) {
+    return fail("ITEM_ID_INVALID");
+  }
+
   return ok(Object.freeze({
+    ...(itemId ? { item_id: itemId } : {}),
     description: description.value,
     designation: description.value,
     quantity: quantity.value.number,

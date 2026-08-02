@@ -142,7 +142,7 @@ function normalizeOptionValue(value, fallback) {
   return normalized || fallback;
 }
 
-function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, cryptoConfig = null } = {}) {
+function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, cryptoConfig = null, webhookOrchestration = false } = {}) {
   if (!cartService || (typeof ownerResolver !== "function" && typeof flowSessionService?.resolveInvoiceFlowSession !== "function")) throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
 
   async function handle(decryptedBody, requestContext = {}) {
@@ -169,7 +169,11 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
         ? await cartService.loadOwned(sessionDraftId, ownerRef, body.flow_token)
         : await cartService.createDraft({ ownerRef, flowToken: body.flow_token });
       if (!created.ok) return { ok: false, status: 400, error: created.error };
-      return { ok: true, value: { screen: "CLIENT", data: { draft_id: created.value.draft_id } }, draft: created.value, stage: "action_init" };
+      return { ok: true, value: { screen: "CLIENT", data: { flow_token: body.flow_token, draft_id: created.value.draft_id } }, draft: created.value, stage: "action_init" };
+    }
+
+    if (webhookOrchestration) {
+      return { ok: false, status: 409, error: "FLOW_WEBHOOK_ORCHESTRATION_REQUIRED", stage: "action_data_exchange" };
     }
 
     const data = safeRecord(body.data);

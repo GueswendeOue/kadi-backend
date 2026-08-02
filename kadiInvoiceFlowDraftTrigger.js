@@ -126,6 +126,11 @@ function createInvoiceFlowDraftTrigger({
           to: normalizedFrom,
           flowId,
           flowToken: session.value.flow_token,
+          screen: "CLIENT",
+          data: {
+            flow_token: session.value.flow_token,
+            draft_id: draft.value.draft_id,
+          },
         });
         const sent = await sendFlow(payload);
         if (!sent?.accepted || typeof sent.messageId !== "string" || !sent.messageId.trim()) {
