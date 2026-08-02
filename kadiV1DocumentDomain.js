@@ -8,7 +8,7 @@ const {
 
 const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 const COMMON_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
-const DISCHARGE_SUBJECT_TYPES = Object.freeze(["MONEY", "GOOD", "DOCUMENT"]);
+const DISCHARGE_SUBJECT_TYPES = Object.freeze(["MONEY", "GOODS", "DOCUMENT", "OTHER"]);
 const DOCUMENT_PURPOSES = Object.freeze({
   FACTURE: "PAYMENT_DUE",
   DEVIS: "COMMERCIAL_PROPOSAL",
@@ -270,13 +270,10 @@ function normalizeDischarge(value) {
       return fail("DISCHARGE_SUBJECT_INVALID");
     }
     if (!DISCHARGE_SUBJECT_TYPES.includes(subject.type)) return fail("DISCHARGE_SUBJECT_TYPE_INVALID");
-    const description = cleanText(subject.description, true, 500);
+    const description = cleanText(subject.description, false, 500);
     if (!description.ok) return fail("DISCHARGE_SUBJECT_DESCRIPTION_INVALID");
     if (subject.amount != null && (!Number.isSafeInteger(subject.amount) || subject.amount <= 0)) {
       return fail("DISCHARGE_SUBJECT_AMOUNT_INVALID");
-    }
-    if (subject.type === "MONEY" && !Number.isSafeInteger(subject.amount)) {
-      return fail("DISCHARGE_SUBJECT_AMOUNT_REQUIRED");
     }
     result.subject = {
       type: subject.type,
@@ -384,7 +381,9 @@ function normalizeCommonContent(input) {
 }
 
 function validateForReview(document) {
-  if (!validIdentifier(document.issuer_profile_id)) return fail("DOCUMENT_ISSUER_REQUIRED");
+  if (document.document_type !== "DECHARGE" && !validIdentifier(document.issuer_profile_id)) {
+    return fail("DOCUMENT_ISSUER_REQUIRED");
+  }
   if (["FACTURE", "DEVIS"].includes(document.document_type)) {
     if (!isPlainRecord(document.client) || !cleanText(document.client.name, true, 200).ok) {
       return fail("DOCUMENT_CLIENT_REQUIRED");
@@ -401,6 +400,12 @@ function validateForReview(document) {
     const discharge = document.discharge;
     if (!discharge?.giver || !discharge?.receiver || !discharge?.subject || !discharge?.reason) {
       return fail("DISCHARGE_INCOMPLETE");
+    }
+    if (discharge.subject.type === "MONEY" && !Number.isSafeInteger(discharge.subject.amount)) {
+      return fail("DISCHARGE_SUBJECT_AMOUNT_REQUIRED");
+    }
+    if (discharge.subject.type !== "MONEY" && !discharge.subject.description) {
+      return fail("DISCHARGE_SUBJECT_DESCRIPTION_REQUIRED");
     }
   }
   return ok(document);
