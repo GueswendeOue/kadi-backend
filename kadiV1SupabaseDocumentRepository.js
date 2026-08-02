@@ -90,6 +90,7 @@ function createSupabaseV1DocumentRepository(client) {
       preview: row.preview,
       generation_quote: row.generation_quote,
       generation_cost: row.generation_cost,
+      generated_file: row.generated_file,
       recoverable_failure: row.recoverable_failure,
       cancelled_at: row.cancelled_at,
       events: (eventRows || []).map((event) => ({
@@ -114,7 +115,10 @@ function createSupabaseV1DocumentRepository(client) {
   }) {
     const safeMetadata = normalizeMetadata(metadata);
     if (!safeMetadata.ok) return safeMetadata;
-    const { data, error } = await client.rpc("kadi_v1_persist_transition", {
+    const rpcName = document?.status === "GENERATED" && document?.generated_file
+      ? "kadi_v1_persist_generated_transition"
+      : "kadi_v1_persist_transition";
+    const { data, error } = await client.rpc(rpcName, {
       p_document_id: document?.document_id,
       p_owner_wa_id: ownerWaId,
       p_expected_version: expectedVersion,

@@ -61,6 +61,10 @@ function must(result) {
   return result.value;
 }
 
+function generatedFile(document) {
+  return { final_file_id: `final:${document.document_id}`, document_id: document.document_id, document_version: document.version, page_count: 1, checksum: "a".repeat(64), immutable: true };
+}
+
 function advanceToPreview(domain, document) {
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_READY_FOR_REVIEW));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.VERIFY));
@@ -211,7 +215,7 @@ test("rejects forbidden shortcuts and modifications of terminal documents", () =
   }));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.START_GENERATION));
-  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_GENERATED));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_GENERATED, { generated_file: generatedFile(document) }));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_DELIVERED));
   assert.equal(document.status, "DELIVERED");
   assert.equal(domain.modifyDocument(document, { notes: "Mutation interdite" }).error, "DOCUMENT_MODIFICATION_FORBIDDEN");
@@ -292,6 +296,7 @@ test("issued_at comes only from the injected server clock when generation succee
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.START_GENERATION));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_GENERATED, {
     issued_at: "2000-01-01T00:00:00.000Z",
+    generated_file: generatedFile(document),
   }));
   assert.equal(document.issued_at, "2026-08-02T10:00:07.123Z");
 });

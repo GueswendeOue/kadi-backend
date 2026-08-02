@@ -106,6 +106,7 @@ function createInMemoryV1DocumentRepository({ failpoint = async () => {} } = {})
       preview: clone(documentRow.preview),
       generation_quote: clone(documentRow.generation_quote),
       generation_cost: documentRow.generation_cost,
+      generated_file: clone(documentRow.generated_file),
       recoverable_failure: clone(documentRow.recoverable_failure),
       cancelled_at: documentRow.cancelled_at,
       events: documentEvents.map((event) => ({
@@ -194,6 +195,7 @@ function createInMemoryV1DocumentRepository({ failpoint = async () => {} } = {})
         preview: null,
         generation_quote: null,
         generation_cost: null,
+        generated_file: null,
         recoverable_failure: null,
         cancelled_at: null,
         legacy_source: legacyReference?.source || null,
@@ -287,6 +289,7 @@ function createInMemoryV1DocumentRepository({ failpoint = async () => {} } = {})
         preview: clone(restored.value.preview),
         generation_quote: clone(restored.value.generation_quote),
         generation_cost: restored.value.generation_cost,
+        generated_file: clone(restored.value.generated_file),
         recoverable_failure: clone(restored.value.recoverable_failure),
         cancelled_at: restored.value.cancelled_at,
         updated_at: restored.value.events.at(-1)?.occurred_at || row.updated_at,

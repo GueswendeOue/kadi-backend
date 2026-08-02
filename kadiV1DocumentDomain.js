@@ -564,7 +564,17 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
     if (event === DOCUMENT_EVENTS.RESUME) changes.recoverable_failure = null;
     const timestamp = now();
     if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) return fail("DOCUMENT_CLOCK_INVALID");
-    if (event === DOCUMENT_EVENTS.MARK_GENERATED) changes.issued_at = new Date(timestamp).toISOString();
+    if (event === DOCUMENT_EVENTS.MARK_GENERATED) {
+      const file = ownValues(payloadValues.generated_file);
+      if (!file || !validIdentifier(file.final_file_id) || file.document_id !== document.document_id ||
+          file.document_version !== document.version || file.immutable !== true ||
+          !Number.isSafeInteger(file.page_count) || file.page_count < 1 ||
+          typeof file.checksum !== "string" || !/^[a-f0-9]{64}$/.test(file.checksum)) {
+        return fail("DOCUMENT_GENERATED_FILE_INVALID");
+      }
+      changes.generated_file = deepFreeze(deepCopy(file));
+      changes.issued_at = new Date(timestamp).toISOString();
+    }
     if (event === DOCUMENT_EVENTS.CANCEL) changes.cancelled_at = new Date(timestamp).toISOString();
     return ok(deepFreeze({
       ...deepCopy(document),

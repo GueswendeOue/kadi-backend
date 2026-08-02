@@ -13,6 +13,10 @@ const { createSharedDocumentPolicies } = require("../kadiV1SharedDocumentPolicie
 const OWNER = "22670000001";
 const TIMES = Array.from({ length: 100 }, (_, index) => `2026-08-02T12:00:${String(index).padStart(2, "0")}.000Z`);
 
+function generatedFile(document) {
+  return { final_file_id: `final:${document.document_id}`, document_id: document.document_id, document_version: document.version, page_count: 1, checksum: "a".repeat(64), immutable: true };
+}
+
 function fixture({ quoteValidityRequired = false } = {}) {
   let timeIndex = 0;
   let idIndex = 0;
@@ -353,7 +357,7 @@ test("DELIVERED remains immutable through every pipeline correction operation", 
   }, "cost");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION, {}, "confirm");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.START_GENERATION, {}, "generate");
-  document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_GENERATED, {}, "generated");
+  document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_GENERATED, { generated_file: generatedFile(document) }, "generated");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_DELIVERED, {}, "delivered");
   const result = await f.pipeline.updateContent(command(document, "updateContent", "immutable", {
     itemId: document.items[0].item_id,

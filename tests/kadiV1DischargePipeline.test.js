@@ -11,6 +11,10 @@ const { createDischargePipeline } = require("../kadiV1DischargePipeline");
 
 const OWNER = "22670000001";
 
+function generatedFile(document) {
+  return { final_file_id: `final:${document.document_id}`, document_id: document.document_id, document_version: document.version, page_count: 1, checksum: "a".repeat(64), immutable: true };
+}
+
 function fixture() {
   let tick = 0;
   let id = 0;
@@ -303,7 +307,7 @@ test("DELIVERED remains immutable", async () => {
   }, "delivered-cost");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION, {}, "confirm");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.START_GENERATION, {}, "start");
-  document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_GENERATED, {}, "generated");
+  document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_GENERATED, { generated_file: generatedFile(document) }, "generated");
   document = await persistTransition(f, document, DOCUMENT_EVENTS.MARK_DELIVERED, {}, "delivered");
   assert.deepEqual(
     await f.pipeline.setReason(command(document, "delivered-edit", { reason: "Interdit" })),
