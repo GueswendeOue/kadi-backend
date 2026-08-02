@@ -36,9 +36,9 @@ test("dynamic KADI_FACTURE_V1 declares the editable review screen", () => {
   const flow = loadFlow();
   assert.equal(flow.version, "7.3");
   assert.equal(flow.data_api_version, "3.0");
-  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DOCUMENT_ESTIMATE"]);
+  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DRAFT_SAVED"]);
   assert.deepEqual(flow.routing_model, {
-    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["DOCUMENT_ESTIMATE"], DOCUMENT_ESTIMATE: [],
+    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["DRAFT_SAVED"], DRAFT_SAVED: [],
   });
   assert.equal(hasRoutingCycle(flow.routing_model), false);
   assert.equal(Object.hasOwn(flow.routing_model, "ARTICLE_DECISION"), false);
@@ -52,46 +52,55 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   const named = all.filter((component) => typeof component.name === "string");
   assert.equal(new Set(named.map(({ name }) => name)).size, named.length);
   assert.equal(named.find(({ name }) => name === "client_type").type, "RadioButtonsGroup");
-  const unit = named.find(({ name }) => name === "item_unit");
-  assert.equal(unit.type, "Dropdown");
-  assert.equal(Object.hasOwn(unit, "on-select-action"), false);
+  const units = named.filter(({ name }) => /^item_unit_[ab]$/.test(name));
+  assert.equal(units.length, 2);
+  assert.equal(units.every(({ type }) => type === "Dropdown"), true);
+  assert.equal(units.every((unit) => !Object.hasOwn(unit, "on-select-action")), true);
   for (const screen of flow.screens) {
     assert.ok(flatten(screen.layout.children).some(({ type }) => type === "Footer"), screen.id);
   }
   const cart = flow.screens.find(({ id }) => id === "ARTICLE_CART");
   const cartComponents = flatten(cart.layout.children);
   const cartFooters = cartComponents.filter(({ type }) => type === "Footer");
-  assert.equal(cartFooters.length, 1);
-  assert.equal(cartFooters[0].label, "Ajouter cet article");
-  assert.equal(cartFooters[0]["on-click-action"].name, "data_exchange");
-  const decision = cartComponents.find(({ name }) => name === "article_decision");
-  assert.equal(decision.required, true);
-  assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add_another", "finish_items"]);
+  assert.equal(cartFooters.length, 2);
+  assert.equal(cartFooters.every(({ label }) => label === "Ajouter cet article"), true);
+  assert.equal(cartFooters.every((footer) => footer["on-click-action"].name === "data_exchange"), true);
+  const decisions = cartComponents.filter(({ name }) => /^article_decision_[ab]$/.test(name));
+  assert.equal(decisions.length, 2);
+  assert.equal(decisions.every(({ required }) => required === true), true);
+  for (const decision of decisions) {
+    assert.deepEqual(decision["data-source"].map(({ id }) => id), ["add_another", "finish_items"]);
+    assert.deepEqual(decision["data-source"].map(({ title }) => title), ["Ajouter un autre article", "C’est tout"]);
+  }
   assert.equal(all.some((component) => Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "TextInput" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "Dropdown" && Object.hasOwn(component, "init-value")), false);
   assert.equal(all.some((component) => component.type === "RadioButtonsGroup" && Object.hasOwn(component, "init-value")), false);
 
   const formsWithInitValues = all.filter((component) => Object.hasOwn(component, "init-values"));
-  assert.equal(formsWithInitValues.length, 1);
-  assert.equal(formsWithInitValues[0].type, "Form");
-  assert.equal(formsWithInitValues[0].name, "item_form");
-  assert.equal(formsWithInitValues[0]["init-values"], "${data.article_form_init_values}");
+  assert.equal(formsWithInitValues.length, 2);
+  assert.equal(formsWithInitValues.every(({ type }) => type === "Form"), true);
+  assert.deepEqual(formsWithInitValues.map(({ name }) => name).sort(), ["item_form_a", "item_form_b"]);
+  assert.deepEqual(formsWithInitValues.map((form) => form["init-values"]).sort(), ["${data.article_form_a_init_values}", "${data.article_form_b_init_values}"]);
   assert.equal(all.some((component) => component.type !== "Form" && Object.hasOwn(component, "init-values")), false);
 
-  const initDefinition = cart.data.article_form_init_values;
-  assert.equal(initDefinition.type, "object");
-  assert.deepEqual(Object.keys(initDefinition.properties), ["item_description", "item_quantity", "item_unit_price"]);
-  assert.deepEqual(initDefinition.__example__, { item_description: "", item_quantity: "1", item_unit_price: "" });
-  assert.equal(Object.values(initDefinition.__example__).every((value) => typeof value === "string"), true);
+  for (const suffix of ["a", "b"]) {
+    const initDefinition = cart.data[`article_form_${suffix}_init_values`];
+    assert.equal(initDefinition.type, "object");
+    assert.deepEqual(Object.keys(initDefinition.properties), [`item_description_${suffix}`, `item_quantity_${suffix}`, `item_unit_price_${suffix}`]);
+    assert.deepEqual(initDefinition.__example__, { [`item_description_${suffix}`]: "", [`item_quantity_${suffix}`]: "1", [`item_unit_price_${suffix}`]: "" });
+    assert.equal(Object.values(initDefinition.__example__).every((value) => typeof value === "string"), true);
+  }
+  const condition = cartComponents.find(({ type }) => type === "If");
+  assert.equal(condition.condition, "${data.use_alternate_form}");
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {
   const flow = loadFlow();
   const source = fs.readFileSync(flowPath, "utf8");
   const footers = components(flow).filter(({ type }) => type === "Footer");
-  assert.deepEqual(footers.slice(0, -1).map((footer) => footer["on-click-action"].name), ["data_exchange", "data_exchange", "data_exchange", "data_exchange"]);
-  assert.equal(footers.at(-1)["on-click-action"].name, "complete");
+  assert.equal(footers.filter((footer) => footer["on-click-action"].name === "data_exchange").length, 5);
+  assert.equal(footers.filter((footer) => footer["on-click-action"].name === "complete").length, 1);
   assert.doesNotMatch(source, /endpoint_uri|WHATSAPP_TOKEN|APP_SECRET|OPENAI_API_KEY|SUPABASE_SERVICE/i);
   for (const footer of footers) {
     assert.ok(Object.keys(footer["on-click-action"].payload || {}).every((key) => !/subtotal|grand_total|tax_total|balance_due|line_total/.test(key)));
@@ -110,7 +119,7 @@ test("screen data declarations have type-compatible examples", () => {
 
 test("Flow item_count data is string-typed with a string zero example", () => {
   const flow = loadFlow();
-  for (const screenId of ["ARTICLE_CART", "OPTIONS", "DOCUMENT_ESTIMATE"]) {
+  for (const screenId of ["ARTICLE_CART", "OPTIONS"]) {
     const definition = flow.screens.find(({ id }) => id === screenId).data.item_count;
     assert.equal(definition.type, "string");
     assert.equal(definition.__example__, "0");
@@ -121,8 +130,9 @@ test("Flow visible article titles use the updated French UX copy", () => {
   const cart = loadFlow().screens.find(({ id }) => id === "ARTICLE_CART");
   assert.equal(cart.title, "Articles et services");
   const texts = flatten(cart.layout.children).map((component) => component.text).filter(Boolean);
-  assert.ok(texts.includes("Ajoutez les produits ou services à facturer."));
-  assert.ok(texts.includes("Résumé des articles"));
+  assert.ok(texts.includes("Ajoutez un produit ou un service à la fois."));
+  assert.ok(texts.includes("Ce que vous avez déjà ajouté"));
+  assert.ok(texts.includes("Total pour le moment"));
 });
 
 test("dynamic data bindings are declared and use standalone references", () => {
@@ -164,6 +174,41 @@ test("every TextBody has an explicit text binding or safe literal", () => {
   }
 });
 
+test("technical estimate screen is replaced by a minimal human draft confirmation", () => {
+  const flow = loadFlow();
+  assert.equal(flow.screens.some(({ id }) => id === "DOCUMENT_ESTIMATE"), false);
+  const terminal = flow.screens.find(({ id }) => id === "DRAFT_SAVED");
+  assert.equal(terminal.terminal, true);
+  assert.equal(terminal.success, true);
+  assert.equal(terminal.title, "C’est bien enregistré");
+  const terminalComponents = flatten(terminal.layout.children);
+  assert.deepEqual(terminalComponents.filter(({ type }) => type === "TextBody").map(({ text }) => text), [
+    "Votre brouillon de facture a bien été enregistré. Aucun crédit n’a été débité.",
+  ]);
+  const footer = terminalComponents.find(({ type }) => type === "Footer");
+  assert.equal(footer.label, "Retourner dans WhatsApp");
+  assert.deepEqual(footer["on-click-action"].payload, {
+    status: "draft_saved",
+    flow_token: "${data.flow_token}",
+    draft_id: "${data.draft_id}",
+  });
+  assert.doesNotMatch(JSON.stringify(terminal), /Pages|Source|Renderer|Crédits proposés|Montant|PDF/);
+});
+
+test("review screen uses human draft language without technical estimate fields", () => {
+  const review = loadFlow().screens.find(({ id }) => id === "REVIEW_INVOICE_DRAFT");
+  const all = flatten(review.layout.children);
+  assert.equal(all.find(({ type }) => type === "TextHeading").text, "Tout est bon ?");
+  const choices = all.find(({ name }) => name === "review_action")["data-source"].map(({ title }) => title);
+  assert.deepEqual(choices, [
+    "Corriger le client",
+    "Corriger les produits et services",
+    "Corriger les autres détails",
+    "Oui, enregistrer le brouillon",
+  ]);
+  assert.deepEqual(Object.keys(review.data).filter((key) => /page|source|credit|estimate/.test(key)), []);
+});
+
 test("Flow MVP has no stamp or client-selectable issue date", () => {
   const source = fs.readFileSync(flowPath, "utf8");
   assert.doesNotMatch(source, /add_stamp|Ajouter le tampon|transaction_date|invoice_date|document_date|issued_at/);
@@ -187,5 +232,8 @@ test("legacy response parser remains fail-closed", () => {
   assert.equal(parseInvoiceFlowResponseJson('{"prototype":true}').error, "FORBIDDEN_FIELD");
   assert.equal(parseInvoiceFlowResponseJson('{"constructor":true}').error, "FORBIDDEN_FIELD");
   assert.equal(parseInvoiceFlowResponseJson(`{"client_name":"${"x".repeat(MAX_RESPONSE_JSON_BYTES)}"}`).error, "RESPONSE_JSON_TOO_LARGE");
+  assert.deepEqual({ ...parseInvoiceFlowResponseJson({ flowToken: "token", draftId: "draft", status: "draft_saved" }).value }, {
+    flow_token: "token", draft_id: "draft", status: "draft_saved",
+  });
   assert.equal(isInvoiceFlowReply({ type: "interactive", interactive: { type: "nfm_reply" } }), false);
 });

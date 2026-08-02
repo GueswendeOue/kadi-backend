@@ -5,8 +5,8 @@
     "CLIENT": ["ARTICLE_CART"],
     "ARTICLE_CART": ["OPTIONS"],
     "OPTIONS": ["REVIEW_INVOICE_DRAFT"],
-    "REVIEW_INVOICE_DRAFT": ["DOCUMENT_ESTIMATE"],
-    "DOCUMENT_ESTIMATE": []
+    "REVIEW_INVOICE_DRAFT": ["DRAFT_SAVED"],
+    "DRAFT_SAVED": []
   },
   "screens": [
     {
@@ -37,19 +37,31 @@
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
         "item_count": {"type": "string", "__example__": "0"},
+        "item_index": {"type": "string", "__example__": "0"},
         "item_number_text": {"type": "string", "__example__": "Article 1"},
         "current_item_id": {"type": "string", "__example__": "draft-example:item:1"},
+        "submission_id": {"type": "string", "__example__": "draft-example:item:1"},
         "saved_item_count_text": {"type": "string", "__example__": "0 articles enregistrés"},
         "saved_items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
         "saved_subtotal_text": {"type": "string", "__example__": "0 FCFA"},
-        "article_form_init_values": {
+        "use_alternate_form": {"type": "boolean", "__example__": false},
+        "article_form_a_init_values": {
           "type": "object",
           "properties": {
-            "item_description": {"type": "string"},
-            "item_quantity": {"type": "string"},
-            "item_unit_price": {"type": "string"}
+            "item_description_a": {"type": "string"},
+            "item_quantity_a": {"type": "string"},
+            "item_unit_price_a": {"type": "string"}
           },
-          "__example__": {"item_description": "", "item_quantity": "1", "item_unit_price": ""}
+          "__example__": {"item_description_a": "", "item_quantity_a": "1", "item_unit_price_a": ""}
+        },
+        "article_form_b_init_values": {
+          "type": "object",
+          "properties": {
+            "item_description_b": {"type": "string"},
+            "item_quantity_b": {"type": "string"},
+            "item_unit_price_b": {"type": "string"}
+          },
+          "__example__": {"item_description_b": "", "item_quantity_b": "1", "item_unit_price_b": ""}
         },
         "item_unit": {"type": "string", "__example__": ""},
         "article_decision": {"type": "string", "__example__": ""},
@@ -59,27 +71,46 @@
       },
       "layout": {
         "type": "SingleColumnLayout",
-        "children": [{
-          "type": "Form",
-          "name": "item_form",
-          "init-values": "${data.article_form_init_values}",
-          "children": [
-            {"type": "TextHeading", "text": "${data.item_number_text}"},
-            {"type": "TextBody", "text": "Ajoutez les produits ou services à facturer."},
-            {"type": "TextSubheading", "text": "Articles déjà enregistrés"},
-            {"type": "TextBody", "text": "${data.saved_item_count_text}"},
-            {"type": "TextSubheading", "text": "Résumé des articles"},
-            {"type": "TextBody", "text": "${data.saved_items_summary}"},
-            {"type": "TextSubheading", "text": "Sous-total provisoire"},
-            {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
-            {"type": "TextInput", "name": "item_description", "label": "Désignation", "input-type": "text", "required": true},
-            {"type": "TextInput", "name": "item_quantity", "label": "Quantité", "input-type": "number", "required": true},
-            {"type": "Dropdown", "name": "item_unit", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
-            {"type": "TextInput", "name": "item_unit_price", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-            {"type": "RadioButtonsGroup", "name": "article_decision", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"Passer au résumé"}]},
-            {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "current_item_id": "${data.current_item_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description}", "quantity": "${form.item_quantity}", "unit": "${form.item_unit}", "unit_price": "${form.item_unit_price}", "decision": "${form.article_decision}"}}}
-          ]
-        }]
+        "children": [
+          {"type": "TextHeading", "text": "${data.item_number_text}"},
+          {"type": "TextBody", "text": "Ajoutez un produit ou un service à la fois."},
+          {"type": "TextSubheading", "text": "Déjà ajoutés"},
+          {"type": "TextBody", "text": "${data.saved_item_count_text}"},
+          {"type": "TextSubheading", "text": "Ce que vous avez déjà ajouté"},
+          {"type": "TextBody", "text": "${data.saved_items_summary}"},
+          {"type": "TextSubheading", "text": "Total pour le moment"},
+          {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
+          {
+            "type": "If",
+            "condition": "${data.use_alternate_form}",
+            "then": [{
+              "type": "Form",
+              "name": "item_form_b",
+              "init-values": "${data.article_form_b_init_values}",
+              "children": [
+                {"type": "TextInput", "name": "item_description_b", "label": "Désignation", "input-type": "text", "required": true},
+                {"type": "TextInput", "name": "item_quantity_b", "label": "Quantité", "input-type": "number", "required": true},
+                {"type": "Dropdown", "name": "item_unit_b", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
+                {"type": "TextInput", "name": "item_unit_price_b", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
+                {"type": "RadioButtonsGroup", "name": "article_decision_b", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
+                {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description_b}", "quantity": "${form.item_quantity_b}", "unit": "${form.item_unit_b}", "unit_price": "${form.item_unit_price_b}", "decision": "${form.article_decision_b}"}}}
+              ]
+            }],
+            "else": [{
+              "type": "Form",
+              "name": "item_form_a",
+              "init-values": "${data.article_form_a_init_values}",
+              "children": [
+                {"type": "TextInput", "name": "item_description_a", "label": "Désignation", "input-type": "text", "required": true},
+                {"type": "TextInput", "name": "item_quantity_a", "label": "Quantité", "input-type": "number", "required": true},
+                {"type": "Dropdown", "name": "item_unit_a", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
+                {"type": "TextInput", "name": "item_unit_price_a", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
+                {"type": "RadioButtonsGroup", "name": "article_decision_a", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
+                {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description_a}", "quantity": "${form.item_quantity_a}", "unit": "${form.item_unit_a}", "unit_price": "${form.item_unit_price_a}", "decision": "${form.article_decision_a}"}}}
+              ]
+            }]
+          }
+        ]
       }
     },
     {
@@ -110,7 +141,7 @@
             {"type": "Dropdown", "name": "payment_method", "label": "Mode de paiement", "required": false, "data-source": [{"id":"cash","title":"Espèces"},{"id":"mobile_money","title":"Mobile Money"},{"id":"bank_transfer","title":"Virement"},{"id":"cheque","title":"Chèque"},{"id":"other","title":"Autre"}]},
             {"type": "TextInput", "name": "payment_terms", "label": "Conditions paiement", "input-type": "text", "required": false},
             {"type": "TextArea", "name": "note", "label": "Note", "required": false},
-            {"type": "Footer", "label": "Vérifier la facture", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}"}}}
+            {"type": "Footer", "label": "Vérifiez les informations", "on-click-action": {"name": "data_exchange", "payload": {"intent": "save_options", "draft_id": "${data.draft_id}", "return_to_review": "${data.return_to_review}", "tax_status": "${form.tax_status}", "tax_rate": "${form.tax_rate}", "discount_amount": "${form.discount_amount}", "amount_paid": "${form.amount_paid}", "due_date": "${form.due_date}", "payment_method": "${form.payment_method}", "payment_terms": "${form.payment_terms}", "note": "${form.note}"}}}
           ]
         }]
       }
@@ -130,62 +161,37 @@
         "discount_text": {"type": "string", "__example__": "0 FCFA"},
         "tax_text": {"type": "string", "__example__": "Aucune taxe"},
         "total_text": {"type": "string", "__example__": "150 000 FCFA"},
-        "page_count_text": {"type": "string", "__example__": "À calculer"},
-        "page_count_mode_text": {"type": "string", "__example__": "Mode de pagination non confirmé"},
         "payment_terms": {"type": "string", "__example__": "Non renseignées"},
         "note": {"type": "string", "__example__": "Aucune note"},
-        "due_date": {"type": "string", "__example__": "Aucune échéance"},
-        "credit_cost_text": {"type": "string", "__example__": "Aucun débit"},
-        "estimate_notice": {"type": "string", "__example__": "Aucun crédit n’a encore été débité."}
+        "due_date": {"type": "string", "__example__": "Aucune échéance"}
       },
       "layout": {"type": "SingleColumnLayout", "children": [{"type": "Form", "name": "review_form", "children": [
-        {"type": "TextHeading", "text": "Vérifiez les informations"},
+        {"type": "TextHeading", "text": "Tout est bon ?"},
         {"type": "TextSubheading", "text": "Émetteur"}, {"type": "TextBody", "text": "${data.issuer_name}"},
         {"type": "TextSubheading", "text": "Client"}, {"type": "TextBody", "text": "${data.client_type}"}, {"type": "TextBody", "text": "${data.client_name}"}, {"type": "TextBody", "text": "${data.client_phone}"}, {"type": "TextBody", "text": "${data.client_address}"},
         {"type": "TextSubheading", "text": "Articles et services"}, {"type": "TextBody", "text": "${data.items_summary}"},
-        {"type": "TextSubheading", "text": "Totaux"}, {"type": "TextBody", "text": "${data.subtotal_text}"}, {"type": "TextBody", "text": "${data.discount_text}"}, {"type": "TextBody", "text": "${data.tax_text}"}, {"type": "TextBody", "text": "${data.total_text}"}, {"type": "TextBody", "text": "${data.page_count_text}"}, {"type": "TextBody", "text": "${data.page_count_mode_text}"},
+        {"type": "TextSubheading", "text": "Totaux"}, {"type": "TextBody", "text": "${data.subtotal_text}"}, {"type": "TextBody", "text": "${data.discount_text}"}, {"type": "TextBody", "text": "${data.tax_text}"}, {"type": "TextBody", "text": "${data.total_text}"},
         {"type": "TextSubheading", "text": "Informations complémentaires"}, {"type": "TextBody", "text": "${data.payment_terms}"}, {"type": "TextBody", "text": "${data.note}"}, {"type": "TextBody", "text": "${data.due_date}"},
-        {"type": "TextSubheading", "text": "Coût"}, {"type": "TextBody", "text": "${data.credit_cost_text}"}, {"type": "TextBody", "text": "${data.estimate_notice}"},
-        {"type": "RadioButtonsGroup", "name": "review_action", "label": "Que voulez-vous faire ?", "required": true, "data-source": [{"id":"modify_client","title":"Modifier le client"},{"id":"modify_items","title":"Modifier les articles"},{"id":"modify_options","title":"Modifier les options"},{"id":"confirm_generate","title":"Confirmer et générer"}]},
+        {"type": "RadioButtonsGroup", "name": "review_action", "label": "Que voulez-vous faire ?", "required": true, "data-source": [{"id":"modify_client","title":"Corriger le client"},{"id":"modify_items","title":"Corriger les produits et services"},{"id":"modify_options","title":"Corriger les autres détails"},{"id":"confirm_generate","title":"Oui, enregistrer le brouillon"}]},
         {"type": "Footer", "label": "Continuer", "on-click-action": {"name": "data_exchange", "payload": {"intent": "review_action", "draft_id": "${data.draft_id}", "review_action": "${form.review_action}"}}}
       ]}]}
     },
     {
-      "id": "DOCUMENT_ESTIMATE",
-      "title": "Résumé de votre document",
+      "id": "DRAFT_SAVED",
+      "title": "C’est bien enregistré",
       "terminal": true,
       "success": true,
       "data": {
-        "item_count": {"type": "string", "__example__": "0"},
-        "item_count_text": {"type": "string", "__example__": "0 article"},
-        "source_text": {"type": "string", "__example__": "Brouillon Flow"},
-        "page_count_text": {"type": "string", "__example__": "À calculer"},
-        "credit_cost_text": {"type": "string", "__example__": "Aucun débit"},
-        "amount_fcfa_text": {"type": "string", "__example__": "À confirmer"},
-        "estimate_notice": {"type": "string", "__example__": "Aucun crédit n'a encore été débité."},
-        "page_count_mode_text": {"type": "string", "__example__": "Renderer final non exécuté"}
+        "flow_token": {"type": "string", "__example__": "opaque-flow-token"},
+        "draft_id": {"type": "string", "__example__": "draft-example"}
       },
       "layout": {
         "type": "SingleColumnLayout",
-        "children": [{
-          "type": "Form",
-          "name": "estimate_form",
-          "children": [
-            {"type":"TextHeading","text":"Résumé de votre document"},
-            {"type":"TextSubheading","text":"Articles"},
-            {"type":"TextBody","text":"${data.item_count_text}"},
-            {"type":"TextSubheading","text":"Pages"},
-            {"type":"TextBody","text":"${data.page_count_text}"},
-            {"type":"TextSubheading","text":"Source"},
-            {"type":"TextBody","text":"${data.source_text}"},
-            {"type":"TextSubheading","text":"Crédits proposés"},
-            {"type":"TextBody","text":"${data.credit_cost_text}"},
-            {"type":"TextSubheading","text":"Montant"},
-            {"type":"TextBody","text":"${data.amount_fcfa_text}"},
-            {"type":"TextBody","text":"${data.estimate_notice}"},
-            {"type":"Footer","label":"Retourner dans WhatsApp","on-click-action":{"name":"complete","payload":{"status":"estimate_ready"}}}
-          ]
-        }]
+        "children": [
+          {"type":"TextHeading","text":"C’est bien enregistré"},
+          {"type":"TextBody","text":"Votre brouillon de facture a bien été enregistré. Aucun crédit n’a été débité."},
+          {"type":"Footer","label":"Retourner dans WhatsApp","on-click-action":{"name":"complete","payload":{"status":"draft_saved","flow_token":"${data.flow_token}","draft_id":"${data.draft_id}"}}}
+        ]
       }
     }
   ]

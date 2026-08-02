@@ -49,6 +49,7 @@ const ALLOWED_RESPONSE_FIELDS = Object.freeze([
   "flow_token",
   "draft_id",
   "review_action",
+  "status",
   ...CLIENT_FIELDS,
   ...ITEM_FIELDS,
   "has_more_items",
@@ -56,6 +57,11 @@ const ALLOWED_RESPONSE_FIELDS = Object.freeze([
 ]);
 
 const ALLOWED_RESPONSE_FIELD_SET = new Set(ALLOWED_RESPONSE_FIELDS);
+const RESPONSE_FIELD_ALIASES = new Map([
+  ["flowToken", "flow_token"],
+  ["draftId", "draft_id"],
+  ["reviewAction", "review_action"],
+]);
 const UNITS = new Map([
   ["unit", "Unité"],
   ["piece", "Pièce"],
@@ -132,16 +138,20 @@ function isInvoiceFlowReply(message) {
 }
 
 function parseInvoiceFlowResponseJson(responseJson) {
-  if (typeof responseJson !== "string") return fail("RESPONSE_JSON_TYPE");
-  if (Buffer.byteLength(responseJson, "utf8") > MAX_RESPONSE_JSON_BYTES) {
-    return fail("RESPONSE_JSON_TOO_LARGE");
-  }
-
   let parsed;
-  try {
-    parsed = JSON.parse(responseJson);
-  } catch {
-    return fail("RESPONSE_JSON_INVALID");
+  if (typeof responseJson === "string") {
+    if (Buffer.byteLength(responseJson, "utf8") > MAX_RESPONSE_JSON_BYTES) {
+      return fail("RESPONSE_JSON_TOO_LARGE");
+    }
+    try {
+      parsed = JSON.parse(responseJson);
+    } catch {
+      return fail("RESPONSE_JSON_INVALID");
+    }
+  } else if (isPlainRecord(responseJson)) {
+    parsed = responseJson;
+  } else {
+    return fail("RESPONSE_JSON_TYPE");
   }
 
   const descriptors = getOwnDataDescriptors(parsed);
@@ -150,7 +160,9 @@ function parseInvoiceFlowResponseJson(responseJson) {
   const safePayload = Object.create(null);
   for (const [key, descriptor] of Object.entries(descriptors)) {
     if (FORBIDDEN_KEYS.has(key)) return fail("FORBIDDEN_FIELD");
-    if (!ALLOWED_RESPONSE_FIELD_SET.has(key)) return fail("UNKNOWN_FIELD");
+    const canonicalKey = RESPONSE_FIELD_ALIASES.get(key) || key;
+    if (!ALLOWED_RESPONSE_FIELD_SET.has(canonicalKey)) return fail("UNKNOWN_FIELD");
+    if (Object.hasOwn(safePayload, canonicalKey)) return fail("DUPLICATE_FIELD");
     if (!Object.hasOwn(descriptor, "value")) return fail("FIELD_VALUE_INVALID");
     const value = descriptor.value;
     if (
@@ -159,7 +171,11 @@ function parseInvoiceFlowResponseJson(responseJson) {
     ) {
       return fail("FIELD_VALUE_INVALID");
     }
-    safePayload[key] = value;
+    safePayload[canonicalKey] = value;
+  }
+
+  if (Buffer.byteLength(JSON.stringify(safePayload), "utf8") > MAX_RESPONSE_JSON_BYTES) {
+    return fail("RESPONSE_JSON_TOO_LARGE");
   }
 
   return ok(safePayload);

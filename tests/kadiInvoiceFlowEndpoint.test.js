@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createInvoiceFlowEndpoint, estimateData, safeRecord } = require("../kadiInvoiceFlowEndpoint");
+const { createInvoiceFlowEndpoint, safeRecord } = require("../kadiInvoiceFlowEndpoint");
 const { createInvoiceCartService } = require("../kadiInvoiceCartService");
 const { createInMemoryInvoiceDraftRepository } = require("../kadiInvoiceDraftRepository");
 
@@ -10,7 +10,6 @@ function endpoint(overrides = {}) {
   return createInvoiceFlowEndpoint({
     cartService,
     ownerResolver: async () => "internal-owner",
-    estimateDocument: async () => ({ page_count: 2, page_count_mode: "final_renderer", credit_cost: 1, amount_fcfa: 100 }),
     ...overrides,
   });
 }
@@ -22,22 +21,6 @@ test("endpoint supports official ping and INIT without a network server", async 
   assert.equal(init.ok, true);
   assert.equal(init.value.screen, "CLIENT");
   assert.equal(typeof init.value.data.draft_id, "string");
-});
-
-test("terminal estimate bindings stay safe when business values are absent", () => {
-  for (const estimate of [null, undefined, {}, { page_count: null, credit_cost: undefined, amount_fcfa: null }]) {
-    const data = estimateData(estimate, 0);
-    assert.equal(typeof data.item_count_text, "string");
-    assert.equal(typeof data.page_count_text, "string");
-    assert.equal(typeof data.source_text, "string");
-    assert.equal(typeof data.credit_cost_text, "string");
-    assert.equal(typeof data.amount_fcfa_text, "string");
-    assert.ok(data.item_count_text.length > 0);
-    assert.ok(data.page_count_text.length > 0);
-    assert.ok(data.source_text.length > 0);
-    assert.ok(data.credit_cost_text.length > 0);
-    assert.ok(data.amount_fcfa_text.length > 0);
-  }
 });
 
 test("add returns Article 2 with Form reset values while preserving the first item summary", async () => {
@@ -55,19 +38,23 @@ test("add returns Article 2 with Form reset values while preserving the first it
   assert.match(added.value.data.saved_items_summary, /Ordinateur — 1 ×/);
   assert.equal(added.value.data.provisional_subtotal, "150 000 FCFA");
   assert.equal(added.value.data.saved_subtotal_text, "150 000 FCFA");
-  assert.deepEqual(added.value.data.article_form_init_values, {
-    item_description: "",
-    item_quantity: "1",
-    item_unit_price: "",
+  assert.equal(added.value.data.use_alternate_form, true);
+  assert.deepEqual(added.value.data.article_form_b_init_values, {
+    item_description_b: "",
+    item_quantity_b: "1",
+    item_unit_price_b: "",
   });
-  assert.equal(Object.values(added.value.data.article_form_init_values).every((value) => typeof value === "string"), true);
+  assert.equal(Object.values(added.value.data.article_form_b_init_values).every((value) => typeof value === "string"), true);
   assert.equal(added.value.data.item_unit, "");
   assert.equal(added.value.data.article_decision, "");
   assert.equal(added.value.data.item_number_text, "Article 2");
+  assert.equal(added.value.data.item_index, "1");
+  assert.equal(added.value.data.current_item_id, `${draftId}:item:2`);
+  assert.equal(added.value.data.submission_id, `${draftId}:item:2`);
   assert.equal(added.value.data.saved_item_count_text, "1 article enregistré");
   const retried = await api.handle(request);
   assert.equal(retried.value.data.item_count, "1");
-  assert.deepEqual(retried.value.data.article_form_init_values, added.value.data.article_form_init_values);
+  assert.deepEqual(retried.value.data.article_form_b_init_values, added.value.data.article_form_b_init_values);
 });
 
 test("finish adds the last item once, advances to OPTIONS and rejects an empty submission", async () => {
@@ -96,14 +83,11 @@ test("endpoint rejects malformed roots, dangerous keys and foreign context", asy
   assert.equal((await endpoint().handle([])).error, "FLOW_REQUEST_INVALID");
 });
 
-test("endpoint preserves client metadata and reports a side-effect-free final-renderer estimate", async () => {
-  let estimatedInvoice = null;
+test("endpoint calculates review locally without invoking a PDF or credit estimator", async () => {
+  let estimateCalls = 0;
   const api = endpoint({
     issuerResolver: async () => ({ issuer_registration_status: "registered_rccm" }),
-    estimateDocument: async (invoice) => {
-      estimatedInvoice = invoice;
-      return { page_count: 2, page_count_mode: "final_renderer", credit_cost: 1, amount_fcfa: 100, debit_performed: false, sent: false };
-    },
+    estimateDocument: async () => { estimateCalls += 1; throw new Error("MUST_NOT_RUN"); },
   });
   const init = await api.handle({ action: "INIT", flow_token: "metadata-token", version: "3.0" });
   const draftId = init.value.data.draft_id;
@@ -120,25 +104,22 @@ test("endpoint preserves client metadata and reports a side-effect-free final-re
   } });
   assert.equal(result.ok, true);
   assert.equal(result.value.screen, "REVIEW_INVOICE_DRAFT");
-  assert.equal(result.value.data.page_count_mode_text, "Comptage issu du renderer PDF Kadi final");
-  assert.equal(estimatedInvoice.subject, "Conseil");
-  assert.equal(estimatedInvoice.transaction_date, null);
-  assert.equal(estimateData({ debit_performed: true }, 1), null);
-  assert.equal(estimateData({ sent: true }, 1), null);
+  assert.equal(result.value.data.total_text, "1 000 FCFA");
+  assert.equal(Object.hasOwn(result.value.data, "page_count_text"), false);
+  assert.equal(Object.hasOwn(result.value.data, "credit_cost_text"), false);
+  assert.equal(estimateCalls, 0);
 });
 
 test("synthetic Ben invoice path returns complete bound data with empty optional options", async () => {
-  let estimatedInvoice = null;
-  const api = endpoint({ estimateDocument: async (invoice) => { estimatedInvoice = invoice; return { page_count: 1, page_count_mode: "final_renderer", credit_cost: 0, amount_fcfa: 50000 }; } });
+  const api = endpoint();
   const init = await api.handle({ action: "INIT", flow_token: "journey-token" });
   const draftId = init.value.data.draft_id;
   const client = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: {
     intent: "save_client", draft_id: draftId, client_type: "individual", client_name: "Ben",
   } });
   assert.deepEqual(Object.keys(client.value.data).sort(), [
-    "article_decision", "article_form_init_values", "current_item_id", "draft_id", "item_count", "item_number_text",
-    "item_unit", "items_summary",
-    "provisional_subtotal", "return_to_review", "saved_item_count_text", "saved_items_summary", "saved_subtotal_text",
+    "article_decision", "article_form_a_init_values", "article_form_b_init_values", "current_item_id", "draft_id", "item_count", "item_index", "item_number_text",
+    "item_unit", "items_summary", "provisional_subtotal", "return_to_review", "saved_item_count_text", "saved_items_summary", "saved_subtotal_text", "submission_id", "use_alternate_form",
   ].sort());
   assert.equal(client.value.data.item_count, "0");
   assert.equal(typeof client.value.data.item_count, "string");
@@ -151,19 +132,15 @@ test("synthetic Ben invoice path returns complete bound data with empty optional
     intent: "save_options", draft_id: draftId,
   } });
   assert.equal(estimate.value.screen, "REVIEW_INVOICE_DRAFT");
-  assert.equal(estimatedInvoice.tax_status, "not_applicable");
-  assert.equal(estimatedInvoice.add_stamp, undefined);
   assert.equal(estimate.value.data.total_text, "50 000 FCFA");
   const final = await api.handle({ action: "data_exchange", flow_token: "journey-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
-  assert.equal(final.value.screen, "DOCUMENT_ESTIMATE");
-  assert.equal(final.value.data.item_count_text, "1 article");
-  assert.equal(final.value.data.source_text, "Brouillon Flow");
-  assert.match(final.value.data.message, /brouillon de facture a été enregistré/);
+  assert.equal(final.value.screen, "DRAFT_SAVED");
+  assert.deepEqual(final.value.data, { flow_token: "journey-token", draft_id: draftId });
 });
 
-test("Flow item_count remains a string for two internal numeric items", async () => {
-  let estimated = null;
-  const api = endpoint({ estimateDocument: async (invoice) => { estimated = invoice; return { page_count: 1, page_count_mode: "final_renderer", credit_cost: 0, amount_fcfa: 300000 }; } });
+test("two-item journey preserves both items, totals 300000 and finalizes without a third item", async () => {
+  let estimateCalls = 0;
+  const api = endpoint({ estimateDocument: async () => { estimateCalls += 1; throw new Error("MUST_NOT_RUN"); } });
   const init = await api.handle({ action: "INIT", flow_token: "two-items-token" });
   const draftId = init.value.data.draft_id;
   await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: {
@@ -173,6 +150,9 @@ test("Flow item_count remains a string for two internal numeric items", async ()
     intent: "submit_article", draft_id: draftId, item_count: 0, description: "Ordinateur", quantity: 1, unit: "unit", unit_price: 150000, decision: "add_another",
   } });
   assert.equal(first.value.data.item_count, "1");
+  assert.equal(first.value.data.item_number_text, "Article 2");
+  assert.equal(first.value.data.use_alternate_form, true);
+  assert.deepEqual(first.value.data.article_form_b_init_values, { item_description_b: "", item_quantity_b: "1", item_unit_price_b: "" });
   const secondRequest = { action: "data_exchange", flow_token: "two-items-token", data: {
     intent: "submit_article", draft_id: draftId, item_count: 1, description: "Souris", quantity: 1, unit: "unit", unit_price: 150000, decision: "finish_items",
   } };
@@ -186,11 +166,13 @@ test("Flow item_count remains a string for two internal numeric items", async ()
     intent: "save_options", draft_id: draftId,
   } });
   assert.equal(estimate.value.screen, "REVIEW_INVOICE_DRAFT");
-  assert.equal(estimated.subtotal_excluding_tax, 300000);
+  assert.match(estimate.value.data.items_summary, /1\. Ordinateur/);
+  assert.match(estimate.value.data.items_summary, /2\. Souris/);
+  assert.equal(estimate.value.data.total_text, "300 000 FCFA");
+  assert.equal(estimateCalls, 0);
   const final = await api.handle({ action: "data_exchange", flow_token: "two-items-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
-  assert.equal(final.value.screen, "DOCUMENT_ESTIMATE");
-  assert.equal(final.value.data.item_count_text, "2 articles");
-  assert.equal(final.value.data.source_text, "Brouillon Flow");
+  assert.equal(final.value.screen, "DRAFT_SAVED");
+  assert.deepEqual(final.value.data, { flow_token: "two-items-token", draft_id: draftId });
 });
 
 test("review actions preserve the draft and server-finalize only in draft mode", async () => {
@@ -214,9 +196,9 @@ test("review actions preserve the draft and server-finalize only in draft mode",
   const modifyOptions = await api.handle({ action: "data_exchange", flow_token: "review-token", data: { intent: "review_action", draft_id: draftId, review_action: "modify_options" } });
   assert.equal(modifyOptions.value.screen, "OPTIONS");
   const final = await api.handle({ action: "data_exchange", flow_token: "review-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
-  assert.equal(final.value.screen, "DOCUMENT_ESTIMATE");
-  assert.match(final.value.data.issued_at_local, /\d{2}:\d{2}:\d{2}/);
-  assert.match(final.value.data.message, /brouillon de facture/);
+  assert.equal(final.value.screen, "DRAFT_SAVED");
+  assert.deepEqual(final.value.data, { flow_token: "review-token", draft_id: draftId });
   const retry = await api.handle({ action: "data_exchange", flow_token: "review-token", data: { intent: "review_action", draft_id: draftId, review_action: "confirm_generate" } });
-  assert.equal(retry.value.screen, "DOCUMENT_ESTIMATE");
+  assert.equal(retry.value.screen, "DRAFT_SAVED");
+  assert.deepEqual(retry.value.data, final.value.data);
 });

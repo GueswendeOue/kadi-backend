@@ -7,7 +7,7 @@ function messageRef(value) {
   return crypto.createHash("sha256").update(String(value || "missing"), "utf8").digest("hex").slice(0, 12);
 }
 
-function createInvoiceFlowCompletionHandler({ flowSessionService, sendText, logger = console } = {}) {
+function createInvoiceFlowCompletionHandler({ flowSessionService, logger = console } = {}) {
   const seen = new Set();
   return async function handle({ from, message, identity } = {}) {
     const messageId = message?.id || null;
@@ -20,12 +20,12 @@ function createInvoiceFlowCompletionHandler({ flowSessionService, sendText, logg
     const parsed = parseInvoiceFlowReply(message);
     if (!parsed.ok) {
       log({ response_json_valid: false, draft_id_present: false, duplicate: false, outcome: "ignored", reason: parsed.error });
-      return { handled: false, reason: parsed.error };
+      return { handled: true, accepted: false, reason: parsed.error };
     }
     const payload = parsed.value;
     if (typeof payload.flow_token !== "string" || !payload.flow_token.trim()) {
       log({ response_json_valid: true, draft_id_present: false, duplicate: false, outcome: "ignored", reason: "FLOW_TOKEN_MISSING" });
-      return { handled: false, reason: "FLOW_TOKEN_MISSING" };
+      return { handled: true, accepted: false, reason: "FLOW_TOKEN_MISSING" };
     }
     if (messageId && seen.has(messageId)) {
       log({ response_json_valid: true, draft_id_present: Boolean(payload.draft_id), duplicate: true, outcome: "ignored", reason: "DUPLICATE_MESSAGE" });
@@ -34,11 +34,10 @@ function createInvoiceFlowCompletionHandler({ flowSessionService, sendText, logg
     const session = await flowSessionService?.resolveInvoiceFlowSession?.(payload.flow_token);
     if (!session?.ok || (payload.draft_id && payload.draft_id !== session.value.draftId)) {
       log({ response_json_valid: true, draft_id_present: Boolean(payload.draft_id), duplicate: false, outcome: "ignored", reason: "FLOW_SESSION_INVALID" });
-      return { handled: false, reason: "FLOW_SESSION_INVALID" };
+      return { handled: true, accepted: false, reason: "FLOW_SESSION_INVALID" };
     }
     if (messageId) seen.add(messageId);
     log({ response_json_valid: true, draft_id_present: Boolean(payload.draft_id), duplicate: false, outcome: "handled", reason: "FLOW_COMPLETION_ACCEPTED" });
-    if (typeof sendText === "function") await sendText(from, "✅ J’ai bien reçu les informations de votre facture. Voulez-vous relire, modifier ou générer le document ?").catch(() => {});
     return { handled: true, outcome: "handled" };
   };
 }

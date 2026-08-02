@@ -42,6 +42,7 @@ function itemSubmissionId(body, data, draftId) {
 
 function draftData(draft, { returnToReview = false } = {}) {
   const itemCount = draft.items.length;
+  const currentItemId = `${draft.draft_id}:item:${itemCount + 1}`;
   const subtotal = draft.items.reduce(
     (sum, item) => sum + ((BigInt(item.quantity_millis) * BigInt(item.unit_price) + 500n) / 1000n),
     0n
@@ -53,57 +54,32 @@ function draftData(draft, { returnToReview = false } = {}) {
   const summaryPrefix = draft.items.length > recentItems.length ? "… · " : "";
   const savedSummary = draft.items.length ? `${summaryPrefix}${recentItems.join(" · ")}`.slice(0, 240) : "Aucun article enregistré";
   const savedCountText = itemCount === 1 ? "1 article enregistré" : `${itemCount} articles enregistrés`;
-  const articleFormInitValues = {
-    item_description: "",
-    item_quantity: "1",
-    item_unit_price: "",
-  };
   return {
     draft_id: draft.draft_id,
     item_count: String(itemCount),
+    item_index: String(itemCount),
     item_number_text: `Article ${itemCount + 1}`,
-    current_item_id: `${draft.draft_id}:item:${itemCount + 1}`,
+    current_item_id: currentItemId,
+    submission_id: currentItemId,
     saved_item_count_text: savedCountText,
     saved_items_summary: savedSummary,
     saved_subtotal_text: subtotalText,
-    article_form_init_values: articleFormInitValues,
+    use_alternate_form: itemCount % 2 === 1,
+    article_form_a_init_values: {
+      item_description_a: "",
+      item_quantity_a: "1",
+      item_unit_price_a: "",
+    },
+    article_form_b_init_values: {
+      item_description_b: "",
+      item_quantity_b: "1",
+      item_unit_price_b: "",
+    },
     item_unit: "",
     article_decision: "",
     return_to_review: returnToReview ? "true" : "false",
     items_summary: savedSummary,
     provisional_subtotal: subtotalText,
-  };
-}
-
-function estimateData(estimate, itemCount) {
-  const numericItemCount = Number.isSafeInteger(itemCount) && itemCount >= 0 ? itemCount : 0;
-  const itemCountText = numericItemCount === 1 ? "1 article" : `${numericItemCount} articles`;
-  const value = estimate?.ok === true ? estimate.value : estimate;
-  if (!value) return {
-    item_count: String(numericItemCount),
-    item_count_text: itemCountText,
-    source_text: "Brouillon Flow",
-    page_count_text: "À calculer",
-    page_count_mode_text: "Renderer final non exécuté",
-    credit_cost_text: "Aucun débit",
-    amount_fcfa_text: "À confirmer",
-    estimate_notice: "Aucun crédit n'a été débité et aucun PDF n'a été envoyé.",
-  };
-  if (value.debit_performed === true || value.sent === true) return null;
-  const pageCount = Number.isSafeInteger(value.page_count) && value.page_count > 0
-    ? value.page_count
-    : null;
-  return {
-    item_count: String(numericItemCount),
-    item_count_text: itemCountText,
-    source_text: "Brouillon Flow",
-    page_count_text: pageCount ? String(pageCount) : "À calculer",
-    page_count_mode_text: value.page_count_mode === "final_renderer"
-      ? "Comptage issu du renderer PDF Kadi final"
-      : "Mode de pagination non confirmé",
-    credit_cost_text: Number.isSafeInteger(value.credit_cost) ? String(value.credit_cost) : "Aucun débit",
-    amount_fcfa_text: Number.isSafeInteger(value.amount_fcfa) ? `${value.amount_fcfa} FCFA` : "À confirmer",
-    estimate_notice: "Estimation locale uniquement : aucun débit et aucun envoi PDF.",
   };
 }
 
@@ -113,8 +89,18 @@ function formatIssuedAtLocal(date) {
   }).format(date);
 }
 
-function reviewData(draft, estimate, issuerProfile = null) {
-  const value = estimate?.ok === true ? estimate.value : estimate;
+function calculationSubmission(draft) {
+  return {
+    client: draft.client,
+    items: draft.items,
+    invoice_subject: draft.client?.invoice_subject,
+    transaction_date: null,
+    ...Object.fromEntries(Object.entries(draft.options || {}).filter(([key]) => key !== "add_stamp" && key !== "finalization")),
+  };
+}
+
+function reviewData(draft, calculation, issuerProfile = null) {
+  const value = calculation?.ok === true ? calculation.value : calculation;
   const items = draft.items.map((item, index) => {
     const total = Number(item.quantity) * Number(item.unit_price);
     return `${index + 1}. ${item.description} — ${item.quantity} × ${item.unit} × ${Number(item.unit_price).toLocaleString("fr-FR")} FCFA = ${total.toLocaleString("fr-FR")} FCFA`;
@@ -132,13 +118,9 @@ function reviewData(draft, estimate, issuerProfile = null) {
     discount_text: `${Number(draft.options?.discount_amount || 0).toLocaleString("fr-FR")} FCFA`,
     tax_text: draft.options?.tax_status === "taxable" ? "Taxe selon le taux saisi" : "Aucune taxe",
     total_text: Number(value?.amount_fcfa ?? subtotal).toLocaleString("fr-FR") + " FCFA",
-    page_count_text: Number.isSafeInteger(value?.page_count) ? String(value.page_count) : "À calculer",
-    page_count_mode_text: value?.page_count_mode === "final_renderer" ? "Comptage issu du renderer PDF Kadi final" : "Mode de pagination non confirmé",
     payment_terms: draft.options?.payment_terms || "Non renseignées",
     note: draft.options?.note || "Aucune note",
     due_date: draft.options?.due_date || "Aucune échéance",
-    credit_cost_text: Number.isSafeInteger(value?.credit_cost) ? String(value.credit_cost) : "Aucun débit",
-    estimate_notice: "Aucun crédit n’a encore été débité.",
   };
 }
 
@@ -147,7 +129,7 @@ function normalizeOptionValue(value, fallback) {
   return normalized || fallback;
 }
 
-function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, estimateDocument, cryptoConfig = null } = {}) {
+function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSessionService = null, issuerResolver = null, cryptoConfig = null } = {}) {
   if (!cartService || (typeof ownerResolver !== "function" && typeof flowSessionService?.resolveInvoiceFlowSession !== "function")) throw new TypeError("FLOW_ENDPOINT_DEPENDENCIES_REQUIRED");
 
   async function handle(decryptedBody, requestContext = {}) {
@@ -230,24 +212,12 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       };
       const updated = await cartService.setOptions({ ...common, actionKey: actionKey(body, "options"), options });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      const submission = {
-        client: updated.value.client,
-        items: updated.value.items,
-        invoice_subject: updated.value.client.invoice_subject,
-        transaction_date: null,
-        ...Object.fromEntries(Object.entries(updated.value.options || {}).filter(([key]) => key !== "add_stamp")),
-      };
       const issuerProfile = typeof issuerResolver === "function"
         ? await issuerResolver(requestContext)
         : null;
-      const calculated = calculateInvoiceFlowDraft(submission, issuerProfile);
+      const calculated = calculateInvoiceFlowDraft(calculationSubmission(updated.value), issuerProfile);
       if (!calculated.ok) return { ok: false, status: 400, error: calculated.error };
-      const estimateInput = { ...calculated.value };
-      delete estimateInput.add_stamp;
-      const estimate = typeof estimateDocument === "function" ? await estimateDocument(estimateInput) : null;
-      const estimateScreenData = estimateData(estimate, updated.value.items.length);
-      if (!estimateScreenData) return { ok: false, status: 500, error: "ESTIMATE_SIDE_EFFECT_FORBIDDEN" };
-      return { ok: true, value: { screen: "REVIEW_INVOICE_DRAFT", data: reviewData(updated.value, estimate, issuerProfile) }, stage: "action_data_exchange" };
+      return { ok: true, value: { screen: "REVIEW_INVOICE_DRAFT", data: reviewData(updated.value, calculated, issuerProfile) }, stage: "action_data_exchange" };
     }
     if (data.intent === "review_action") {
       const loaded = await cartService.loadOwned(common.draftId, ownerRef, body.flow_token, { allowConfirmed: data.review_action === "confirm_generate" });
@@ -256,24 +226,18 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       if (data.review_action === "modify_items") return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(loaded.value, { returnToReview: true }) }, stage: "action_data_exchange" };
       if (data.review_action === "modify_options") return { ok: true, value: { screen: "OPTIONS", data: { draft_id: loaded.value.draft_id, item_count: String(loaded.value.items.length), return_to_review: "true", tax_status: loaded.value.options?.tax_status || "not_applicable", tax_rate: loaded.value.options?.tax_rate_basis_points ? String(loaded.value.options.tax_rate_basis_points / 100) : "", discount_amount: String(loaded.value.options?.discount_amount || 0), amount_paid: String(loaded.value.options?.amount_paid || 0), payment_terms: loaded.value.options?.payment_terms || "", note: loaded.value.options?.note || "" } }, stage: "action_data_exchange" };
       if (data.review_action === "confirm_generate") {
+        const issuerProfile = typeof issuerResolver === "function"
+          ? await issuerResolver(requestContext)
+          : null;
+        const calculated = calculateInvoiceFlowDraft(calculationSubmission(loaded.value), issuerProfile);
+        if (!calculated.ok) return { ok: false, status: 400, error: calculated.error };
         const issuedAt = new Date();
         const finalization = { issued_at_utc: issuedAt.toISOString(), issued_at_timezone: "Africa/Ouagadougou", issued_at_local: formatIssuedAtLocal(issuedAt), issued_at_source: "server", finalized_at: new Date().toISOString() };
         const finalized = await cartService.finalizeDraft({ ...common, actionKey: actionKey(body, "confirm_generate"), finalization });
         if (!finalized.ok) return { ok: false, status: 400, error: finalized.error };
-        const finalizedItemCount = Array.isArray(finalized.value?.items)
-          ? finalized.value.items.length
-          : (Array.isArray(loaded.value.items) ? loaded.value.items.length : 0);
-        return { ok: true, value: { screen: "DOCUMENT_ESTIMATE", data: {
-          message: "✅ Votre brouillon de facture a été enregistré. Les informations ont été reçues correctement.",
-          issued_at_local: finalization.issued_at_local,
-          item_count: String(finalizedItemCount),
-          item_count_text: finalizedItemCount === 1 ? "1 article" : `${finalizedItemCount} articles`,
-          page_count_text: "À calculer",
-          source_text: "Brouillon Flow",
-          page_count_mode_text: "Brouillon Flow",
-          credit_cost_text: "Aucun débit",
-          amount_fcfa_text: "À confirmer",
-          estimate_notice: "Aucun crédit n’a été débité et aucun PDF définitif n’a été généré."
+        return { ok: true, value: { screen: "DRAFT_SAVED", data: {
+          flow_token: body.flow_token,
+          draft_id: finalized.value.draft_id,
         } }, stage: "action_data_exchange" };
       }
       return { ok: false, status: 400, error: "REVIEW_ACTION_INVALID" };
@@ -320,4 +284,4 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
   return Object.freeze({ handle, handleEncrypted, handleEncryptedRaw });
 }
 
-module.exports = { ACTIONS, INTENTS, createInvoiceFlowEndpoint, estimateData, safeRecord };
+module.exports = { ACTIONS, INTENTS, createInvoiceFlowEndpoint, safeRecord };
