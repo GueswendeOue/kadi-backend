@@ -27,22 +27,38 @@ function actionKey(body, suffix) {
   return `${version}:${token}:${suffix}`;
 }
 
-function itemSubmissionId(body, data, draftId) {
+function normalizeArticleSubmission(data) {
+  return {
+    designation: data.designation ?? data.designation_a ?? data.designation_b ?? data.description,
+    quantity: data.quantity ?? data.quantity_a ?? data.quantity_b,
+    unit: data.unit ?? data.unit_a ?? data.unit_b,
+    unit_price: data.unit_price ?? data.unit_price_a ?? data.unit_price_b,
+    article_decision: data.article_decision ?? data.article_decision_a ?? data.article_decision_b ?? data.decision,
+  };
+}
+
+function itemSubmissionId(body, data, article, draftId) {
   const stable = [
     draftId,
     data.current_item_id || data.item_index || data.item_count || "0",
-    data.description || "",
-    data.quantity || "",
-    data.unit || "",
-    data.unit_price || "",
-    data.decision || "",
+    article.designation || "",
+    article.quantity || "",
+    article.unit || "",
+    article.unit_price || "",
+    article.article_decision || "",
   ].map((value) => String(value)).join("\u001f");
   return crypto.createHash("sha256").update(stable, "utf8").digest("hex").slice(0, 32);
 }
 
+function articleScreenId(itemIndex) {
+  return itemIndex % 2 === 1 ? "ARTICLE_CART_A" : "ARTICLE_CART_B";
+}
+
 function draftData(draft, { returnToReview = false } = {}) {
   const itemCount = draft.items.length;
-  const currentItemId = `${draft.draft_id}:item:${itemCount + 1}`;
+  const itemIndex = itemCount + 1;
+  const suffix = itemIndex % 2 === 1 ? "a" : "b";
+  const currentItemId = `${draft.draft_id}:item:${itemIndex}`;
   const subtotal = draft.items.reduce(
     (sum, item) => sum + ((BigInt(item.quantity_millis) * BigInt(item.unit_price) + 500n) / 1000n),
     0n
@@ -57,30 +73,27 @@ function draftData(draft, { returnToReview = false } = {}) {
   return {
     draft_id: draft.draft_id,
     item_count: String(itemCount),
-    item_index: String(itemCount),
-    item_number_text: `Article ${itemCount + 1}`,
+    item_index: String(itemIndex),
+    item_number_text: `Article ${itemIndex}`,
     current_item_id: currentItemId,
     submission_id: currentItemId,
     saved_item_count_text: savedCountText,
     saved_items_summary: savedSummary,
     saved_subtotal_text: subtotalText,
-    use_alternate_form: itemCount % 2 === 1,
-    article_form_a_init_values: {
-      item_description_a: "",
-      item_quantity_a: "1",
-      item_unit_price_a: "",
+    article_form_init_values: {
+      [`designation_${suffix}`]: "",
+      [`quantity_${suffix}`]: "1",
+      [`unit_price_${suffix}`]: "",
     },
-    article_form_b_init_values: {
-      item_description_b: "",
-      item_quantity_b: "1",
-      item_unit_price_b: "",
-    },
-    item_unit: "",
-    article_decision: "",
     return_to_review: returnToReview ? "true" : "false",
     items_summary: savedSummary,
     provisional_subtotal: subtotalText,
   };
+}
+
+function articleScreen(draft, options) {
+  const data = draftData(draft, options);
+  return { screen: articleScreenId(Number(data.item_index)), data };
 }
 
 function formatIssuedAtLocal(date) {
@@ -176,23 +189,26 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
       };
       const updated = await cartService.setClient({ ...common, actionKey: actionKey(body, `client:${common.draftId}`), client });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
-      return { ok: true, value: { screen: data.return_to_review === "true" ? "REVIEW_INVOICE_DRAFT" : "ARTICLE_CART", data: data.return_to_review === "true" ? reviewData(updated.value, null) : draftData(updated.value) }, stage: "action_data_exchange" };
+      return { ok: true, value: data.return_to_review === "true"
+        ? { screen: "REVIEW_INVOICE_DRAFT", data: reviewData(updated.value, null) }
+        : articleScreen(updated.value), stage: "action_data_exchange" };
     }
     if (data.intent === "submit_article") {
-      const decision = data.decision === "add" || data.decision === "add_another" ? "add_another"
-        : data.decision === "finish" || data.decision === "finish_items" ? "finish_items"
+      const article = normalizeArticleSubmission(data);
+      const decision = article.article_decision === "add" || article.article_decision === "add_another" ? "add_another"
+        : article.article_decision === "finish" || article.article_decision === "finish_items" ? "finish_items"
           : null;
       if (!decision) {
         return { ok: false, status: 400, error: "ARTICLE_ACTION_INVALID" };
       }
-      const item = { description: data.description, quantity: data.quantity, unit: data.unit, unit_price: data.unit_price };
+      const item = { description: article.designation, quantity: article.quantity, unit: article.unit, unit_price: article.unit_price };
       const submissionId = typeof data.submission_id === "string" && data.submission_id.trim()
         ? data.submission_id.trim().slice(0, 64)
-        : itemSubmissionId(body, data, common.draftId);
+        : itemSubmissionId(body, data, article, common.draftId);
       const updated = await cartService.addItem({ ...common, actionKey: actionKey(body, `item:${submissionId}`), item });
       if (!updated.ok) return { ok: false, status: 400, error: updated.error };
       if (decision === "add_another") {
-        return { ok: true, value: { screen: data.return_to_review === "true" ? "REVIEW_INVOICE_DRAFT" : "ARTICLE_CART", data: data.return_to_review === "true" ? reviewData(updated.value, null) : draftData(updated.value) }, stage: "action_data_exchange" };
+        return { ok: true, value: articleScreen(updated.value, { returnToReview: data.return_to_review === "true" }), stage: "action_data_exchange" };
       }
       const finished = await cartService.finishItems({ ...common, actionKey: actionKey(body, `finish-items:${submissionId}`) });
       if (!finished.ok) return { ok: false, status: 400, error: finished.error };
@@ -222,8 +238,8 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
     if (data.intent === "review_action") {
       const loaded = await cartService.loadOwned(common.draftId, ownerRef, body.flow_token, { allowConfirmed: data.review_action === "confirm_generate" });
       if (!loaded.ok) return { ok: false, status: 400, error: loaded.error };
-      if (data.review_action === "modify_client") return { ok: true, value: { screen: "CLIENT", data: { draft_id: loaded.value.draft_id, client_type: loaded.value.client?.type || "", client_name: loaded.value.client?.name || "", client_phone: loaded.value.client?.phone || "", client_address: loaded.value.client?.address || "", client_ifu: loaded.value.client?.ifu || "", client_registry_number: loaded.value.client?.registry_number || "", invoice_subject: loaded.value.client?.invoice_subject || "" } }, stage: "action_data_exchange" };
-      if (data.review_action === "modify_items") return { ok: true, value: { screen: "ARTICLE_CART", data: draftData(loaded.value, { returnToReview: true }) }, stage: "action_data_exchange" };
+      if (data.review_action === "modify_client") return { ok: true, value: { screen: "CLIENT", data: { draft_id: loaded.value.draft_id, return_to_review: "true", client_type: loaded.value.client?.type || "", client_name: loaded.value.client?.name || "", client_phone: loaded.value.client?.phone || "", client_address: loaded.value.client?.address || "", client_ifu: loaded.value.client?.ifu || "", client_registry_number: loaded.value.client?.registry_number || "", invoice_subject: loaded.value.client?.invoice_subject || "" } }, stage: "action_data_exchange" };
+      if (data.review_action === "modify_items") return { ok: true, value: articleScreen(loaded.value, { returnToReview: true }), stage: "action_data_exchange" };
       if (data.review_action === "modify_options") return { ok: true, value: { screen: "OPTIONS", data: { draft_id: loaded.value.draft_id, item_count: String(loaded.value.items.length), return_to_review: "true", tax_status: loaded.value.options?.tax_status || "not_applicable", tax_rate: loaded.value.options?.tax_rate_basis_points ? String(loaded.value.options.tax_rate_basis_points / 100) : "", discount_amount: String(loaded.value.options?.discount_amount || 0), amount_paid: String(loaded.value.options?.amount_paid || 0), payment_terms: loaded.value.options?.payment_terms || "", note: loaded.value.options?.note || "" } }, stage: "action_data_exchange" };
       if (data.review_action === "confirm_generate") {
         const issuerProfile = typeof issuerResolver === "function"
@@ -244,8 +260,9 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
     }
     if (data.intent === "update_item" || data.intent === "delete_item") {
       const itemIndex = Number(data.item_index);
+      const article = normalizeArticleSubmission(data);
       const result = data.intent === "update_item"
-        ? await cartService.updateItem({ ...common, itemIndex, actionKey: actionKey(body, `update-item:${itemIndex}`), item: { description: data.description, quantity: data.quantity, unit: data.unit, unit_price: data.unit_price } })
+        ? await cartService.updateItem({ ...common, itemIndex, actionKey: actionKey(body, `update-item:${itemIndex}`), item: { description: article.designation, quantity: article.quantity, unit: article.unit, unit_price: article.unit_price } })
         : await cartService.deleteItem({ ...common, itemIndex, actionKey: actionKey(body, `delete-item:${itemIndex}`) });
       if (!result.ok) return { ok: false, status: 400, error: result.error };
       return { ok: true, value: { screen: "REVIEW_INVOICE_DRAFT", data: reviewData(result.value, null) }, stage: "action_data_exchange" };
@@ -284,4 +301,4 @@ function createInvoiceFlowEndpoint({ cartService, ownerResolver = null, flowSess
   return Object.freeze({ handle, handleEncrypted, handleEncryptedRaw });
 }
 
-module.exports = { ACTIONS, INTENTS, createInvoiceFlowEndpoint, safeRecord };
+module.exports = { ACTIONS, INTENTS, articleScreenId, createInvoiceFlowEndpoint, normalizeArticleSubmission, safeRecord };

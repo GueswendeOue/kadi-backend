@@ -3,8 +3,8 @@
 Cette fondation locale n'est reliée ni au webhook actif, ni au portefeuille, ni à l'envoi PDF.
 
 - Flow JSON `7.3`, protocole de données `3.0`.
-- Routage déclaré strictement orienté vers l'avant : `CLIENT` → `ARTICLE_CART` → `OPTIONS` → `REVIEW_INVOICE_DRAFT` → `DRAFT_SAVED`.
-- « Ajouter un autre article » renvoie dynamiquement `ARTICLE_CART` depuis l'endpoint `data_exchange`, avec résumé, compteur et sous-total recalculés. Deux formulaires exclusifs (`item_form_a` et `item_form_b`) alternent à chaque article afin de remonter des composants de saisie neufs. Seul le `Form` reçoit `init-values`; aucun composant individuel ne reçoit `init-value`.
+- Le parcours principal est `CLIENT` → `ARTICLE_CART_A` ↔ `ARTICLE_CART_B` → `OPTIONS` → `REVIEW_INVOICE_DRAFT` → `DRAFT_SAVED`; le modèle de routage déclare aussi les retours de correction depuis la vérification.
+- « Ajouter un autre article » alterne dynamiquement entre `ARTICLE_CART_A` et `ARTICLE_CART_B` depuis l'endpoint `data_exchange`, avec résumé, compteur et sous-total recalculés. Chaque écran contient directement son propre formulaire (`item_form_a` ou `item_form_b`) afin de remonter des composants de saisie neufs. Aucun `Form` n'est imbriqué dans une branche conditionnelle, seul le `Form` reçoit `init-values` et aucun composant individuel ne reçoit `init-value`.
 - « Terminer les articles » ajoute le dernier article de façon idempotente puis avance vers `OPTIONS`.
 - Le backend conserve le panier canonique `items[]`, déduplique les actions et limite techniquement un document à 100 articles.
 - Les requêtes de l'endpoint utilisent RSA-OAEP SHA-256 puis AES-128-GCM. La réponse réutilise la clé AES avec l'IV inversé, conformément à l'exemple officiel WhatsApp.

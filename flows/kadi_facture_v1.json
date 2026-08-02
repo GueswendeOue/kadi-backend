@@ -2,10 +2,11 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "CLIENT": ["ARTICLE_CART"],
-    "ARTICLE_CART": ["OPTIONS"],
+    "CLIENT": ["ARTICLE_CART_A", "REVIEW_INVOICE_DRAFT"],
+    "ARTICLE_CART_A": ["ARTICLE_CART_B", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
+    "ARTICLE_CART_B": ["ARTICLE_CART_A", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
     "OPTIONS": ["REVIEW_INVOICE_DRAFT"],
-    "REVIEW_INVOICE_DRAFT": ["DRAFT_SAVED"],
+    "REVIEW_INVOICE_DRAFT": ["CLIENT", "ARTICLE_CART_A", "ARTICLE_CART_B", "OPTIONS", "DRAFT_SAVED"],
     "DRAFT_SAVED": []
   },
   "screens": [
@@ -32,39 +33,27 @@
       }
     },
     {
-      "id": "ARTICLE_CART",
+      "id": "ARTICLE_CART_A",
       "title": "Articles et services",
       "data": {
         "draft_id": {"type": "string", "__example__": "draft-example"},
         "item_count": {"type": "string", "__example__": "0"},
-        "item_index": {"type": "string", "__example__": "0"},
+        "item_index": {"type": "string", "__example__": "1"},
         "item_number_text": {"type": "string", "__example__": "Article 1"},
         "current_item_id": {"type": "string", "__example__": "draft-example:item:1"},
         "submission_id": {"type": "string", "__example__": "draft-example:item:1"},
         "saved_item_count_text": {"type": "string", "__example__": "0 articles enregistrés"},
         "saved_items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
         "saved_subtotal_text": {"type": "string", "__example__": "0 FCFA"},
-        "use_alternate_form": {"type": "boolean", "__example__": false},
-        "article_form_a_init_values": {
+        "article_form_init_values": {
           "type": "object",
           "properties": {
-            "item_description_a": {"type": "string"},
-            "item_quantity_a": {"type": "string"},
-            "item_unit_price_a": {"type": "string"}
+            "designation_a": {"type": "string"},
+            "quantity_a": {"type": "string"},
+            "unit_price_a": {"type": "string"}
           },
-          "__example__": {"item_description_a": "", "item_quantity_a": "1", "item_unit_price_a": ""}
+          "__example__": {"designation_a": "", "quantity_a": "1", "unit_price_a": ""}
         },
-        "article_form_b_init_values": {
-          "type": "object",
-          "properties": {
-            "item_description_b": {"type": "string"},
-            "item_quantity_b": {"type": "string"},
-            "item_unit_price_b": {"type": "string"}
-          },
-          "__example__": {"item_description_b": "", "item_quantity_b": "1", "item_unit_price_b": ""}
-        },
-        "item_unit": {"type": "string", "__example__": ""},
-        "article_decision": {"type": "string", "__example__": ""},
         "return_to_review": {"type": "string", "__example__": "false"},
         "items_summary": {"type": "string", "__example__": "Aucun article enregistré"},
         "provisional_subtotal": {"type": "string", "__example__": "0 FCFA"}
@@ -81,34 +70,70 @@
           {"type": "TextSubheading", "text": "Total pour le moment"},
           {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
           {
-            "type": "If",
-            "condition": "${data.use_alternate_form}",
-            "then": [{
-              "type": "Form",
-              "name": "item_form_b",
-              "init-values": "${data.article_form_b_init_values}",
-              "children": [
-                {"type": "TextInput", "name": "item_description_b", "label": "Désignation", "input-type": "text", "required": true},
-                {"type": "TextInput", "name": "item_quantity_b", "label": "Quantité", "input-type": "number", "required": true},
-                {"type": "Dropdown", "name": "item_unit_b", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
-                {"type": "TextInput", "name": "item_unit_price_b", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-                {"type": "RadioButtonsGroup", "name": "article_decision_b", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
-                {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description_b}", "quantity": "${form.item_quantity_b}", "unit": "${form.item_unit_b}", "unit_price": "${form.item_unit_price_b}", "decision": "${form.article_decision_b}"}}}
-              ]
-            }],
-            "else": [{
-              "type": "Form",
-              "name": "item_form_a",
-              "init-values": "${data.article_form_a_init_values}",
-              "children": [
-                {"type": "TextInput", "name": "item_description_a", "label": "Désignation", "input-type": "text", "required": true},
-                {"type": "TextInput", "name": "item_quantity_a", "label": "Quantité", "input-type": "number", "required": true},
-                {"type": "Dropdown", "name": "item_unit_a", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
-                {"type": "TextInput", "name": "item_unit_price_a", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
-                {"type": "RadioButtonsGroup", "name": "article_decision_a", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
-                {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "description": "${form.item_description_a}", "quantity": "${form.item_quantity_a}", "unit": "${form.item_unit_a}", "unit_price": "${form.item_unit_price_a}", "decision": "${form.article_decision_a}"}}}
-              ]
-            }]
+            "type": "Form",
+            "name": "item_form_a",
+            "init-values": "${data.article_form_init_values}",
+            "children": [
+              {"type": "TextInput", "name": "designation_a", "label": "Désignation", "input-type": "text", "required": true},
+              {"type": "TextInput", "name": "quantity_a", "label": "Quantité", "input-type": "number", "required": true},
+              {"type": "Dropdown", "name": "unit_a", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
+              {"type": "TextInput", "name": "unit_price_a", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
+              {"type": "RadioButtonsGroup", "name": "article_decision_a", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
+              {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "designation": "${form.designation_a}", "quantity": "${form.quantity_a}", "unit": "${form.unit_a}", "unit_price": "${form.unit_price_a}", "article_decision": "${form.article_decision_a}"}}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICLE_CART_B",
+      "title": "Articles et services",
+      "data": {
+        "draft_id": {"type": "string", "__example__": "draft-example"},
+        "item_count": {"type": "string", "__example__": "1"},
+        "item_index": {"type": "string", "__example__": "2"},
+        "item_number_text": {"type": "string", "__example__": "Article 2"},
+        "current_item_id": {"type": "string", "__example__": "draft-example:item:2"},
+        "submission_id": {"type": "string", "__example__": "draft-example:item:2"},
+        "saved_item_count_text": {"type": "string", "__example__": "1 article enregistré"},
+        "saved_items_summary": {"type": "string", "__example__": "Ordinateur — 1 × 150 000 FCFA"},
+        "saved_subtotal_text": {"type": "string", "__example__": "150 000 FCFA"},
+        "article_form_init_values": {
+          "type": "object",
+          "properties": {
+            "designation_b": {"type": "string"},
+            "quantity_b": {"type": "string"},
+            "unit_price_b": {"type": "string"}
+          },
+          "__example__": {"designation_b": "", "quantity_b": "1", "unit_price_b": ""}
+        },
+        "return_to_review": {"type": "string", "__example__": "false"},
+        "items_summary": {"type": "string", "__example__": "Ordinateur — 1 × 150 000 FCFA"},
+        "provisional_subtotal": {"type": "string", "__example__": "150 000 FCFA"}
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {"type": "TextHeading", "text": "${data.item_number_text}"},
+          {"type": "TextBody", "text": "Ajoutez un produit ou un service à la fois."},
+          {"type": "TextSubheading", "text": "Déjà ajoutés"},
+          {"type": "TextBody", "text": "${data.saved_item_count_text}"},
+          {"type": "TextSubheading", "text": "Ce que vous avez déjà ajouté"},
+          {"type": "TextBody", "text": "${data.saved_items_summary}"},
+          {"type": "TextSubheading", "text": "Total pour le moment"},
+          {"type": "TextBody", "text": "${data.saved_subtotal_text}"},
+          {
+            "type": "Form",
+            "name": "item_form_b",
+            "init-values": "${data.article_form_init_values}",
+            "children": [
+              {"type": "TextInput", "name": "designation_b", "label": "Désignation", "input-type": "text", "required": true},
+              {"type": "TextInput", "name": "quantity_b", "label": "Quantité", "input-type": "number", "required": true},
+              {"type": "Dropdown", "name": "unit_b", "label": "Unité", "required": true, "data-source": [{"id":"piece","title":"Pièce"},{"id":"unit","title":"Unité"},{"id":"lot","title":"Lot"},{"id":"pack","title":"Paquet"},{"id":"carton","title":"Carton"},{"id":"kilogram","title":"Kilogramme"},{"id":"gram","title":"Gramme"},{"id":"liter","title":"Litre"},{"id":"meter","title":"Mètre"},{"id":"square_meter","title":"Mètre carré"},{"id":"cubic_meter","title":"Mètre cube"},{"id":"hour","title":"Heure"},{"id":"day","title":"Jour"},{"id":"flat_rate","title":"Forfait"},{"id":"other","title":"Autre"}]},
+              {"type": "TextInput", "name": "unit_price_b", "label": "Prix unitaire FCFA", "input-type": "number", "required": true},
+              {"type": "RadioButtonsGroup", "name": "article_decision_b", "label": "Après cet article", "required": true, "data-source": [{"id":"add_another","title":"Ajouter un autre article"},{"id":"finish_items","title":"C’est tout"}]},
+              {"type": "Footer", "label": "Ajouter cet article", "on-click-action": {"name": "data_exchange", "payload": {"intent": "submit_article", "draft_id": "${data.draft_id}", "item_count": "${data.item_count}", "item_index": "${data.item_index}", "current_item_id": "${data.current_item_id}", "submission_id": "${data.submission_id}", "return_to_review": "${data.return_to_review}", "designation": "${form.designation_b}", "quantity": "${form.quantity_b}", "unit": "${form.unit_b}", "unit_price": "${form.unit_price_b}", "article_decision": "${form.article_decision_b}"}}}
+            ]
           }
         ]
       }

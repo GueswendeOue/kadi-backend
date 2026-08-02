@@ -10,40 +10,58 @@ const flowPath = path.join(__dirname, "..", "flows", "kadi_facture_v1.json");
 const loadFlow = () => JSON.parse(fs.readFileSync(flowPath, "utf8"));
 
 function flatten(values) {
-  return values.flatMap((value) => [value, ...flatten(value.children || []), ...flatten(value.then || []), ...flatten(value.else || [])]);
+  return values.flatMap((value) => [
+    value,
+    ...flatten(value.children || []),
+    ...flatten(value.then || []),
+    ...flatten(value.else || []),
+    ...flatten((value.cases || []).flatMap((entry) => entry.children || entry.then || [])),
+  ]);
 }
 
 function components(flow) {
   return flow.screens.flatMap((screen) => flatten(screen.layout.children));
 }
 
-function hasRoutingCycle(routingModel) {
-  const visiting = new Set();
-  const visited = new Set();
-  function visit(screen) {
-    if (visiting.has(screen)) return true;
-    if (visited.has(screen)) return false;
-    visiting.add(screen);
-    if ((routingModel[screen] || []).some(visit)) return true;
-    visiting.delete(screen);
-    visited.add(screen);
-    return false;
+function formsInConditionalBranches(values) {
+  return flatten(values).flatMap((component) => {
+    const branches = component.type === "If"
+      ? [...(component.then || []), ...(component.else || [])]
+      : component.type === "Switch"
+        ? (component.cases || []).flatMap((entry) => entry.children || entry.then || [])
+        : [];
+    return flatten(branches).filter(({ type }) => type === "Form");
+  });
+}
+
+function reachableScreens(routingModel, start) {
+  const reached = new Set();
+  const pending = [start];
+  while (pending.length) {
+    const screen = pending.pop();
+    if (reached.has(screen)) continue;
+    reached.add(screen);
+    pending.push(...(routingModel[screen] || []));
   }
-  return Object.keys(routingModel).some(visit);
+  return reached;
 }
 
 test("dynamic KADI_FACTURE_V1 declares the editable review screen", () => {
   const flow = loadFlow();
   assert.equal(flow.version, "7.3");
   assert.equal(flow.data_api_version, "3.0");
-  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DRAFT_SAVED"]);
+  assert.deepEqual(flow.screens.map(({ id }) => id), ["CLIENT", "ARTICLE_CART_A", "ARTICLE_CART_B", "OPTIONS", "REVIEW_INVOICE_DRAFT", "DRAFT_SAVED"]);
   assert.deepEqual(flow.routing_model, {
-    CLIENT: ["ARTICLE_CART"], ARTICLE_CART: ["OPTIONS"], OPTIONS: ["REVIEW_INVOICE_DRAFT"], REVIEW_INVOICE_DRAFT: ["DRAFT_SAVED"], DRAFT_SAVED: [],
+    CLIENT: ["ARTICLE_CART_A", "REVIEW_INVOICE_DRAFT"],
+    ARTICLE_CART_A: ["ARTICLE_CART_B", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
+    ARTICLE_CART_B: ["ARTICLE_CART_A", "OPTIONS", "REVIEW_INVOICE_DRAFT"],
+    OPTIONS: ["REVIEW_INVOICE_DRAFT"],
+    REVIEW_INVOICE_DRAFT: ["CLIENT", "ARTICLE_CART_A", "ARTICLE_CART_B", "OPTIONS", "DRAFT_SAVED"],
+    DRAFT_SAVED: [],
   });
-  assert.equal(hasRoutingCycle(flow.routing_model), false);
+  assert.deepEqual([...reachableScreens(flow.routing_model, "CLIENT")].sort(), flow.screens.map(({ id }) => id).sort());
   assert.equal(Object.hasOwn(flow.routing_model, "ARTICLE_DECISION"), false);
   assert.equal(flow.screens.some(({ id }) => id === "ARTICLE_DECISION"), false);
-  assert.equal(flow.routing_model.ARTICLE_CART.includes("ARTICLE_CART"), false);
 });
 
 test("Flow UI uses supported selectors, unique fields and visible footers", () => {
@@ -52,15 +70,15 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   const named = all.filter((component) => typeof component.name === "string");
   assert.equal(new Set(named.map(({ name }) => name)).size, named.length);
   assert.equal(named.find(({ name }) => name === "client_type").type, "RadioButtonsGroup");
-  const units = named.filter(({ name }) => /^item_unit_[ab]$/.test(name));
+  const units = named.filter(({ name }) => /^unit_[ab]$/.test(name));
   assert.equal(units.length, 2);
   assert.equal(units.every(({ type }) => type === "Dropdown"), true);
   assert.equal(units.every((unit) => !Object.hasOwn(unit, "on-select-action")), true);
   for (const screen of flow.screens) {
     assert.ok(flatten(screen.layout.children).some(({ type }) => type === "Footer"), screen.id);
   }
-  const cart = flow.screens.find(({ id }) => id === "ARTICLE_CART");
-  const cartComponents = flatten(cart.layout.children);
+  const carts = ["ARTICLE_CART_A", "ARTICLE_CART_B"].map((id) => flow.screens.find((screen) => screen.id === id));
+  const cartComponents = carts.flatMap((cart) => flatten(cart.layout.children));
   const cartFooters = cartComponents.filter(({ type }) => type === "Footer");
   assert.equal(cartFooters.length, 2);
   assert.equal(cartFooters.every(({ label }) => label === "Ajouter cet article"), true);
@@ -81,18 +99,31 @@ test("Flow UI uses supported selectors, unique fields and visible footers", () =
   assert.equal(formsWithInitValues.length, 2);
   assert.equal(formsWithInitValues.every(({ type }) => type === "Form"), true);
   assert.deepEqual(formsWithInitValues.map(({ name }) => name).sort(), ["item_form_a", "item_form_b"]);
-  assert.deepEqual(formsWithInitValues.map((form) => form["init-values"]).sort(), ["${data.article_form_a_init_values}", "${data.article_form_b_init_values}"]);
+  assert.deepEqual(formsWithInitValues.map((form) => form["init-values"]), ["${data.article_form_init_values}", "${data.article_form_init_values}"]);
   assert.equal(all.some((component) => component.type !== "Form" && Object.hasOwn(component, "init-values")), false);
 
   for (const suffix of ["a", "b"]) {
-    const initDefinition = cart.data[`article_form_${suffix}_init_values`];
+    const cart = flow.screens.find(({ id }) => id === `ARTICLE_CART_${suffix.toUpperCase()}`);
+    const initDefinition = cart.data.article_form_init_values;
     assert.equal(initDefinition.type, "object");
-    assert.deepEqual(Object.keys(initDefinition.properties), [`item_description_${suffix}`, `item_quantity_${suffix}`, `item_unit_price_${suffix}`]);
-    assert.deepEqual(initDefinition.__example__, { [`item_description_${suffix}`]: "", [`item_quantity_${suffix}`]: "1", [`item_unit_price_${suffix}`]: "" });
+    assert.deepEqual(Object.keys(initDefinition.properties), [`designation_${suffix}`, `quantity_${suffix}`, `unit_price_${suffix}`]);
+    assert.deepEqual(initDefinition.__example__, { [`designation_${suffix}`]: "", [`quantity_${suffix}`]: "1", [`unit_price_${suffix}`]: "" });
     assert.equal(Object.values(initDefinition.__example__).every((value) => typeof value === "string"), true);
   }
-  const condition = cartComponents.find(({ type }) => type === "If");
-  assert.equal(condition.condition, "${data.use_alternate_form}");
+});
+
+test("no Form is nested in If or Switch branches and both cart screens have one direct Form", () => {
+  const flow = loadFlow();
+  assert.deepEqual(formsInConditionalBranches(flow.screens.flatMap((screen) => screen.layout.children)), []);
+  assert.equal(formsInConditionalBranches([{ type: "If", then: [{ type: "Form" }] }]).length, 1);
+  assert.equal(formsInConditionalBranches([{ type: "If", else: [{ type: "Form" }] }]).length, 1);
+  assert.equal(formsInConditionalBranches([{ type: "Switch", cases: [{ children: [{ type: "Form" }] }] }]).length, 1);
+  for (const id of ["ARTICLE_CART_A", "ARTICLE_CART_B"]) {
+    const screen = flow.screens.find((candidate) => candidate.id === id);
+    assert.ok(screen, id);
+    assert.equal(screen.layout.children.filter(({ type }) => type === "Form").length, 1, id);
+    assert.equal(flatten(screen.layout.children).filter(({ type }) => type === "Form").length, 1, id);
+  }
 });
 
 test("all dynamic navigation is data_exchange and contains no phone-side totals", () => {
@@ -117,22 +148,26 @@ test("screen data declarations have type-compatible examples", () => {
   }
 });
 
-test("Flow item_count data is string-typed with a string zero example", () => {
+test("Flow item_count data is string-typed with screen-compatible examples", () => {
   const flow = loadFlow();
-  for (const screenId of ["ARTICLE_CART", "OPTIONS"]) {
+  const expectedExamples = { ARTICLE_CART_A: "0", ARTICLE_CART_B: "1", OPTIONS: "0" };
+  for (const screenId of Object.keys(expectedExamples)) {
     const definition = flow.screens.find(({ id }) => id === screenId).data.item_count;
     assert.equal(definition.type, "string");
-    assert.equal(definition.__example__, "0");
+    assert.equal(definition.__example__, expectedExamples[screenId]);
   }
 });
 
 test("Flow visible article titles use the updated French UX copy", () => {
-  const cart = loadFlow().screens.find(({ id }) => id === "ARTICLE_CART");
-  assert.equal(cart.title, "Articles et services");
-  const texts = flatten(cart.layout.children).map((component) => component.text).filter(Boolean);
-  assert.ok(texts.includes("Ajoutez un produit ou un service à la fois."));
-  assert.ok(texts.includes("Ce que vous avez déjà ajouté"));
-  assert.ok(texts.includes("Total pour le moment"));
+  const flow = loadFlow();
+  for (const id of ["ARTICLE_CART_A", "ARTICLE_CART_B"]) {
+    const cart = flow.screens.find((screen) => screen.id === id);
+    assert.equal(cart.title, "Articles et services");
+    const texts = flatten(cart.layout.children).map((component) => component.text).filter(Boolean);
+    assert.ok(texts.includes("Ajoutez un produit ou un service à la fois."));
+    assert.ok(texts.includes("Ce que vous avez déjà ajouté"));
+    assert.ok(texts.includes("Total pour le moment"));
+  }
 });
 
 test("dynamic data bindings are declared and use standalone references", () => {
