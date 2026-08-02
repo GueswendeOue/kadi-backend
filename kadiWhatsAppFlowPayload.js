@@ -1,5 +1,7 @@
 "use strict";
 
+const { resolveInvoiceFlowId } = require("./kadiInvoiceFlowIds");
+
 const FLOW_MESSAGE_VERSION = "3";
 const INVOICE_FLOW_TOKEN_PATTERN = /^kadi_invoice_v1:[a-f0-9]{32}:[0-9]{10,13}$/;
 const INVOICE_FLOW_TOKEN_CONTRACT = Object.freeze({
@@ -23,7 +25,7 @@ function buildDraftInvoiceFlowMessage(args) {
     throw new TypeError("FLOW_ARGS_INVALID");
   }
   const to = requireString(args.to, /^\d{6,20}$/, "FLOW_RECIPIENT_INVALID");
-  const flowId = requireString(args.flowId, /^\d{1,40}$/, "FLOW_ID_INVALID");
+  const flowId = resolveInvoiceFlowId(args.flowIds, args.targetScreen);
   const flowToken = requireString(
     args.flowToken,
     INVOICE_FLOW_TOKEN_PATTERN,

@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const { buildDraftInvoiceFlowMessage } = require("./kadiWhatsAppFlowPayload");
+const { validateInvoiceFlowIdMap } = require("./kadiInvoiceFlowIds");
 
 function normalizeRecipient(value) {
   return String(value || "").replace(/[^0-9]/g, "");
@@ -32,7 +33,7 @@ function createInvoiceFlowDraftTrigger({
   enabled = false,
   recipients,
   triggerText,
-  flowId,
+  flowIds,
   flowMode = "draft",
   ttlMinutes = 30,
   cartService,
@@ -45,7 +46,7 @@ function createInvoiceFlowDraftTrigger({
 } = {}) {
   const allowlist = recipients instanceof Set ? recipients : parseRecipients(recipients);
   const configuredTrigger = normalizeTriggerText(triggerText);
-  const configValid = enabled && Boolean(flowId) && flowMode === "draft" && allowlist.size > 0 && Boolean(configuredTrigger) && Number.isFinite(ttlMinutes) && ttlMinutes > 0 && ttlMinutes <= 24 * 60;
+  const configValid = enabled && validateInvoiceFlowIdMap(flowIds) && flowMode === "draft" && allowlist.size > 0 && Boolean(configuredTrigger) && Number.isFinite(ttlMinutes) && ttlMinutes > 0 && ttlMinutes <= 24 * 60;
   const seenMessageIds = new Set();
   const inFlight = new Map();
 
@@ -125,7 +126,8 @@ function createInvoiceFlowDraftTrigger({
         }
         const payload = buildDraftInvoiceFlowMessage({
           to: normalizedFrom,
-          flowId,
+          flowIds,
+          targetScreen: "CLIENT",
           flowToken: session.value.flow_token,
         });
         const sent = await sendFlow(payload);

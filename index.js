@@ -27,6 +27,7 @@ const { createSupabaseInvoiceDraftRepository } = require("./kadiInvoiceDraftRepo
 const { createInvoiceFlowSessionService, createSupabaseInvoiceFlowSessionRepository } = require("./kadiInvoiceFlowSession");
 const { createInvoiceFlowDraftTrigger } = require("./kadiInvoiceFlowDraftTrigger");
 const { createInvoiceFlowCompletionHandler } = require("./kadiInvoiceFlowCompletion");
+const { buildInvoiceFlowIdMap, validateInvoiceFlowIdMap } = require("./kadiInvoiceFlowIds");
 const { createWhatsAppWebhookReceiver } = require("./kadiFlowMonitoringWebhook");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
@@ -406,11 +407,12 @@ app.get("/health", (_, res) => {
 // requires an externally supplied private key and an application-specific owner resolver.
 let invoiceFlowTrigger = null;
 let invoiceFlowCompletion = null;
+const invoiceFlowIds = buildInvoiceFlowIdMap(process.env);
 const invoiceFlowTriggerOptions = {
   enabled: INVOICE_FLOW_ENABLED,
   recipients: INVOICE_FLOW_TEST_RECIPIENTS,
   triggerText: INVOICE_FLOW_TEST_TRIGGER,
-  flowId: process.env.KADI_INVOICE_FLOW_ID,
+  flowIds: invoiceFlowIds,
   flowMode: INVOICE_FLOW_MODE,
   ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
   sendFlow,
@@ -434,7 +436,7 @@ const invoiceFlowEndpoint = INVOICE_FLOW_ENABLED
     invoiceFlowCompletion = createInvoiceFlowCompletionHandler({
       flowSessionService,
       cartService,
-      flowId: process.env.KADI_INVOICE_FLOW_ID,
+      flowIds: invoiceFlowIds,
       ttlMinutes: INVOICE_FLOW_SESSION_TTL_MINUTES,
       sendFlow,
       sendText,
@@ -467,7 +469,7 @@ console.log("KADI_FLOW_ENDPOINT_READY", {
 });
 console.log("KADI_FLOW_TRIGGER_READY", {
   enabled: INVOICE_FLOW_ENABLED,
-  flow_id: process.env.KADI_INVOICE_FLOW_ID ? "SET" : "MISSING",
+  flow_ids: validateInvoiceFlowIdMap(invoiceFlowIds) ? "SET" : "MISSING",
   mode: ["draft", "published"].includes(INVOICE_FLOW_MODE) ? INVOICE_FLOW_MODE : "missing",
   recipients_count: new Set(String(INVOICE_FLOW_TEST_RECIPIENTS).split(",").map((value) => String(value || "").replace(/[^0-9]/g, "")).filter(Boolean)).size,
   trigger_configured: Boolean(String(INVOICE_FLOW_TEST_TRIGGER || "").trim()),

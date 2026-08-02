@@ -1,0 +1,236 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "ARTICLE_ENTRY": []
+  },
+  "screens": [
+    {
+      "id": "ARTICLE_ENTRY",
+      "title": "Articles et services",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        },
+        "item_number_text": {
+          "type": "string",
+          "__example__": "Produit ou service 1"
+        },
+        "saved_item_count_text": {
+          "type": "string",
+          "__example__": "0 article enregistré"
+        },
+        "saved_items_summary": {
+          "type": "string",
+          "__example__": "Rien pour le moment"
+        },
+        "saved_subtotal_text": {
+          "type": "string",
+          "__example__": "0 FCFA"
+        },
+        "current_item_id": {
+          "type": "string",
+          "__example__": "draft-example:item:1"
+        },
+        "submission_id": {
+          "type": "string",
+          "__example__": "draft-example:item:1"
+        },
+        "return_to_review": {
+          "type": "string",
+          "__example__": "false"
+        },
+        "article_form_init_values": {
+          "type": "object",
+          "properties": {
+            "designation": {
+              "type": "string"
+            },
+            "quantity": {
+              "type": "string"
+            },
+            "unit_price": {
+              "type": "string"
+            }
+          },
+          "__example__": {
+            "designation": "",
+            "quantity": "1",
+            "unit_price": ""
+          }
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.item_number_text}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Qu’avez-vous vendu ou réalisé ?"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Déjà ajoutés"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.saved_item_count_text}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.saved_items_summary}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Total pour le moment"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.saved_subtotal_text}"
+          },
+          {
+            "type": "Form",
+            "name": "article_form",
+            "init-values": "${data.article_form_init_values}",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "designation",
+                "label": "Désignation",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "name": "quantity",
+                "label": "Quantité",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "Dropdown",
+                "name": "unit",
+                "label": "Unité",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "piece",
+                    "title": "Pièce"
+                  },
+                  {
+                    "id": "unit",
+                    "title": "Unité"
+                  },
+                  {
+                    "id": "lot",
+                    "title": "Lot"
+                  },
+                  {
+                    "id": "pack",
+                    "title": "Paquet"
+                  },
+                  {
+                    "id": "carton",
+                    "title": "Carton"
+                  },
+                  {
+                    "id": "kilogram",
+                    "title": "Kilogramme"
+                  },
+                  {
+                    "id": "gram",
+                    "title": "Gramme"
+                  },
+                  {
+                    "id": "liter",
+                    "title": "Litre"
+                  },
+                  {
+                    "id": "meter",
+                    "title": "Mètre"
+                  },
+                  {
+                    "id": "square_meter",
+                    "title": "Mètre carré"
+                  },
+                  {
+                    "id": "cubic_meter",
+                    "title": "Mètre cube"
+                  },
+                  {
+                    "id": "hour",
+                    "title": "Heure"
+                  },
+                  {
+                    "id": "day",
+                    "title": "Jour"
+                  },
+                  {
+                    "id": "flat_rate",
+                    "title": "Forfait"
+                  },
+                  {
+                    "id": "other",
+                    "title": "Autre"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "unit_price",
+                "label": "Prix unitaire FCFA",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "article_decision",
+                "label": "Après cet article",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "add_another_item",
+                    "title": "J’ajoute autre chose"
+                  },
+                  {
+                    "id": "items_finished",
+                    "title": "C’est tout"
+                  }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Ajouter cet article",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "${form.article_decision}",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}",
+                    "current_item_id": "${data.current_item_id}",
+                    "submission_id": "${data.submission_id}",
+                    "return_to_review": "${data.return_to_review}",
+                    "designation": "${form.designation}",
+                    "quantity": "${form.quantity}",
+                    "unit": "${form.unit}",
+                    "unit_price": "${form.unit_price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "EDIT_CLIENT": []
+  },
+  "screens": [
+    {
+      "id": "EDIT_CLIENT",
+      "title": "Corriger le client",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        },
+        "client_form_init_values": {
+          "type": "object",
+          "properties": {
+            "client_type": {
+              "type": "string"
+            },
+            "client_name": {
+              "type": "string"
+            },
+            "client_phone": {
+              "type": "string"
+            },
+            "client_address": {
+              "type": "string"
+            },
+            "client_ifu": {
+              "type": "string"
+            },
+            "client_registry_number": {
+              "type": "string"
+            },
+            "invoice_subject": {
+              "type": "string"
+            }
+          },
+          "__example__": {
+            "client_type": "individual",
+            "client_name": "Ben",
+            "client_phone": "",
+            "client_address": "",
+            "client_ifu": "",
+            "client_registry_number": "",
+            "invoice_subject": ""
+          }
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "edit_client_form",
+            "init-values": "${data.client_form_init_values}",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "D’accord, corrigeons cela."
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "client_type",
+                "label": "Type de client",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "individual",
+                    "title": "Particulier"
+                  },
+                  {
+                    "id": "professional",
+                    "title": "Professionnel"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "client_name",
+                "label": "Nom du client",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "name": "client_phone",
+                "label": "Téléphone",
+                "input-type": "phone",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_address",
+                "label": "Adresse",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_ifu",
+                "label": "IFU",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_registry_number",
+                "label": "RCCM ou registre",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "invoice_subject",
+                "label": "Objet",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Enregistrer la correction",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "client_corrected",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}",
+                    "client_type": "${form.client_type}",
+                    "client_name": "${form.client_name}",
+                    "client_phone": "${form.client_phone}",
+                    "client_address": "${form.client_address}",
+                    "client_ifu": "${form.client_ifu}",
+                    "client_registry_number": "${form.client_registry_number}",
+                    "invoice_subject": "${form.invoice_subject}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

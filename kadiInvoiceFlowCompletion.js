@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const { parseInvoiceFlowReply } = require("./kadiInvoiceFlowContract");
 const { buildDraftInvoiceFlowMessage } = require("./kadiWhatsAppFlowPayload");
+const { validateInvoiceFlowIdMap } = require("./kadiInvoiceFlowIds");
 const {
   formatFcfa,
   subtotalAmount,
@@ -47,7 +48,7 @@ function optionsFromPayload(payload) {
 function createInvoiceFlowCompletionHandler({
   flowSessionService,
   cartService = null,
-  flowId = null,
+  flowIds = null,
   ttlMinutes = 30,
   sendFlow = null,
   sendText = null,
@@ -71,7 +72,8 @@ function createInvoiceFlowCompletionHandler({
     try {
       const payload = buildDraftInvoiceFlowMessage({
         to: String(from || "").replace(/[^0-9]/g, ""),
-        flowId,
+        flowIds,
+        targetScreen: screen,
         flowToken: nextFlowToken,
         cta,
       });
@@ -118,10 +120,14 @@ function createInvoiceFlowCompletionHandler({
         log({ response_json_valid: true, duplicate: false, outcome: "ignored", reason: "FLOW_SESSION_INVALID" });
         return { handled: true, accepted: false, reason: "FLOW_SESSION_INVALID" };
       }
-      if (!payload.outcome || !cartService || !flowId || typeof sendFlow !== "function") {
+      if (!payload.outcome || !cartService || typeof sendFlow !== "function") {
         seen.add(dedupeKey);
         log({ response_json_valid: true, duplicate: false, outcome: "handled", reason: "FLOW_COMPLETION_ACCEPTED" });
         return { handled: true, outcome: "handled" };
+      }
+      if (!validateInvoiceFlowIdMap(flowIds)) {
+        log({ response_json_valid: true, duplicate: false, outcome: "failed", reason: "FLOW_ID_CONFIGURATION_INVALID" });
+        return { handled: true, accepted: false, reason: "FLOW_ID_CONFIGURATION_INVALID" };
       }
 
       const common = { draftId: session.value.draftId, ownerRef: session.value.ownerRef, flowToken: payload.flow_token };

@@ -1,0 +1,117 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "CLIENT": []
+  },
+  "screens": [
+    {
+      "id": "CLIENT",
+      "title": "Client",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "client_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "À qui facturez-vous ?"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "client_type",
+                "label": "Type de client",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "individual",
+                    "title": "Particulier"
+                  },
+                  {
+                    "id": "professional",
+                    "title": "Professionnel"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "client_name",
+                "label": "Nom du client",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "name": "client_phone",
+                "label": "Téléphone",
+                "input-type": "phone",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_address",
+                "label": "Adresse",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_ifu",
+                "label": "IFU",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "client_registry_number",
+                "label": "RCCM ou registre",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "invoice_subject",
+                "label": "Objet",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "client_saved",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}",
+                    "client_type": "${form.client_type}",
+                    "client_name": "${form.client_name}",
+                    "client_phone": "${form.client_phone}",
+                    "client_address": "${form.client_address}",
+                    "client_ifu": "${form.client_ifu}",
+                    "client_registry_number": "${form.client_registry_number}",
+                    "invoice_subject": "${form.invoice_subject}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -10,6 +10,16 @@ const { createInvoiceCartService } = require("../kadiInvoiceCartService");
 const { createInMemoryInvoiceDraftRepository } = require("../kadiInvoiceDraftRepository");
 const { createInMemoryInvoiceFlowSessionRepository, createInvoiceFlowSessionService } = require("../kadiInvoiceFlowSession");
 
+const FLOW_IDS = Object.freeze({
+  CLIENT: "400000000000001",
+  ARTICLE_ENTRY: "400000000000002",
+  OPTIONS: "400000000000003",
+  REVIEW_INVOICE_DRAFT: "400000000000004",
+  EDIT_CLIENT: "400000000000005",
+  EDIT_ITEMS: "400000000000006",
+  EDIT_OPTIONS: "400000000000007",
+});
+
 async function orchestrationFixture() {
   const nowValue = 1735689600000;
   const draftRepository = createInMemoryInvoiceDraftRepository();
@@ -23,7 +33,7 @@ async function orchestrationFixture() {
   const handler = createInvoiceFlowCompletionHandler({
     flowSessionService,
     cartService,
-    flowId: "1972040430119125",
+    flowIds: FLOW_IDS,
     ttlMinutes: 30,
     sendFlow: async (payload) => {
       const parameters = payload.interactive.action.parameters;
@@ -111,6 +121,23 @@ test("recognized but invalid Flow completion is swallowed before legacy MENU and
   assert.equal(result.handled, true);
   assert.equal(result.accepted, false);
   assert.equal(result.reason, "FLOW_TOKEN_MISSING");
+});
+
+test("recognized completion fails closed before mutation when the seven Flow IDs are not configured", async () => {
+  let mutationCount = 0;
+  const handler = createInvoiceFlowCompletionHandler({
+    flowSessionService: { resolveInvoiceFlowSession: async () => ({ ok: true, value: { draftId: "draft-1", ownerRef: "owner-a" } }) },
+    cartService: { setClient: async () => { mutationCount += 1; return { ok: true }; } },
+    flowIds: { ...FLOW_IDS, EDIT_OPTIONS: "" },
+    sendFlow: async () => { throw new Error("MUST_NOT_SEND"); },
+    logger: { log: () => {} },
+  });
+  const result = await handler({
+    from: "22670000000",
+    message: { id: "missing-flow-config", type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: JSON.stringify({ outcome: "client_saved", flow_token: "opaque-flow-token", draft_id: "draft-1", client_type: "individual", client_name: "Test" }) } } },
+  });
+  assert.deepEqual(result, { handled: true, accepted: false, reason: "FLOW_ID_CONFIGURATION_INVALID" });
+  assert.equal(mutationCount, 0);
 });
 
 test("three short article sessions build fresh Article 2 and 3 payloads without duplicates", async () => {

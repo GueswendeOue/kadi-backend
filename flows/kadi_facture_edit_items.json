@@ -1,0 +1,112 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "EDIT_ITEMS": []
+  },
+  "screens": [
+    {
+      "id": "EDIT_ITEMS",
+      "title": "Corriger les articles",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        },
+        "items_summary": {
+          "type": "string",
+          "__example__": "1. Ordinateur — 1 × 50 000 FCFA"
+        },
+        "total_text": {
+          "type": "string",
+          "__example__": "50 000 FCFA"
+        },
+        "editable_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "draft-example:item:1",
+              "title": "1. Ordinateur"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "edit_items_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "D’accord, corrigeons cela."
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.items_summary}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.total_text}"
+              },
+              {
+                "type": "Dropdown",
+                "name": "edit_item_id",
+                "label": "Article à corriger",
+                "required": true,
+                "data-source": "${data.editable_items}"
+              },
+              {
+                "type": "TextInput",
+                "name": "edit_quantity",
+                "label": "Nouvelle quantité",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "name": "edit_unit_price",
+                "label": "Nouveau prix unitaire",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "Footer",
+                "label": "Enregistrer la correction",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "item_corrected",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}",
+                    "edit_item_id": "${form.edit_item_id}",
+                    "edit_quantity": "${form.edit_quantity}",
+                    "edit_unit_price": "${form.edit_unit_price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

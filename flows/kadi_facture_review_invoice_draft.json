@@ -1,0 +1,136 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "REVIEW_INVOICE_DRAFT": []
+  },
+  "screens": [
+    {
+      "id": "REVIEW_INVOICE_DRAFT",
+      "title": "Vérifiez les informations",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        },
+        "issuer_name": {
+          "type": "string",
+          "__example__": "Profil entreprise non renseigné"
+        },
+        "client_summary": {
+          "type": "string",
+          "__example__": "Ben"
+        },
+        "items_summary": {
+          "type": "string",
+          "__example__": "1. Ordinateur — 1 × 50 000 FCFA"
+        },
+        "total_text": {
+          "type": "string",
+          "__example__": "50 000 FCFA"
+        },
+        "options_summary": {
+          "type": "string",
+          "__example__": "Aucune taxe"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "review_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Tout est bon ?"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Émetteur"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.issuer_name}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Client"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.client_summary}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Produits et services"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.items_summary}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Total"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.total_text}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "Autres détails"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.options_summary}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "review_action",
+                "label": "Que souhaitez-vous faire ?",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "modify_client",
+                    "title": "Corriger le client"
+                  },
+                  {
+                    "id": "modify_items",
+                    "title": "Corriger les produits et services"
+                  },
+                  {
+                    "id": "modify_options",
+                    "title": "Corriger les autres détails"
+                  },
+                  {
+                    "id": "finalize_draft",
+                    "title": "Oui, enregistrer le brouillon"
+                  }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "${form.review_action}",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

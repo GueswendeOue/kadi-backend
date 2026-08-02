@@ -1,0 +1,188 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "EDIT_OPTIONS": []
+  },
+  "screens": [
+    {
+      "id": "EDIT_OPTIONS",
+      "title": "Corriger les détails",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "flow_token": {
+          "type": "string",
+          "__example__": "opaque-flow-token"
+        },
+        "draft_id": {
+          "type": "string",
+          "__example__": "draft-example"
+        },
+        "options_form_init_values": {
+          "type": "object",
+          "properties": {
+            "tax_status": {
+              "type": "string"
+            },
+            "tax_rate": {
+              "type": "string"
+            },
+            "discount_amount": {
+              "type": "string"
+            },
+            "amount_paid": {
+              "type": "string"
+            },
+            "due_date": {
+              "type": "string"
+            },
+            "payment_method": {
+              "type": "string"
+            },
+            "payment_terms": {
+              "type": "string"
+            },
+            "invoice_note": {
+              "type": "string"
+            }
+          },
+          "__example__": {
+            "tax_status": "not_applicable",
+            "tax_rate": "",
+            "discount_amount": "0",
+            "amount_paid": "0",
+            "due_date": "",
+            "payment_method": "",
+            "payment_terms": "",
+            "invoice_note": ""
+          }
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "edit_options_form",
+            "init-values": "${data.options_form_init_values}",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "D’accord, corrigeons cela."
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "tax_status",
+                "label": "Situation fiscale",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "not_applicable",
+                    "title": "Non applicable"
+                  },
+                  {
+                    "id": "exempt",
+                    "title": "Exonéré"
+                  },
+                  {
+                    "id": "taxable",
+                    "title": "Taxable"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "tax_rate",
+                "label": "Taux de taxe (%)",
+                "input-type": "number",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "discount_amount",
+                "label": "Remise FCFA",
+                "input-type": "number",
+                "required": false
+              },
+              {
+                "type": "TextInput",
+                "name": "amount_paid",
+                "label": "Montant payé",
+                "input-type": "number",
+                "required": false
+              },
+              {
+                "type": "DatePicker",
+                "name": "due_date",
+                "label": "Date d'échéance",
+                "required": false
+              },
+              {
+                "type": "Dropdown",
+                "name": "payment_method",
+                "label": "Mode de paiement",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "cash",
+                    "title": "Espèces"
+                  },
+                  {
+                    "id": "mobile_money",
+                    "title": "Mobile Money"
+                  },
+                  {
+                    "id": "bank_transfer",
+                    "title": "Virement"
+                  },
+                  {
+                    "id": "cheque",
+                    "title": "Chèque"
+                  },
+                  {
+                    "id": "other",
+                    "title": "Autre"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "payment_terms",
+                "label": "Conditions paiement",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "TextArea",
+                "name": "invoice_note",
+                "label": "Note",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Enregistrer la correction",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "outcome": "options_corrected",
+                    "flow_token": "${data.flow_token}",
+                    "draft_id": "${data.draft_id}",
+                    "tax_status": "${form.tax_status}",
+                    "tax_rate": "${form.tax_rate}",
+                    "discount_amount": "${form.discount_amount}",
+                    "amount_paid": "${form.amount_paid}",
+                    "due_date": "${form.due_date}",
+                    "payment_method": "${form.payment_method}",
+                    "payment_terms": "${form.payment_terms}",
+                    "invoice_note": "${form.invoice_note}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

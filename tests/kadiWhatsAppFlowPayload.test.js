@@ -10,10 +10,16 @@ const {
   INVOICE_FLOW_TOKEN_CONTRACT,
   buildDraftInvoiceFlowMessage,
 } = require("../kadiWhatsAppFlowPayload");
+const { INVOICE_FLOW_TARGET_SCREENS } = require("../kadiInvoiceFlowSession");
+
+const flowIds = Object.freeze(Object.fromEntries(
+  INVOICE_FLOW_TARGET_SCREENS.map((screen, index) => [screen, String(100000000000001 + index)])
+));
 
 const validArgs = {
   to: "22670000000",
-  flowId: "123456789012345",
+  flowIds,
+  targetScreen: "CLIENT",
   flowToken: "kadi_invoice_v1:0123456789abcdef0123456789abcdef:1785528000",
 };
 
@@ -33,7 +39,7 @@ test("draft payload follows the current interactive Flow message contract", () =
   assert.equal(parameters.flow_action, "data_exchange");
   assert.equal(Object.hasOwn(parameters, "flow_action_payload"), false);
   assert.equal(parameters.flow_cta, "Ouvrir le formulaire");
-  assert.equal(parameters.flow_id, validArgs.flowId);
+  assert.equal(parameters.flow_id, flowIds.CLIENT);
   assert.equal(parameters.flow_token, validArgs.flowToken);
 });
 
@@ -85,14 +91,18 @@ test("flow token contract accepts only an opaque pseudonymized invoice token", (
   }
 });
 
-test("flow id and recipient are supplied, validated and never defaulted", () => {
+test("target-specific flow id and recipient are supplied, validated and never defaulted", () => {
   assert.throws(
     () => buildDraftInvoiceFlowMessage({ ...validArgs, to: undefined }),
     /FLOW_RECIPIENT_INVALID/
   );
   assert.throws(
-    () => buildDraftInvoiceFlowMessage({ ...validArgs, flowId: "not-an-id" }),
-    /FLOW_ID_INVALID/
+    () => buildDraftInvoiceFlowMessage({ ...validArgs, flowIds: { ...flowIds, CLIENT: "" } }),
+    /FLOW_ID_NOT_CONFIGURED/
+  );
+  assert.throws(
+    () => buildDraftInvoiceFlowMessage({ ...validArgs, targetScreen: "KADI_SESSION_ROOT" }),
+    /FLOW_TARGET_SCREEN_INVALID/
   );
   assert.throws(() => buildDraftInvoiceFlowMessage(null), /FLOW_ARGS_INVALID/);
 });

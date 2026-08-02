@@ -3,6 +3,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createInvoiceFlowDraftTrigger } = require("../kadiInvoiceFlowDraftTrigger");
+const { INVOICE_FLOW_TARGET_SCREENS } = require("../kadiInvoiceFlowSession");
+
+const FLOW_IDS = Object.freeze(Object.fromEntries(
+  INVOICE_FLOW_TARGET_SCREENS.map((screen, index) => [screen, String(200000000000001 + index)])
+));
 
 function fixture(overrides = {}) {
   const sent = [];
@@ -30,7 +35,7 @@ function fixture(overrides = {}) {
     enabled: true,
     recipients: "22670626055",
     triggerText: "Test facture Flow",
-    flowId: "1972040430119125",
+    flowIds: FLOW_IDS,
     cartService,
     flowSessionService,
     sendFlow: async (payload) => { sent.push(payload); return { accepted: true, messageId: "wamid-flow-1" }; },
@@ -49,7 +54,7 @@ test("allowlisted exact trigger accepts case and surrounding spaces", async () =
   const payload = f.sent[0];
   assert.equal(payload.to, "22670626055");
   assert.equal(payload.interactive.action.parameters.mode, "draft");
-  assert.equal(payload.interactive.action.parameters.flow_id, "1972040430119125");
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.CLIENT);
   assert.equal(payload.interactive.action.parameters.flow_action, "data_exchange");
   assert.equal(Object.hasOwn(payload.interactive.action.parameters, "flow_action_payload"), false);
   assert.equal(f.createdSessions.length, 1);
@@ -88,8 +93,8 @@ test("send failure revokes the session and never claims success", async () => {
   assert.equal(f.texts[0].text, "⚠️ Le formulaire de facture n’a pas pu être envoyé.");
 });
 
-test("invalid configuration handles the exact allowlisted trigger without entering the old path", async () => {
-  const f = fixture({ flowId: "", triggerText: "Test facture Flow" });
+test("incomplete multi-Flow configuration handles the exact allowlisted trigger without entering the old path", async () => {
+  const f = fixture({ flowIds: { ...FLOW_IDS, EDIT_OPTIONS: "" }, triggerText: "Test facture Flow" });
   const result = await f.trigger.run({ from: "22670626055", text: "Test facture Flow", ownerRef: "owner-a", messageId: "wamid-config" });
   assert.deepEqual(result, { handled: true, outcome: "failed", reason: "CONFIG_INVALID" });
   assert.equal(f.sent.length, 0);
