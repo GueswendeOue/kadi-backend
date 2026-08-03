@@ -55,6 +55,7 @@ function dispatchWhatsAppWebhook(body, {
   handleIncomingMessage,
   invoiceFlowTrigger = null,
   invoiceFlowCompletion = null,
+  kadiV1WebhookHandler = null,
   extractStatusesFromWebhookValue = () => [],
   monitoringHandler = handleFlowMonitoringChange,
   logger = console,
@@ -77,9 +78,27 @@ function dispatchWhatsAppWebhook(body, {
         });
       }
 
-      if (Array.isArray(ownValue(value, "messages")) && value.messages.length && typeof handleIncomingMessage === "function") {
-        Promise.resolve(handleIncomingMessage(value, { invoiceFlowTrigger, invoiceFlowCompletion })).catch((error) => {
-          logger?.error?.("handleIncomingMessage", error);
+      if (Array.isArray(ownValue(value, "messages")) && value.messages.length &&
+        (typeof kadiV1WebhookHandler === "function" || typeof handleIncomingMessage === "function")) {
+        Promise.resolve((async () => {
+          if (typeof kadiV1WebhookHandler === "function") {
+            try {
+              const v1 = await kadiV1WebhookHandler(value);
+              if (v1?.handled === true) return;
+            } catch (error) {
+              logger?.error?.("kadiV1WebhookHandler", {
+                code: typeof error?.code === "string" ? error.code.slice(0, 100) : "KADI_V1_WEBHOOK_HANDLER_FAILED",
+              });
+              return;
+            }
+          }
+          if (typeof handleIncomingMessage === "function") {
+            await handleIncomingMessage(value, { invoiceFlowTrigger, invoiceFlowCompletion });
+          }
+        })()).catch((error) => {
+          logger?.error?.("handleIncomingMessage", {
+            code: typeof error?.code === "string" ? error.code.slice(0, 100) : "INCOMING_MESSAGE_FAILED",
+          });
         });
       }
     }
