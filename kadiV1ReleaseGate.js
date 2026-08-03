@@ -11,6 +11,9 @@ const {
 } = require("./kadiV1RuntimeConfig");
 const { KADI_V1_DRAFT_FLOW_CATALOG } = require("./kadiV1DraftFlowCatalog");
 const { ROLLOUT_MODES } = require("./kadiV1CanaryIngress");
+const {
+  inspectKadiV1ProductionCapabilities,
+} = require("./kadiV1ProductionComposition");
 
 const RELEASE_MODES = Object.freeze({
   REHEARSAL: "REHEARSAL",
@@ -129,6 +132,7 @@ function evaluateKadiV1ReleaseGate({
   catalog = KADI_V1_DRAFT_FLOW_CATALOG,
   flowEnvKeys = FLOW_ENV_KEYS,
   featureEnvKeys = FEATURE_ENV_KEYS,
+  compositionInspector = inspectKadiV1ProductionCapabilities,
 } = {}) {
   const normalizedMode = normalizeMode(mode);
   if (!normalizedMode) {
@@ -151,6 +155,9 @@ function evaluateKadiV1ReleaseGate({
   const missingFlowKeys = Object.keys(flowEnvKeys).filter((flowKey) => !config.flowIds?.[flowKey]);
   const duplicateKeys = duplicateFlowKeys(config.flowIds);
   const configuredFlowCount = Object.values(config.flowIds || {}).filter(Boolean).length;
+  const composition = typeof compositionInspector === "function"
+    ? compositionInspector()
+    : { ready: false, missing_capabilities: ["compositionInspector"] };
   const checks = [];
 
   function addCheck(code, ok, detail) {
@@ -179,6 +186,13 @@ function evaluateKadiV1ReleaseGate({
     addCheck("ROLLOUT_CONFIG_VALID", config.rollout?.valid === true, config.rollout?.valid === true ? "PASS" : "BLOCKED");
     addCheck("ROLLOUT_MODE_CANARY", config.rollout?.mode === ROLLOUT_MODES.CANARY, config.rollout?.mode === ROLLOUT_MODES.CANARY ? "PASS" : "BLOCKED");
     addCheck("CANARY_OWNER_CONFIGURED", Number.isSafeInteger(config.rollout?.canaryOwnerCount) && config.rollout.canaryOwnerCount > 0, `${config.rollout?.canaryOwnerCount || 0}`);
+    addCheck(
+      "PRODUCTION_COMPOSITION_READY",
+      composition?.ready === true,
+      composition?.ready === true
+        ? "PASS"
+        : `MISSING:${Array.isArray(composition?.missing_capabilities) ? composition.missing_capabilities.length : 1}`
+    );
   }
 
   addCheck(
@@ -207,6 +221,11 @@ function evaluateKadiV1ReleaseGate({
       duplicate_flow_keys: Object.freeze([...duplicateKeys]),
       rollout_error: config.rollout?.error || null,
       asset_errors: assets.errors,
+      production_composition_missing: Object.freeze([
+        ...(Array.isArray(composition?.missing_capabilities)
+          ? composition.missing_capabilities
+          : []),
+      ]),
     }),
     summary: Object.freeze({
       required_feature_count: requiredFeatures.length,
@@ -216,6 +235,7 @@ function evaluateKadiV1ReleaseGate({
       valid_draft_flow_count: assets.valid_flow_count,
       rollout_mode: config.rollout?.mode || null,
       canary_owner_count: config.rollout?.canaryOwnerCount || 0,
+      production_composition_ready: composition?.ready === true,
     }),
   });
 }

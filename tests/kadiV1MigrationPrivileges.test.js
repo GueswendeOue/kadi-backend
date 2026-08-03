@@ -12,6 +12,10 @@ const expected = {
                                                              "kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb)",
                                                              "kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb)"
                                                          ],
+    "20260803_add_kadi_v1_conversation_sessions.sql":  [
+                                                               "kadi_v1_create_conversation_session(jsonb)",
+                                                               "kadi_v1_save_conversation_session(jsonb)"
+                                                           ],
     "20260802_add_kadi_v1_onboarding.sql":  [
                                                 "kadi_v1_create_or_get_minimal_profile(text, text)",
                                                 "kadi_v1_grant_welcome_credits(text, text)",

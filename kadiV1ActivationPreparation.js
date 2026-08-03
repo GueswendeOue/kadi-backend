@@ -10,6 +10,7 @@ const {
 
 const EXPECTED_V1_MIGRATIONS = Object.freeze([
   "20260802_create_kadi_v1_document_persistence.sql",
+  "20260803_add_kadi_v1_conversation_sessions.sql",
   "20260802_add_kadi_v1_onboarding.sql",
   "20260802_add_kadi_v1_preview_generation.sql",
   "20260802_add_kadi_v1_generation_lifecycle.sql",

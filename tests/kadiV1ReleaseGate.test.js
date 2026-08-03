@@ -18,6 +18,13 @@ const {
 
 const ROOT = path.resolve(__dirname, "..");
 
+function readyComposition() {
+  return Object.freeze({
+    ready: true,
+    missing_capabilities: Object.freeze([]),
+  });
+}
+
 function activationEnv() {
   const env = {
     KADI_V1_ENABLED: "true",
@@ -86,6 +93,7 @@ test("activation gate passes only for the complete V1 feature and Flow matrix", 
     env: activationEnv(),
     mode: RELEASE_MODES.ACTIVATION,
     rootDir: ROOT,
+    compositionInspector: readyComposition,
   });
   assert.equal(report.ok, true);
   assert.equal(report.verdict, "KADI_V1_ACTIVATION_GATE_PASS");
@@ -93,6 +101,24 @@ test("activation gate passes only for the complete V1 feature and Flow matrix", 
   assert.equal(report.summary.configured_flow_count, Object.keys(FLOW_ENV_KEYS).length);
   assert.deepEqual(report.diagnostics.missing_features, []);
   assert.deepEqual(report.diagnostics.missing_flow_keys, []);
+});
+
+test("activation recognizes the completed production composition", () => {
+  const report = evaluateKadiV1ReleaseGate({
+    env: activationEnv(),
+    mode: RELEASE_MODES.ACTIVATION,
+    rootDir: ROOT,
+  });
+  assert.equal(report.ok, true);
+  assert.equal(
+    report.blockers.includes("PRODUCTION_COMPOSITION_READY"),
+    false
+  );
+  assert.equal(report.summary.production_composition_ready, true);
+  assert.deepEqual(
+    report.diagnostics.production_composition_missing,
+    []
+  );
 });
 
 test("activation blocks two logical Flow keys mapped to the same Meta Flow", () => {

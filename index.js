@@ -30,7 +30,7 @@ const { createInvoiceFlowCompletionHandler } = require("./kadiInvoiceFlowComplet
 const { buildInvoiceFlowIdMap, validateInvoiceFlowIdMap } = require("./kadiInvoiceFlowIds");
 const { createWhatsAppWebhookReceiver } = require("./kadiFlowMonitoringWebhook");
 const { createKadiV1RuntimeConfig } = require("./kadiV1RuntimeConfig");
-const { createKadiV1WebhookRuntime } = require("./kadiV1WebhookRuntime");
+const { createKadiV1ProductionComposition } = require("./kadiV1ProductionComposition");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
@@ -144,8 +144,11 @@ const INVOICE_FLOW_TEST_TRIGGER = process.env.KADI_INVOICE_FLOW_TEST_TRIGGER || 
 const INVOICE_FLOW_SESSION_TTL_MINUTES = Number(process.env.KADI_INVOICE_FLOW_SESSION_TTL_MINUTES || 30);
 
 const KADI_V1_CONFIG = createKadiV1RuntimeConfig(process.env);
-const kadiV1WebhookRuntime = createKadiV1WebhookRuntime({ config: KADI_V1_CONFIG });
-const kadiV1WebhookHandler = kadiV1WebhookRuntime.handleIncomingValue;
+const kadiV1ProductionComposition = createKadiV1ProductionComposition({
+  config: KADI_V1_CONFIG,
+  logger: console,
+});
+const kadiV1WebhookHandler = kadiV1ProductionComposition.webhookHandler;
 
 // ===============================
 // WEEKLY REPORT CONTROL
@@ -481,10 +484,7 @@ console.log("KADI_FLOW_TRIGGER_READY", {
   trigger_configured: Boolean(String(INVOICE_FLOW_TEST_TRIGGER || "").trim()),
   session_ttl_minutes: Number.isFinite(INVOICE_FLOW_SESSION_TTL_MINUTES) && INVOICE_FLOW_SESSION_TTL_MINUTES > 0 ? INVOICE_FLOW_SESSION_TTL_MINUTES : 30,
 });
-console.log("KADI_V1_WEBHOOK_READY", {
-  enabled: KADI_V1_CONFIG.enabled && KADI_V1_CONFIG.features.webhook,
-  runtime_mode: KADI_V1_CONFIG.enabled && KADI_V1_CONFIG.features.webhook ? "REQUIRES_COMPOSITION" : "DISABLED",
-});
+console.log("KADI_V1_WEBHOOK_READY", kadiV1ProductionComposition.readiness);
 
 app.get(
   "/verify/certified/:id",

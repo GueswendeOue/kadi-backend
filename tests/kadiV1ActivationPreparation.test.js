@@ -38,11 +38,11 @@ function passingReleaseGate() {
   };
 }
 
-test("migration preparation locks the six additive files in dependency order", () => {
+test("migration preparation locks the seven additive files in dependency order", () => {
   const root = makeRoot();
   const result = inspectKadiV1MigrationAssets({ rootDir: root });
   assert.equal(result.ok, true);
-  assert.equal(result.valid_migration_count, 6);
+  assert.equal(result.valid_migration_count, 7);
   assert.deepEqual(result.ordered_files, EXPECTED_V1_MIGRATIONS);
 });
 
@@ -79,7 +79,7 @@ test("activation preparation passes only after release rehearsal and migration i
   assert.equal(report.ok, true);
   assert.equal(report.verdict, "KADI_V1_ACTIVATION_PREPARATION_PASS");
   assert.equal(report.execution_policy, "DRY_RUN_ONLY");
-  assert.equal(report.summary.valid_migration_count, 6);
+  assert.equal(report.summary.valid_migration_count, 7);
   assert.equal(report.summary.valid_draft_flow_count, 15);
 });
 

@@ -1,0 +1,774 @@
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const {
+  createConversationSessionService,
+} = require("./kadiV1ConversationSession");
+const {
+  createSupabaseV1ConversationSessionRepository,
+} = require("./kadiV1SupabaseConversationSessionRepository");
+const {
+  KADI_V1_DRAFT_FLOW_CATALOG,
+} = require("./kadiV1DraftFlowCatalog");
+const { FLOW_KEYS } = require("./kadiV1FlowRouter");
+
+const FLOW_MESSAGE_VERSION = "3";
+const OWNER_PATTERN = /^\d{8,20}$/;
+const ID_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
+const FLOW_ID_PATTERN = /^\d{5,30}$/;
+const FLOW_MODES = new Set(["draft", "published"]);
+const DOCUMENT_TYPES = new Set(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
+const DOCUMENT_STATES = new Set([
+  "COLLECTING",
+  "INCOMPLETE",
+  "READY_FOR_REVIEW",
+  "VERIFIED",
+  "PREVIEW_READY",
+  "COST_CALCULATED",
+  "AWAITING_GENERATION_CONFIRMATION",
+  "RECHARGE_REQUIRED",
+  "GENERATION_IN_PROGRESS",
+  "GENERATED",
+  "DELIVERED",
+  "RECOVERABLE_FAILURE",
+  "CANCELLED",
+]);
+const FORBIDDEN_META_DATA_KEYS = new Set([
+  "owner_wa_id",
+  "ownerWaId",
+  "document_id",
+  "document_version",
+  "version",
+  "status",
+  "issued_at",
+  "document_number",
+  "subtotal",
+  "total",
+  "tax_amount",
+  "page_count",
+  "cost",
+  "credits",
+  "flow_id",
+  "flow_token",
+  "draft_id",
+  "meta_flow_id",
+]);
+
+function isPlainObject(value) {
+  return value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function clone(value) {
+  return value == null ? value : structuredClone(value);
+}
+
+function assertMethod(target, method, error) {
+  if (!target || typeof target[method] !== "function") {
+    throw new TypeError(error);
+  }
+  return target;
+}
+
+function stableRef(value) {
+  return crypto
+    .createHash("sha256")
+    .update(String(value || "missing"), "utf8")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function safeLog(logger, event, details = {}) {
+  try {
+    logger?.log?.(
+      "KADI_V1_PRESENTER",
+      Object.freeze({
+        event,
+        flow_key: FLOW_KEYS.includes(details.flowKey)
+          ? details.flowKey
+          : null,
+        business_action:
+          typeof details.businessAction === "string"
+            ? details.businessAction.slice(0, 80)
+            : null,
+        reason:
+          typeof details.reason === "string"
+            ? details.reason.slice(0, 100)
+            : null,
+      })
+    );
+  } catch {
+    // Presenter observability is non-authoritative.
+  }
+}
+
+function defaultForSchema(schema) {
+  if (!schema || typeof schema !== "object") return null;
+  if (Object.hasOwn(schema, "__example__")) return clone(schema.__example__);
+  if (schema.type === "string") return "";
+  if (schema.type === "number") return 0;
+  if (schema.type === "boolean") return false;
+  if (schema.type === "array") return [];
+  if (schema.type === "object") return {};
+  return null;
+}
+
+function loadFlowRegistry(rootDir = __dirname) {
+  const registry = {};
+
+  for (const flowKey of FLOW_KEYS) {
+    const catalog = KADI_V1_DRAFT_FLOW_CATALOG[flowKey];
+    if (!catalog) throw new TypeError(`KADI_V1_FLOW_CATALOG_MISSING:${flowKey}`);
+
+    const absolutePath = path.join(rootDir, catalog.file);
+    const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
+    const screens = Array.isArray(parsed.screens) ? parsed.screens : [];
+    const first = screens[0];
+    const routingKeys =
+      parsed.routing_model &&
+      typeof parsed.routing_model === "object"
+        ? Object.keys(parsed.routing_model)
+        : [];
+
+    if (
+      screens.length !== 1 ||
+      first?.id !== flowKey ||
+      routingKeys.length !== 1 ||
+      routingKeys[0] !== flowKey ||
+      !isPlainObject(first.data) ||
+      !Object.hasOwn(first.data, "session_id")
+    ) {
+      throw new TypeError(`KADI_V1_FLOW_ENTRY_CONTRACT_INVALID:${flowKey}`);
+    }
+
+    const defaults = {};
+    for (const [key, schema] of Object.entries(first.data)) {
+      defaults[key] = defaultForSchema(schema);
+    }
+
+    registry[flowKey] = Object.freeze({
+      flowKey,
+      entryScreen: first.id,
+      dataKeys: Object.freeze(Object.keys(first.data)),
+      defaults: Object.freeze(defaults),
+      card: Object.freeze({
+        body: String(catalog.card?.body || "Continuez avec Kadi.").slice(
+          0,
+          1024
+        ),
+        cta: String(catalog.card?.cta || "Continuer").slice(0, 30),
+      }),
+    });
+  }
+
+  return Object.freeze(registry);
+}
+
+function documentLabel(documentType) {
+  return (
+    {
+      FACTURE: "Facture",
+      DEVIS: "Devis",
+      RECU: "Reçu",
+      DECHARGE: "Décharge",
+    }[documentType] || "Document"
+  );
+}
+
+function safeFlowData(contract, sessionId, suggested = {}) {
+  const output = clone(contract.defaults);
+  output.session_id = sessionId;
+
+  const source = isPlainObject(suggested) ? suggested : {};
+  for (const key of contract.dataKeys) {
+    if (
+      key === "session_id" ||
+      FORBIDDEN_META_DATA_KEYS.has(key) ||
+      !Object.hasOwn(source, key)
+    ) {
+      continue;
+    }
+    const value = source[key];
+    if (
+      value == null ||
+      ["string", "number", "boolean"].includes(typeof value) ||
+      Array.isArray(value) ||
+      isPlainObject(value)
+    ) {
+      output[key] = clone(value);
+    }
+  }
+
+  if (
+    contract.dataKeys.includes("document_label") &&
+    typeof source.document_type === "string"
+  ) {
+    output.document_label = documentLabel(source.document_type);
+  }
+
+  return Object.freeze(output);
+}
+
+function buildV1FlowMessage({
+  to,
+  flowKey,
+  flowId,
+  sessionId,
+  flowMode,
+  contract,
+  data,
+}) {
+  if (!OWNER_PATTERN.test(to || "")) {
+    throw new TypeError("KADI_V1_PRESENTER_OWNER_INVALID");
+  }
+  if (!FLOW_KEYS.includes(flowKey) || contract?.entryScreen !== flowKey) {
+    throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
+  }
+  if (!FLOW_ID_PATTERN.test(flowId || "")) {
+    throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_INVALID");
+  }
+  if (!ID_PATTERN.test(sessionId || "")) {
+    throw new TypeError("KADI_V1_PRESENTER_SESSION_INVALID");
+  }
+  if (!FLOW_MODES.has(flowMode)) {
+    throw new TypeError("KADI_V1_PRESENTER_FLOW_MODE_INVALID");
+  }
+
+  return Object.freeze({
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "interactive",
+    interactive: Object.freeze({
+      type: "flow",
+      body: Object.freeze({ text: contract.card.body }),
+      action: Object.freeze({
+        name: "flow",
+        parameters: Object.freeze({
+          mode: flowMode,
+          flow_message_version: FLOW_MESSAGE_VERSION,
+          flow_token: sessionId,
+          flow_id: flowId,
+          flow_cta: contract.card.cta,
+          flow_action: "navigate",
+          flow_action_payload: Object.freeze({
+            screen: contract.entryScreen,
+            data,
+          }),
+        }),
+      }),
+    }),
+  });
+}
+
+function extractDocument(value) {
+  if (!value || typeof value !== "object") return null;
+  if (
+    ID_PATTERN.test(value.document_id || "") &&
+    Number.isSafeInteger(value.version) &&
+    value.version >= 1 &&
+    DOCUMENT_TYPES.has(value.document_type) &&
+    DOCUMENT_STATES.has(value.status)
+  ) {
+    return value;
+  }
+  for (const key of ["document", "value", "result"]) {
+    const nested = extractDocument(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function documentFromPrefill(prefill, nextState) {
+  if (!isPlainObject(prefill)) return null;
+  const version = Number(prefill.document_version ?? prefill.version);
+  const status = prefill.document_state || prefill.status || nextState;
+  if (
+    !ID_PATTERN.test(prefill.document_id || "") ||
+    !Number.isSafeInteger(version) ||
+    version < 1 ||
+    !DOCUMENT_TYPES.has(prefill.document_type) ||
+    !DOCUMENT_STATES.has(status)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    document_id: prefill.document_id,
+    version,
+    document_type: prefill.document_type,
+    status,
+  });
+}
+
+function routeDocument(document) {
+  if (!document) return null;
+  if (document.status === "READY_FOR_REVIEW") return "DOCUMENT_REVIEW";
+  if (["VERIFIED", "PREVIEW_READY"].includes(document.status)) {
+    return "DOCUMENT_PREVIEW";
+  }
+  if (
+    ["COST_CALCULATED", "AWAITING_GENERATION_CONFIRMATION"].includes(
+      document.status
+    )
+  ) {
+    return "GENERATION_CONFIRMATION";
+  }
+  if (document.status === "RECHARGE_REQUIRED") return "RECHARGE";
+  return null;
+}
+
+function nextFlowForReply(action, resultValue) {
+  if (
+    FLOW_KEYS.includes(resultValue?.next_flow_key)
+  ) {
+    return resultValue.next_flow_key;
+  }
+
+  const document = extractDocument(resultValue);
+  const routed = routeDocument(document);
+  if (routed) return routed;
+
+  if (action === "PREPARE_DOCUMENT") return "DOCUMENT_TYPE";
+  if (action === "SELECT_DOCUMENT_TYPE") {
+    return document?.document_type === "DECHARGE"
+      ? "DISCHARGE_DETAILS"
+      : "DOCUMENT_CLIENT";
+  }
+  if (action === "SAVE_CLIENT") return "DOCUMENT_CONTENT";
+  if (["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)) {
+    return "DOCUMENT_CONTENT";
+  }
+  if (action === "SAVE_OPTIONS") return "DOCUMENT_REVIEW";
+  if (action === "VERIFY") return "DOCUMENT_PREVIEW";
+  if (action === "EDIT_CLIENT") return "EDIT_CLIENT";
+  if (action === "EDIT_CONTENT") return "EDIT_CONTENT";
+  if (action === "EDIT_OPTIONS") return "EDIT_OPTIONS";
+  if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
+  if (action === "SELECT_PACK") return "RECHARGE";
+  return null;
+}
+
+function quoteFromResult(value) {
+  if (!value || typeof value !== "object") return null;
+  const candidate =
+    value.quote_id ||
+    value.quote?.quote_id ||
+    value.result?.quote_id ||
+    value.result?.quote?.quote_id;
+  return ID_PATTERN.test(candidate || "") ? candidate : null;
+}
+
+function canonicalReplyText(action, value) {
+  const document = extractDocument(value);
+  if (document?.status === "DELIVERED") {
+    return "Votre document est prêt et a été envoyé.";
+  }
+
+  const copy = {
+    START: "Votre profil est enregistré.",
+    PREPARE_DOCUMENT: "Choisissez le document à préparer.",
+    SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
+    SAVE_CLIENT: "Les informations du client sont enregistrées.",
+    ADD_CONTENT: "L’article est enregistré.",
+    UPDATE_CONTENT: "L’article est mis à jour.",
+    REMOVE_CONTENT: "L’article est supprimé.",
+    SAVE_OPTIONS: "Les options sont enregistrées.",
+    VERIFY: "Les informations sont vérifiées.",
+    EDIT_CLIENT: "Vous pouvez modifier le client.",
+    EDIT_CONTENT: "Vous pouvez modifier les articles.",
+    EDIT_OPTIONS: "Vous pouvez modifier les options.",
+    PREPARE_PDF: "L’aperçu et le coût sont prêts.",
+    CONFIRM_GENERATION: "La génération du document est terminée.",
+    SELECT_PACK: "Le pack est sélectionné.",
+    CHECK_PAYMENT: "La vérification du paiement est terminée.",
+    SEARCH: "La recherche est terminée.",
+    OPEN_DOCUMENT: "Le document est ouvert.",
+    SAVE_DETAILS: "Les informations de la décharge sont enregistrées.",
+    BALANCE: "Votre solde a été consulté.",
+    HELP: "Kadi peut préparer une facture, un devis, un reçu ou une décharge.",
+    CANCEL: "L’opération est annulée.",
+    SAVE_FOR_LATER: "Votre travail est conservé.",
+  };
+
+  return copy[action] || "Votre demande a bien été enregistrée.";
+}
+
+function suggestedDataForFlow(flowKey, source) {
+  const document = extractDocument(source);
+  const output = {};
+
+  if (document) {
+    output.document_type = document.document_type;
+    output.document_label = documentLabel(document.document_type);
+  }
+
+  const quoteId = quoteFromResult(source);
+  if (quoteId) output.quote_id = quoteId;
+
+  if (flowKey === "MENU") {
+    output.menu_options = [
+      { id: "PREPARE_DOCUMENT", title: "Préparer un document" },
+      { id: "HISTORY_SEARCH", title: "Retrouver un document" },
+      { id: "BALANCE", title: "Mon solde" },
+      { id: "HELP", title: "Aide" },
+    ];
+  }
+
+  return output;
+}
+
+function createKadiV1ProductionPresenter({
+  config,
+  supabase = null,
+  whatsappApi,
+  sessionService = null,
+  flowMode = "draft",
+  sessionTtlMs,
+  clock,
+  sessionIdFactory,
+  voiceResponseEngine = null,
+  voiceDelivery = null,
+  logger = console,
+  rootDir = __dirname,
+} = {}) {
+  if (!config || typeof config.enabled !== "boolean" || !config.flowIds) {
+    throw new TypeError("KADI_V1_RUNTIME_CONFIG_REQUIRED");
+  }
+  const messaging = assertMethod(
+    assertMethod(
+      whatsappApi,
+      "sendText",
+      "KADI_V1_PRESENTER_SEND_TEXT_REQUIRED"
+    ),
+    "sendFlow",
+    "KADI_V1_PRESENTER_SEND_FLOW_REQUIRED"
+  );
+  if (!FLOW_MODES.has(flowMode)) {
+    throw new TypeError("KADI_V1_PRESENTER_FLOW_MODE_INVALID");
+  }
+
+  let sessions = sessionService;
+  if (sessions == null) {
+    const repository =
+      createSupabaseV1ConversationSessionRepository(supabase);
+    const options = { repository };
+    if (sessionTtlMs !== undefined) options.ttlMs = sessionTtlMs;
+    if (clock !== undefined) options.clock = clock;
+    if (sessionIdFactory !== undefined) options.idFactory = sessionIdFactory;
+    sessions = createConversationSessionService(options);
+  }
+  assertMethod(
+    sessions,
+    "open",
+    "KADI_V1_PRESENTER_SESSION_SERVICE_REQUIRED"
+  );
+
+  if (
+    voiceResponseEngine != null &&
+    typeof voiceResponseEngine.generate !== "function"
+  ) {
+    throw new TypeError("KADI_V1_PRESENTER_VOICE_ENGINE_INVALID");
+  }
+  if (
+    voiceDelivery != null &&
+    typeof voiceDelivery.sendGeneratedVoice !== "function"
+  ) {
+    throw new TypeError("KADI_V1_PRESENTER_VOICE_DELIVERY_INVALID");
+  }
+
+  const registry = loadFlowRegistry(rootDir);
+
+  async function maybeTyping(messageId) {
+    if (
+      typeof messaging.sendTypingIndicator !== "function" ||
+      typeof messageId !== "string" ||
+      !messageId.trim()
+    ) {
+      return;
+    }
+    try {
+      await messaging.sendTypingIndicator(messageId);
+    } catch {
+      // Typing feedback must never block the authoritative response.
+    }
+  }
+
+  async function openAndSendFlow({
+    ownerWaId,
+    messageId,
+    flowKey,
+    document = null,
+    suggestedData = {},
+  }) {
+    if (!FLOW_KEYS.includes(flowKey)) {
+      throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
+    }
+    const flowId = config.flowIds[flowKey];
+    if (!FLOW_ID_PATTERN.test(flowId || "")) {
+      throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_MISSING");
+    }
+
+    const source = `${messageId || ownerWaId}:${flowKey}:${
+      document?.document_id || "none"
+    }:${document?.version || 0}`;
+    const opened = await sessions.open({
+      ownerWaId,
+      document,
+      expectedFlowKey: flowKey,
+      returnState: document?.status || null,
+      idempotencyKey: `present:${stableRef(source)}`,
+    });
+    if (!opened?.ok) {
+      throw new Error(opened?.error || "KADI_V1_PRESENTER_SESSION_OPEN_FAILED");
+    }
+
+    const contract = registry[flowKey];
+    const data = safeFlowData(
+      contract,
+      opened.value.session_id,
+      suggestedData
+    );
+    const payload = buildV1FlowMessage({
+      to: ownerWaId,
+      flowKey,
+      flowId,
+      sessionId: opened.value.session_id,
+      flowMode,
+      contract,
+      data,
+    });
+    await messaging.sendFlow(payload);
+    return Object.freeze({
+      flow_key: flowKey,
+      session_id: opened.value.session_id,
+      duplicate: opened.duplicate === true,
+    });
+  }
+
+  async function maybeVoice({
+    ownerWaId,
+    response,
+    messageId,
+  }) {
+    if (
+      response?.voice_request?.mode !== "TEXT_AND_VOICE" ||
+      !voiceResponseEngine ||
+      !voiceDelivery
+    ) {
+      return Object.freeze({ delivered: false, skipped: true });
+    }
+
+    try {
+      const source = messageId || `${ownerWaId}:${response.business_action}`;
+      const generated = await voiceResponseEngine.generate({
+        owner_id: ownerWaId,
+        validated_text: response.canonical_text,
+        locale: "fr-BF",
+        output_format: "audio/ogg",
+        correlation_id: `presenter:${stableRef(source)}`,
+        idempotency_key: `voice:${stableRef(source)}`,
+        policy_input: {
+          voice_response_mode: "VOICE_WHEN_HELPFUL",
+          provider_available: true,
+          journey_step: response.business_action || "CONVERSATION",
+          message_complexity: "SIMPLE",
+          last_input_modality: "TEXT",
+        },
+      });
+
+      if (generated?.decision !== "TEXT_AND_VOICE" || !generated.audio) {
+        return Object.freeze({ delivered: false, skipped: true });
+      }
+
+      await voiceDelivery.sendGeneratedVoice({
+        ownerWaId,
+        audio: generated.audio,
+      });
+      return Object.freeze({ delivered: true, skipped: false });
+    } catch (error) {
+      safeLog(logger, "voice_non_blocking_failure", {
+        businessAction: response?.business_action,
+        reason:
+          typeof error?.code === "string"
+            ? error.code
+            : "VOICE_PRESENTATION_FAILED",
+      });
+      return Object.freeze({
+        delivered: false,
+        skipped: true,
+        non_blocking: true,
+      });
+    }
+  }
+
+  async function presentConversation({
+    ownerWaId,
+    messageId = null,
+    response,
+  } = {}) {
+    if (
+      !OWNER_PATTERN.test(ownerWaId || "") ||
+      !isPlainObject(response) ||
+      response.handled !== true ||
+      typeof response.canonical_text !== "string" ||
+      !response.canonical_text.trim()
+    ) {
+      throw new TypeError("KADI_V1_PRESENTER_CONVERSATION_INVALID");
+    }
+
+    await maybeTyping(messageId);
+    await messaging.sendText(ownerWaId, response.canonical_text);
+
+    let flow = null;
+    if (response.flow_request) {
+      const flowKey = response.flow_request.flow_key;
+      const document = documentFromPrefill(
+        response.flow_request.prefill,
+        response.next_state
+      );
+      const suggestedData = {
+        ...(isPlainObject(response.flow_request.prefill)
+          ? response.flow_request.prefill
+          : {}),
+        ...(document
+          ? {
+              document_type: document.document_type,
+              document_label: documentLabel(document.document_type),
+            }
+          : {}),
+      };
+      flow = await openAndSendFlow({
+        ownerWaId,
+        messageId,
+        flowKey,
+        document,
+        suggestedData,
+      });
+    }
+
+    const voice = await maybeVoice({
+      ownerWaId,
+      response,
+      messageId,
+    });
+
+    safeLog(logger, "conversation_presented", {
+      flowKey: flow?.flow_key || null,
+      businessAction: response.business_action,
+    });
+
+    return Object.freeze({
+      text_sent: true,
+      flow_sent: Boolean(flow),
+      voice_sent: voice.delivered === true,
+    });
+  }
+
+  async function presentFlowReply({
+    ownerWaId,
+    messageId = null,
+    result,
+  } = {}) {
+    if (
+      !OWNER_PATTERN.test(ownerWaId || "") ||
+      !isPlainObject(result) ||
+      result.handled !== true ||
+      typeof result.action !== "string"
+    ) {
+      throw new TypeError("KADI_V1_PRESENTER_FLOW_REPLY_INVALID");
+    }
+
+    if (result.duplicate === true) {
+      return Object.freeze({
+        duplicate: true,
+        text_sent: false,
+        flow_sent: false,
+      });
+    }
+
+    const canonicalText = canonicalReplyText(
+      result.action,
+      result.result
+    );
+    await maybeTyping(messageId);
+    await messaging.sendText(ownerWaId, canonicalText);
+
+    const flowKey = nextFlowForReply(
+      result.action,
+      result.result
+    );
+    let flow = null;
+    if (flowKey) {
+      const document = extractDocument(result.result);
+      flow = await openAndSendFlow({
+        ownerWaId,
+        messageId,
+        flowKey,
+        document,
+        suggestedData: suggestedDataForFlow(
+          flowKey,
+          result.result
+        ),
+      });
+    }
+
+    safeLog(logger, "flow_reply_presented", {
+      flowKey: flow?.flow_key || null,
+      businessAction: result.action,
+    });
+
+    return Object.freeze({
+      duplicate: false,
+      text_sent: true,
+      flow_sent: Boolean(flow),
+    });
+  }
+
+  async function presentRecoverableError({
+    ownerWaId,
+    messageId = null,
+    canonicalText,
+    reason = null,
+  } = {}) {
+    if (
+      !OWNER_PATTERN.test(ownerWaId || "") ||
+      typeof canonicalText !== "string" ||
+      !canonicalText.trim()
+    ) {
+      throw new TypeError("KADI_V1_PRESENTER_RECOVERABLE_ERROR_INVALID");
+    }
+
+    await maybeTyping(messageId);
+    await messaging.sendText(ownerWaId, canonicalText);
+    safeLog(logger, "recoverable_error_presented", { reason });
+
+    return Object.freeze({ text_sent: true });
+  }
+
+  return Object.freeze({
+    presentConversation,
+    presentFlowReply,
+    presentRecoverableError,
+    readiness: Object.freeze({
+      ready: true,
+      text_required: true,
+      flow_sessions_persistent: sessionService == null,
+      voice_non_blocking: true,
+      pdf_delivery_owned_by_generation_lifecycle: true,
+      boot_external_calls: 0,
+    }),
+  });
+}
+
+module.exports = {
+  FLOW_MESSAGE_VERSION,
+  buildV1FlowMessage,
+  createKadiV1ProductionPresenter,
+  loadFlowRegistry,
+  nextFlowForReply,
+  safeFlowData,
+};
