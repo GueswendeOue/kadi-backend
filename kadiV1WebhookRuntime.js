@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const { FLOW_KEYS } = require("./kadiV1FlowCommandRuntime");
+const { ROLLOUT_MODES, isKadiV1OwnerAllowed } = require("./kadiV1CanaryIngress");
 
 const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
@@ -119,9 +120,9 @@ async function mapMetaMessageToConversationInput({ ownerWaId, message, value, me
   return fail("KADI_V1_WEBHOOK_MESSAGE_UNSUPPORTED");
 }
 
-function createDisabledRuntime() {
+function createDisabledRuntime(reason = "KADI_V1_WEBHOOK_DISABLED") {
   return Object.freeze({
-    handleIncomingValue: async () => ({ handled: false, reason: "KADI_V1_WEBHOOK_DISABLED" }),
+    handleIncomingValue: async () => ({ handled: false, reason }),
   });
 }
 
@@ -135,6 +136,8 @@ function createKadiV1WebhookRuntime({
 } = {}) {
   if (!config || typeof config.enabled !== "boolean" || !config.features) throw new TypeError("KADI_V1_RUNTIME_CONFIG_REQUIRED");
   if (!config.enabled || config.features.webhook !== true) return createDisabledRuntime();
+  if (!config.rollout || config.rollout.valid !== true) return createDisabledRuntime("KADI_V1_ROLLOUT_CONFIG_INVALID");
+  if (config.rollout.mode === ROLLOUT_MODES.OFF) return createDisabledRuntime("KADI_V1_ROLLOUT_OFF");
 
   const conversations = assertPort(orchestrator, ["handle"], "KADI_V1_CONVERSATION_ORCHESTRATOR");
   const replies = assertPort(flowReplyRuntime, ["handle"], "KADI_V1_FLOW_REPLY_RUNTIME");
@@ -165,6 +168,17 @@ function createKadiV1WebhookRuntime({
     if (!ownerWaId) {
       if (isNfmReply(message)) return { handled: true, accepted: false, reason: "KADI_V1_WEBHOOK_OWNER_INVALID" };
       return { handled: false, reason: "KADI_V1_WEBHOOK_OWNER_INVALID" };
+    }
+
+    if (!isKadiV1OwnerAllowed(config.rollout, ownerWaId)) {
+      if (isNfmReply(message)) {
+        const recognized = parseNfmReply(message, ownerWaId);
+        if (recognized.ok) {
+          log("canary_owner_blocked", message, "KADI_V1_CANARY_OWNER_NOT_ALLOWED");
+          return { handled: true, accepted: false, reason: "KADI_V1_CANARY_OWNER_NOT_ALLOWED" };
+        }
+      }
+      return { handled: false, reason: "KADI_V1_OWNER_NOT_IN_ROLLOUT" };
     }
 
     if (isNfmReply(message)) {

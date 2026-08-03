@@ -137,6 +137,7 @@ function createReleaseHarness({ clockStart = "2026-08-03T00:00:00.000Z", present
 
   const config = {
     enabled: true,
+    rollout: { mode: "FULL", valid: true, canaryOwnerCount: 0, canaryWaIds: [] },
     features: {
       brain: true,
       vision: true,

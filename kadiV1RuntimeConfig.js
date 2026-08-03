@@ -1,5 +1,7 @@
 "use strict";
 
+const { createKadiV1RolloutConfig } = require("./kadiV1CanaryIngress");
+
 const FEATURE_ENV_KEYS = Object.freeze({
   brain: "KADI_V1_BRAIN_ENABLED",
   vision: "KADI_V1_VISION_ENABLED",
@@ -56,6 +58,7 @@ function createKadiV1RuntimeConfig(env = process.env) {
       enabled && parseBoolean(env?.[envKey], false),
     ])
   );
+  const rollout = createKadiV1RolloutConfig(env);
   const flowIds = Object.fromEntries(
     Object.entries(FLOW_ENV_KEYS).map(([flowKey, envKey]) => [flowKey, readFlowId(env, envKey)])
   );
@@ -63,6 +66,7 @@ function createKadiV1RuntimeConfig(env = process.env) {
   return Object.freeze({
     enabled,
     features: Object.freeze(features),
+    rollout,
     flowIds: Object.freeze(flowIds),
   });
 }

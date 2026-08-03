@@ -10,8 +10,13 @@ const {
   parseNfmReply,
 } = require("../kadiV1WebhookRuntime");
 
-function enabledConfig() {
-  return { enabled: true, features: { webhook: true } };
+function enabledConfig(overrides = {}) {
+  return {
+    enabled: true,
+    features: { webhook: true },
+    rollout: { mode: "FULL", valid: true, canaryOwnerCount: 0, canaryWaIds: [] },
+    ...overrides,
+  };
 }
 
 function textMessage(overrides = {}) {
@@ -159,4 +164,59 @@ test("runtime logs only safe message references and controlled reasons", async (
   await runtime.handleIncomingValue({ messages: [textMessage({ text: { body: "Client secret 70000000" } })] });
   const serialized = JSON.stringify(calls.filter(([name]) => name === "log"));
   assert.doesNotMatch(serialized, /Client secret|70000000|22670000000/);
+});
+
+test("canary rollout sends only allowlisted owners to V1", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      config: enabledConfig({
+        rollout: { mode: "CANARY", valid: true, canaryOwnerCount: 1, canaryWaIds: ["22670000000"] },
+      }),
+    },
+  });
+  const allowed = await runtime.handleIncomingValue({ messages: [textMessage()] });
+  const denied = await runtime.handleIncomingValue({ messages: [textMessage({ id: "wamid.text.2", from: "22671111111" })] });
+  assert.equal(allowed.handled, true);
+  assert.deepEqual(denied.results[0], { handled: false, reason: "KADI_V1_OWNER_NOT_IN_ROLLOUT" });
+  assert.equal(calls.filter(([name]) => name === "conversation").length, 1);
+});
+
+test("recognized V1 Flow reply from a non-canary owner is absorbed before legacy", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      config: enabledConfig({
+        rollout: { mode: "CANARY", valid: true, canaryOwnerCount: 1, canaryWaIds: ["22670000000"] },
+      }),
+    },
+  });
+  const result = await runtime.handleIncomingValue({
+    messages: [nfmMessage({
+      session_id: "kadi_session:blocked",
+      flow_key: "DOCUMENT_CONTENT",
+      action: "ADD_CONTENT",
+      data: { description: "Ciment", quantity: 1, unit_price: 6500 },
+    }, { id: "wamid.flow.blocked", from: "22671111111" })],
+  });
+  assert.equal(result.handled, true);
+  assert.deepEqual(result.results[0], { handled: true, accepted: false, reason: "KADI_V1_CANARY_OWNER_NOT_ALLOWED" });
+  assert.equal(calls.some(([name]) => name === "flow_reply"), false);
+  assert.equal(calls.some(([name]) => name === "present_error"), false);
+});
+
+test("rollout OFF and invalid rollout require no operational ports", async () => {
+  const off = createKadiV1WebhookRuntime({
+    config: enabledConfig({ rollout: { mode: "OFF", valid: true, canaryOwnerCount: 0, canaryWaIds: [] } }),
+  });
+  assert.deepEqual(await off.handleIncomingValue({ messages: [textMessage()] }), {
+    handled: false,
+    reason: "KADI_V1_ROLLOUT_OFF",
+  });
+
+  const invalid = createKadiV1WebhookRuntime({
+    config: enabledConfig({ rollout: { mode: "OFF", valid: false, error: "KADI_V1_ROLLOUT_MODE_INVALID", canaryOwnerCount: 0, canaryWaIds: [] } }),
+  });
+  assert.deepEqual(await invalid.handleIncomingValue({ messages: [textMessage()] }), {
+    handled: false,
+    reason: "KADI_V1_ROLLOUT_CONFIG_INVALID",
+  });
 });

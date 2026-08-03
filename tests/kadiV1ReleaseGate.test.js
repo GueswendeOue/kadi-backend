@@ -22,6 +22,8 @@ function activationEnv() {
   const env = {
     KADI_V1_ENABLED: "true",
     KADI_V1_WEBHOOK_ENABLED: "true",
+    KADI_V1_ROLLOUT_MODE: "CANARY",
+    KADI_V1_CANARY_WA_IDS: "22670000000",
   };
   for (const envKey of Object.values(FEATURE_ENV_KEYS)) env[envKey] = "true";
   let sequence = 100000000000000;
@@ -101,6 +103,42 @@ test("activation blocks two logical Flow keys mapped to the same Meta Flow", () 
   assert.ok(report.blockers.includes("FLOW_IDS_UNIQUE"));
   assert.deepEqual(report.diagnostics.duplicate_flow_keys, ["MENU", "ONBOARDING"]);
   assert.equal(JSON.stringify(report).includes(env.KADI_V1_FLOW_MENU_ID), false);
+});
+
+
+test("activation gate rejects FULL rollout and an empty canary", () => {
+  const full = activationEnv();
+  full.KADI_V1_ROLLOUT_MODE = "FULL";
+  delete full.KADI_V1_CANARY_WA_IDS;
+  const fullReport = evaluateKadiV1ReleaseGate({ env: full, mode: RELEASE_MODES.ACTIVATION, rootDir: ROOT });
+  assert.equal(fullReport.ok, false);
+  assert.ok(fullReport.blockers.includes("ROLLOUT_MODE_CANARY"));
+  assert.equal(fullReport.summary.canary_owner_count, 0);
+
+  const empty = activationEnv();
+  delete empty.KADI_V1_CANARY_WA_IDS;
+  const emptyReport = evaluateKadiV1ReleaseGate({ env: empty, mode: RELEASE_MODES.ACTIVATION, rootDir: ROOT });
+  assert.equal(emptyReport.ok, false);
+  assert.ok(emptyReport.blockers.includes("ROLLOUT_CONFIG_VALID"));
+  assert.ok(emptyReport.blockers.includes("CANARY_OWNER_CONFIGURED"));
+  assert.equal(emptyReport.diagnostics.rollout_error, "KADI_V1_CANARY_OWNER_REQUIRED");
+});
+
+test("rehearsal blocks a hidden canary or full rollout mode", () => {
+  for (const mode of ["CANARY", "FULL"]) {
+    const report = evaluateKadiV1ReleaseGate({
+      env: {
+        KADI_V1_ENABLED: "false",
+        KADI_V1_WEBHOOK_ENABLED: "false",
+        KADI_V1_ROLLOUT_MODE: mode,
+        KADI_V1_CANARY_WA_IDS: mode === "CANARY" ? "22670000000" : "",
+      },
+      mode: RELEASE_MODES.REHEARSAL,
+      rootDir: ROOT,
+    });
+    assert.equal(report.ok, false);
+    assert.ok(report.blockers.includes("ROLLOUT_MODE_OFF"));
+  }
 });
 
 test("draft asset inspection fails closed for a missing or malformed file", () => {
