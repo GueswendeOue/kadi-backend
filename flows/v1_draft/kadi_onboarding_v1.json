@@ -1,0 +1,50 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "ONBOARDING": []
+  },
+  "screens": [
+    {
+      "id": "ONBOARDING",
+      "title": "Bienvenue chez Kadi",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Bienvenue chez Kadi"
+          },
+          {
+            "type": "TextBody",
+            "text": "Je vous aide à préparer vos factures, devis, reçus et décharges depuis WhatsApp."
+          },
+          {
+            "type": "TextBody",
+            "text": "Vous pouvez écrire, envoyer un vocal ou une photo. Vos 5 crédits de bienvenue sont déjà disponibles."
+          },
+          {
+            "type": "Footer",
+            "label": "Commencer",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "session_id": "${data.session_id}",
+                "flow_key": "ONBOARDING",
+                "action": "START",
+                "data": {}
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

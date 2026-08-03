@@ -1,0 +1,93 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DOCUMENT_CLIENT": []
+  },
+  "screens": [
+    {
+      "id": "DOCUMENT_CLIENT",
+      "title": "Informations du client",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "current_summary": {
+          "type": "string",
+          "__example__": "Aucune information enregistrée pour le moment."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.current_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "name",
+                "label": "Nom du client",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "phone",
+                "label": "Téléphone",
+                "required": false,
+                "input-type": "phone"
+              },
+              {
+                "type": "TextInput",
+                "name": "email",
+                "label": "E-mail",
+                "required": false,
+                "input-type": "email"
+              },
+              {
+                "type": "TextInput",
+                "name": "address",
+                "label": "Adresse",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "tax_id",
+                "label": "Identifiant fiscal",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_CLIENT",
+                    "action": "SAVE_CLIENT",
+                    "data": {
+                      "name": "${form.name}",
+                      "phone": "${form.phone}",
+                      "email": "${form.email}",
+                      "address": "${form.address}",
+                      "tax_id": "${form.tax_id}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

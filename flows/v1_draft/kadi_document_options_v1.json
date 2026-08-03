@@ -1,0 +1,142 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DOCUMENT_OPTIONS": []
+  },
+  "screens": [
+    {
+      "id": "DOCUMENT_OPTIONS",
+      "title": "Options du document",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "current_summary": {
+          "type": "string",
+          "__example__": "Aucune option particulière."
+        },
+        "payment_methods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ESPECES",
+              "title": "Espèces"
+            },
+            {
+              "id": "MOBILE_MONEY",
+              "title": "Mobile Money"
+            },
+            {
+              "id": "VIREMENT",
+              "title": "Virement"
+            },
+            {
+              "id": "AUTRE",
+              "title": "Autre"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.current_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "tax_rate_basis_points",
+                "label": "Taxe en points de base",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Exemple : 1800 pour 18 %"
+              },
+              {
+                "type": "TextInput",
+                "name": "discount_amount",
+                "label": "Remise",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "TextInput",
+                "name": "notes",
+                "label": "Notes",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "payment_terms",
+                "label": "Conditions de paiement",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "validity_days",
+                "label": "Validité en jours",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "Dropdown",
+                "name": "payment_method",
+                "label": "Mode de paiement",
+                "required": false,
+                "data-source": "${data.payment_methods}"
+              },
+              {
+                "type": "TextInput",
+                "name": "reference",
+                "label": "Référence",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_OPTIONS",
+                    "action": "SAVE_OPTIONS",
+                    "data": {
+                      "tax_rate_basis_points": "${form.tax_rate_basis_points}",
+                      "discount_amount": "${form.discount_amount}",
+                      "notes": "${form.notes}",
+                      "payment_terms": "${form.payment_terms}",
+                      "validity_days": "${form.validity_days}",
+                      "payment_method": "${form.payment_method}",
+                      "reference": "${form.reference}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

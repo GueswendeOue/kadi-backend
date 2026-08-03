@@ -1,0 +1,172 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DISCHARGE_DETAILS": []
+  },
+  "screens": [
+    {
+      "id": "DISCHARGE_DETAILS",
+      "title": "Préparer la décharge",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "current_summary": {
+          "type": "string",
+          "__example__": "Aucune information enregistrée."
+        },
+        "content_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ARGENT",
+              "title": "Argent"
+            },
+            {
+              "id": "BIEN",
+              "title": "Bien"
+            },
+            {
+              "id": "DOCUMENT",
+              "title": "Document"
+            },
+            {
+              "id": "AUTRE",
+              "title": "Autre"
+            }
+          ]
+        },
+        "discharge_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "SAVE_DETAILS",
+              "title": "Enregistrer les informations"
+            },
+            {
+              "id": "VERIFY",
+              "title": "C’est bon"
+            },
+            {
+              "id": "EDIT",
+              "title": "Modifier"
+            },
+            {
+              "id": "CANCEL",
+              "title": "Annuler"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.current_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Prochaine étape",
+                "required": true,
+                "data-source": "${data.discharge_actions}"
+              },
+              {
+                "type": "TextInput",
+                "name": "giver",
+                "label": "Personne qui remet",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "recipient",
+                "label": "Personne qui reçoit",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Dropdown",
+                "name": "transferred_content_type",
+                "label": "Ce qui est remis",
+                "required": false,
+                "data-source": "${data.content_types}"
+              },
+              {
+                "type": "TextInput",
+                "name": "transferred_content",
+                "label": "Montant, bien ou document",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "purpose",
+                "label": "Motif",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "notes",
+                "label": "Notes",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DISCHARGE_DETAILS",
+                    "action": "${form.action}",
+                    "data": {
+                      "giver": "${form.giver}",
+                      "recipient": "${form.recipient}",
+                      "transferred_content_type": "${form.transferred_content_type}",
+                      "transferred_content": "${form.transferred_content}",
+                      "purpose": "${form.purpose}",
+                      "notes": "${form.notes}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

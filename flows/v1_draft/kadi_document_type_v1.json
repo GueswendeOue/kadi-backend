@@ -1,0 +1,89 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DOCUMENT_TYPE": []
+  },
+  "screens": [
+    {
+      "id": "DOCUMENT_TYPE",
+      "title": "Quel document préparer ?",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "document_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "FACTURE",
+              "title": "Facture"
+            },
+            {
+              "id": "DEVIS",
+              "title": "Devis"
+            },
+            {
+              "id": "RECU",
+              "title": "Reçu"
+            },
+            {
+              "id": "DECHARGE",
+              "title": "Décharge"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "Choisissez le document dont vous avez besoin."
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "document_type",
+                "label": "Type de document",
+                "required": true,
+                "data-source": "${data.document_types}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_TYPE",
+                    "action": "SELECT_DOCUMENT_TYPE",
+                    "data": {
+                      "document_type": "${form.document_type}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

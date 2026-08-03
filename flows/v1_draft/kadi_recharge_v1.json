@@ -1,0 +1,132 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "RECHARGE": []
+  },
+  "screens": [
+    {
+      "id": "RECHARGE",
+      "title": "Recharger mes crédits",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "balance_summary": {
+          "type": "string",
+          "__example__": "Solde actuel : 0 crédit."
+        },
+        "pack_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "PACK_1000",
+              "title": "1 000 FCFA — 10 crédits"
+            },
+            {
+              "id": "PACK_2000",
+              "title": "2 000 FCFA — 25 crédits"
+            },
+            {
+              "id": "PACK_5000",
+              "title": "5 000 FCFA — 70 crédits"
+            }
+          ]
+        },
+        "recharge_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "SELECT_PACK",
+              "title": "Choisir ce pack"
+            },
+            {
+              "id": "CHECK_PAYMENT",
+              "title": "Vérifier mon paiement"
+            },
+            {
+              "id": "CANCEL",
+              "title": "Revenir plus tard"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.balance_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Que souhaitez-vous faire ?",
+                "required": true,
+                "data-source": "${data.recharge_actions}"
+              },
+              {
+                "type": "Dropdown",
+                "name": "pack_id",
+                "label": "Pack de crédits",
+                "required": false,
+                "data-source": "${data.pack_options}"
+              },
+              {
+                "type": "TextInput",
+                "name": "payment_reference",
+                "label": "Référence du paiement",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "RECHARGE",
+                    "action": "${form.action}",
+                    "data": {
+                      "pack_id": "${form.pack_id}",
+                      "payment_reference": "${form.payment_reference}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

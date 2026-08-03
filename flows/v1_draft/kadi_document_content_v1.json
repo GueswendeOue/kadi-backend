@@ -1,0 +1,125 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DOCUMENT_CONTENT": []
+  },
+  "screens": [
+    {
+      "id": "DOCUMENT_CONTENT",
+      "title": "Ajouter un article",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "document_label": {
+          "type": "string",
+          "__example__": "Facture"
+        },
+        "items_summary": {
+          "type": "string",
+          "__example__": "Aucun article enregistré."
+        },
+        "unit_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "unité",
+              "title": "Unité"
+            },
+            {
+              "id": "heure",
+              "title": "Heure"
+            },
+            {
+              "id": "jour",
+              "title": "Jour"
+            },
+            {
+              "id": "forfait",
+              "title": "Forfait"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.document_label}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.items_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "description",
+                "label": "Produit ou service",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "quantity",
+                "label": "Quantité",
+                "required": true,
+                "input-type": "number"
+              },
+              {
+                "type": "Dropdown",
+                "name": "unit",
+                "label": "Unité",
+                "required": false,
+                "data-source": "${data.unit_options}"
+              },
+              {
+                "type": "TextInput",
+                "name": "unit_price",
+                "label": "Prix unitaire",
+                "required": true,
+                "input-type": "number"
+              },
+              {
+                "type": "Footer",
+                "label": "Ajouter",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_CONTENT",
+                    "action": "ADD_CONTENT",
+                    "data": {
+                      "description": "${form.description}",
+                      "quantity": "${form.quantity}",
+                      "unit": "${form.unit}",
+                      "unit_price": "${form.unit_price}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

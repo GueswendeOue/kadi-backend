@@ -1,0 +1,97 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "GENERATION_CONFIRMATION": []
+  },
+  "screens": [
+    {
+      "id": "GENERATION_CONFIRMATION",
+      "title": "Confirmer la préparation",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "cost_summary": {
+          "type": "string",
+          "__example__": "Le PDF comporte 1 page et coûte 1 crédit."
+        },
+        "balance_summary": {
+          "type": "string",
+          "__example__": "Solde disponible : 5 crédits."
+        },
+        "quote_id": {
+          "type": "string",
+          "__example__": "quote:example"
+        },
+        "confirmation_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "CONFIRM_GENERATION",
+              "title": "Confirmer et générer"
+            },
+            {
+              "id": "CANCEL",
+              "title": "Annuler"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.cost_summary}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.balance_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Votre décision",
+                "required": true,
+                "data-source": "${data.confirmation_actions}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "GENERATION_CONFIRMATION",
+                    "action": "${form.action}",
+                    "data": {
+                      "quote_id": "${data.quote_id}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "MENU": []
+  },
+  "screens": [
+    {
+      "id": "MENU",
+      "title": "Que souhaitez-vous faire ?",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "menu_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "PREPARE_DOCUMENT",
+              "title": "Préparer un document"
+            },
+            {
+              "id": "HISTORY_SEARCH",
+              "title": "Retrouver un document"
+            },
+            {
+              "id": "BALANCE",
+              "title": "Mon solde"
+            },
+            {
+              "id": "HELP",
+              "title": "Aide"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "Choisissez ce qui vous sera utile maintenant."
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Votre choix",
+                "required": true,
+                "data-source": "${data.menu_options}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "MENU",
+                    "action": "${form.action}",
+                    "data": {}
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "EDIT_CONTENT": []
+  },
+  "screens": [
+    {
+      "id": "EDIT_CONTENT",
+      "title": "Modifier les articles",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "items_summary": {
+          "type": "string",
+          "__example__": "Articles enregistrés."
+        },
+        "item_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "item:example",
+              "title": "Article 1"
+            }
+          ]
+        },
+        "edit_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ADD_CONTENT",
+              "title": "Ajouter un article"
+            },
+            {
+              "id": "UPDATE_CONTENT",
+              "title": "Modifier cet article"
+            },
+            {
+              "id": "REMOVE_CONTENT",
+              "title": "Supprimer cet article"
+            }
+          ]
+        },
+        "unit_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "unité",
+              "title": "Unité"
+            },
+            {
+              "id": "heure",
+              "title": "Heure"
+            },
+            {
+              "id": "jour",
+              "title": "Jour"
+            },
+            {
+              "id": "forfait",
+              "title": "Forfait"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.items_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Action",
+                "required": true,
+                "data-source": "${data.edit_actions}"
+              },
+              {
+                "type": "Dropdown",
+                "name": "item_id",
+                "label": "Article concerné",
+                "required": false,
+                "data-source": "${data.item_options}"
+              },
+              {
+                "type": "TextInput",
+                "name": "description",
+                "label": "Produit ou service",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "quantity",
+                "label": "Quantité",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "Dropdown",
+                "name": "unit",
+                "label": "Unité",
+                "required": false,
+                "data-source": "${data.unit_options}"
+              },
+              {
+                "type": "TextInput",
+                "name": "unit_price",
+                "label": "Prix unitaire",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "EDIT_CONTENT",
+                    "action": "${form.action}",
+                    "data": {
+                      "item_id": "${form.item_id}",
+                      "description": "${form.description}",
+                      "quantity": "${form.quantity}",
+                      "unit": "${form.unit}",
+                      "unit_price": "${form.unit_price}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "DOCUMENT_PREVIEW": []
+  },
+  "screens": [
+    {
+      "id": "DOCUMENT_PREVIEW",
+      "title": "Aperçu du document",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "preview_summary": {
+          "type": "string",
+          "__example__": "Aperçu prêt."
+        },
+        "preview_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "EDIT",
+              "title": "Modifier les informations"
+            },
+            {
+              "id": "PREPARE_PDF",
+              "title": "Préparer le PDF"
+            },
+            {
+              "id": "SAVE_FOR_LATER",
+              "title": "Enregistrer pour plus tard"
+            }
+          ]
+        },
+        "edit_sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "CLIENT",
+              "title": "Client"
+            },
+            {
+              "id": "CONTENT",
+              "title": "Articles ou objet"
+            },
+            {
+              "id": "OPTIONS",
+              "title": "Options"
+            },
+            {
+              "id": "ALL",
+              "title": "Tout le document"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.preview_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Prochaine étape",
+                "required": true,
+                "data-source": "${data.preview_actions}"
+              },
+              {
+                "type": "Dropdown",
+                "name": "section",
+                "label": "Partie à modifier",
+                "required": false,
+                "data-source": "${data.edit_sections}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_PREVIEW",
+                    "action": "${form.action}",
+                    "data": {
+                      "section": "${form.section}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "HISTORY_SEARCH": []
+  },
+  "screens": [
+    {
+      "id": "HISTORY_SEARCH",
+      "title": "Retrouver un document",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "document_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "FACTURE",
+              "title": "Facture"
+            },
+            {
+              "id": "DEVIS",
+              "title": "Devis"
+            },
+            {
+              "id": "RECU",
+              "title": "Reçu"
+            },
+            {
+              "id": "DECHARGE",
+              "title": "Décharge"
+            }
+          ]
+        },
+        "history_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "document:example",
+              "title": "Document récent"
+            }
+          ]
+        },
+        "history_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "SEARCH",
+              "title": "Rechercher"
+            },
+            {
+              "id": "OPEN_DOCUMENT",
+              "title": "Ouvrir le document"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Action",
+                "required": true,
+                "data-source": "${data.history_actions}"
+              },
+              {
+                "type": "TextInput",
+                "name": "query",
+                "label": "Nom du client ou mot-clé",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Dropdown",
+                "name": "document_type",
+                "label": "Type de document",
+                "required": false,
+                "data-source": "${data.document_types}"
+              },
+              {
+                "type": "TextInput",
+                "name": "date_from",
+                "label": "Du",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "date_to",
+                "label": "Au",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Dropdown",
+                "name": "document_id",
+                "label": "Document trouvé",
+                "required": false,
+                "data-source": "${data.history_options}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "HISTORY_SEARCH",
+                    "action": "${form.action}",
+                    "data": {
+                      "query": "${form.query}",
+                      "document_type": "${form.document_type}",
+                      "date_from": "${form.date_from}",
+                      "date_to": "${form.date_to}",
+                      "document_id": "${form.document_id}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
