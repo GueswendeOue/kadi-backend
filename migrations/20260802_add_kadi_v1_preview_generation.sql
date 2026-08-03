@@ -276,3 +276,10 @@ $$;
 alter table public.kadi_v1_document_previews enable row level security;
 alter table public.kadi_v1_temporary_renders enable row level security;
 alter table public.kadi_v1_generation_quotes enable row level security;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from public;
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from anon;
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END

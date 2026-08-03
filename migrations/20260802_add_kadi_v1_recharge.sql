@@ -236,3 +236,18 @@ alter table public.kadi_v1_recharge_sessions enable row level security;
 alter table public.kadi_v1_payment_events enable row level security;
 alter table public.kadi_v1_payment_provider_references enable row level security;
 alter table public.kadi_v1_recharge_resume_links enable row level security;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_create_recharge_session(jsonb, jsonb) from public;
+revoke all on function public.kadi_v1_create_recharge_session(jsonb, jsonb) from anon;
+revoke all on function public.kadi_v1_create_recharge_session(jsonb, jsonb) from authenticated;
+grant execute on function public.kadi_v1_create_recharge_session(jsonb, jsonb) to service_role;
+revoke all on function public.kadi_v1_get_wallet_balance(text) from public;
+revoke all on function public.kadi_v1_get_wallet_balance(text) from anon;
+revoke all on function public.kadi_v1_get_wallet_balance(text) from authenticated;
+grant execute on function public.kadi_v1_get_wallet_balance(text) to service_role;
+revoke all on function public.kadi_v1_confirm_recharge_credit(text, text, text, text, text, integer, text, text, boolean, timestamptz, text, text, timestamptz, boolean) from public;
+revoke all on function public.kadi_v1_confirm_recharge_credit(text, text, text, text, text, integer, text, text, boolean, timestamptz, text, text, timestamptz, boolean) from anon;
+revoke all on function public.kadi_v1_confirm_recharge_credit(text, text, text, text, text, integer, text, text, boolean, timestamptz, text, text, timestamptz, boolean) from authenticated;
+grant execute on function public.kadi_v1_confirm_recharge_credit(text, text, text, text, text, integer, text, text, boolean, timestamptz, text, text, timestamptz, boolean) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END

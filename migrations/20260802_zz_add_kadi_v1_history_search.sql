@@ -209,3 +209,22 @@ begin
   );
 end;
 $$;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_owned_history_bundle(text, text) from public;
+revoke all on function public.kadi_v1_owned_history_bundle(text, text) from anon;
+revoke all on function public.kadi_v1_owned_history_bundle(text, text) from authenticated;
+grant execute on function public.kadi_v1_owned_history_bundle(text, text) to service_role;
+revoke all on function public.kadi_v1_get_owned_document_history_bundle(text, text) from public;
+revoke all on function public.kadi_v1_get_owned_document_history_bundle(text, text) from anon;
+revoke all on function public.kadi_v1_get_owned_document_history_bundle(text, text) from authenticated;
+grant execute on function public.kadi_v1_get_owned_document_history_bundle(text, text) to service_role;
+revoke all on function public.kadi_v1_search_owned_documents(text, jsonb, timestamptz, text, integer, text) from public;
+revoke all on function public.kadi_v1_search_owned_documents(text, jsonb, timestamptz, text, integer, text) from anon;
+revoke all on function public.kadi_v1_search_owned_documents(text, jsonb, timestamptz, text, integer, text) from authenticated;
+grant execute on function public.kadi_v1_search_owned_documents(text, jsonb, timestamptz, text, integer, text) to service_role;
+revoke all on function public.kadi_v1_remember_history_duplicate(text, text, text, text) from public;
+revoke all on function public.kadi_v1_remember_history_duplicate(text, text, text, text) from anon;
+revoke all on function public.kadi_v1_remember_history_duplicate(text, text, text, text) from authenticated;
+grant execute on function public.kadi_v1_remember_history_duplicate(text, text, text, text) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END

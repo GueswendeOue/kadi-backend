@@ -190,3 +190,22 @@ alter table public.kadi_v1_wallet_reservations enable row level security;
 alter table public.kadi_v1_generation_attempts enable row level security;
 alter table public.kadi_v1_final_files enable row level security;
 alter table public.kadi_v1_delivery_attempts enable row level security;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_persist_generated_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from public;
+revoke all on function public.kadi_v1_persist_generated_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from anon;
+revoke all on function public.kadi_v1_persist_generated_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.kadi_v1_persist_generated_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
+revoke all on function public.kadi_v1_reserve_generation_credits(text, text, text, integer, text) from public;
+revoke all on function public.kadi_v1_reserve_generation_credits(text, text, text, integer, text) from anon;
+revoke all on function public.kadi_v1_reserve_generation_credits(text, text, text, integer, text) from authenticated;
+grant execute on function public.kadi_v1_reserve_generation_credits(text, text, text, integer, text) to service_role;
+revoke all on function public.kadi_v1_capture_generation_reservation(text, text) from public;
+revoke all on function public.kadi_v1_capture_generation_reservation(text, text) from anon;
+revoke all on function public.kadi_v1_capture_generation_reservation(text, text) from authenticated;
+grant execute on function public.kadi_v1_capture_generation_reservation(text, text) to service_role;
+revoke all on function public.kadi_v1_release_generation_reservation(text, text) from public;
+revoke all on function public.kadi_v1_release_generation_reservation(text, text) from anon;
+revoke all on function public.kadi_v1_release_generation_reservation(text, text) from authenticated;
+grant execute on function public.kadi_v1_release_generation_reservation(text, text) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END

@@ -254,3 +254,22 @@ grant execute on function public.kadi_v1_create_or_get_minimal_profile(text, tex
 grant execute on function public.kadi_v1_grant_welcome_credits(text, text) to service_role;
 grant execute on function public.kadi_v1_record_onboarding_event(text, text, text, text) to service_role;
 grant execute on function public.kadi_v1_set_onboarding_status(text, text, text, text) to service_role;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_create_or_get_minimal_profile(text, text) from public;
+revoke all on function public.kadi_v1_create_or_get_minimal_profile(text, text) from anon;
+revoke all on function public.kadi_v1_create_or_get_minimal_profile(text, text) from authenticated;
+grant execute on function public.kadi_v1_create_or_get_minimal_profile(text, text) to service_role;
+revoke all on function public.kadi_v1_grant_welcome_credits(text, text) from public;
+revoke all on function public.kadi_v1_grant_welcome_credits(text, text) from anon;
+revoke all on function public.kadi_v1_grant_welcome_credits(text, text) from authenticated;
+grant execute on function public.kadi_v1_grant_welcome_credits(text, text) to service_role;
+revoke all on function public.kadi_v1_record_onboarding_event(text, text, text, text) from public;
+revoke all on function public.kadi_v1_record_onboarding_event(text, text, text, text) from anon;
+revoke all on function public.kadi_v1_record_onboarding_event(text, text, text, text) from authenticated;
+grant execute on function public.kadi_v1_record_onboarding_event(text, text, text, text) to service_role;
+revoke all on function public.kadi_v1_set_onboarding_status(text, text, text, text) from public;
+revoke all on function public.kadi_v1_set_onboarding_status(text, text, text, text) from anon;
+revoke all on function public.kadi_v1_set_onboarding_status(text, text, text, text) from authenticated;
+grant execute on function public.kadi_v1_set_onboarding_status(text, text, text, text) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END

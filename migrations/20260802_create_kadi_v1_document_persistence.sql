@@ -516,3 +516,22 @@ revoke all on function public.kadi_v1_append_domain_event(text, text, text, text
 grant execute on function public.kadi_v1_create_document(jsonb, text, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
 grant execute on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
 grant execute on function public.kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb) to service_role;
+
+-- KADI_V1_SERVICE_ROLE_ONLY_BEGIN
+revoke all on function public.kadi_v1_reject_immutable_mutation() from public;
+revoke all on function public.kadi_v1_reject_immutable_mutation() from anon;
+revoke all on function public.kadi_v1_reject_immutable_mutation() from authenticated;
+grant execute on function public.kadi_v1_reject_immutable_mutation() to service_role;
+revoke all on function public.kadi_v1_create_document(jsonb, text, jsonb, jsonb, text, text, text, text, jsonb) from public;
+revoke all on function public.kadi_v1_create_document(jsonb, text, jsonb, jsonb, text, text, text, text, jsonb) from anon;
+revoke all on function public.kadi_v1_create_document(jsonb, text, jsonb, jsonb, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.kadi_v1_create_document(jsonb, text, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from public;
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from anon;
+revoke all on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.kadi_v1_persist_transition(text, text, integer, jsonb, jsonb, text, text, text, text, jsonb) to service_role;
+revoke all on function public.kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb) from public;
+revoke all on function public.kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb) from anon;
+revoke all on function public.kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb) from authenticated;
+grant execute on function public.kadi_v1_append_domain_event(text, text, text, text, text, text, jsonb) to service_role;
+-- KADI_V1_SERVICE_ROLE_ONLY_END
