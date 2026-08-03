@@ -385,4 +385,15 @@ test("the additive migration is private and service-role-only", () => {
   assert.equal(/\bdrop\s+table\b/.test(sql), false);
   assert.equal(/\btruncate\b/.test(sql), false);
   assert.equal(/\bdelete\s+from\b/.test(sql), false);
+  assert.equal(
+    sql.includes(
+      "or v_current.document_version is distinct from case"
+    ),
+    false
+  );
+  assert.ok(
+    sql.includes(
+      "or v_current.document_version is distinct from ( case when p_session->>'document_version' is null then null else (p_session->>'document_version')::integer end )"
+    )
+  );
 });

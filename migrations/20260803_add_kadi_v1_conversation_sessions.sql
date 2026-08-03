@@ -272,11 +272,12 @@ begin
 
   if
     v_current.document_id is distinct from nullif(p_session->>'document_id', '')
-    or v_current.document_version is distinct from
+    or v_current.document_version is distinct from (
       case
         when p_session->>'document_version' is null then null
         else (p_session->>'document_version')::integer
       end
+    )
     or v_current.document_type is distinct from nullif(p_session->>'document_type', '')
     or v_current.document_state is distinct from nullif(p_session->>'document_state', '')
     or v_current.expected_flow_key is distinct from p_session->>'expected_flow_key'
