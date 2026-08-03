@@ -93,6 +93,15 @@ test("consumption is one-way and a retry is reported as duplicate", async () => 
   assert.equal(second.duplicate, true);
 });
 
+test("a consumed session rejects a different reply idempotency key", async () => {
+  const { service } = makeHarness();
+  const opened = await openSession(service);
+  const first = await service.consumeReply({ ownerWaId, sessionId: opened.value.session_id, flowKey: "DOCUMENT_REVIEW", idempotencyKey: "flow_reply:first" });
+  const second = await service.consumeReply({ ownerWaId, sessionId: opened.value.session_id, flowKey: "DOCUMENT_REVIEW", idempotencyKey: "flow_reply:different" });
+  assert.equal(first.value.consumed_reply_key, "flow_reply:first");
+  assert.equal(second.error, "KADI_V1_SESSION_ALREADY_CONSUMED");
+});
+
 test("expired session fails closed and cannot be consumed", async () => {
   const { service, clock } = makeHarness();
   const opened = await openSession(service);

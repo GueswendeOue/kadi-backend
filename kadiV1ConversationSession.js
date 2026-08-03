@@ -30,7 +30,7 @@ function validateSessionRecord(raw) {
   const allowed = new Set([
     "session_id", "owner_wa_id", "document_id", "document_version", "document_type",
     "document_state", "expected_flow_key", "return_state", "status", "opened_at",
-    "expires_at", "consumed_at", "revoked_at", "idempotency_key",
+    "expires_at", "consumed_at", "revoked_at", "consumed_reply_key", "idempotency_key",
   ]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) return fail("KADI_V1_SESSION_FIELD_FORBIDDEN");
   if (!ID_PATTERN.test(raw.session_id || "")) return fail("KADI_V1_SESSION_ID_INVALID");
@@ -53,7 +53,11 @@ function validateSessionRecord(raw) {
   for (const key of ["consumed_at", "revoked_at"]) {
     if (raw[key] != null && !Number.isFinite(Date.parse(raw[key]))) return fail("KADI_V1_SESSION_TIMESTAMP_INVALID");
   }
+  if (raw.consumed_reply_key != null && !IDEMPOTENCY_PATTERN.test(raw.consumed_reply_key)) {
+    return fail("KADI_V1_SESSION_CONSUMED_REPLY_KEY_INVALID");
+  }
   if (raw.status === "CONSUMED" && raw.consumed_at == null) return fail("KADI_V1_SESSION_CONSUMED_AT_REQUIRED");
+  if (raw.status === "CONSUMED" && raw.consumed_reply_key == null) return fail("KADI_V1_SESSION_CONSUMED_REPLY_KEY_REQUIRED");
   if (raw.status === "REVOKED" && raw.revoked_at == null) return fail("KADI_V1_SESSION_REVOKED_AT_REQUIRED");
   return ok(Object.freeze(clone(raw)));
 }
@@ -167,6 +171,7 @@ function createConversationSessionService({
       expires_at: new Date(Date.parse(nowIso) + ttlMs).toISOString(),
       consumed_at: null,
       revoked_at: null,
+      consumed_reply_key: null,
       idempotency_key: idempotencyKey,
     };
     const checked = validateSessionRecord(session);
@@ -195,11 +200,17 @@ function createConversationSessionService({
     if (!checked.ok) {
       const loaded = await storage.getById({ sessionId });
       if (loaded.ok && loaded.value?.status === "CONSUMED" && loaded.value.owner_wa_id === ownerWaId && loaded.value.expected_flow_key === flowKey) {
-        return ok(loaded.value, { duplicate: true });
+        if (loaded.value.consumed_reply_key === idempotencyKey) return ok(loaded.value, { duplicate: true });
+        return fail("KADI_V1_SESSION_ALREADY_CONSUMED");
       }
       return checked;
     }
-    const consumed = { ...checked.value, status: "CONSUMED", consumed_at: new Date(clock()).toISOString() };
+    const consumed = {
+      ...checked.value,
+      status: "CONSUMED",
+      consumed_at: new Date(clock()).toISOString(),
+      consumed_reply_key: idempotencyKey,
+    };
     return storage.save(consumed);
   }
 
