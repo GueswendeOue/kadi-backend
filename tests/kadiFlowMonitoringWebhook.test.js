@@ -31,6 +31,7 @@ function dependencies(overrides = {}) {
       handleIncomingMessage: async () => { calls.messages += 1; },
       invoiceFlowTrigger: { marker: "trigger" },
       invoiceFlowCompletion: { marker: "completion" },
+      kadiV1WebhookHandler: null,
       logger: {
         log: (label, record) => calls.logs.push({ label, record }),
         error: (...args) => calls.errors.push(args),
@@ -140,4 +141,44 @@ test("ordinary messages and nfm_reply still reach the existing incoming-message 
   assert.equal(received[0].value.messages[0].type, "text");
   assert.equal(received[1].value.messages[0].interactive.type, "nfm_reply");
   assert.equal(received[1].options.invoiceFlowCompletion, fake.value.invoiceFlowCompletion);
+});
+
+
+test("V1 webhook handling runs before legacy routing and returns immediately when handled", async () => {
+  const order = [];
+  const fake = dependencies({
+    kadiV1WebhookHandler: async () => { order.push("v1"); return { handled: true }; },
+    handleIncomingMessage: async () => { order.push("legacy"); },
+  });
+  const body = { object: "whatsapp_business_account", entry: [{ id: "waba-123", changes: [{ field: "messages", value: { messages: [{ type: "text", text: { body: "Bonjour" } }] } }] }] };
+  dispatchWhatsAppWebhook(body, fake.value);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["v1"]);
+});
+
+test("disabled or non-applicable V1 routing falls through to the unchanged legacy handler", async () => {
+  const order = [];
+  const fake = dependencies({
+    kadiV1WebhookHandler: async () => { order.push("v1"); return { handled: false }; },
+    handleIncomingMessage: async () => { order.push("legacy"); },
+  });
+  const body = { object: "whatsapp_business_account", entry: [{ id: "waba-123", changes: [{ field: "messages", value: { messages: [{ type: "text", text: { body: "Bonjour" } }] } }] }] };
+  dispatchWhatsAppWebhook(body, fake.value);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["v1", "legacy"]);
+});
+
+test("V1 handler failure is absorbed and never triggers a second legacy response", async () => {
+  const order = [];
+  const fake = dependencies({
+    kadiV1WebhookHandler: async () => { order.push("v1"); throw Object.assign(new Error("secret"), { code: "V1_FAILED" }); },
+    handleIncomingMessage: async () => { order.push("legacy"); },
+  });
+  const body = { object: "whatsapp_business_account", entry: [{ id: "waba-123", changes: [{ field: "messages", value: { messages: [{ type: "interactive", interactive: { type: "nfm_reply" } }] } }] }] };
+  dispatchWhatsAppWebhook(body, fake.value);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["v1"]);
+  assert.equal(fake.calls.errors.length, 1);
+  assert.deepEqual(fake.calls.errors[0], ["kadiV1WebhookHandler", { code: "V1_FAILED" }]);
+  assert.doesNotMatch(JSON.stringify(fake.calls.errors), /secret/);
 });
