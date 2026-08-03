@@ -41,7 +41,7 @@ function isPathInside(rootDir, candidate) {
 function validateFlowJson(flowKey, json) {
   return json
     && json.version === "7.3"
-    && json.data_api_version === "3.0"
+    && !Object.hasOwn(json, "data_api_version")
     && json.routing_model
     && Array.isArray(json.routing_model[flowKey])
     && json.routing_model[flowKey].length === 0

@@ -80,7 +80,7 @@ test("all draft files use the locked one-screen Flow JSON contract", () => {
     const { entry, absolute, json } = readFlow(key);
     assert.ok(fs.existsSync(absolute), `${key} file missing`);
     assert.equal(json.version, "7.3");
-    assert.equal(json.data_api_version, "3.0");
+    assert.equal(Object.hasOwn(json, "data_api_version"), false);
     assert.deepEqual(Object.keys(json.routing_model), [key]);
     assert.deepEqual(json.routing_model[key], []);
     assert.equal(json.screens.length, 1);
