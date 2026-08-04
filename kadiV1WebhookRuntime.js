@@ -9,7 +9,7 @@ const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const MAX_RESPONSE_JSON_BYTES = 16 * 1024;
 const MAX_TEXT_LENGTH = 4000;
 const RECOVERABLE_TEXT = "Je n’ai pas pu continuer pour le moment. Vos informations sont conservées. Réessayez dans un instant.";
-const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data"]);
+const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data", "flow_token"]);
 
 function ok(value) { return { ok: true, value }; }
 function fail(error) { return { ok: false, error }; }
@@ -55,6 +55,10 @@ function parseNfmReply(message, ownerWaId) {
   if (!isPlainObject(parsed)) return fail("KADI_V1_FLOW_REPLY_RESPONSE_JSON_INVALID");
   if (Object.keys(parsed).some((key) => !FLOW_REPLY_KEYS.has(key))) return fail("KADI_V1_FLOW_REPLY_ENVELOPE_FIELD_FORBIDDEN");
   if (!ID_PATTERN.test(parsed.session_id || "")) return fail("KADI_V1_FLOW_REPLY_SESSION_INVALID");
+  if (parsed.flow_token != null) {
+    if (!ID_PATTERN.test(parsed.flow_token || "")) return fail("KADI_V1_FLOW_REPLY_TOKEN_INVALID");
+    if (parsed.flow_token !== parsed.session_id) return fail("KADI_V1_FLOW_REPLY_TOKEN_MISMATCH");
+  }
   if (!FLOW_KEYS.includes(parsed.flow_key)) return fail("KADI_V1_FLOW_REPLY_KEY_INVALID");
   if (typeof parsed.action !== "string" || !/^[A-Z][A-Z0-9_]{1,79}$/.test(parsed.action)) return fail("KADI_V1_FLOW_REPLY_ACTION_INVALID");
   if (!isPlainObject(parsed.data || {})) return fail("KADI_V1_FLOW_REPLY_DATA_INVALID");
