@@ -32,48 +32,28 @@
           },
           "__example__": [
             {
-              "id": "EDIT",
-              "title": "Modifier les informations"
-            },
-            {
               "id": "PREPARE_PDF",
               "title": "Préparer le PDF"
             },
             {
+              "id": "EDIT_CLIENT",
+              "title": "Modifier le client"
+            },
+            {
+              "id": "EDIT_CONTENT",
+              "title": "Modifier le contenu"
+            },
+            {
+              "id": "EDIT_OPTIONS",
+              "title": "Modifier les options"
+            },
+            {
               "id": "SAVE_FOR_LATER",
               "title": "Enregistrer pour plus tard"
-            }
-          ]
-        },
-        "edit_sections": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "CLIENT",
-              "title": "Client"
             },
             {
-              "id": "CONTENT",
-              "title": "Articles ou objet"
-            },
-            {
-              "id": "OPTIONS",
-              "title": "Options"
-            },
-            {
-              "id": "ALL",
-              "title": "Tout le document"
+              "id": "CANCEL",
+              "title": "Annuler"
             }
           ]
         }
@@ -97,13 +77,6 @@
                 "data-source": "${data.preview_actions}"
               },
               {
-                "type": "Dropdown",
-                "name": "section",
-                "label": "Partie à modifier",
-                "required": false,
-                "data-source": "${data.edit_sections}"
-              },
-              {
                 "type": "Footer",
                 "label": "Continuer",
                 "on-click-action": {
@@ -112,9 +85,7 @@
                     "session_id": "${data.session_id}",
                     "flow_key": "DOCUMENT_PREVIEW",
                     "action": "${form.action}",
-                    "data": {
-                      "section": "${form.section}"
-                    }
+                    "data": {}
                   }
                 }
               }

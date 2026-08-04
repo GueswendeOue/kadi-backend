@@ -67,6 +67,14 @@ function harness(overrides = {}) {
   return { presenter, calls };
 }
 
+function issuerProfileReaderStub(profile) {
+  return {
+    async getIssuerProfileById({ issuerProfileId }) {
+      return issuerProfileId === "issuer:1" ? { ok: true, value: profile } : { ok: false, error: "NOT_FOUND" };
+    },
+  };
+}
+
 test("all fifteen draft Flows expose one matching entry screen and session input", () => {
   const registry = loadFlowRegistry();
   assert.equal(Object.keys(registry).length, 15);
@@ -194,6 +202,137 @@ test("duplicate Flow reply produces no duplicate outward message", async () => {
   assert.deepEqual(calls, []);
 });
 
+test("DOCUMENT_PREVIEW preview_summary contains the resolved issuer, the client and the content with its total", async () => {
+  const { presenter, calls } = harness({
+    issuerProfileReader: issuerProfileReaderStub({ business_name: "Kadi Boutique", owner_name: "Awa Traoré" }),
+  });
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:verify",
+    result: {
+      handled: true,
+      action: "VERIFY",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 6,
+        document_type: "FACTURE",
+        status: "VERIFIED",
+        issuer_profile_id: "issuer:1",
+        client: { name: "Client Test" },
+        items: [{ item_id: "item:1", description: "Ordinateur", quantity_millis: 1000, unit: "unité", unit_price: 250000, line_total: 250000 }],
+        subtotal: 250000, taxes: 0, discount: 0, total: 250000,
+        receipt: null,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_PREVIEW);
+  const summary = parameters.flow_action_payload.data.preview_summary;
+  assert.match(summary, /^Parfait, votre facture est presque prête\. Vérifiez les informations avant de la générer\./);
+  assert.match(summary, /Émetteur : Kadi Boutique — Awa Traoré/);
+  assert.match(summary, /Client : Client Test/);
+  assert.match(summary, /Ordinateur/);
+  assert.match(summary, /Total : 250\s000 FCFA/);
+});
+
+test("DOCUMENT_PREVIEW intro text matches the exact canonical wording for each document type", async () => {
+  const expected = {
+    FACTURE: "Parfait, votre facture est presque prête. Vérifiez les informations avant de la générer.",
+    DEVIS: "Parfait, votre devis est presque prêt. Vérifiez les informations avant de le générer.",
+    RECU: "Parfait, votre reçu est presque prêt. Vérifiez les informations avant de le générer.",
+    DECHARGE: "Parfait, votre décharge est presque prête. Vérifiez les informations avant de la générer.",
+  };
+  for (const [documentType, intro] of Object.entries(expected)) {
+    const { presenter, calls } = harness();
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:verify-${documentType}`,
+      result: {
+        handled: true,
+        action: "VERIFY",
+        duplicate: false,
+        result: {
+          document_id: `document:${documentType}`, version: 1, document_type: documentType, status: "VERIFIED",
+          items: [], client: null, receipt: null, discharge: null,
+        },
+      },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    const summary = payload.interactive.action.parameters.flow_action_payload.data.preview_summary;
+    assert.ok(summary.startsWith(intro), `${documentType}: ${summary}`);
+  }
+});
+
+test("DOCUMENT_PREVIEW without a resolvable issuer profile still opens, omitting the issuer line", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:verify-no-issuer",
+    result: {
+      handled: true,
+      action: "VERIFY",
+      duplicate: false,
+      result: {
+        document_id: "document:1", version: 1, document_type: "FACTURE", status: "VERIFIED",
+        issuer_profile_id: "issuer:missing", client: { name: "Client" }, items: [], receipt: null,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.preview_summary;
+  assert.doesNotMatch(summary, /Émetteur :/);
+  assert.match(summary, /Client : Client/);
+});
+
+test("each DOCUMENT_PREVIEW action opens its documented next screen", async () => {
+  const cases = [
+    { action: "EDIT_CLIENT", flowId: FLOW_IDS.EDIT_CLIENT, screen: "EDIT_CLIENT" },
+    { action: "EDIT_CONTENT", flowId: FLOW_IDS.EDIT_CONTENT, screen: "EDIT_CONTENT" },
+    { action: "EDIT_OPTIONS", flowId: FLOW_IDS.EDIT_OPTIONS, screen: "EDIT_OPTIONS" },
+  ];
+  for (const testCase of cases) {
+    const { presenter, calls } = harness();
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:${testCase.action}`,
+      result: {
+        handled: true,
+        action: testCase.action,
+        duplicate: false,
+        result: {
+          document_id: "document:1", version: 2, document_type: "FACTURE", status: "COLLECTING", items: [], client: null,
+        },
+      },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    const parameters = payload.interactive.action.parameters;
+    assert.equal(parameters.flow_id, testCase.flowId, testCase.action);
+    assert.equal(parameters.flow_action_payload.screen, testCase.screen, testCase.action);
+  }
+});
+
+test("SAVE_FOR_LATER and CANCEL from DOCUMENT_PREVIEW send only the canonical text, no new Flow", async () => {
+  for (const action of ["SAVE_FOR_LATER", "CANCEL"]) {
+    const { presenter, calls } = harness();
+    const result = await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:${action}`,
+      result: {
+        handled: true,
+        action,
+        duplicate: false,
+        result: {
+          document_id: "document:1", version: 2, document_type: "FACTURE", status: "COLLECTING", items: [], client: null,
+        },
+      },
+    });
+    assert.equal(result.flow_sent, false, action);
+    assert.equal(calls.some(([name]) => name === "flow"), false, action);
+  }
+});
+
 test("preview result opens generation confirmation with the authoritative quote id", async () => {
   const { presenter, calls } = harness();
   await presenter.presentFlowReply({
@@ -254,6 +393,31 @@ test("START_ADD_CONTENT reopens the same Flow directly on the empty ARTICLE_FORM
   assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "quantity"), false, "ARTICLE_FORM must never carry a stale prefill");
 });
 
+test("FINISH_CONTENT opens DOCUMENT_OPTIONS directly and never reopens DOCUMENT_CONTENT or ARTICLE_FORM", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:finish-content",
+    result: {
+      handled: true,
+      action: "FINISH_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 4,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [{ item_id: "item:1", description: "Ciment", quantity: 2, unit_price: 5000 }],
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_OPTIONS);
+  assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_OPTIONS");
+  assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
+});
+
 test("a successful ADD_CONTENT reopens the DOCUMENT_CONTENT decision screen", async () => {
   const { presenter, calls } = harness();
   await presenter.presentFlowReply({
@@ -275,6 +439,98 @@ test("a successful ADD_CONTENT reopens the DOCUMENT_CONTENT decision screen", as
   const payload = calls.find(([name]) => name === "flow")[1];
   const parameters = payload.interactive.action.parameters;
   assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CONTENT");
+});
+
+test("items_summary reflects the real saved items: description, quantity, unit, price, line total and document total", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:items-summary",
+    result: {
+      handled: true,
+      action: "ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 3,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [
+          { item_id: "item:1", description: "Ordinateur", quantity_millis: 1000, unit: "unité", unit_price: 250000, line_total: 250000 },
+        ],
+        subtotal: 250000,
+        taxes: 0,
+        discount: 0,
+        total: 250000,
+        client: null,
+        receipt: null,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.items_summary;
+  assert.match(summary, /Articles enregistrés/);
+  assert.match(summary, /Ordinateur/);
+  assert.match(summary, /1 unité/);
+  assert.match(summary, /250\s000 FCFA/);
+  assert.match(summary, /=\s*250\s000 FCFA/);
+  assert.match(summary, /Total : 250\s000 FCFA/);
+  assert.doesNotMatch(summary, /Aucun article enregistré/);
+});
+
+test("items_summary caps the list at 10 items and reports the remaining count", async () => {
+  const { presenter, calls } = harness();
+  const items = Array.from({ length: 12 }, (_, index) => ({
+    item_id: `item:${index + 1}`,
+    description: `Article ${index + 1}`,
+    quantity_millis: 1000,
+    unit: "unité",
+    unit_price: 1000,
+    line_total: 1000,
+  }));
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:items-summary-cap",
+    result: {
+      handled: true,
+      action: "ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1", version: 13, document_type: "FACTURE", status: "COLLECTING",
+        items, subtotal: 12000, taxes: 0, discount: 0, total: 12000, client: null, receipt: null,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.items_summary;
+  assert.match(summary, /Article 10/);
+  assert.doesNotMatch(summary, /Article 11/);
+  assert.match(summary, /… et 2 autres/);
+});
+
+test("RECU gets its own items_summary shape instead of a forced item list", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:receipt-summary",
+    result: {
+      handled: true,
+      action: "ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:2", version: 1, document_type: "RECU", status: "COLLECTING",
+        items: [], client: null,
+        receipt: { payer: "Moussa", beneficiary: "Boutique Awa", amount: 15000, reason: "Achat tissu", payment_method: null, reference: null },
+        subtotal: 15000, taxes: 0, discount: 0, total: 15000,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.items_summary;
+  assert.match(summary, /Payeur : Moussa/);
+  assert.match(summary, /Bénéficiaire : Boutique Awa/);
+  assert.match(summary, /Montant : 15\s000 FCFA/);
+  assert.doesNotMatch(summary, /Articles enregistrés/);
 });
 
 test("SAVE_CLIENT on a document with no items yet opens ARTICLE_FORM directly instead of the decision screen", async () => {

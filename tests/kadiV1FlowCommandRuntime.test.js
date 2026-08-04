@@ -86,6 +86,14 @@ test("item update separates server item id from editable content", async () => {
   assert.deepEqual(calls[0].payload.content, { quantity: 4 });
 });
 
+test("FINISH_CONTENT calls only finishContent and never addContent", async () => {
+  const calls = [];
+  const result = await makeRuntime(calls).execute(command({ action: "FINISH_CONTENT", data: {} }));
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(calls.map((entry) => entry.name), ["finishContent"]);
+  assert.equal(calls.some((entry) => entry.name === "addContent"), false);
+});
+
 test("START_ADD_CONTENT is routed to the document adapter with server-bound identity only", async () => {
   const calls = [];
   await makeRuntime(calls).execute(command({ action: "START_ADD_CONTENT", data: {} }));

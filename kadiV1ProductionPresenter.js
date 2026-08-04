@@ -13,6 +13,9 @@ const {
   KADI_V1_DRAFT_FLOW_CATALOG,
 } = require("./kadiV1DraftFlowCatalog");
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
+const { buildPreviewData } = require("./kadiV1PreviewService");
+
+const MAX_SUMMARY_ITEMS = 10;
 
 const FLOW_MESSAGE_VERSION = "3";
 const OWNER_PATTERN = /^\d{8,20}$/;
@@ -219,6 +222,138 @@ function documentLabel(documentType) {
       DECHARGE: "Décharge",
     }[documentType] || "Document"
   );
+}
+
+// items_summary / preview_summary formatting — built exclusively from the
+// server's own kadiV1PreviewService.buildPreviewData(document) projection
+// (real item_id/description/quantity_millis/unit/unit_price/line_total and
+// document subtotal/taxes/discount/total), never from invented field names.
+
+function formatFcfaAmount(amount) {
+  return Number.isSafeInteger(amount) ? `${amount.toLocaleString("fr-FR")} FCFA` : "—";
+}
+
+function formatItemQuantity(quantityMillis) {
+  return (quantityMillis / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 3 });
+}
+
+function formatItemsList(items) {
+  const shown = items.slice(0, MAX_SUMMARY_ITEMS);
+  const lines = ["Articles enregistrés", ""];
+  shown.forEach((item, index) => {
+    const quantityLabel = item.unit
+      ? `${formatItemQuantity(item.quantity_millis)} ${item.unit}`
+      : formatItemQuantity(item.quantity_millis);
+    lines.push(`${index + 1}. ${item.description}`);
+    lines.push(`   ${quantityLabel} × ${formatFcfaAmount(item.unit_price)} = ${formatFcfaAmount(item.line_total)}`);
+  });
+  const remaining = items.length - shown.length;
+  if (remaining > 0) {
+    lines.push("");
+    lines.push(`… et ${remaining} autre${remaining > 1 ? "s" : ""}`);
+  }
+  return lines;
+}
+
+function formatCommonItemsSummary(preview) {
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  if (items.length === 0) return "Aucun article enregistré.";
+  const lines = formatItemsList(items);
+  lines.push("");
+  lines.push(`Total : ${formatFcfaAmount(preview.total)}`);
+  return lines.join("\n");
+}
+
+function formatReceiptSummary(preview) {
+  const lines = [];
+  if (preview.payer) lines.push(`Payeur : ${preview.payer}`);
+  if (preview.beneficiary) lines.push(`Bénéficiaire : ${preview.beneficiary}`);
+  if (preview.reason) lines.push(`Motif : ${preview.reason}`);
+  const amount = preview.content?.amount ?? preview.total;
+  if (Number.isSafeInteger(amount)) lines.push(`Montant : ${formatFcfaAmount(amount)}`);
+  return lines.length > 0 ? lines.join("\n") : "Informations du reçu à renseigner.";
+}
+
+const PREVIEW_INTROS = Object.freeze({
+  FACTURE: "Parfait, votre facture est presque prête. Vérifiez les informations avant de la générer.",
+  DEVIS: "Parfait, votre devis est presque prêt. Vérifiez les informations avant de le générer.",
+  RECU: "Parfait, votre reçu est presque prêt. Vérifiez les informations avant de le générer.",
+  DECHARGE: "Parfait, votre décharge est presque prête. Vérifiez les informations avant de la générer.",
+});
+
+function formatIssuerLine(issuerProfile) {
+  const businessName = typeof issuerProfile?.business_name === "string" ? issuerProfile.business_name.trim() : "";
+  const ownerName = typeof issuerProfile?.owner_name === "string" ? issuerProfile.owner_name.trim() : "";
+  const label = businessName
+    ? (ownerName && ownerName !== businessName ? `${businessName} — ${ownerName}` : businessName)
+    : ownerName;
+  return label ? `Émetteur : ${label}` : null;
+}
+
+function formatPartiesLine(document, preview) {
+  if (document.document_type === "DECHARGE") {
+    const lines = [];
+    if (document.discharge?.giver) lines.push(`Remettant : ${document.discharge.giver}`);
+    if (document.discharge?.receiver) lines.push(`Bénéficiaire : ${document.discharge.receiver}`);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  if (document.document_type === "RECU") {
+    const lines = [];
+    if (preview.payer) lines.push(`Payeur : ${preview.payer}`);
+    if (preview.beneficiary) lines.push(`Bénéficiaire : ${preview.beneficiary}`);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  const name = preview.client?.name;
+  return name ? `Client : ${name}` : null;
+}
+
+function formatContentLine(document, preview) {
+  if (document.document_type === "DECHARGE") {
+    const content = preview.content;
+    if (!content) return null;
+    if (content.type === "MONEY") return `Objet : somme de ${formatFcfaAmount(content.amount)}`;
+    const quantity = document.discharge?.quantity;
+    return `Objet : ${content.description || "—"}${quantity ? ` (quantité : ${quantity})` : ""}`;
+  }
+  if (document.document_type === "RECU") return formatReceiptSummary(preview);
+  return formatCommonItemsSummary(preview);
+}
+
+function buildPreviewSummary(document, issuerProfile) {
+  if (!isPlainObject(document)) return "Aperçu prêt.";
+  const intro = PREVIEW_INTROS[document.document_type] || "Vérifiez les informations avant de générer le document.";
+  let preview = null;
+  try { preview = buildPreviewData(document); } catch { preview = null; }
+  const lines = [intro, ""];
+  const issuerLine = formatIssuerLine(issuerProfile);
+  if (issuerLine) lines.push(issuerLine);
+  if (preview) {
+    const partiesLine = formatPartiesLine(document, preview);
+    if (partiesLine) lines.push(partiesLine);
+    const contentLine = formatContentLine(document, preview);
+    if (contentLine) {
+      lines.push("");
+      lines.push(contentLine);
+    }
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildItemsSummary(document) {
+  if (!isPlainObject(document) || document.document_type === "DECHARGE") {
+    return "Aucun article enregistré.";
+  }
+  if (document.document_type !== "RECU" && !Array.isArray(document.items)) {
+    return "Aucun article enregistré.";
+  }
+  try {
+    const preview = buildPreviewData(document);
+    return document.document_type === "RECU"
+      ? formatReceiptSummary(preview)
+      : formatCommonItemsSummary(preview);
+  } catch {
+    return "Aucun article enregistré.";
+  }
 }
 
 function safeFlowData(contract, screen, sessionId, suggested = {}) {
@@ -487,7 +622,7 @@ function canonicalReplyText(action, value) {
   return copy[action] || "Votre demande a bien été enregistrée.";
 }
 
-function suggestedDataForFlow(flowKey, source) {
+function suggestedDataForFlow(flowKey, source, extra = {}) {
   const document = extractDocument(source);
   const output = {};
 
@@ -511,6 +646,7 @@ function suggestedDataForFlow(flowKey, source) {
   if (flowKey === "DOCUMENT_CONTENT") {
     const items = document?.items;
     const hasItems = Array.isArray(items) && items.length > 0;
+    output.items_summary = buildItemsSummary(document);
     if (document?.document_type === "RECU") {
       output.content_actions = hasItems
         ? [
@@ -528,6 +664,10 @@ function suggestedDataForFlow(flowKey, source) {
     }
   }
 
+  if (flowKey === "DOCUMENT_PREVIEW") {
+    output.preview_summary = buildPreviewSummary(document, extra.issuerProfile || null);
+  }
+
   return output;
 }
 
@@ -542,6 +682,7 @@ function createKadiV1ProductionPresenter({
   sessionIdFactory,
   voiceResponseEngine = null,
   voiceDelivery = null,
+  issuerProfileReader = null,
   logger = console,
   rootDir = __dirname,
 } = {}) {
@@ -589,8 +730,26 @@ function createKadiV1ProductionPresenter({
   ) {
     throw new TypeError("KADI_V1_PRESENTER_VOICE_DELIVERY_INVALID");
   }
+  if (
+    issuerProfileReader != null &&
+    typeof issuerProfileReader.getIssuerProfileById !== "function"
+  ) {
+    throw new TypeError("KADI_V1_PRESENTER_ISSUER_PROFILE_READER_INVALID");
+  }
 
   const registry = loadFlowRegistry(rootDir);
+
+  async function resolveIssuerProfileForPreview(document) {
+    if (!issuerProfileReader || !document?.issuer_profile_id) return null;
+    try {
+      const resolved = await issuerProfileReader.getIssuerProfileById({
+        issuerProfileId: document.issuer_profile_id,
+      });
+      return resolved?.ok ? resolved.value : null;
+    } catch {
+      return null;
+    }
+  }
 
   async function maybeTyping(messageId) {
     if (
@@ -822,6 +981,9 @@ function createKadiV1ProductionPresenter({
     let flow = null;
     if (flowKey) {
       const document = extractDocument(result.result);
+      const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
+        ? await resolveIssuerProfileForPreview(document)
+        : null;
       flow = await openAndSendFlow({
         ownerWaId,
         messageId,
@@ -829,7 +991,8 @@ function createKadiV1ProductionPresenter({
         document,
         suggestedData: suggestedDataForFlow(
           flowKey,
-          result.result
+          result.result,
+          { issuerProfile }
         ),
         screen: nextScreenForReply(flowKey, result.action, result.result),
       });
