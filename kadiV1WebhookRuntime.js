@@ -8,7 +8,7 @@ const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const MAX_RESPONSE_JSON_BYTES = 16 * 1024;
 const MAX_TEXT_LENGTH = 4000;
-const RECOVERABLE_TEXT = "Je n’ai pas pu continuer pour le moment. Vos informations sont conservées. Réessayez dans un instant.";
+const RECOVERABLE_TEXT = "Je n’ai pas pu terminer cette étape. Réessayez dans un instant.";
 const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data", "flow_token"]);
 
 function ok(value) { return { ok: true, value }; }

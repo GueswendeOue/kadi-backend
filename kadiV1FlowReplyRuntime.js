@@ -8,6 +8,8 @@ const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
 const MAX_PAYLOAD_BYTES = 16 * 1024;
 const MAX_DEPTH = 5;
 
+const CONTENT_NUMERIC_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
+
 const FLOW_ACTIONS = Object.freeze({
   ONBOARDING: Object.freeze(["START"]),
   MENU: Object.freeze(["PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP"]),
@@ -64,6 +66,35 @@ function ok(value, extra = {}) {
   return { ok: true, value, ...extra };
 }
 
+function parseContentInteger(raw, field) {
+  let num;
+  if (Number.isSafeInteger(raw)) {
+    num = raw;
+  } else if (typeof raw === "string" && /^\d+$/.test(raw)) {
+    num = Number(raw);
+    if (!Number.isSafeInteger(num)) {
+      return fail(field === "quantity" ? "KADI_V1_FLOW_REPLY_QUANTITY_INVALID" : "KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
+    }
+  } else {
+    return fail(field === "quantity" ? "KADI_V1_FLOW_REPLY_QUANTITY_INVALID" : "KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
+  }
+  if (field === "quantity" && num <= 0) return fail("KADI_V1_FLOW_REPLY_QUANTITY_INVALID");
+  if (field === "unit_price" && num < 0) return fail("KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
+  return ok(num);
+}
+
+function normalizeContentNumbers(action, data) {
+  if (!CONTENT_NUMERIC_ACTIONS.has(action)) return ok(data);
+  const normalized = { ...data };
+  for (const field of ["quantity", "unit_price"]) {
+    if (!Object.hasOwn(data, field)) continue;
+    const result = parseContentInteger(data[field], field);
+    if (!result.ok) return result;
+    normalized[field] = result.value;
+  }
+  return ok(normalized);
+}
+
 function fail(error) {
   return { ok: false, error };
 }
@@ -117,7 +148,9 @@ function validateActionPayload(flowKey, action, data) {
     if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
     if (data.owner_name.trim().replace(/\s+/g, " ").length < 2) return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
   }
-  return ok(Object.freeze(structuredClone(data)));
+  const contentNormalized = normalizeContentNumbers(action, data);
+  if (!contentNormalized.ok) return contentNormalized;
+  return ok(Object.freeze(structuredClone(contentNormalized.value)));
 }
 
 function validateReplyEnvelope(input) {
