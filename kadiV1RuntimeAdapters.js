@@ -174,6 +174,18 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.reopenForCorrection(input) : shared.reopenForCorrection(input);
   }
   async function saveForLater(command) { return load(command); }
+  async function finishContent(command) {
+    const checked = documentIdentity(command);
+    if (!checked.ok) return checked;
+    if (command.documentType === "DECHARGE") return fail("KADI_V1_DISCHARGE_FINISH_CONTENT_INVALID");
+    const loaded = await load(command);
+    if (!loaded.ok) return loaded;
+    const doc = loaded.value;
+    if (doc.document_type !== "RECU" && (!Array.isArray(doc.items) || doc.items.length === 0)) {
+      return fail("KADI_V1_DOCUMENT_CONTENT_REQUIRED");
+    }
+    return ok(doc);
+  }
   function normalizeDischargeType(value) {
     const normalized = String(value || "").trim().toUpperCase();
     return ({ ARGENT: "MONEY", MONEY: "MONEY", BIEN: "GOODS", GOODS: "GOODS", DOCUMENT: "DOCUMENT", AUTRE: "OTHER", OTHER: "OTHER" })[normalized] || null;
@@ -222,7 +234,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 
-  return Object.freeze({ start, apply, setClient, addContent, updateContent, removeContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
+  return Object.freeze({ start, apply, setClient, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
 }
 
 function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderService, generationQuoteService } = {}) {

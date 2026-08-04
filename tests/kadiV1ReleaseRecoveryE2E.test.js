@@ -31,7 +31,7 @@ function passiveCommandRuntimeDependencies(generationRuntime) {
   return {
     onboardingRuntime: { continueOnboarding: noop },
     documentRuntime: {
-      start: noop, setClient: noop, addContent: noop, updateContent: noop, removeContent: noop,
+      start: noop, setClient: noop, addContent: noop, updateContent: noop, removeContent: noop, finishContent: noop,
       setOptions: noop, verify: noop, beginEdit: noop, saveForLater: noop,
       saveDischargeDetails: noop, cancel: noop,
     },

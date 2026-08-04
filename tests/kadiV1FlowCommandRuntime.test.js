@@ -16,9 +16,9 @@ function makeRuntime(calls) {
     onboardingRuntime: { continueOnboarding: record("continueOnboarding") },
     documentRuntime: {
       start: record("start"), setClient: record("setClient"), addContent: record("addContent"),
-      updateContent: record("updateContent"), removeContent: record("removeContent"), setOptions: record("setOptions"),
-      verify: record("verify"), beginEdit: record("beginEdit"), saveForLater: record("saveForLater"),
-      saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancelDocument"),
+      updateContent: record("updateContent"), removeContent: record("removeContent"), finishContent: record("finishContent"),
+      setOptions: record("setOptions"), verify: record("verify"), beginEdit: record("beginEdit"),
+      saveForLater: record("saveForLater"), saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancelDocument"),
     },
     previewRuntime: { prepare: record("preparePreview") },
     generationRuntime: { confirm: record("confirmGeneration") },
@@ -136,7 +136,8 @@ test("adapter exceptions become closed recoverable failures", async () => {
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
     documentRuntime: {
       start: async () => { throw new Error("secret"); }, setClient: async () => ({}), addContent: async () => ({}),
-      updateContent: async () => ({}), removeContent: async () => ({}), setOptions: async () => ({}), verify: async () => ({}),
+      updateContent: async () => ({}), removeContent: async () => ({}), finishContent: async () => ({}),
+      setOptions: async () => ({}), verify: async () => ({}),
       beginEdit: async () => ({}), saveForLater: async () => ({}), saveDischargeDetails: async () => ({}), cancel: async () => ({}),
     },
     previewRuntime: { prepare: async () => ({}) }, generationRuntime: { confirm: async () => ({}) },

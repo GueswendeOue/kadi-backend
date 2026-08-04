@@ -100,6 +100,7 @@ function createRestartHarness() {
       addContent: noop,
       updateContent: noop,
       removeContent: noop,
+      finishContent: noop,
       setOptions: noop,
       verify: noop,
       beginEdit: noop,

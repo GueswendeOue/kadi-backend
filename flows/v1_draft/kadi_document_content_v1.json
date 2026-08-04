@@ -6,7 +6,7 @@
   "screens": [
     {
       "id": "DOCUMENT_CONTENT",
-      "title": "Ajouter un article",
+      "title": "Articles",
       "terminal": true,
       "data": {
         "session_id": {
@@ -21,37 +21,54 @@
           "type": "string",
           "__example__": "Aucun article enregistré."
         },
+        "content_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "ADD_CONTENT", "title": "Ajouter un article" },
+            { "id": "FINISH_CONTENT", "title": "Terminer les articles" }
+          ]
+        },
         "unit_options": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
+              "id": { "type": "string" },
+              "title": { "type": "string" }
             }
           },
           "__example__": [
-            {
-              "id": "unité",
-              "title": "Unité"
-            },
-            {
-              "id": "heure",
-              "title": "Heure"
-            },
-            {
-              "id": "jour",
-              "title": "Jour"
-            },
-            {
-              "id": "forfait",
-              "title": "Forfait"
-            }
+            { "id": "unité", "title": "Unité" },
+            { "id": "piece", "title": "Pièce" },
+            { "id": "lot", "title": "Lot" },
+            { "id": "paquet", "title": "Paquet" },
+            { "id": "carton", "title": "Carton" },
+            { "id": "sac", "title": "Sac" },
+            { "id": "kilogramme", "title": "Kilogramme" },
+            { "id": "gramme", "title": "Gramme" },
+            { "id": "litre", "title": "Litre" },
+            { "id": "metre", "title": "Mètre" },
+            { "id": "metre_carre", "title": "Mètre carré" },
+            { "id": "metre_cube", "title": "Mètre cube" },
+            { "id": "kilometre", "title": "Kilomètre" },
+            { "id": "heure", "title": "Heure" },
+            { "id": "jour", "title": "Jour" },
+            { "id": "mois", "title": "Mois" },
+            { "id": "forfait", "title": "Forfait" },
+            { "id": "service", "title": "Service" },
+            { "id": "autre", "title": "Autre" }
           ]
+        },
+        "unit_custom": {
+          "type": "string",
+          "__example__": ""
         }
       },
       "layout": {
@@ -70,17 +87,24 @@
             "name": "kadi_form",
             "children": [
               {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Que souhaitez-vous faire ?",
+                "required": true,
+                "data-source": "${data.content_actions}"
+              },
+              {
                 "type": "TextInput",
                 "name": "description",
                 "label": "Produit ou service",
-                "required": true,
+                "required": false,
                 "input-type": "text"
               },
               {
                 "type": "TextInput",
                 "name": "quantity",
                 "label": "Quantité",
-                "required": true,
+                "required": false,
                 "input-type": "number"
               },
               {
@@ -92,24 +116,32 @@
               },
               {
                 "type": "TextInput",
+                "name": "unit_custom",
+                "label": "Autre unité (si besoin)",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
                 "name": "unit_price",
                 "label": "Prix unitaire",
-                "required": true,
+                "required": false,
                 "input-type": "number"
               },
               {
                 "type": "Footer",
-                "label": "Ajouter",
+                "label": "Continuer",
                 "on-click-action": {
                   "name": "complete",
                   "payload": {
                     "session_id": "${data.session_id}",
                     "flow_key": "DOCUMENT_CONTENT",
-                    "action": "ADD_CONTENT",
+                    "action": "${form.action}",
                     "data": {
                       "description": "${form.description}",
                       "quantity": "${form.quantity}",
                       "unit": "${form.unit}",
+                      "unit_custom": "${form.unit_custom}",
                       "unit_price": "${form.unit_price}"
                     }
                   }
