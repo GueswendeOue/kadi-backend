@@ -113,6 +113,10 @@ function validateActionPayload(flowKey, action, data) {
   if (!inspected.ok) return inspected;
   const allowed = new Set(ACTION_FIELDS[action] || []);
   if (Object.keys(data).some((key) => !allowed.has(key))) return fail("KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
+  if (action === "START") {
+    if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
+    if (data.owner_name.trim().replace(/\s+/g, " ").length < 2) return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
+  }
   return ok(Object.freeze(structuredClone(data)));
 }
 
