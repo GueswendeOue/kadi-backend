@@ -9,13 +9,14 @@ const MAX_PAYLOAD_BYTES = 16 * 1024;
 const MAX_DEPTH = 5;
 
 const CONTENT_NUMERIC_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
+const UNIT_CUSTOM_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
 
 const FLOW_ACTIONS = Object.freeze({
   ONBOARDING: Object.freeze(["START"]),
   MENU: Object.freeze(["PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP"]),
   DOCUMENT_TYPE: Object.freeze(["SELECT_DOCUMENT_TYPE"]),
   DOCUMENT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
-  DOCUMENT_CONTENT: Object.freeze(["ADD_CONTENT"]),
+  DOCUMENT_CONTENT: Object.freeze(["ADD_CONTENT", "FINISH_CONTENT"]),
   DOCUMENT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_REVIEW: Object.freeze(["VERIFY", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL"]),
   EDIT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
@@ -36,8 +37,8 @@ const ACTION_FIELDS = Object.freeze({
   HELP: Object.freeze([]),
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
   SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
-  ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_price"]),
-  UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_price"]),
+  ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
+  UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   REMOVE_CONTENT: Object.freeze(["item_id"]),
   SAVE_OPTIONS: Object.freeze(["tax_rate_basis_points", "discount_amount", "notes", "payment_terms", "validity_days", "payment_method", "reference"]),
   VERIFY: Object.freeze([]),
@@ -54,6 +55,7 @@ const ACTION_FIELDS = Object.freeze({
   SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to"]),
   OPEN_DOCUMENT: Object.freeze(["document_id"]),
   SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "transferred_content", "purpose", "notes"]),
+  FINISH_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_price"]),
 });
 
 const FORBIDDEN_AUTHORITY_FIELDS = new Set([
@@ -81,6 +83,19 @@ function parseContentInteger(raw, field) {
   if (field === "quantity" && num <= 0) return fail("KADI_V1_FLOW_REPLY_QUANTITY_INVALID");
   if (field === "unit_price" && num < 0) return fail("KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
   return ok(num);
+}
+
+function resolveUnitCustom(action, data) {
+  if (!UNIT_CUSTOM_ACTIONS.has(action)) return ok(data);
+  const normalized = { ...data };
+  delete normalized.unit_custom;
+  if (data.unit !== "autre") return ok(normalized);
+  const raw = data.unit_custom;
+  if (typeof raw !== "string") return fail("KADI_V1_FLOW_REPLY_UNIT_CUSTOM_REQUIRED");
+  const cleaned = raw.trim().replace(/\s+/g, " ");
+  if (cleaned.length < 1 || cleaned.length > 50) return fail("KADI_V1_FLOW_REPLY_UNIT_CUSTOM_INVALID");
+  normalized.unit = cleaned;
+  return ok(normalized);
 }
 
 function normalizeContentNumbers(action, data) {
@@ -148,9 +163,16 @@ function validateActionPayload(flowKey, action, data) {
     if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
     if (data.owner_name.trim().replace(/\s+/g, " ").length < 2) return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
   }
+  if (action === "ADD_CONTENT") {
+    if (typeof data.description !== "string" || !data.description.trim()) return fail("KADI_V1_FLOW_REPLY_DESCRIPTION_REQUIRED");
+    if (!Object.hasOwn(data, "quantity")) return fail("KADI_V1_FLOW_REPLY_QUANTITY_INVALID");
+    if (!Object.hasOwn(data, "unit_price")) return fail("KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
+  }
   const contentNormalized = normalizeContentNumbers(action, data);
   if (!contentNormalized.ok) return contentNormalized;
-  return ok(Object.freeze(structuredClone(contentNormalized.value)));
+  const unitResolved = resolveUnitCustom(action, contentNormalized.value);
+  if (!unitResolved.ok) return unitResolved;
+  return ok(Object.freeze(structuredClone(unitResolved.value)));
 }
 
 function validateReplyEnvelope(input) {

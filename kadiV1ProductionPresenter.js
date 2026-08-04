@@ -342,6 +342,7 @@ function nextFlowForReply(action, resultValue) {
   if (["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)) {
     return "DOCUMENT_CONTENT";
   }
+  if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
   if (action === "SAVE_OPTIONS") return "DOCUMENT_REVIEW";
   if (action === "VERIFY") return "DOCUMENT_PREVIEW";
   if (action === "EDIT_CLIENT") return "EDIT_CLIENT";
@@ -403,7 +404,8 @@ function canonicalReplyText(action, value) {
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
     SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
     SAVE_CLIENT: "Les informations du client sont enregistrées.",
-    ADD_CONTENT: "L’article est enregistré.",
+    ADD_CONTENT: "L’article est enregistré. Que souhaitez-vous faire ?",
+    FINISH_CONTENT: "Les articles sont enregistrés.",
     UPDATE_CONTENT: "L’article est mis à jour.",
     REMOVE_CONTENT: "L’article est supprimé.",
     SAVE_OPTIONS: "Les options sont enregistrées.",
@@ -446,6 +448,26 @@ function suggestedDataForFlow(flowKey, source) {
       { id: "BALANCE", title: "Mon solde" },
       { id: "HELP", title: "Aide" },
     ];
+  }
+
+  if (flowKey === "DOCUMENT_CONTENT") {
+    const items = document?.items;
+    const hasItems = Array.isArray(items) && items.length > 0;
+    if (document?.document_type === "RECU") {
+      output.content_actions = hasItems
+        ? [
+            { id: "ADD_CONTENT", title: "Modifier les informations" },
+            { id: "FINISH_CONTENT", title: "Terminer le reçu" },
+          ]
+        : [{ id: "ADD_CONTENT", title: "Renseigner les informations" }];
+    } else {
+      output.content_actions = hasItems
+        ? [
+            { id: "ADD_CONTENT", title: "Ajouter un autre article" },
+            { id: "FINISH_CONTENT", title: "Terminer les articles" },
+          ]
+        : [{ id: "ADD_CONTENT", title: "Ajouter un article" }];
+    }
   }
 
   return output;
