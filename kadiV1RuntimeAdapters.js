@@ -270,8 +270,11 @@ function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {
   return Object.freeze({ confirm });
 }
 
-function createKadiV1OnboardingRuntimeAdapter({ onboardingService } = {}) {
+function createKadiV1OnboardingRuntimeAdapter({ onboardingService, profileCompleter = null } = {}) {
   const service = assertMethods(onboardingService, ["onboardNewUser", "getOnboardingState", "completeOnboarding"], "KADI_V1_ONBOARDING_SERVICE");
+  const profiles = profileCompleter == null
+    ? null
+    : assertMethods(profileCompleter, ["complete"], "KADI_V1_ONBOARDING_PROFILE_COMPLETER");
   async function start({ ownerWaId }) {
     const onboarded = await service.onboardNewUser({ waId: ownerWaId });
     if (!onboarded?.ok) return fail(onboarded?.error || "KADI_V1_ONBOARDING_FAILED");
@@ -284,9 +287,35 @@ function createKadiV1OnboardingRuntimeAdapter({ onboardingService } = {}) {
       welcome: onboarded.welcome || null,
     }));
   }
-  async function continueOnboarding({ ownerWaId }) {
+  async function continueOnboarding({
+    ownerWaId,
+    profileData = {},
+    idempotencyKey = null,
+  }) {
+    if (profiles) {
+      const completed = await profiles.complete({
+        ownerWaId,
+        profileData: clone(profileData),
+        idempotencyKey,
+      });
+      if (!completed?.ok) {
+        return fail(completed?.error || "KADI_V1_ONBOARDING_PROFILE_COMPLETE_FAILED");
+      }
+      const value = completed.value && typeof completed.value === "object"
+        ? clone(completed.value)
+        : {};
+      return ok(Object.freeze({
+        ...value,
+        next_flow_key: "MENU",
+      }), {
+        duplicate: completed.duplicate === true,
+      });
+    }
+
     const completed = await service.completeOnboarding({ waId: ownerWaId });
-    return completed?.ok ? ok(completed.value || completed.profile || null) : fail(completed?.error || "KADI_V1_ONBOARDING_COMPLETE_FAILED");
+    return completed?.ok
+      ? ok(completed.value || completed.profile || null)
+      : fail(completed?.error || "KADI_V1_ONBOARDING_COMPLETE_FAILED");
   }
   return Object.freeze({ start, continueOnboarding });
 }

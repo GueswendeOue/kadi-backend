@@ -82,6 +82,9 @@ const { createRechargeService } = require("./kadiV1RechargeService");
 const {
   createSupabaseOnboardingRepository,
 } = require("./kadiV1SupabaseOnboardingRepository");
+const {
+  createSupabaseOnboardingProfileCompleter,
+} = require("./kadiV1SupabaseOnboardingProfileCompleter");
 const { createKadiV1OnboardingService } = require("./kadiV1WelcomeService");
 const {
   createKadiV1DocumentRuntimeAdapter,
@@ -493,8 +496,13 @@ function createKadiV1ProductionBootstrap({
     const onboardingService = createKadiV1OnboardingService({
       repository: onboardingRepository,
     });
+    const onboardingProfileCompleter =
+      createSupabaseOnboardingProfileCompleter({
+        client: supabase,
+      });
     const onboardingRuntime = createKadiV1OnboardingRuntimeAdapter({
       onboardingService,
+      profileCompleter: onboardingProfileCompleter,
     });
     const documentRuntime = createKadiV1DocumentRuntimeAdapter({
       sharedPipeline,

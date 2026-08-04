@@ -399,7 +399,7 @@ function canonicalReplyText(action, value) {
   }
 
   const copy = {
-    START: "Votre profil est enregistré.",
+    START: "Merci. Votre profil est enregistré. Que voulez-vous préparer aujourd’hui ?",
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
     SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
     SAVE_CLIENT: "Les informations du client sont enregistrées.",

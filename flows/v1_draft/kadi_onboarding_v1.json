@@ -6,7 +6,7 @@
   "screens": [
     {
       "id": "ONBOARDING",
-      "title": "Bienvenue chez Kadi",
+      "title": "Faisons connaissance",
       "terminal": true,
       "data": {
         "session_id": {
@@ -23,24 +23,43 @@
           },
           {
             "type": "TextBody",
-            "text": "Je vous aide à préparer vos factures, devis, reçus et décharges depuis WhatsApp."
+            "text": "Indiquez seulement les informations utiles pour commencer. Votre numéro WhatsApp est déjà reconnu."
           },
           {
-            "type": "TextBody",
-            "text": "Vous pouvez écrire, envoyer un vocal ou une photo. Vos 5 crédits de bienvenue sont déjà disponibles."
-          },
-          {
-            "type": "Footer",
-            "label": "Commencer",
-            "on-click-action": {
-              "name": "complete",
-              "payload": {
-                "session_id": "${data.session_id}",
-                "flow_key": "ONBOARDING",
-                "action": "START",
-                "data": {}
+            "type": "Form",
+            "name": "kadi_profile_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "owner_name",
+                "label": "Votre nom ou prénom",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "business_name",
+                "label": "Nom de l’activité ou entreprise",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "Footer",
+                "label": "Enregistrer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "ONBOARDING",
+                    "action": "START",
+                    "data": {
+                      "owner_name": "${form.owner_name}",
+                      "business_name": "${form.business_name}"
+                    }
+                  }
+                }
               }
-            }
+            ]
           }
         ]
       }

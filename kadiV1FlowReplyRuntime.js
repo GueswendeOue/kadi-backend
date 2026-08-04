@@ -27,7 +27,7 @@ const FLOW_ACTIONS = Object.freeze({
 });
 
 const ACTION_FIELDS = Object.freeze({
-  START: Object.freeze([]),
+  START: Object.freeze(["owner_name", "business_name"]),
   PREPARE_DOCUMENT: Object.freeze(["document_type"]),
   HISTORY_SEARCH: Object.freeze([]),
   BALANCE: Object.freeze([]),

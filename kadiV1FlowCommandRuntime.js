@@ -80,7 +80,10 @@ function createKadiV1FlowCommandRuntime({
     const data = command.data;
 
     if (command.action === "START") {
-      return call(onboarding, "continueOnboarding", base, "KADI_V1_ONBOARDING_CONTINUE_FAILED");
+      return call(onboarding, "continueOnboarding", {
+        ...base,
+        profileData: structuredClone(data),
+      }, "KADI_V1_ONBOARDING_CONTINUE_FAILED");
     }
     if (command.action === "HELP") return ok(Object.freeze({ business_action: "SHOW_HELP" }));
     if (command.action === "HISTORY_SEARCH") return ok(Object.freeze({ business_action: "OPEN_HISTORY", next_flow_key: "HISTORY_SEARCH" }));
