@@ -414,6 +414,7 @@ function createKadiV1ProductionBootstrap({
       storage: privateStorage,
       renderer: createExistingPdfTemporaryRenderer({
         rendererResolver: providers.pdfRendererResolver || null,
+        issuerProfileReader: issuerResolver,
       }),
       pageCountInspector: createPdfLibPageCountInspector({ clock }),
       clock,
@@ -441,6 +442,7 @@ function createKadiV1ProductionBootstrap({
       storage: privateStorage,
       renderer: createExistingPdfFinalRenderer({
         rendererResolver: providers.pdfRendererResolver || null,
+        issuerProfileReader: issuerResolver,
       }),
       clock,
     });
@@ -561,6 +563,7 @@ function createKadiV1ProductionBootstrap({
       whatsappApi,
       flowMode: String(env.KADI_V1_FLOW_MODE || "published").toLowerCase(),
       logger,
+      issuerProfileReader: issuerResolver,
     });
 
     const components = Object.freeze({

@@ -86,6 +86,7 @@ function createReleaseHarness({ clockStart = "2026-08-03T00:00:00.000Z", present
     apply: async (payload) => idempotentWrite("document.apply", payload, document()),
     cancel: async (payload) => idempotentWrite("document.cancel", payload, document({ status: "CANCELLED", version: payload.expectedVersion + 1 })),
     setClient: async (payload) => idempotentWrite("document.setClient", payload, document({ version: payload.expectedVersion + 1 })),
+    startAddContent: async (payload) => idempotentWrite("document.startAddContent", payload, document({ version: payload.expectedVersion })),
     addContent: async (payload) => idempotentWrite("document.addContent", payload, document({ version: payload.expectedVersion + 1 })),
     updateContent: async (payload) => idempotentWrite("document.updateContent", payload, document({ version: payload.expectedVersion + 1 })),
     removeContent: async (payload) => idempotentWrite("document.removeContent", payload, document({ version: payload.expectedVersion + 1 })),

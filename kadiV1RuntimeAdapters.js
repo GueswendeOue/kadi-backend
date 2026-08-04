@@ -114,6 +114,12 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
       party: clone(command.client), idempotencyKey: sharedKey("setClientOrPayer", command.idempotencyKey),
     });
   }
+  async function startAddContent(command) {
+    const checked = documentIdentity(command);
+    if (!checked.ok) return checked;
+    if (command.documentType === "DECHARGE") return fail("KADI_V1_DISCHARGE_CONTENT_FLOW_REQUIRED");
+    return load(command);
+  }
   async function addContent(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
@@ -234,7 +240,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 
-  return Object.freeze({ start, apply, setClient, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
+  return Object.freeze({ start, apply, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
 }
 
 function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderService, generationQuoteService } = {}) {

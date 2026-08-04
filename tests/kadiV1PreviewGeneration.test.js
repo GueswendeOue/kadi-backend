@@ -462,13 +462,23 @@ test("a changed render or pricing version invalidates an existing quote", async 
   });
 });
 
+function stubIssuerProfileReader(profilesById = { "issuer:1": { business_name: "Kadi Boutique", owner_name: "Awa Traoré", address: null, phone: null, email: null } }) {
+  return {
+    async getIssuerProfileById({ issuerProfileId }) {
+      return Object.hasOwn(profilesById, issuerProfileId)
+        ? { ok: true, value: profilesById[issuerProfileId] }
+        : { ok: false, error: "ISSUER_PROFILE_NOT_FOUND" };
+    },
+  };
+}
+
 test("the existing Kadi renderer can produce a real temporary PDF", async () => {
   const f = fixture();
   const preview = (await persistedPreview(f)).value;
   const service = createTemporaryRenderService({
     previewRepository: f.previewRepository,
     storage: f.storage,
-    renderer: createExistingPdfTemporaryRenderer(),
+    renderer: createExistingPdfTemporaryRenderer({ issuerProfileReader: stubIssuerProfileReader() }),
     pageCountInspector: createPdfLibPageCountInspector({ clock: f.clock }),
     clock: f.clock,
     idFactory: f.idFactory,

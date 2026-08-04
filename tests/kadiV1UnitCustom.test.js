@@ -205,13 +205,14 @@ test("unit_custom n'atteint jamais le command runtime", async () => {
 
 // ── Flow JSON : unités étendues dans DOCUMENT_CONTENT ────────────────────────
 
-test("DOCUMENT_CONTENT contient 'unité', 'heure', 'forfait' et 'autre' dans unit_options", () => {
+test("ARTICLE_FORM (écran d'article de DOCUMENT_CONTENT) contient 'unité', 'heure', 'forfait' et 'autre' dans unit_options", () => {
   const raw = fs.readFileSync(
     path.join(__dirname, "..", "flows", "v1_draft", "kadi_document_content_v1.json"),
     "utf8"
   );
   const flow = JSON.parse(raw);
-  const screen = flow.screens[0];
+  const screen = flow.screens.find((candidate) => candidate.id === "ARTICLE_FORM");
+  assert.ok(screen, "l'écran ARTICLE_FORM doit exister dans kadi_document_content_v1.json");
   const units = screen.data.unit_options.__example__;
   const ids = units.map((u) => u.id);
   assert.equal(ids.includes("unité"), true, "'unité' manquant");

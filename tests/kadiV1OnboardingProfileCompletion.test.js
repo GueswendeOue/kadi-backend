@@ -32,6 +32,7 @@ function passiveCommandDependencies(onboardingRuntime) {
     documentRuntime: {
       start: noop,
       setClient: noop,
+      startAddContent: noop,
       addContent: noop,
       updateContent: noop,
       removeContent: noop,

@@ -133,14 +133,35 @@ function previewToDocData(preview) {
   };
 }
 
-function createExistingPdfTemporaryRenderer({ rendererResolver = null } = {}) {
+function createExistingPdfTemporaryRenderer({ rendererResolver = null, issuerProfileReader } = {}) {
   const resolve = rendererResolver || require("./pdf/kadiPdfRouter").resolveRenderer;
+  if (typeof issuerProfileReader?.getIssuerProfileById !== "function") {
+    throw new TypeError("TEMPORARY_RENDER_ISSUER_PROFILE_READER_REQUIRED");
+  }
   return Object.freeze({
     async render({ preview }) {
+      const documentType = preview?.structured_preview?.document_type;
+      let businessProfile = null;
+      // DECHARGE never carries an issuer_profile_id (its "giver" is free
+      // text on the discharge itself, not a registered business profile) —
+      // every other type must resolve a real profile or fail closed rather
+      // than render anonymously.
+      if (documentType !== "DECHARGE") {
+        const issuerProfileId = preview?.structured_preview?.issuer?.profile_id;
+        if (!issuerProfileId) return fail("TEMPORARY_RENDER_ISSUER_UNRESOLVED");
+        let resolved;
+        try {
+          resolved = await issuerProfileReader.getIssuerProfileById({ issuerProfileId });
+        } catch {
+          return fail("TEMPORARY_RENDER_ISSUER_UNRESOLVED");
+        }
+        if (!resolved?.ok) return fail("TEMPORARY_RENDER_ISSUER_UNRESOLVED");
+        businessProfile = resolved.value;
+      }
       try {
         const docData = previewToDocData(preview);
         const renderer = resolve(docData);
-        const buffer = await renderer({ docData, businessProfile: null, logoBuffer: null, qr: null, kadiE164: "" });
+        const buffer = await renderer({ docData, businessProfile, logoBuffer: null, qr: null, kadiE164: "" });
         return Buffer.isBuffer(buffer) && buffer.length > 0
           ? ok({ buffer, mime_type: PDF_MIME_TYPE, renderer: "KADI_EXISTING_PDF_RENDERER" })
           : fail("TEMPORARY_RENDER_OUTPUT_INVALID");

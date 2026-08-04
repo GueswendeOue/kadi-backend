@@ -13,6 +13,9 @@ const {
   KADI_V1_DRAFT_FLOW_CATALOG,
 } = require("./kadiV1DraftFlowCatalog");
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
+const { buildPreviewData } = require("./kadiV1PreviewService");
+
+const MAX_SUMMARY_ITEMS = 10;
 
 const FLOW_MESSAGE_VERSION = "3";
 const OWNER_PATTERN = /^\d{8,20}$/;
@@ -117,6 +120,15 @@ function defaultForSchema(schema) {
   return null;
 }
 
+// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
+// contract: it stays a single flow_key but opens either its decision screen
+// or the ARTICLE_FORM item-entry screen, both terminal and complete-only.
+// Screens are always resolved by id (never by array position) and any id
+// outside this closed registry is rejected.
+const MULTI_SCREEN_ENTRIES = Object.freeze({
+  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
+});
+
 function loadFlowRegistry(rootDir = __dirname) {
   const registry = {};
 
@@ -127,34 +139,67 @@ function loadFlowRegistry(rootDir = __dirname) {
     const absolutePath = path.join(rootDir, catalog.file);
     const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
     const screens = Array.isArray(parsed.screens) ? parsed.screens : [];
-    const first = screens[0];
+    const expectedScreenIds = MULTI_SCREEN_ENTRIES[flowKey] || [flowKey];
     const routingKeys =
       parsed.routing_model &&
       typeof parsed.routing_model === "object"
         ? Object.keys(parsed.routing_model)
         : [];
 
-    if (
-      screens.length !== 1 ||
-      first?.id !== flowKey ||
-      routingKeys.length !== 1 ||
-      routingKeys[0] !== flowKey ||
-      !isPlainObject(first.data) ||
-      !Object.hasOwn(first.data, "session_id")
-    ) {
+    const screensById = {};
+    for (const screen of screens) {
+      if (isPlainObject(screen) && typeof screen.id === "string") {
+        screensById[screen.id] = screen;
+      }
+    }
+
+    const contractValid =
+      screens.length === expectedScreenIds.length &&
+      Object.keys(screensById).length === expectedScreenIds.length &&
+      expectedScreenIds.every((id) => Object.hasOwn(screensById, id)) &&
+      routingKeys.length === expectedScreenIds.length &&
+      expectedScreenIds.every(
+        (id) =>
+          routingKeys.includes(id) &&
+          Array.isArray(parsed.routing_model[id]) &&
+          parsed.routing_model[id].length === 0
+      ) &&
+      expectedScreenIds.every((id) => screensById[id]?.terminal === true) &&
+      expectedScreenIds.every(
+        (id) =>
+          isPlainObject(screensById[id]?.data) &&
+          Object.hasOwn(screensById[id].data, "session_id")
+      );
+
+    if (!contractValid) {
       throw new TypeError(`KADI_V1_FLOW_ENTRY_CONTRACT_INVALID:${flowKey}`);
     }
 
-    const defaults = {};
-    for (const [key, schema] of Object.entries(first.data)) {
-      defaults[key] = defaultForSchema(schema);
+    const defaultsByScreenId = {};
+    const screensRegistry = {};
+    for (const id of expectedScreenIds) {
+      const screenData = screensById[id].data;
+      const defaults = {};
+      for (const [key, schema] of Object.entries(screenData)) {
+        defaults[key] = defaultForSchema(schema);
+      }
+      defaultsByScreenId[id] = Object.freeze(defaults);
+      screensRegistry[id] = Object.freeze({
+        id,
+        dataKeys: Object.freeze(Object.keys(screenData)),
+      });
     }
+
+    const entryScreen = flowKey;
 
     registry[flowKey] = Object.freeze({
       flowKey,
-      entryScreen: first.id,
-      dataKeys: Object.freeze(Object.keys(first.data)),
-      defaults: Object.freeze(defaults),
+      entryScreen,
+      allowedScreenIds: Object.freeze([...expectedScreenIds]),
+      screensById: Object.freeze(screensRegistry),
+      defaultsByScreenId: Object.freeze(defaultsByScreenId),
+      dataKeys: screensRegistry[entryScreen].dataKeys,
+      defaults: defaultsByScreenId[entryScreen],
       card: Object.freeze({
         body: String(catalog.card?.body || "Continuez avec Kadi.").slice(
           0,
@@ -179,12 +224,144 @@ function documentLabel(documentType) {
   );
 }
 
-function safeFlowData(contract, sessionId, suggested = {}) {
-  const output = clone(contract.defaults);
+// items_summary / preview_summary formatting — built exclusively from the
+// server's own kadiV1PreviewService.buildPreviewData(document) projection
+// (real item_id/description/quantity_millis/unit/unit_price/line_total and
+// document subtotal/taxes/discount/total), never from invented field names.
+
+function formatFcfaAmount(amount) {
+  return Number.isSafeInteger(amount) ? `${amount.toLocaleString("fr-FR")} FCFA` : "—";
+}
+
+function formatItemQuantity(quantityMillis) {
+  return (quantityMillis / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 3 });
+}
+
+function formatItemsList(items) {
+  const shown = items.slice(0, MAX_SUMMARY_ITEMS);
+  const lines = ["Articles enregistrés", ""];
+  shown.forEach((item, index) => {
+    const quantityLabel = item.unit
+      ? `${formatItemQuantity(item.quantity_millis)} ${item.unit}`
+      : formatItemQuantity(item.quantity_millis);
+    lines.push(`${index + 1}. ${item.description}`);
+    lines.push(`   ${quantityLabel} × ${formatFcfaAmount(item.unit_price)} = ${formatFcfaAmount(item.line_total)}`);
+  });
+  const remaining = items.length - shown.length;
+  if (remaining > 0) {
+    lines.push("");
+    lines.push(`… et ${remaining} autre${remaining > 1 ? "s" : ""}`);
+  }
+  return lines;
+}
+
+function formatCommonItemsSummary(preview) {
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  if (items.length === 0) return "Aucun article enregistré.";
+  const lines = formatItemsList(items);
+  lines.push("");
+  lines.push(`Total : ${formatFcfaAmount(preview.total)}`);
+  return lines.join("\n");
+}
+
+function formatReceiptSummary(preview) {
+  const lines = [];
+  if (preview.payer) lines.push(`Payeur : ${preview.payer}`);
+  if (preview.beneficiary) lines.push(`Bénéficiaire : ${preview.beneficiary}`);
+  if (preview.reason) lines.push(`Motif : ${preview.reason}`);
+  const amount = preview.content?.amount ?? preview.total;
+  if (Number.isSafeInteger(amount)) lines.push(`Montant : ${formatFcfaAmount(amount)}`);
+  return lines.length > 0 ? lines.join("\n") : "Informations du reçu à renseigner.";
+}
+
+const PREVIEW_INTROS = Object.freeze({
+  FACTURE: "Parfait, votre facture est presque prête. Vérifiez les informations avant de la générer.",
+  DEVIS: "Parfait, votre devis est presque prêt. Vérifiez les informations avant de le générer.",
+  RECU: "Parfait, votre reçu est presque prêt. Vérifiez les informations avant de le générer.",
+  DECHARGE: "Parfait, votre décharge est presque prête. Vérifiez les informations avant de la générer.",
+});
+
+function formatIssuerLine(issuerProfile) {
+  const businessName = typeof issuerProfile?.business_name === "string" ? issuerProfile.business_name.trim() : "";
+  const ownerName = typeof issuerProfile?.owner_name === "string" ? issuerProfile.owner_name.trim() : "";
+  const label = businessName
+    ? (ownerName && ownerName !== businessName ? `${businessName} — ${ownerName}` : businessName)
+    : ownerName;
+  return label ? `Émetteur : ${label}` : null;
+}
+
+function formatPartiesLine(document, preview) {
+  if (document.document_type === "DECHARGE") {
+    const lines = [];
+    if (document.discharge?.giver) lines.push(`Remettant : ${document.discharge.giver}`);
+    if (document.discharge?.receiver) lines.push(`Bénéficiaire : ${document.discharge.receiver}`);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  if (document.document_type === "RECU") {
+    const lines = [];
+    if (preview.payer) lines.push(`Payeur : ${preview.payer}`);
+    if (preview.beneficiary) lines.push(`Bénéficiaire : ${preview.beneficiary}`);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  const name = preview.client?.name;
+  return name ? `Client : ${name}` : null;
+}
+
+function formatContentLine(document, preview) {
+  if (document.document_type === "DECHARGE") {
+    const content = preview.content;
+    if (!content) return null;
+    if (content.type === "MONEY") return `Objet : somme de ${formatFcfaAmount(content.amount)}`;
+    const quantity = document.discharge?.quantity;
+    return `Objet : ${content.description || "—"}${quantity ? ` (quantité : ${quantity})` : ""}`;
+  }
+  if (document.document_type === "RECU") return formatReceiptSummary(preview);
+  return formatCommonItemsSummary(preview);
+}
+
+function buildPreviewSummary(document, issuerProfile) {
+  if (!isPlainObject(document)) return "Aperçu prêt.";
+  const intro = PREVIEW_INTROS[document.document_type] || "Vérifiez les informations avant de générer le document.";
+  let preview = null;
+  try { preview = buildPreviewData(document); } catch { preview = null; }
+  const lines = [intro, ""];
+  const issuerLine = formatIssuerLine(issuerProfile);
+  if (issuerLine) lines.push(issuerLine);
+  if (preview) {
+    const partiesLine = formatPartiesLine(document, preview);
+    if (partiesLine) lines.push(partiesLine);
+    const contentLine = formatContentLine(document, preview);
+    if (contentLine) {
+      lines.push("");
+      lines.push(contentLine);
+    }
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildItemsSummary(document) {
+  if (!isPlainObject(document) || document.document_type === "DECHARGE") {
+    return "Aucun article enregistré.";
+  }
+  if (document.document_type !== "RECU" && !Array.isArray(document.items)) {
+    return "Aucun article enregistré.";
+  }
+  try {
+    const preview = buildPreviewData(document);
+    return document.document_type === "RECU"
+      ? formatReceiptSummary(preview)
+      : formatCommonItemsSummary(preview);
+  } catch {
+    return "Aucun article enregistré.";
+  }
+}
+
+function safeFlowData(contract, screen, sessionId, suggested = {}) {
+  const output = clone(contract.defaultsByScreenId[screen]);
   output.session_id = sessionId;
 
   const source = isPlainObject(suggested) ? suggested : {};
-  for (const key of contract.dataKeys) {
+  for (const key of contract.screensById[screen].dataKeys) {
     if (
       key === "session_id" ||
       FORBIDDEN_META_DATA_KEYS.has(key) ||
@@ -204,7 +381,7 @@ function safeFlowData(contract, sessionId, suggested = {}) {
   }
 
   if (
-    contract.dataKeys.includes("document_label") &&
+    contract.screensById[screen].dataKeys.includes("document_label") &&
     typeof source.document_type === "string"
   ) {
     output.document_label = documentLabel(source.document_type);
@@ -221,12 +398,16 @@ function buildV1FlowMessage({
   flowMode,
   contract,
   data,
+  screen,
 }) {
   if (!OWNER_PATTERN.test(to || "")) {
     throw new TypeError("KADI_V1_PRESENTER_OWNER_INVALID");
   }
-  if (!FLOW_KEYS.includes(flowKey) || contract?.entryScreen !== flowKey) {
+  if (!FLOW_KEYS.includes(flowKey) || contract?.flowKey !== flowKey) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
+  }
+  if (!contract?.allowedScreenIds?.includes(screen)) {
+    throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
   }
   if (!FLOW_ID_PATTERN.test(flowId || "")) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_INVALID");
@@ -256,7 +437,7 @@ function buildV1FlowMessage({
           flow_cta: contract.card.cta,
           flow_action: "navigate",
           flow_action_payload: Object.freeze({
-            screen: contract.entryScreen,
+            screen,
             data,
           }),
         }),
@@ -339,7 +520,9 @@ function nextFlowForReply(action, resultValue) {
       : "DOCUMENT_CLIENT";
   }
   if (action === "SAVE_CLIENT") return "DOCUMENT_CONTENT";
-  if (["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)) {
+  if (
+    ["START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)
+  ) {
     return "DOCUMENT_CONTENT";
   }
   if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
@@ -351,6 +534,15 @@ function nextFlowForReply(action, resultValue) {
   if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
   if (action === "SELECT_PACK") return "RECHARGE";
   return null;
+}
+
+function nextScreenForReply(flowKey, action, resultValue) {
+  if (flowKey !== "DOCUMENT_CONTENT") return null;
+  if (action === "START_ADD_CONTENT") return "ARTICLE_FORM";
+  if (action === "ADD_CONTENT") return "DOCUMENT_CONTENT";
+  const document = extractDocument(resultValue);
+  const hasItems = Array.isArray(document?.items) && document.items.length > 0;
+  return hasItems ? "DOCUMENT_CONTENT" : "ARTICLE_FORM";
 }
 
 function quoteFromResult(value) {
@@ -404,6 +596,7 @@ function canonicalReplyText(action, value) {
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
     SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
     SAVE_CLIENT: "Les informations du client sont enregistrées.",
+    START_ADD_CONTENT: "Ajoutons un article.",
     ADD_CONTENT: "L’article est enregistré. Que souhaitez-vous faire ?",
     FINISH_CONTENT: "Les articles sont enregistrés.",
     UPDATE_CONTENT: "L’article est mis à jour.",
@@ -429,7 +622,7 @@ function canonicalReplyText(action, value) {
   return copy[action] || "Votre demande a bien été enregistrée.";
 }
 
-function suggestedDataForFlow(flowKey, source) {
+function suggestedDataForFlow(flowKey, source, extra = {}) {
   const document = extractDocument(source);
   const output = {};
 
@@ -453,21 +646,26 @@ function suggestedDataForFlow(flowKey, source) {
   if (flowKey === "DOCUMENT_CONTENT") {
     const items = document?.items;
     const hasItems = Array.isArray(items) && items.length > 0;
+    output.items_summary = buildItemsSummary(document);
     if (document?.document_type === "RECU") {
       output.content_actions = hasItems
         ? [
-            { id: "ADD_CONTENT", title: "Modifier les informations" },
+            { id: "START_ADD_CONTENT", title: "Modifier les informations" },
             { id: "FINISH_CONTENT", title: "Terminer le reçu" },
           ]
-        : [{ id: "ADD_CONTENT", title: "Renseigner les informations" }];
+        : [{ id: "START_ADD_CONTENT", title: "Renseigner les informations" }];
     } else {
       output.content_actions = hasItems
         ? [
-            { id: "ADD_CONTENT", title: "Ajouter un autre article" },
+            { id: "START_ADD_CONTENT", title: "Ajouter un autre article" },
             { id: "FINISH_CONTENT", title: "Terminer les articles" },
           ]
-        : [{ id: "ADD_CONTENT", title: "Ajouter un article" }];
+        : [{ id: "START_ADD_CONTENT", title: "Ajouter un article" }];
     }
+  }
+
+  if (flowKey === "DOCUMENT_PREVIEW") {
+    output.preview_summary = buildPreviewSummary(document, extra.issuerProfile || null);
   }
 
   return output;
@@ -484,6 +682,7 @@ function createKadiV1ProductionPresenter({
   sessionIdFactory,
   voiceResponseEngine = null,
   voiceDelivery = null,
+  issuerProfileReader = null,
   logger = console,
   rootDir = __dirname,
 } = {}) {
@@ -531,8 +730,26 @@ function createKadiV1ProductionPresenter({
   ) {
     throw new TypeError("KADI_V1_PRESENTER_VOICE_DELIVERY_INVALID");
   }
+  if (
+    issuerProfileReader != null &&
+    typeof issuerProfileReader.getIssuerProfileById !== "function"
+  ) {
+    throw new TypeError("KADI_V1_PRESENTER_ISSUER_PROFILE_READER_INVALID");
+  }
 
   const registry = loadFlowRegistry(rootDir);
+
+  async function resolveIssuerProfileForPreview(document) {
+    if (!issuerProfileReader || !document?.issuer_profile_id) return null;
+    try {
+      const resolved = await issuerProfileReader.getIssuerProfileById({
+        issuerProfileId: document.issuer_profile_id,
+      });
+      return resolved?.ok ? resolved.value : null;
+    } catch {
+      return null;
+    }
+  }
 
   async function maybeTyping(messageId) {
     if (
@@ -555,6 +772,7 @@ function createKadiV1ProductionPresenter({
     flowKey,
     document = null,
     suggestedData = {},
+    screen = null,
   }) {
     if (!FLOW_KEYS.includes(flowKey)) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
@@ -563,8 +781,13 @@ function createKadiV1ProductionPresenter({
     if (!FLOW_ID_PATTERN.test(flowId || "")) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_MISSING");
     }
+    const contract = registry[flowKey];
+    const targetScreen = screen == null ? contract.entryScreen : screen;
+    if (!contract.allowedScreenIds.includes(targetScreen)) {
+      throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
+    }
 
-    const source = `${messageId || ownerWaId}:${flowKey}:${
+    const source = `${messageId || ownerWaId}:${flowKey}:${targetScreen}:${
       document?.document_id || "none"
     }:${document?.version || 0}`;
     const opened = await sessions.open({
@@ -578,9 +801,9 @@ function createKadiV1ProductionPresenter({
       throw new Error(opened?.error || "KADI_V1_PRESENTER_SESSION_OPEN_FAILED");
     }
 
-    const contract = registry[flowKey];
     const data = safeFlowData(
       contract,
+      targetScreen,
       opened.value.session_id,
       suggestedData
     );
@@ -592,10 +815,12 @@ function createKadiV1ProductionPresenter({
       flowMode,
       contract,
       data,
+      screen: targetScreen,
     });
     await messaging.sendFlow(payload);
     return Object.freeze({
       flow_key: flowKey,
+      screen: targetScreen,
       session_id: opened.value.session_id,
       duplicate: opened.duplicate === true,
     });
@@ -756,6 +981,9 @@ function createKadiV1ProductionPresenter({
     let flow = null;
     if (flowKey) {
       const document = extractDocument(result.result);
+      const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
+        ? await resolveIssuerProfileForPreview(document)
+        : null;
       flow = await openAndSendFlow({
         ownerWaId,
         messageId,
@@ -763,8 +991,10 @@ function createKadiV1ProductionPresenter({
         document,
         suggestedData: suggestedDataForFlow(
           flowKey,
-          result.result
+          result.result,
+          { issuerProfile }
         ),
+        screen: nextScreenForReply(flowKey, result.action, result.result),
       });
     }
 
@@ -822,5 +1052,6 @@ module.exports = {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
   nextFlowForReply,
+  nextScreenForReply,
   safeFlowData,
 };

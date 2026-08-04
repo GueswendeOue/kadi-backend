@@ -214,6 +214,20 @@ function createSupabasePrivateArtifactStorage({
   });
 }
 
+function normalizeIssuerProfileRow(row) {
+  const ownerName = typeof row?.owner_name === "string" ? row.owner_name.trim() : "";
+  const businessName = typeof row?.business_name === "string" ? row.business_name.trim() : "";
+  if (!ownerName && !businessName) return null;
+  const optionalText = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+  return Object.freeze({
+    business_name: businessName || ownerName,
+    owner_name: ownerName || null,
+    address: optionalText(row?.address),
+    phone: optionalText(row?.phone),
+    email: optionalText(row?.email),
+  });
+}
+
 function createKadiV1IssuerResolver({ client } = {}) {
   const supabase = assertSupabaseClient(client);
   return Object.freeze({
@@ -230,6 +244,24 @@ function createKadiV1IssuerResolver({ client } = {}) {
       return result?.error || !ID_PATTERN.test(String(id || ""))
         ? fail("KADI_V1_ISSUER_NOT_CONFIGURED")
         : ok({ issuerProfileId: String(id) });
+    },
+    // Resolves the human-facing identity (owner_name / business_name and
+    // optional contact fields) for a persisted issuer_profile_id, in the
+    // exact shape pdf/kadiPdfLayoutCommon.js:drawBusinessHeader expects
+    // (business_name/address/phone/email). No renderer ever queries
+    // Supabase itself: this is the single place that does.
+    async getIssuerProfileById({ issuerProfileId } = {}) {
+      if (!ID_PATTERN.test(issuerProfileId || "")) {
+        return fail("KADI_V1_ISSUER_PROFILE_ID_INVALID");
+      }
+      const result = await supabase
+        .from("business_profiles")
+        .select("*")
+        .eq("id", issuerProfileId)
+        .maybeSingle();
+      if (result?.error) return fail("KADI_V1_ISSUER_PROFILE_LOOKUP_FAILED");
+      const normalized = normalizeIssuerProfileRow(result?.data);
+      return normalized ? ok(normalized) : fail("KADI_V1_ISSUER_PROFILE_NOT_FOUND");
     },
   });
 }
