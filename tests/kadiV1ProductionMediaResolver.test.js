@@ -284,8 +284,34 @@ test("production composition derives media resolver without boot I/O", () => {
   assert.equal(externalCalls, 0);
 });
 
-test("capability report is complete after presenter composition", () => {
+test("capability report fails closed without concrete boot composition", () => {
   const report = inspectKadiV1ProductionCapabilities();
+  assert.equal(report.ready, false);
+  assert.deepEqual(report.missing_capabilities, [
+    "orchestrator",
+    "flowReplyRuntime",
+    "mediaResolver",
+    "presenter",
+  ]);
+});
+
+test("capability report accepts concrete READY boot evidence", () => {
+  const report = inspectKadiV1ProductionCapabilities({
+    readiness: {
+      ready: true,
+      active: true,
+      state: "READY",
+      required_ports: {
+        orchestrator: true,
+        flowReplyRuntime: true,
+        mediaResolver: true,
+        presenter: true,
+      },
+      missing_ports: [],
+      missing_capabilities: [],
+    },
+  });
+
   assert.equal(report.ready, true);
   assert.deepEqual(report.missing_capabilities, []);
 });

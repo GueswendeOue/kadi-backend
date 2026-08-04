@@ -368,6 +368,36 @@ function canonicalReplyText(action, value) {
     return "Votre document est prêt et a été envoyé.";
   }
 
+  if (action === "SELECT_PACK" && value?.payment_instructions) {
+    const instructions = value.payment_instructions;
+    const amount = Number(instructions.amount);
+    const credits = Number(instructions.credits);
+    const number = String(instructions.number || "").replace(/[^0-9]/g, "");
+    const name = String(instructions.name || "").trim();
+    const reference = String(instructions.reference || "").trim();
+    if (
+      Number.isSafeInteger(amount) && amount > 0 &&
+      Number.isSafeInteger(credits) && credits > 0 &&
+      /^\d{8,20}$/.test(number) &&
+      name && reference
+    ) {
+      return [
+        `Pack sélectionné : ${amount.toLocaleString("fr-FR")} FCFA pour ${credits} crédits.`,
+        `Envoyez le paiement par Orange Money au ${number}, au nom de ${name}.`,
+        `Référence à conserver : ${reference}.`,
+        "Après le paiement, choisissez Vérifier mon paiement.",
+      ].join("\n");
+    }
+  }
+
+  if (action === "CHECK_PAYMENT" && value?.credited === true) {
+    return "Votre paiement est confirmé et vos crédits ont été ajoutés.";
+  }
+
+  if (action === "CHECK_PAYMENT" && value?.credited === false) {
+    return "Le paiement n’est pas encore confirmé. Vérifiez la référence puis réessayez.";
+  }
+
   const copy = {
     START: "Votre profil est enregistré.",
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",

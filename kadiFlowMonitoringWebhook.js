@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const FLOW_MONITORING_EVENTS = new Set([
   "FLOW_STATUS_CHANGE",
   "CLIENT_ERROR_RATE",
@@ -28,6 +30,46 @@ function monitoringValue(value, key) {
     if (candidate !== null) return candidate;
   }
   return null;
+}
+
+function safeMessageReference(value) {
+  const messages = ownValue(value, "messages");
+  const messageId = Array.isArray(messages)
+    ? ownValue(messages[0], "id")
+    : null;
+  if (typeof messageId !== "string" || !messageId.trim()) {
+    return null;
+  }
+  return crypto
+    .createHash("sha256")
+    .update(messageId, "utf8")
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function logV1Decision(logger, value, result) {
+  const results = Array.isArray(result?.results)
+    ? result.results
+    : [];
+  const firstReason = results.find(
+    (entry) => typeof entry?.reason === "string"
+  )?.reason;
+  try {
+    logger?.log?.("KADI_V1_WEBHOOK_DECISION", Object.freeze({
+      message_ref: safeMessageReference(value),
+      handled: result?.handled === true,
+      terminal: result?.terminal === true,
+      accepted: results.some((entry) => entry?.accepted === true),
+      reason:
+        typeof result?.reason === "string"
+          ? result.reason.slice(0, 100)
+          : typeof firstReason === "string"
+            ? firstReason.slice(0, 100)
+            : null,
+    }));
+  } catch {
+    // Observability must never change routing behavior.
+  }
 }
 
 function handleFlowMonitoringChange({ entry, change, logger = console } = {}) {
@@ -84,7 +126,13 @@ function dispatchWhatsAppWebhook(body, {
           if (typeof kadiV1WebhookHandler === "function") {
             try {
               const v1 = await kadiV1WebhookHandler(value);
-              if (v1?.handled === true) return;
+              logV1Decision(logger, value, v1);
+              if (
+                v1?.handled === true ||
+                v1?.terminal === true
+              ) {
+                return;
+              }
             } catch (error) {
               logger?.error?.("kadiV1WebhookHandler", {
                 code: typeof error?.code === "string" ? error.code.slice(0, 100) : "KADI_V1_WEBHOOK_HANDLER_FAILED",

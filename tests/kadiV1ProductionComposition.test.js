@@ -116,6 +116,23 @@ test("requested canary is blocked without complete production ports but the proc
   });
   assert.deepEqual(result, {
     handled: false,
+    terminal: true,
+    blocked_owner_in_rollout: true,
+    reason: "KADI_V1_PRODUCTION_COMPOSITION_BLOCKED",
+  });
+
+  const nonCanary = await composition.webhookHandler({
+    messages: [{
+      id: "wamid:blocked:legacy",
+      from: NON_CANARY,
+      type: "text",
+      text: { body: "bonjour" },
+    }],
+  });
+  assert.deepEqual(nonCanary, {
+    handled: false,
+    terminal: false,
+    blocked_owner_in_rollout: false,
     reason: "KADI_V1_PRODUCTION_COMPOSITION_BLOCKED",
   });
 });
@@ -189,8 +206,33 @@ test("complete injected composition refuses V1 for a non-canary owner", async ()
   assert.equal(calls.presentConversation, 0);
 });
 
-test("production capability inspection is complete", () => {
+test("production capability inspection fails closed without the real boot composition", () => {
   const report = inspectKadiV1ProductionCapabilities();
+  assert.equal(report.ready, false);
+  assert.deepEqual(report.missing_capabilities, [
+    "orchestrator",
+    "flowReplyRuntime",
+    "mediaResolver",
+    "presenter",
+  ]);
+});
+
+test("production capability inspection accepts only a real READY readiness report", () => {
+  const report = inspectKadiV1ProductionCapabilities({
+    readiness: {
+      ready: true,
+      active: true,
+      state: "READY",
+      required_ports: {
+        orchestrator: true,
+        flowReplyRuntime: true,
+        mediaResolver: true,
+        presenter: true,
+      },
+      missing_ports: [],
+      missing_capabilities: [],
+    },
+  });
   assert.equal(report.ready, true);
   assert.deepEqual(report.missing_capabilities, []);
 });

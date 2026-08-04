@@ -168,6 +168,60 @@ test("disabled or non-applicable V1 routing falls through to the unchanged legac
   assert.deepEqual(order, ["v1", "legacy"]);
 });
 
+test("a terminal V1 block never falls through to the legacy engine", async () => {
+  const order = [];
+  const fake = dependencies({
+    kadiV1WebhookHandler: async () => {
+      order.push("v1");
+      return {
+        handled: false,
+        terminal: true,
+        reason: "KADI_V1_PRODUCTION_COMPOSITION_BLOCKED",
+      };
+    },
+    handleIncomingMessage: async () => {
+      order.push("legacy");
+    },
+  });
+  const body = {
+    object: "whatsapp_business_account",
+    entry: [{
+      id: "waba-123",
+      changes: [{
+        field: "messages",
+        value: {
+          messages: [{
+            id: "wamid.terminal.secret",
+            from: "22670626055",
+            type: "text",
+            text: { body: "Bonjour Kadi" },
+          }],
+        },
+      }],
+    }],
+  };
+
+  dispatchWhatsAppWebhook(body, fake.value);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(order, ["v1"]);
+  const decision = fake.calls.logs.find(
+    (entry) => entry.label === "KADI_V1_WEBHOOK_DECISION"
+  );
+  assert.ok(decision);
+  assert.equal(decision.record.handled, false);
+  assert.equal(decision.record.terminal, true);
+  assert.equal(
+    decision.record.reason,
+    "KADI_V1_PRODUCTION_COMPOSITION_BLOCKED"
+  );
+  assert.match(decision.record.message_ref, /^[a-f0-9]{12}$/);
+  assert.doesNotMatch(
+    JSON.stringify(decision),
+    /wamid\.terminal\.secret|22670626055|Bonjour Kadi/
+  );
+});
+
 test("V1 handler failure is absorbed and never triggers a second legacy response", async () => {
   const order = [];
   const fake = dependencies({

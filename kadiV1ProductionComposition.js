@@ -1,6 +1,7 @@
 "use strict";
 
 const { createKadiV1WebhookRuntime } = require("./kadiV1WebhookRuntime");
+const { isKadiV1OwnerAllowed } = require("./kadiV1CanaryIngress");
 const { createKadiV1ProductionFlowReplyComposition } = require("./kadiV1ProductionFlowReplyComposition");
 const {
   createKadiV1ProductionOrchestratorComposition,
@@ -24,10 +25,10 @@ const REQUIRED_PORTS = Object.freeze({
 });
 
 const CURRENT_PRODUCTION_CAPABILITIES = Object.freeze({
-  orchestrator: true,
-  flowReplyRuntime: true,
-  mediaResolver: true,
-  presenter: true,
+  orchestrator: false,
+  flowReplyRuntime: false,
+  mediaResolver: false,
+  presenter: false,
   persistentConversationSessionRepository: true,
 });
 
@@ -69,23 +70,66 @@ function inspectPorts(components) {
   });
 }
 
-function inspectKadiV1ProductionCapabilities() {
-  const missing = Object.entries(CURRENT_PRODUCTION_CAPABILITIES)
-    .filter(([, ready]) => ready !== true)
-    .map(([name]) => name);
+function inspectKadiV1ProductionCapabilities({
+  readiness = null,
+  components = null,
+} = {}) {
+  if (readiness && typeof readiness === "object") {
+    const missing = [
+      ...(Array.isArray(readiness.missing_ports)
+        ? readiness.missing_ports
+        : []),
+      ...(Array.isArray(readiness.missing_capabilities)
+        ? readiness.missing_capabilities
+        : []),
+    ];
+    const uniqueMissing = [...new Set(missing)];
+    const ready = Boolean(
+      readiness.ready === true &&
+      readiness.active === true &&
+      readiness.state === "READY" &&
+      uniqueMissing.length === 0
+    );
+    return Object.freeze({
+      ready,
+      capabilities: Object.freeze({
+        ...(readiness.required_ports &&
+        typeof readiness.required_ports === "object"
+          ? readiness.required_ports
+          : {}),
+      }),
+      missing_capabilities: Object.freeze(uniqueMissing),
+    });
+  }
 
+  const inspected = inspectPorts(components);
   return Object.freeze({
-    ready: missing.length === 0,
-    capabilities: CURRENT_PRODUCTION_CAPABILITIES,
-    missing_capabilities: Object.freeze(missing),
+    ready: inspected.ready,
+    capabilities: inspected.required_ports,
+    missing_capabilities: inspected.missing_ports,
   });
 }
 
-function createBlockedHandler(reason) {
-  return async () => Object.freeze({
-    handled: false,
-    reason,
-  });
+function blockedValueTargetsRollout(config, value) {
+  const messages = Array.isArray(value?.messages)
+    ? value.messages
+    : [];
+  return messages.some((message) =>
+    isKadiV1OwnerAllowed(config?.rollout, message?.from)
+  );
+}
+
+function createBlockedHandler(reason, config) {
+  return async (value) => {
+    const blockedOwnerInRollout =
+      blockedValueTargetsRollout(config, value);
+    return Object.freeze({
+      handled: false,
+      terminal: blockedOwnerInRollout,
+      blocked_owner_in_rollout: blockedOwnerInRollout,
+      reason,
+    });
+  };
 }
 
 function requestedByConfig(config) {
@@ -218,7 +262,10 @@ function createKadiV1ProductionComposition({
     }
 
     return Object.freeze({
-      webhookHandler: createBlockedHandler("KADI_V1_PRODUCTION_COMPOSITION_BLOCKED"),
+      webhookHandler: createBlockedHandler(
+        "KADI_V1_PRODUCTION_COMPOSITION_BLOCKED",
+        config
+      ),
       readiness: freezeReadiness({
         requested: true,
         ready: false,
@@ -229,7 +276,9 @@ function createKadiV1ProductionComposition({
         required_ports: inspected.required_ports,
         missing_ports: inspected.missing_ports,
         missing_capabilities:
-          inspectKadiV1ProductionCapabilities().missing_capabilities,
+          inspectKadiV1ProductionCapabilities({
+            components: resolvedComponents,
+          }).missing_capabilities,
       }),
       components: null,
     });

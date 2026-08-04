@@ -12,8 +12,8 @@ const {
 const { KADI_V1_DRAFT_FLOW_CATALOG } = require("./kadiV1DraftFlowCatalog");
 const { ROLLOUT_MODES } = require("./kadiV1CanaryIngress");
 const {
-  inspectKadiV1ProductionCapabilities,
-} = require("./kadiV1ProductionComposition");
+  inspectKadiV1ProductionBootstrap,
+} = require("./kadiV1ProductionBootstrap");
 
 const RELEASE_MODES = Object.freeze({
   REHEARSAL: "REHEARSAL",
@@ -132,7 +132,7 @@ function evaluateKadiV1ReleaseGate({
   catalog = KADI_V1_DRAFT_FLOW_CATALOG,
   flowEnvKeys = FLOW_ENV_KEYS,
   featureEnvKeys = FEATURE_ENV_KEYS,
-  compositionInspector = inspectKadiV1ProductionCapabilities,
+  compositionInspector = inspectKadiV1ProductionBootstrap,
 } = {}) {
   const normalizedMode = normalizeMode(mode);
   if (!normalizedMode) {
@@ -155,9 +155,31 @@ function evaluateKadiV1ReleaseGate({
   const missingFlowKeys = Object.keys(flowEnvKeys).filter((flowKey) => !config.flowIds?.[flowKey]);
   const duplicateKeys = duplicateFlowKeys(config.flowIds);
   const configuredFlowCount = Object.values(config.flowIds || {}).filter(Boolean).length;
-  const composition = typeof compositionInspector === "function"
-    ? compositionInspector()
-    : { ready: false, missing_capabilities: ["compositionInspector"] };
+  let composition;
+  try {
+    composition = typeof compositionInspector === "function"
+      ? compositionInspector({ config, env, rootDir })
+      : {
+          ready: false,
+          missing_capabilities: ["compositionInspector"],
+        };
+  } catch {
+    composition = {
+      ready: false,
+      missing_capabilities: ["compositionInspector"],
+    };
+  }
+
+  const productionCompositionMissing = Object.freeze([
+    ...new Set([
+      ...(Array.isArray(composition?.missing_ports)
+        ? composition.missing_ports
+        : []),
+      ...(Array.isArray(composition?.missing_capabilities)
+        ? composition.missing_capabilities
+        : []),
+    ]),
+  ]);
   const checks = [];
 
   function addCheck(code, ok, detail) {
@@ -191,7 +213,7 @@ function evaluateKadiV1ReleaseGate({
       composition?.ready === true,
       composition?.ready === true
         ? "PASS"
-        : `MISSING:${Array.isArray(composition?.missing_capabilities) ? composition.missing_capabilities.length : 1}`
+        : `MISSING:${productionCompositionMissing.length || 1}`
     );
   }
 
@@ -221,11 +243,8 @@ function evaluateKadiV1ReleaseGate({
       duplicate_flow_keys: Object.freeze([...duplicateKeys]),
       rollout_error: config.rollout?.error || null,
       asset_errors: assets.errors,
-      production_composition_missing: Object.freeze([
-        ...(Array.isArray(composition?.missing_capabilities)
-          ? composition.missing_capabilities
-          : []),
-      ]),
+      production_composition_missing:
+        productionCompositionMissing,
     }),
     summary: Object.freeze({
       required_feature_count: requiredFeatures.length,

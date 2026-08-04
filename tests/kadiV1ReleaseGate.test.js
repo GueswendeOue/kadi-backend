@@ -103,21 +103,46 @@ test("activation gate passes only for the complete V1 feature and Flow matrix", 
   assert.deepEqual(report.diagnostics.missing_flow_keys, []);
 });
 
-test("activation recognizes the completed production composition", () => {
+test("activation fails closed when the real production composition is not supplied", () => {
   const report = evaluateKadiV1ReleaseGate({
     env: activationEnv(),
     mode: RELEASE_MODES.ACTIVATION,
     rootDir: ROOT,
   });
-  assert.equal(report.ok, true);
-  assert.equal(
-    report.blockers.includes("PRODUCTION_COMPOSITION_READY"),
-    false
+  assert.equal(report.ok, false);
+  assert.ok(
+    report.blockers.includes("PRODUCTION_COMPOSITION_READY")
   );
-  assert.equal(report.summary.production_composition_ready, true);
+  assert.equal(report.summary.production_composition_ready, false);
+  assert.ok(
+    report.diagnostics.production_composition_missing.length >= 1
+  );
+  assert.equal(
+    report.diagnostics.production_composition_missing.every(
+      (entry) => typeof entry === "string" && entry.length > 0
+    ),
+    true
+  );
+});
+
+test("activation rejects a BLOCKED boot readiness report with explicit missing ports", () => {
+  const report = evaluateKadiV1ReleaseGate({
+    env: activationEnv(),
+    mode: RELEASE_MODES.ACTIVATION,
+    rootDir: ROOT,
+    compositionInspector: () => ({
+      ready: false,
+      missing_ports: ["presenter"],
+      missing_capabilities: [],
+    }),
+  });
+  assert.equal(report.ok, false);
+  assert.ok(
+    report.blockers.includes("PRODUCTION_COMPOSITION_READY")
+  );
   assert.deepEqual(
     report.diagnostics.production_composition_missing,
-    []
+    ["presenter"]
   );
 });
 

@@ -8,11 +8,12 @@ const {
 
 const { supabase } = require("./supabaseClient");
 
+const whatsappApi = require("./whatsappApi");
 const {
   verifyRequestSignature,
   extractStatusesFromWebhookValue,
   sendTemplate,
-} = require("./whatsappApi");
+} = whatsappApi;
 
 const {
   handleIncomingMessage,
@@ -30,7 +31,9 @@ const { createInvoiceFlowCompletionHandler } = require("./kadiInvoiceFlowComplet
 const { buildInvoiceFlowIdMap, validateInvoiceFlowIdMap } = require("./kadiInvoiceFlowIds");
 const { createWhatsAppWebhookReceiver } = require("./kadiFlowMonitoringWebhook");
 const { createKadiV1RuntimeConfig } = require("./kadiV1RuntimeConfig");
-const { createKadiV1ProductionComposition } = require("./kadiV1ProductionComposition");
+const {
+  createKadiV1ProductionBootstrap,
+} = require("./kadiV1ProductionBootstrap");
 const { mountInvoiceFlowRoute, FLOW_ENDPOINT_PATH, envEnabled } = require("./kadiInvoiceFlowHttpRoute");
 const { runReengagementCycle } = require("./kadiReengagementWorker");
 const { makeKadiWeeklyReport } = require("./kadiWeeklyReport");
@@ -144,11 +147,14 @@ const INVOICE_FLOW_TEST_TRIGGER = process.env.KADI_INVOICE_FLOW_TEST_TRIGGER || 
 const INVOICE_FLOW_SESSION_TTL_MINUTES = Number(process.env.KADI_INVOICE_FLOW_SESSION_TTL_MINUTES || 30);
 
 const KADI_V1_CONFIG = createKadiV1RuntimeConfig(process.env);
-const kadiV1ProductionComposition = createKadiV1ProductionComposition({
+const kadiV1ProductionBootstrap = createKadiV1ProductionBootstrap({
+  env: process.env,
   config: KADI_V1_CONFIG,
+  supabase,
+  whatsappApi,
   logger: console,
 });
-const kadiV1WebhookHandler = kadiV1ProductionComposition.webhookHandler;
+const kadiV1WebhookHandler = kadiV1ProductionBootstrap.webhookHandler;
 
 // ===============================
 // WEEKLY REPORT CONTROL
@@ -484,7 +490,7 @@ console.log("KADI_FLOW_TRIGGER_READY", {
   trigger_configured: Boolean(String(INVOICE_FLOW_TEST_TRIGGER || "").trim()),
   session_ttl_minutes: Number.isFinite(INVOICE_FLOW_SESSION_TTL_MINUTES) && INVOICE_FLOW_SESSION_TTL_MINUTES > 0 ? INVOICE_FLOW_SESSION_TTL_MINUTES : 30,
 });
-console.log("KADI_V1_WEBHOOK_READY", kadiV1ProductionComposition.readiness);
+console.log("KADI_V1_WEBHOOK_READY", kadiV1ProductionBootstrap.readiness);
 
 app.get(
   "/verify/certified/:id",
