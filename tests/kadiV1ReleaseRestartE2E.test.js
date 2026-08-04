@@ -97,6 +97,7 @@ function createRestartHarness() {
         document_type: payload.documentType,
         status: "COLLECTING",
       }),
+      startAddContent: noop,
       addContent: noop,
       updateContent: noop,
       removeContent: noop,

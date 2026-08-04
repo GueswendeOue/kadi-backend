@@ -67,6 +67,29 @@ test("shared document adapter starts a real FACTURE draft with a pipeline-compat
   assert.equal(started.value.status, "COLLECTING");
 });
 
+test("startAddContent revalidates ownership and version without mutating the document", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:1b" });
+  const opened = await runtime.startAddContent({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "FACTURE", idempotencyKey: "flow_command:start-add:1",
+  });
+  assert.equal(opened.ok, true, opened.error);
+  assert.equal(opened.value.document_id, started.value.document_id);
+  assert.equal(opened.value.version, started.value.version);
+  assert.deepEqual(opened.value.items, started.value.items);
+});
+
+test("startAddContent is forbidden for DECHARGE", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:1c" });
+  const opened = await runtime.startAddContent({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "DECHARGE", idempotencyKey: "flow_command:start-add:2",
+  });
+  assert.deepEqual(opened, { ok: false, error: "KADI_V1_DISCHARGE_CONTENT_FLOW_REQUIRED" });
+});
+
 test("brain extraction advances a complete FACTURE to READY_FOR_REVIEW", async () => {
   const { runtime } = documentRuntime();
   const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:2" });

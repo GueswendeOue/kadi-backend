@@ -41,17 +41,42 @@ function isPathInside(rootDir, candidate) {
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
+// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
+// contract: exactly two terminal, complete-only screens (DOCUMENT_CONTENT,
+// ARTICLE_FORM), resolved by id, never by array position. Every other Flow
+// keeps the original single-screen contract unchanged.
+const MULTI_SCREEN_ENTRIES = Object.freeze({
+  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
+});
+
 function validateFlowJson(flowKey, json) {
-  return json
-    && json.version === "7.3"
-    && !Object.hasOwn(json, "data_api_version")
-    && json.routing_model
-    && Array.isArray(json.routing_model[flowKey])
-    && json.routing_model[flowKey].length === 0
-    && Array.isArray(json.screens)
-    && json.screens.length === 1
-    && json.screens[0]?.id === flowKey
-    && json.screens[0]?.terminal === true;
+  const expectedScreenIds = MULTI_SCREEN_ENTRIES[flowKey] || [flowKey];
+  if (
+    !json
+    || json.version !== "7.3"
+    || Object.hasOwn(json, "data_api_version")
+    || !json.routing_model
+    || !Array.isArray(json.screens)
+    || json.screens.length !== expectedScreenIds.length
+  ) {
+    return false;
+  }
+  const routingKeys = Object.keys(json.routing_model);
+  if (routingKeys.length !== expectedScreenIds.length) return false;
+  const screensById = {};
+  for (const screen of json.screens) {
+    if (screen && typeof screen === "object" && typeof screen.id === "string") {
+      screensById[screen.id] = screen;
+    }
+  }
+  if (Object.keys(screensById).length !== expectedScreenIds.length) return false;
+  return expectedScreenIds.every((id) => (
+    Object.hasOwn(screensById, id)
+    && screensById[id]?.terminal === true
+    && routingKeys.includes(id)
+    && Array.isArray(json.routing_model[id])
+    && json.routing_model[id].length === 0
+  ));
 }
 
 function inspectDraftFlowAssets({

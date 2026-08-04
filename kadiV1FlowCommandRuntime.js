@@ -11,7 +11,7 @@ const FLOW_KEYS = Object.freeze([
 ]);
 const ACTIONS = Object.freeze([
   "START", "PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP", "SELECT_DOCUMENT_TYPE",
-  "SAVE_CLIENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT", "SAVE_OPTIONS", "VERIFY",
+  "SAVE_CLIENT", "START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT", "SAVE_OPTIONS", "VERIFY",
   "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL", "EDIT", "PREPARE_PDF",
   "SAVE_FOR_LATER", "CONFIRM_GENERATION", "SELECT_PACK", "CHECK_PAYMENT", "SEARCH",
   "OPEN_DOCUMENT", "SAVE_DETAILS",
@@ -59,7 +59,7 @@ function createKadiV1FlowCommandRuntime({
 } = {}) {
   const onboarding = assertPort(onboardingRuntime, ["continueOnboarding"], "KADI_V1_ONBOARDING_COMMAND_RUNTIME");
   const documents = assertPort(documentRuntime, [
-    "start", "setClient", "addContent", "updateContent", "removeContent", "finishContent", "setOptions",
+    "start", "setClient", "startAddContent", "addContent", "updateContent", "removeContent", "finishContent", "setOptions",
     "verify", "beginEdit", "saveForLater", "saveDischargeDetails", "cancel",
   ], "KADI_V1_DOCUMENT_COMMAND_RUNTIME");
   const previews = assertPort(previewRuntime, ["prepare"], "KADI_V1_PREVIEW_COMMAND_RUNTIME");
@@ -128,6 +128,7 @@ function createKadiV1FlowCommandRuntime({
 
     const operations = {
       SAVE_CLIENT: [documents, "setClient", { ...documentBase, client: structuredClone(data) }, "KADI_V1_DOCUMENT_CLIENT_FAILED"],
+      START_ADD_CONTENT: [documents, "startAddContent", documentBase, "KADI_V1_DOCUMENT_CONTENT_START_FAILED"],
       ADD_CONTENT: [documents, "addContent", { ...documentBase, content: structuredClone(data) }, "KADI_V1_DOCUMENT_CONTENT_ADD_FAILED"],
       UPDATE_CONTENT: [documents, "updateContent", { ...documentBase, itemId: data.item_id, content: Object.fromEntries(Object.entries(data).filter(([key]) => key !== "item_id")) }, "KADI_V1_DOCUMENT_CONTENT_UPDATE_FAILED"],
       REMOVE_CONTENT: [documents, "removeContent", { ...documentBase, itemId: data.item_id }, "KADI_V1_DOCUMENT_CONTENT_REMOVE_FAILED"],

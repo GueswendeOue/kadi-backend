@@ -15,7 +15,7 @@ function makeRuntime(calls) {
   return createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: record("continueOnboarding") },
     documentRuntime: {
-      start: record("start"), setClient: record("setClient"), addContent: record("addContent"),
+      start: record("start"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
       updateContent: record("updateContent"), removeContent: record("removeContent"), finishContent: record("finishContent"),
       setOptions: record("setOptions"), verify: record("verify"), beginEdit: record("beginEdit"),
       saveForLater: record("saveForLater"), saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancelDocument"),
@@ -86,6 +86,15 @@ test("item update separates server item id from editable content", async () => {
   assert.deepEqual(calls[0].payload.content, { quantity: 4 });
 });
 
+test("START_ADD_CONTENT is routed to the document adapter with server-bound identity only", async () => {
+  const calls = [];
+  await makeRuntime(calls).execute(command({ action: "START_ADD_CONTENT", data: {} }));
+  assert.equal(calls[0].name, "startAddContent");
+  assert.equal(calls[0].payload.documentId, "document:1");
+  assert.equal(calls[0].payload.expectedVersion, 3);
+  assert.equal(calls[0].payload.ownerWaId, "22670000000");
+});
+
 test("preview preparation cannot proceed without a document context", async () => {
   const calls = [];
   const result = await makeRuntime(calls).execute(command({ flowKey: "DOCUMENT_PREVIEW", action: "PREPARE_PDF", data: {}, documentContext: null }));
@@ -135,7 +144,7 @@ test("adapter exceptions become closed recoverable failures", async () => {
   const bad = createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
     documentRuntime: {
-      start: async () => { throw new Error("secret"); }, setClient: async () => ({}), addContent: async () => ({}),
+      start: async () => { throw new Error("secret"); }, setClient: async () => ({}), startAddContent: async () => ({}), addContent: async () => ({}),
       updateContent: async () => ({}), removeContent: async () => ({}), finishContent: async () => ({}),
       setOptions: async () => ({}), verify: async () => ({}),
       beginEdit: async () => ({}), saveForLater: async () => ({}), saveDischargeDetails: async () => ({}), cancel: async () => ({}),

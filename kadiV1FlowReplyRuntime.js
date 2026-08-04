@@ -16,7 +16,7 @@ const FLOW_ACTIONS = Object.freeze({
   MENU: Object.freeze(["PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP"]),
   DOCUMENT_TYPE: Object.freeze(["SELECT_DOCUMENT_TYPE"]),
   DOCUMENT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
-  DOCUMENT_CONTENT: Object.freeze(["ADD_CONTENT", "FINISH_CONTENT"]),
+  DOCUMENT_CONTENT: Object.freeze(["START_ADD_CONTENT", "ADD_CONTENT", "FINISH_CONTENT"]),
   DOCUMENT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_REVIEW: Object.freeze(["VERIFY", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL"]),
   EDIT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
@@ -31,6 +31,7 @@ const FLOW_ACTIONS = Object.freeze({
 
 const ACTION_FIELDS = Object.freeze({
   START: Object.freeze(["owner_name", "business_name"]),
+  START_ADD_CONTENT: Object.freeze([]),
   PREPARE_DOCUMENT: Object.freeze(["document_type"]),
   HISTORY_SEARCH: Object.freeze([]),
   BALANCE: Object.freeze([]),

@@ -1,7 +1,8 @@
 {
   "version": "7.3",
   "routing_model": {
-    "DOCUMENT_CONTENT": []
+    "DOCUMENT_CONTENT": [],
+    "ARTICLE_FORM": []
   },
   "screens": [
     {
@@ -31,9 +32,63 @@
             }
           },
           "__example__": [
-            { "id": "ADD_CONTENT", "title": "Ajouter un article" },
+            { "id": "START_ADD_CONTENT", "title": "Ajouter un article" },
             { "id": "FINISH_CONTENT", "title": "Terminer les articles" }
           ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.document_label}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.items_summary}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "action",
+                "label": "Que souhaitez-vous faire ?",
+                "required": true,
+                "data-source": "${data.content_actions}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "DOCUMENT_CONTENT",
+                    "action": "${form.action}",
+                    "data": {}
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICLE_FORM",
+      "title": "Nouvel article",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "document_label": {
+          "type": "string",
+          "__example__": "Facture"
         },
         "unit_options": {
           "type": "array",
@@ -79,39 +134,28 @@
             "text": "${data.document_label}"
           },
           {
-            "type": "TextBody",
-            "text": "${data.items_summary}"
-          },
-          {
             "type": "Form",
             "name": "kadi_form",
             "children": [
               {
-                "type": "RadioButtonsGroup",
-                "name": "action",
-                "label": "Que souhaitez-vous faire ?",
-                "required": true,
-                "data-source": "${data.content_actions}"
-              },
-              {
                 "type": "TextInput",
                 "name": "description",
                 "label": "Produit ou service",
-                "required": false,
+                "required": true,
                 "input-type": "text"
               },
               {
                 "type": "TextInput",
                 "name": "quantity",
                 "label": "Quantité",
-                "required": false,
+                "required": true,
                 "input-type": "number"
               },
               {
                 "type": "Dropdown",
                 "name": "unit",
                 "label": "Unité",
-                "required": false,
+                "required": true,
                 "data-source": "${data.unit_options}"
               },
               {
@@ -125,18 +169,18 @@
                 "type": "TextInput",
                 "name": "unit_price",
                 "label": "Prix unitaire",
-                "required": false,
+                "required": true,
                 "input-type": "number"
               },
               {
                 "type": "Footer",
-                "label": "Continuer",
+                "label": "Enregistrer l’article",
                 "on-click-action": {
                   "name": "complete",
                   "payload": {
                     "session_id": "${data.session_id}",
                     "flow_key": "DOCUMENT_CONTENT",
-                    "action": "${form.action}",
+                    "action": "ADD_CONTENT",
                     "data": {
                       "description": "${form.description}",
                       "quantity": "${form.quantity}",

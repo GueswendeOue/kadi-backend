@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
+  buildV1FlowMessage,
 } = require("../kadiV1ProductionPresenter");
 
 const OWNER = "22670000000";
@@ -73,6 +74,41 @@ test("all fifteen draft Flows expose one matching entry screen and session input
     assert.equal(contract.entryScreen, flowKey);
     assert.ok(contract.dataKeys.includes("session_id"));
   }
+});
+
+test("DOCUMENT_CONTENT registry exposes both terminal screens through a closed screen registry", () => {
+  const registry = loadFlowRegistry();
+  const contract = registry.DOCUMENT_CONTENT;
+  assert.equal(contract.entryScreen, "DOCUMENT_CONTENT");
+  assert.deepEqual([...contract.allowedScreenIds].sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
+  assert.deepEqual(Object.keys(contract.screensById).sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
+  assert.deepEqual(Object.keys(contract.defaultsByScreenId).sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
+  assert.ok(contract.screensById.ARTICLE_FORM.dataKeys.includes("session_id"));
+  assert.ok(contract.screensById.ARTICLE_FORM.dataKeys.includes("unit_options"));
+  assert.equal(contract.screensById.ARTICLE_FORM.dataKeys.includes("description"), false);
+});
+
+test("the fourteen other Flows expose only their own screen id in the registry", () => {
+  const registry = loadFlowRegistry();
+  for (const [flowKey, contract] of Object.entries(registry)) {
+    if (flowKey === "DOCUMENT_CONTENT") continue;
+    assert.deepEqual(contract.allowedScreenIds, [flowKey]);
+    assert.deepEqual(Object.keys(contract.screensById), [flowKey]);
+  }
+});
+
+test("buildV1FlowMessage refuses a screen outside the Flow's allowed screen registry", () => {
+  const registry = loadFlowRegistry();
+  assert.throws(() => buildV1FlowMessage({
+    to: OWNER,
+    flowKey: "DOCUMENT_CONTENT",
+    flowId: FLOW_IDS.DOCUMENT_CONTENT,
+    sessionId: "kadi_session:screen-guard",
+    flowMode: "draft",
+    contract: registry.DOCUMENT_CONTENT,
+    data: { session_id: "kadi_session:screen-guard" },
+    screen: "SOME_UNDECLARED_SCREEN",
+  }), /KADI_V1_PRESENTER_SCREEN_INVALID/);
 });
 
 test("conversation sends canonical text before a server-bound Flow", async () => {
@@ -189,6 +225,80 @@ test("preview result opens generation confirmation with the authoritative quote 
     parameters.flow_action_payload.data.quote_id,
     "quote:1"
   );
+});
+
+test("START_ADD_CONTENT reopens the same Flow directly on the empty ARTICLE_FORM screen", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:start-add",
+    result: {
+      handled: true,
+      action: "START_ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 2,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [{ item_id: "item:1", description: "Ciment", quantity: 2, unit_price: 5000 }],
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
+  assert.equal(parameters.flow_action_payload.screen, "ARTICLE_FORM");
+  assert.ok(Array.isArray(parameters.flow_action_payload.data.unit_options));
+  assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "description"), false, "ARTICLE_FORM must never carry a stale prefill");
+  assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "quantity"), false, "ARTICLE_FORM must never carry a stale prefill");
+});
+
+test("a successful ADD_CONTENT reopens the DOCUMENT_CONTENT decision screen", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:add-content",
+    result: {
+      handled: true,
+      action: "ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 3,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [{ item_id: "item:1", description: "Ciment", quantity: 2, unit_price: 5000 }],
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CONTENT");
+});
+
+test("SAVE_CLIENT on a document with no items yet opens ARTICLE_FORM directly instead of the decision screen", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:save-client",
+    result: {
+      handled: true,
+      action: "SAVE_CLIENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 2,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [],
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
+  assert.equal(parameters.flow_action_payload.screen, "ARTICLE_FORM");
 });
 
 test("recoverable error sends only canonical user text and never exposes the reason", async () => {

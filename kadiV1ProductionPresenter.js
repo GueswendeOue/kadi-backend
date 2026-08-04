@@ -117,6 +117,15 @@ function defaultForSchema(schema) {
   return null;
 }
 
+// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
+// contract: it stays a single flow_key but opens either its decision screen
+// or the ARTICLE_FORM item-entry screen, both terminal and complete-only.
+// Screens are always resolved by id (never by array position) and any id
+// outside this closed registry is rejected.
+const MULTI_SCREEN_ENTRIES = Object.freeze({
+  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
+});
+
 function loadFlowRegistry(rootDir = __dirname) {
   const registry = {};
 
@@ -127,34 +136,67 @@ function loadFlowRegistry(rootDir = __dirname) {
     const absolutePath = path.join(rootDir, catalog.file);
     const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
     const screens = Array.isArray(parsed.screens) ? parsed.screens : [];
-    const first = screens[0];
+    const expectedScreenIds = MULTI_SCREEN_ENTRIES[flowKey] || [flowKey];
     const routingKeys =
       parsed.routing_model &&
       typeof parsed.routing_model === "object"
         ? Object.keys(parsed.routing_model)
         : [];
 
-    if (
-      screens.length !== 1 ||
-      first?.id !== flowKey ||
-      routingKeys.length !== 1 ||
-      routingKeys[0] !== flowKey ||
-      !isPlainObject(first.data) ||
-      !Object.hasOwn(first.data, "session_id")
-    ) {
+    const screensById = {};
+    for (const screen of screens) {
+      if (isPlainObject(screen) && typeof screen.id === "string") {
+        screensById[screen.id] = screen;
+      }
+    }
+
+    const contractValid =
+      screens.length === expectedScreenIds.length &&
+      Object.keys(screensById).length === expectedScreenIds.length &&
+      expectedScreenIds.every((id) => Object.hasOwn(screensById, id)) &&
+      routingKeys.length === expectedScreenIds.length &&
+      expectedScreenIds.every(
+        (id) =>
+          routingKeys.includes(id) &&
+          Array.isArray(parsed.routing_model[id]) &&
+          parsed.routing_model[id].length === 0
+      ) &&
+      expectedScreenIds.every((id) => screensById[id]?.terminal === true) &&
+      expectedScreenIds.every(
+        (id) =>
+          isPlainObject(screensById[id]?.data) &&
+          Object.hasOwn(screensById[id].data, "session_id")
+      );
+
+    if (!contractValid) {
       throw new TypeError(`KADI_V1_FLOW_ENTRY_CONTRACT_INVALID:${flowKey}`);
     }
 
-    const defaults = {};
-    for (const [key, schema] of Object.entries(first.data)) {
-      defaults[key] = defaultForSchema(schema);
+    const defaultsByScreenId = {};
+    const screensRegistry = {};
+    for (const id of expectedScreenIds) {
+      const screenData = screensById[id].data;
+      const defaults = {};
+      for (const [key, schema] of Object.entries(screenData)) {
+        defaults[key] = defaultForSchema(schema);
+      }
+      defaultsByScreenId[id] = Object.freeze(defaults);
+      screensRegistry[id] = Object.freeze({
+        id,
+        dataKeys: Object.freeze(Object.keys(screenData)),
+      });
     }
+
+    const entryScreen = flowKey;
 
     registry[flowKey] = Object.freeze({
       flowKey,
-      entryScreen: first.id,
-      dataKeys: Object.freeze(Object.keys(first.data)),
-      defaults: Object.freeze(defaults),
+      entryScreen,
+      allowedScreenIds: Object.freeze([...expectedScreenIds]),
+      screensById: Object.freeze(screensRegistry),
+      defaultsByScreenId: Object.freeze(defaultsByScreenId),
+      dataKeys: screensRegistry[entryScreen].dataKeys,
+      defaults: defaultsByScreenId[entryScreen],
       card: Object.freeze({
         body: String(catalog.card?.body || "Continuez avec Kadi.").slice(
           0,
@@ -179,12 +221,12 @@ function documentLabel(documentType) {
   );
 }
 
-function safeFlowData(contract, sessionId, suggested = {}) {
-  const output = clone(contract.defaults);
+function safeFlowData(contract, screen, sessionId, suggested = {}) {
+  const output = clone(contract.defaultsByScreenId[screen]);
   output.session_id = sessionId;
 
   const source = isPlainObject(suggested) ? suggested : {};
-  for (const key of contract.dataKeys) {
+  for (const key of contract.screensById[screen].dataKeys) {
     if (
       key === "session_id" ||
       FORBIDDEN_META_DATA_KEYS.has(key) ||
@@ -204,7 +246,7 @@ function safeFlowData(contract, sessionId, suggested = {}) {
   }
 
   if (
-    contract.dataKeys.includes("document_label") &&
+    contract.screensById[screen].dataKeys.includes("document_label") &&
     typeof source.document_type === "string"
   ) {
     output.document_label = documentLabel(source.document_type);
@@ -221,12 +263,16 @@ function buildV1FlowMessage({
   flowMode,
   contract,
   data,
+  screen,
 }) {
   if (!OWNER_PATTERN.test(to || "")) {
     throw new TypeError("KADI_V1_PRESENTER_OWNER_INVALID");
   }
-  if (!FLOW_KEYS.includes(flowKey) || contract?.entryScreen !== flowKey) {
+  if (!FLOW_KEYS.includes(flowKey) || contract?.flowKey !== flowKey) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
+  }
+  if (!contract?.allowedScreenIds?.includes(screen)) {
+    throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
   }
   if (!FLOW_ID_PATTERN.test(flowId || "")) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_INVALID");
@@ -256,7 +302,7 @@ function buildV1FlowMessage({
           flow_cta: contract.card.cta,
           flow_action: "navigate",
           flow_action_payload: Object.freeze({
-            screen: contract.entryScreen,
+            screen,
             data,
           }),
         }),
@@ -339,7 +385,9 @@ function nextFlowForReply(action, resultValue) {
       : "DOCUMENT_CLIENT";
   }
   if (action === "SAVE_CLIENT") return "DOCUMENT_CONTENT";
-  if (["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)) {
+  if (
+    ["START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)
+  ) {
     return "DOCUMENT_CONTENT";
   }
   if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
@@ -351,6 +399,15 @@ function nextFlowForReply(action, resultValue) {
   if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
   if (action === "SELECT_PACK") return "RECHARGE";
   return null;
+}
+
+function nextScreenForReply(flowKey, action, resultValue) {
+  if (flowKey !== "DOCUMENT_CONTENT") return null;
+  if (action === "START_ADD_CONTENT") return "ARTICLE_FORM";
+  if (action === "ADD_CONTENT") return "DOCUMENT_CONTENT";
+  const document = extractDocument(resultValue);
+  const hasItems = Array.isArray(document?.items) && document.items.length > 0;
+  return hasItems ? "DOCUMENT_CONTENT" : "ARTICLE_FORM";
 }
 
 function quoteFromResult(value) {
@@ -404,6 +461,7 @@ function canonicalReplyText(action, value) {
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
     SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
     SAVE_CLIENT: "Les informations du client sont enregistrées.",
+    START_ADD_CONTENT: "Ajoutons un article.",
     ADD_CONTENT: "L’article est enregistré. Que souhaitez-vous faire ?",
     FINISH_CONTENT: "Les articles sont enregistrés.",
     UPDATE_CONTENT: "L’article est mis à jour.",
@@ -456,17 +514,17 @@ function suggestedDataForFlow(flowKey, source) {
     if (document?.document_type === "RECU") {
       output.content_actions = hasItems
         ? [
-            { id: "ADD_CONTENT", title: "Modifier les informations" },
+            { id: "START_ADD_CONTENT", title: "Modifier les informations" },
             { id: "FINISH_CONTENT", title: "Terminer le reçu" },
           ]
-        : [{ id: "ADD_CONTENT", title: "Renseigner les informations" }];
+        : [{ id: "START_ADD_CONTENT", title: "Renseigner les informations" }];
     } else {
       output.content_actions = hasItems
         ? [
-            { id: "ADD_CONTENT", title: "Ajouter un autre article" },
+            { id: "START_ADD_CONTENT", title: "Ajouter un autre article" },
             { id: "FINISH_CONTENT", title: "Terminer les articles" },
           ]
-        : [{ id: "ADD_CONTENT", title: "Ajouter un article" }];
+        : [{ id: "START_ADD_CONTENT", title: "Ajouter un article" }];
     }
   }
 
@@ -555,6 +613,7 @@ function createKadiV1ProductionPresenter({
     flowKey,
     document = null,
     suggestedData = {},
+    screen = null,
   }) {
     if (!FLOW_KEYS.includes(flowKey)) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
@@ -563,8 +622,13 @@ function createKadiV1ProductionPresenter({
     if (!FLOW_ID_PATTERN.test(flowId || "")) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_MISSING");
     }
+    const contract = registry[flowKey];
+    const targetScreen = screen == null ? contract.entryScreen : screen;
+    if (!contract.allowedScreenIds.includes(targetScreen)) {
+      throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
+    }
 
-    const source = `${messageId || ownerWaId}:${flowKey}:${
+    const source = `${messageId || ownerWaId}:${flowKey}:${targetScreen}:${
       document?.document_id || "none"
     }:${document?.version || 0}`;
     const opened = await sessions.open({
@@ -578,9 +642,9 @@ function createKadiV1ProductionPresenter({
       throw new Error(opened?.error || "KADI_V1_PRESENTER_SESSION_OPEN_FAILED");
     }
 
-    const contract = registry[flowKey];
     const data = safeFlowData(
       contract,
+      targetScreen,
       opened.value.session_id,
       suggestedData
     );
@@ -592,10 +656,12 @@ function createKadiV1ProductionPresenter({
       flowMode,
       contract,
       data,
+      screen: targetScreen,
     });
     await messaging.sendFlow(payload);
     return Object.freeze({
       flow_key: flowKey,
+      screen: targetScreen,
       session_id: opened.value.session_id,
       duplicate: opened.duplicate === true,
     });
@@ -765,6 +831,7 @@ function createKadiV1ProductionPresenter({
           flowKey,
           result.result
         ),
+        screen: nextScreenForReply(flowKey, result.action, result.result),
       });
     }
 
@@ -822,5 +889,6 @@ module.exports = {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
   nextFlowForReply,
+  nextScreenForReply,
   safeFlowData,
 };
