@@ -91,7 +91,7 @@ function createRestartHarness() {
     const noop = async () => ok({});
     const documentRuntime = {
       start: noop,
-      setInvoiceKind: noop,
+      setInvoiceKind: noop, setReceiptDetails: noop,
       setClient: async (payload) => idempotentWrite("document.setClient", payload, {
         document_id: payload.documentId,
         version: payload.expectedVersion + 1,

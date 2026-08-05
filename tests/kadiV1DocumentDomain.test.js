@@ -242,6 +242,7 @@ test("models RECU as received payment data rather than an amount-due item basket
     items: undefined,
     discount_amount: undefined,
     tax_rate_basis_points: undefined,
+    options: { receipt_format: "A4" },
     receipt: {
       payer: "Payeur fictif",
       beneficiary: "Bénéficiaire fictif",

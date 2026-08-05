@@ -108,6 +108,7 @@ const {
 } = require("./kadiV1ProductionPresenter");
 const {
   createKadiV1BalanceReader,
+  createKadiV1IssuerLogoLoader,
   createKadiV1IssuerResolver,
   createKadiV1RechargeRuntime,
   createKadiV1WhatsAppDeliveryProvider,
@@ -383,6 +384,19 @@ function createKadiV1ProductionBootstrap({
       repository: documentRepository,
     });
     const issuerResolver = createKadiV1IssuerResolver({ client: supabase });
+    // Reuses the exact buckets the legacy profile upload paths already
+    // write business_profiles.logo_path into — never a separate
+    // KADI_V1_-prefixed bucket. "logos" (store.js) is the current, actively
+    // written bucket and is tried first; "kadi-logos" (supabaseStorage.js)
+    // is the legacy bucket some existing rows may still point into.
+    const logoLoader = createKadiV1IssuerLogoLoader({
+      client: supabase,
+      buckets: [
+        env.SUPABASE_LOGO_BUCKET || "logos",
+        env.SUPABASE_BUCKET_LOGOS || "kadi-logos",
+      ],
+      logger,
+    });
 
     const historyRepository = createSupabaseV1HistoryRepository(supabase);
     const historyService = createV1HistoryService({
@@ -415,6 +429,7 @@ function createKadiV1ProductionBootstrap({
       renderer: createExistingPdfTemporaryRenderer({
         rendererResolver: providers.pdfRendererResolver || null,
         issuerProfileReader: issuerResolver,
+        logoLoader,
       }),
       pageCountInspector: createPdfLibPageCountInspector({ clock }),
       clock,
@@ -443,6 +458,7 @@ function createKadiV1ProductionBootstrap({
       renderer: createExistingPdfFinalRenderer({
         rendererResolver: providers.pdfRendererResolver || null,
         issuerProfileReader: issuerResolver,
+        logoLoader,
       }),
       clock,
     });

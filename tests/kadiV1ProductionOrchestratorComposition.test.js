@@ -31,7 +31,7 @@ function sharedPipeline() {
   return {
     createDraft: noop,
     applyBrainExtraction: noop,
-    setInvoiceKind: noop,
+    setInvoiceKind: noop, setReceiptFormat: noop,
     setClientOrPayer: noop,
     addContent: noop,
     updateContent: noop,
@@ -82,6 +82,9 @@ function baseDependencies(overrides = {}) {
     dischargePipeline: dischargePipeline(),
     issuerResolver: {
       async getIssuerProfileId() {
+        throw new Error("BOOT_ISSUER_FORBIDDEN");
+      },
+      async getIssuerProfileById() {
         throw new Error("BOOT_ISSUER_FORBIDDEN");
       },
     },

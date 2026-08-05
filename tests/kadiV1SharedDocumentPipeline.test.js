@@ -36,6 +36,7 @@ function command(document, operation, suffix = "1", extra = {}) {
   const prefixes = {
     setIssuer: "set_issuer",
     setInvoiceKind: "set_invoice_kind",
+    setReceiptFormat: "set_receipt_format",
     setClientOrPayer: "set_party",
     addContent: "add_content",
     updateContent: "update_content",
@@ -236,6 +237,7 @@ test("RECU keeps payer, beneficiary and payment facts without artificial items",
   document = (await f.pipeline.setOptions(command(document, "setOptions", "payment-options", {
     options: { payment_method: "Espèces", reference: "REF-FICTIVE" },
   }))).value;
+  document = (await f.pipeline.setReceiptFormat(command(document, "setReceiptFormat", "format", { receiptFormat: "A4" }))).value;
   assert.deepEqual(document.items, []);
   assert.equal(document.receipt.amount, 75000);
   assert.equal(document.total, 75000);

@@ -13,10 +13,6 @@
           "type": "string",
           "__example__": "session_example"
         },
-        "current_summary": {
-          "type": "string",
-          "__example__": "Aucune information enregistrée."
-        },
         "content_types": {
           "type": "array",
           "items": {
@@ -32,11 +28,11 @@
           },
           "__example__": [
             {
-              "id": "ARGENT",
+              "id": "MONEY",
               "title": "Argent"
             },
             {
-              "id": "BIEN",
+              "id": "GOODS",
               "title": "Bien"
             },
             {
@@ -44,40 +40,8 @@
               "title": "Document"
             },
             {
-              "id": "AUTRE",
+              "id": "OTHER",
               "title": "Autre"
-            }
-          ]
-        },
-        "discharge_actions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "SAVE_DETAILS",
-              "title": "Enregistrer les informations"
-            },
-            {
-              "id": "VERIFY",
-              "title": "C’est bon"
-            },
-            {
-              "id": "EDIT",
-              "title": "Modifier"
-            },
-            {
-              "id": "CANCEL",
-              "title": "Annuler"
             }
           ]
         }
@@ -87,58 +51,65 @@
         "children": [
           {
             "type": "TextBody",
-            "text": "${data.current_summary}"
+            "text": "Renseignez les informations de la décharge."
           },
           {
             "type": "Form",
             "name": "kadi_form",
             "children": [
               {
-                "type": "RadioButtonsGroup",
-                "name": "action",
-                "label": "Prochaine étape",
-                "required": true,
-                "data-source": "${data.discharge_actions}"
-              },
-              {
                 "type": "TextInput",
                 "name": "giver",
                 "label": "Personne qui remet",
-                "required": false,
+                "required": true,
                 "input-type": "text"
               },
               {
                 "type": "TextInput",
                 "name": "recipient",
                 "label": "Personne qui reçoit",
-                "required": false,
+                "required": true,
                 "input-type": "text"
               },
               {
-                "type": "Dropdown",
+                "type": "RadioButtonsGroup",
                 "name": "transferred_content_type",
                 "label": "Ce qui est remis",
-                "required": false,
+                "required": true,
                 "data-source": "${data.content_types}"
               },
               {
                 "type": "TextInput",
-                "name": "transferred_content",
-                "label": "Montant, bien ou document",
+                "name": "amount",
+                "label": "Montant (si argent)",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "TextInput",
+                "name": "description",
+                "label": "Description (si bien, document ou autre)",
                 "required": false,
                 "input-type": "text"
               },
               {
                 "type": "TextInput",
-                "name": "purpose",
+                "name": "quantity",
+                "label": "Quantité (si applicable)",
+                "required": false,
+                "input-type": "number"
+              },
+              {
+                "type": "TextInput",
+                "name": "reason",
                 "label": "Motif",
-                "required": false,
+                "required": true,
                 "input-type": "text"
               },
               {
                 "type": "TextInput",
-                "name": "notes",
-                "label": "Notes",
+                "name": "observations",
+                "label": "Observations",
                 "required": false,
                 "input-type": "text"
               },
@@ -150,14 +121,16 @@
                   "payload": {
                     "session_id": "${data.session_id}",
                     "flow_key": "DISCHARGE_DETAILS",
-                    "action": "${form.action}",
+                    "action": "SAVE_DETAILS",
                     "data": {
                       "giver": "${form.giver}",
                       "recipient": "${form.recipient}",
                       "transferred_content_type": "${form.transferred_content_type}",
-                      "transferred_content": "${form.transferred_content}",
-                      "purpose": "${form.purpose}",
-                      "notes": "${form.notes}"
+                      "amount": "${form.amount}",
+                      "description": "${form.description}",
+                      "quantity": "${form.quantity}",
+                      "reason": "${form.reason}",
+                      "observations": "${form.observations}"
                     }
                   }
                 }

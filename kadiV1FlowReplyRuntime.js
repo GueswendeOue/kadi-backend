@@ -1,6 +1,7 @@
 "use strict";
 
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
+const { DISCHARGE_CONTENT_TYPES } = require("./kadiV1DischargePolicy");
 
 const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
@@ -10,6 +11,7 @@ const MAX_DEPTH = 5;
 
 const CONTENT_NUMERIC_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
 const VALID_INVOICE_KINDS = new Set(["FINAL", "PROFORMA"]);
+const VALID_RECEIPT_FORMATS = new Set(["A4", "TICKET_80"]);
 const UNIT_CUSTOM_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
 
 const FLOW_ACTIONS = Object.freeze({
@@ -17,6 +19,7 @@ const FLOW_ACTIONS = Object.freeze({
   MENU: Object.freeze(["PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP"]),
   DOCUMENT_TYPE: Object.freeze(["SELECT_DOCUMENT_TYPE"]),
   INVOICE_TYPE: Object.freeze(["SAVE_INVOICE_TYPE"]),
+  RECEIPT_DETAILS: Object.freeze(["SAVE_RECEIPT_DETAILS"]),
   DOCUMENT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
   DOCUMENT_CONTENT: Object.freeze(["START_ADD_CONTENT", "FINISH_CONTENT"]),
   ARTICLE_FORM: Object.freeze(["ADD_CONTENT"]),
@@ -29,7 +32,7 @@ const FLOW_ACTIONS = Object.freeze({
   GENERATION_CONFIRMATION: Object.freeze(["CONFIRM_GENERATION", "CANCEL"]),
   RECHARGE: Object.freeze(["SELECT_PACK", "CHECK_PAYMENT", "CANCEL"]),
   HISTORY_SEARCH: Object.freeze(["SEARCH", "OPEN_DOCUMENT"]),
-  DISCHARGE_DETAILS: Object.freeze(["SAVE_DETAILS", "VERIFY", "EDIT", "CANCEL"]),
+  DISCHARGE_DETAILS: Object.freeze(["SAVE_DETAILS"]),
 });
 
 const ACTION_FIELDS = Object.freeze({
@@ -41,6 +44,7 @@ const ACTION_FIELDS = Object.freeze({
   HELP: Object.freeze([]),
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
   SAVE_INVOICE_TYPE: Object.freeze(["invoice_kind"]),
+  SAVE_RECEIPT_DETAILS: Object.freeze(["payer", "amount", "reason", "payment_method", "reference", "receipt_format"]),
   SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
   ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
@@ -59,7 +63,7 @@ const ACTION_FIELDS = Object.freeze({
   CHECK_PAYMENT: Object.freeze(["payment_reference"]),
   SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to"]),
   OPEN_DOCUMENT: Object.freeze(["document_id"]),
-  SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "transferred_content", "purpose", "notes"]),
+  SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "amount", "description", "quantity", "reason", "observations"]),
   FINISH_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_price"]),
 });
 
@@ -88,6 +92,51 @@ function parseContentInteger(raw, field) {
   if (field === "quantity" && num <= 0) return fail("KADI_V1_FLOW_REPLY_QUANTITY_INVALID");
   if (field === "unit_price" && num < 0) return fail("KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
   return ok(num);
+}
+
+function parsePositiveInteger(raw, errorCode) {
+  let num;
+  if (Number.isSafeInteger(raw)) {
+    num = raw;
+  } else if (typeof raw === "string" && /^\d+$/.test(raw)) {
+    num = Number(raw);
+    if (!Number.isSafeInteger(num)) return fail(errorCode);
+  } else {
+    return fail(errorCode);
+  }
+  if (num <= 0) return fail(errorCode);
+  return ok(num);
+}
+
+function normalizeReceiptNumbers(action, data) {
+  if (action !== "SAVE_RECEIPT_DETAILS") return ok(data);
+  const normalized = { ...data };
+  const result = parsePositiveInteger(data.amount, "KADI_V1_FLOW_REPLY_RECEIPT_AMOUNT_INVALID");
+  if (!result.ok) return result;
+  normalized.amount = result.value;
+  return ok(normalized);
+}
+
+function normalizeDischargeNumbers(action, data) {
+  if (action !== "SAVE_DETAILS") return ok(data);
+  const normalized = { ...data };
+  const isMoney = data.transferred_content_type === "MONEY";
+  if (isMoney) {
+    const result = parsePositiveInteger(data.amount, "KADI_V1_FLOW_REPLY_DISCHARGE_AMOUNT_INVALID");
+    if (!result.ok) return result;
+    normalized.amount = result.value;
+    delete normalized.quantity;
+  } else {
+    delete normalized.amount;
+    if (Object.hasOwn(data, "quantity") && data.quantity !== "" && data.quantity != null) {
+      const result = parsePositiveInteger(data.quantity, "KADI_V1_FLOW_REPLY_DISCHARGE_QUANTITY_INVALID");
+      if (!result.ok) return result;
+      normalized.quantity = result.value;
+    } else {
+      delete normalized.quantity;
+    }
+  }
+  return ok(normalized);
 }
 
 function resolveUnitCustom(action, data) {
@@ -178,9 +227,37 @@ function validateActionPayload(flowKey, action, data) {
     if (!Object.hasOwn(data, "quantity")) return fail("KADI_V1_FLOW_REPLY_QUANTITY_INVALID");
     if (!Object.hasOwn(data, "unit_price")) return fail("KADI_V1_FLOW_REPLY_UNIT_PRICE_INVALID");
   }
+  if (action === "SAVE_RECEIPT_DETAILS") {
+    if (typeof data.payer !== "string" || !data.payer.trim()) return fail("KADI_V1_FLOW_REPLY_RECEIPT_PAYER_REQUIRED");
+    if (typeof data.reason !== "string" || !data.reason.trim()) return fail("KADI_V1_FLOW_REPLY_RECEIPT_REASON_REQUIRED");
+    if (!Object.hasOwn(data, "amount")) return fail("KADI_V1_FLOW_REPLY_RECEIPT_AMOUNT_INVALID");
+    if (typeof data.receipt_format !== "string" || !VALID_RECEIPT_FORMATS.has(data.receipt_format)) {
+      return fail("KADI_V1_FLOW_REPLY_RECEIPT_FORMAT_INVALID");
+    }
+  }
+  if (action === "SAVE_DETAILS") {
+    if (typeof data.giver !== "string" || !data.giver.trim()) return fail("KADI_V1_FLOW_REPLY_DISCHARGE_GIVER_REQUIRED");
+    if (typeof data.recipient !== "string" || !data.recipient.trim()) return fail("KADI_V1_FLOW_REPLY_DISCHARGE_RECIPIENT_REQUIRED");
+    if (typeof data.reason !== "string" || !data.reason.trim()) return fail("KADI_V1_FLOW_REPLY_DISCHARGE_REASON_REQUIRED");
+    if (typeof data.transferred_content_type !== "string" || !DISCHARGE_CONTENT_TYPES.includes(data.transferred_content_type)) {
+      return fail("KADI_V1_FLOW_REPLY_DISCHARGE_TYPE_INVALID");
+    }
+    if (data.transferred_content_type === "MONEY") {
+      if (!Object.hasOwn(data, "amount")) return fail("KADI_V1_FLOW_REPLY_DISCHARGE_AMOUNT_INVALID");
+    } else {
+      if (typeof data.description !== "string" || !data.description.trim()) return fail("KADI_V1_FLOW_REPLY_DISCHARGE_DESCRIPTION_REQUIRED");
+      if (Object.hasOwn(data, "amount") && data.amount !== "" && data.amount != null) {
+        return fail("KADI_V1_FLOW_REPLY_DISCHARGE_AMOUNT_UNEXPECTED");
+      }
+    }
+  }
   const contentNormalized = normalizeContentNumbers(action, data);
   if (!contentNormalized.ok) return contentNormalized;
-  const unitResolved = resolveUnitCustom(action, contentNormalized.value);
+  const receiptNormalized = normalizeReceiptNumbers(action, contentNormalized.value);
+  if (!receiptNormalized.ok) return receiptNormalized;
+  const dischargeNormalized = normalizeDischargeNumbers(action, receiptNormalized.value);
+  if (!dischargeNormalized.ok) return dischargeNormalized;
+  const unitResolved = resolveUnitCustom(action, dischargeNormalized.value);
   if (!unitResolved.ok) return unitResolved;
   return ok(Object.freeze(structuredClone(unitResolved.value)));
 }

@@ -91,6 +91,15 @@ function createPdfLibPageCountInspector({ clock = () => new Date().toISOString()
   });
 }
 
+function resolveReceiptFormat(receiptFormat) {
+  if (receiptFormat === "A4") return "a4";
+  if (receiptFormat === "TICKET_80") return "compact";
+  // Fail closed: an unrecognized or missing receipt_format must never
+  // silently render as A4 — the document is malformed and rendering must
+  // stop rather than guess the layout.
+  throw new Error("RECEIPT_FORMAT_INVALID");
+}
+
 function previewToDocData(preview) {
   const data = preview.structured_preview;
   if (["FACTURE", "DEVIS"].includes(data.document_type)) {
@@ -118,6 +127,7 @@ function previewToDocData(preview) {
       subject: data.reason,
       items: [],
       total: data.total,
+      receiptFormat: resolveReceiptFormat(data.receipt_format),
     };
   }
   return {
@@ -133,10 +143,13 @@ function previewToDocData(preview) {
   };
 }
 
-function createExistingPdfTemporaryRenderer({ rendererResolver = null, issuerProfileReader } = {}) {
+function createExistingPdfTemporaryRenderer({ rendererResolver = null, issuerProfileReader, logoLoader = null } = {}) {
   const resolve = rendererResolver || require("./pdf/kadiPdfRouter").resolveRenderer;
   if (typeof issuerProfileReader?.getIssuerProfileById !== "function") {
     throw new TypeError("TEMPORARY_RENDER_ISSUER_PROFILE_READER_REQUIRED");
+  }
+  if (logoLoader != null && typeof logoLoader.getLogoBuffer !== "function") {
+    throw new TypeError("TEMPORARY_RENDER_LOGO_LOADER_INVALID");
   }
   return Object.freeze({
     async render({ preview }) {
@@ -161,7 +174,20 @@ function createExistingPdfTemporaryRenderer({ rendererResolver = null, issuerPro
       try {
         const docData = previewToDocData(preview);
         const renderer = resolve(docData);
-        const buffer = await renderer({ docData, businessProfile, logoBuffer: null, qr: null, kadiE164: "" });
+        // A logo is only ever attempted for the compact (TICKET_80) receipt
+        // renderer; every other document keeps its existing behavior. A
+        // logo failure of any kind must never block generation, so the
+        // loader itself always resolves rather than throwing.
+        let logoBuffer = null;
+        if (documentType === "RECU" && docData.receiptFormat === "compact" && logoLoader) {
+          try {
+            const loaded = await logoLoader.getLogoBuffer({ issuerProfile: businessProfile });
+            logoBuffer = loaded?.ok && Buffer.isBuffer(loaded.value) ? loaded.value : null;
+          } catch {
+            logoBuffer = null;
+          }
+        }
+        const buffer = await renderer({ docData, businessProfile, logoBuffer, qr: null, kadiE164: "" });
         return Buffer.isBuffer(buffer) && buffer.length > 0
           ? ok({ buffer, mime_type: PDF_MIME_TYPE, renderer: "KADI_EXISTING_PDF_RENDERER" })
           : fail("TEMPORARY_RENDER_OUTPUT_INVALID");
@@ -312,4 +338,5 @@ module.exports = {
   createPdfLibPageCountInspector,
   createTemporaryRenderService,
   previewToDocData,
+  resolveReceiptFormat,
 };

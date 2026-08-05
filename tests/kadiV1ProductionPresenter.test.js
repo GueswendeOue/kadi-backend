@@ -14,6 +14,7 @@ const FLOW_IDS = Object.freeze({
   MENU: "100002",
   DOCUMENT_TYPE: "100003",
   INVOICE_TYPE: "100017",
+  RECEIPT_DETAILS: "100018",
   DOCUMENT_CLIENT: "100004",
   DOCUMENT_CONTENT: "100005",
   ARTICLE_FORM: "100016",
@@ -77,9 +78,9 @@ function issuerProfileReaderStub(profile) {
   };
 }
 
-test("all seventeen draft Flows expose one matching entry screen and session input, including the independent ARTICLE_FORM and INVOICE_TYPE Flows", () => {
+test("all eighteen draft Flows expose one matching entry screen and session input, including the independent ARTICLE_FORM, INVOICE_TYPE and RECEIPT_DETAILS Flows", () => {
   const registry = loadFlowRegistry();
-  assert.equal(Object.keys(registry).length, 17);
+  assert.equal(Object.keys(registry).length, 18);
   assert.ok(Object.hasOwn(registry, "ARTICLE_FORM"));
   for (const [flowKey, contract] of Object.entries(registry)) {
     assert.equal(contract.entryScreen, flowKey);
@@ -404,24 +405,42 @@ test("choosing FACTURE opens INVOICE_TYPE, never DOCUMENT_CLIENT directly", asyn
   assert.equal(parameters.flow_action_payload.screen, "INVOICE_TYPE");
 });
 
-test("choosing DEVIS or RECU still opens DOCUMENT_CLIENT directly, never INVOICE_TYPE", async () => {
-  for (const documentType of ["DEVIS", "RECU"]) {
-    const { presenter, calls } = harness();
-    await presenter.presentFlowReply({
-      ownerWaId: OWNER,
-      messageId: `wamid:select-${documentType}`,
-      result: {
-        handled: true,
-        action: "SELECT_DOCUMENT_TYPE",
-        duplicate: false,
-        result: { document_id: "document:1", version: 1, document_type: documentType, status: "COLLECTING" },
-      },
-    });
-    const payload = calls.find(([name]) => name === "flow")[1];
-    const parameters = payload.interactive.action.parameters;
-    assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
-    assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CLIENT");
-  }
+test("choosing DEVIS still opens DOCUMENT_CLIENT directly, never INVOICE_TYPE", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:select-DEVIS",
+    result: {
+      handled: true,
+      action: "SELECT_DOCUMENT_TYPE",
+      duplicate: false,
+      result: { document_id: "document:1", version: 1, document_type: "DEVIS", status: "COLLECTING" },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
+  assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CLIENT");
+});
+
+test("choosing RECU opens the dedicated RECEIPT_DETAILS Flow, never DOCUMENT_CLIENT or ARTICLE_FORM", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:select-RECU",
+    result: {
+      handled: true,
+      action: "SELECT_DOCUMENT_TYPE",
+      duplicate: false,
+      result: { document_id: "document:1", version: 1, document_type: "RECU", status: "COLLECTING" },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.RECEIPT_DETAILS);
+  assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
+  assert.notEqual(parameters.flow_id, FLOW_IDS.ARTICLE_FORM);
+  assert.equal(parameters.flow_action_payload.screen, "RECEIPT_DETAILS");
 });
 
 test("SAVE_INVOICE_TYPE opens DOCUMENT_CLIENT next, for both FINAL and PROFORMA", async () => {

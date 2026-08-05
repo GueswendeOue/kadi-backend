@@ -288,7 +288,7 @@ test("production composition can derive the orchestrator without boot I/O", () =
       sharedPipeline: {
         createDraft: noop,
         applyBrainExtraction: noop,
-        setInvoiceKind: noop,
+        setInvoiceKind: noop, setReceiptFormat: noop,
         setClientOrPayer: noop,
         addContent: noop,
         updateContent: noop,
@@ -314,6 +314,10 @@ test("production composition can derive the orchestrator without boot I/O", () =
       },
       issuerResolver: {
         async getIssuerProfileId() {
+          externalCalls += 1;
+          throw new Error("BOOT_ISSUER_FORBIDDEN");
+        },
+        async getIssuerProfileById() {
           externalCalls += 1;
           throw new Error("BOOT_ISSUER_FORBIDDEN");
         },

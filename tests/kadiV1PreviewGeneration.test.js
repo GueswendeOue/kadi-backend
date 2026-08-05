@@ -63,6 +63,7 @@ function input(type, suffix = type.toLowerCase()) {
   if (type === "RECU") return {
     ...common,
     receipt: { payer: "Moussa Test", beneficiary: "Entreprise Test", amount: 50000, reason: "Paiement reçu" },
+    options: { receipt_format: "A4" },
     notes: "Paiement comptant",
   };
   return {

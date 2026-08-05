@@ -52,6 +52,7 @@ function buildPreviewData(document) {
     client: null,
     payer: null,
     beneficiary: null,
+    receipt_format: null,
     content: null,
     items: [],
     taxes: null,
@@ -93,6 +94,7 @@ function buildPreviewData(document) {
     common.total = document.receipt?.amount ?? null;
     common.reason = document.receipt?.reason ?? null;
     common.observations = document.notes;
+    common.receipt_format = document.options?.receipt_format ?? null;
   } else if (document.document_type === "DECHARGE") {
     common.issuer = document.discharge?.giver ?? common.issuer;
     common.beneficiary = document.discharge?.receiver ?? null;

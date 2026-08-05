@@ -225,6 +225,11 @@ function normalizeIssuerProfileRow(row) {
     address: optionalText(row?.address),
     phone: optionalText(row?.phone),
     email: optionalText(row?.email),
+    // Logo metadata only — never a signed URL or byte content. Consumed
+    // exclusively by createKadiV1IssuerLogoLoader, which is the single
+    // place that turns logo_path into bytes.
+    logo_path: optionalText(row?.logo_path),
+    no_logo: row?.no_logo === true,
   });
 }
 
@@ -262,6 +267,128 @@ function createKadiV1IssuerResolver({ client } = {}) {
       if (result?.error) return fail("KADI_V1_ISSUER_PROFILE_LOOKUP_FAILED");
       const normalized = normalizeIssuerProfileRow(result?.data);
       return normalized ? ok(normalized) : fail("KADI_V1_ISSUER_PROFILE_NOT_FOUND");
+    },
+  });
+}
+
+const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+const LOGO_OBJECT_PATH_PATTERN = /^[A-Za-z0-9._/-]{1,300}$/;
+// Closed allowlist only: business_profiles.logo_path was historically
+// written by two different legacy modules (store.js -> "logos",
+// supabaseStorage.js -> "kadi-logos"), so existing rows may point into
+// either bucket with an identical bare-path shape. The loader must never
+// search outside this fixed list.
+const APPROVED_LOGO_BUCKETS = Object.freeze(["logos", "kadi-logos"]);
+const LOGO_BUCKET_PREFIX_PATTERN = /^([a-z0-9][a-z0-9._-]{2,62}):(.+)$/;
+
+function detectLogoImageType(buffer) {
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "jpeg";
+  }
+  return null;
+}
+
+// Server-side only. Turns a business_profiles.logo_path into image bytes
+// for the compact (TICKET_80) receipt renderer. Never exposes the storage
+// path, a signed URL or the service-role key to the caller; every failure
+// path (missing logo, unreadable file, unsupported type, oversized file)
+// resolves to "no logo" rather than throwing, so a bad logo never blocks
+// PDF generation.
+function createKadiV1IssuerLogoLoader({ client, buckets = APPROVED_LOGO_BUCKETS, logger = null } = {}) {
+  const supabase = assertSupabaseClient(client);
+  const requested = Array.isArray(buckets) && buckets.length > 0 ? buckets : APPROVED_LOGO_BUCKETS;
+  const normalizedBuckets = requested.map((value) => String(value || "").trim().toLowerCase());
+  for (const bucketName of normalizedBuckets) {
+    if (!PRIVATE_BUCKET_PATTERN.test(bucketName) || !APPROVED_LOGO_BUCKETS.includes(bucketName)) {
+      throw new TypeError("KADI_V1_LOGO_BUCKET_INVALID");
+    }
+  }
+  const storagesByBucket = new Map(normalizedBuckets.map((bucketName) => [bucketName, supabase.storage.from(bucketName)]));
+  for (const storage of storagesByBucket.values()) {
+    if (!storage || typeof storage.download !== "function") {
+      throw new TypeError("KADI_V1_LOGO_STORAGE_API_REQUIRED");
+    }
+  }
+
+  function safeLog(code) {
+    try {
+      logger?.log?.("KADI_V1_LOGO_LOADER", Object.freeze({
+        event: "LOGO_LOAD_SKIPPED",
+        code: typeof code === "string" ? code.slice(0, 80) : "UNKNOWN",
+      }));
+    } catch {
+      // Logo loading is never allowed to fail the render because of a
+      // logging problem.
+    }
+  }
+
+  // Resolves which bucket(s) to try for a given logo_path, without ever
+  // stepping outside the approved allowlist:
+  // - "<bucket>:<object path>" is honored only if <bucket> is allowlisted;
+  // - a bare object path (the only shape either legacy uploader has ever
+  //   written) is tried against every allowlisted bucket, in the given
+  //   order, since the path alone cannot say which bucket it lives in.
+  function resolveCandidates(logoPath) {
+    const prefixMatch = LOGO_BUCKET_PREFIX_PATTERN.exec(logoPath);
+    if (prefixMatch) {
+      const bucketName = prefixMatch[1].toLowerCase();
+      const objectPath = prefixMatch[2];
+      if (!storagesByBucket.has(bucketName) || !LOGO_OBJECT_PATH_PATTERN.test(objectPath) || objectPath.includes("..")) {
+        return [];
+      }
+      return [{ bucketName, objectPath }];
+    }
+    if (!LOGO_OBJECT_PATH_PATTERN.test(logoPath) || logoPath.includes("..")) return [];
+    return normalizedBuckets.map((bucketName) => ({ bucketName, objectPath: logoPath }));
+  }
+
+  return Object.freeze({
+    async getLogoBuffer({ issuerProfile } = {}) {
+      if (!issuerProfile || issuerProfile.no_logo === true) return ok(null);
+      const logoPath = issuerProfile.logo_path;
+      if (typeof logoPath !== "string" || !logoPath) return ok(null);
+      const candidates = resolveCandidates(logoPath);
+      if (candidates.length === 0) return ok(null);
+
+      for (const candidate of candidates) {
+        const storage = storagesByBucket.get(candidate.bucketName);
+        let downloaded;
+        try {
+          downloaded = await storage.download(candidate.objectPath);
+        } catch {
+          safeLog("KADI_V1_LOGO_DOWNLOAD_EXCEPTION");
+          continue;
+        }
+        if (downloaded?.error || downloaded?.data == null) {
+          safeLog("KADI_V1_LOGO_DOWNLOAD_FAILED");
+          continue;
+        }
+        // Bytes were actually found at this candidate: this is the
+        // authoritative source for this logo_path. A validation failure
+        // from here on is terminal (no logo), not a reason to keep
+        // guessing at other buckets.
+        let buffer;
+        try {
+          const maybeBuffer = bufferFromDownload(downloaded.data);
+          buffer = maybeBuffer && typeof maybeBuffer.then === "function" ? await maybeBuffer : maybeBuffer;
+        } catch {
+          safeLog("KADI_V1_LOGO_DECODE_FAILED");
+          return ok(null);
+        }
+        if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > LOGO_MAX_BYTES) {
+          safeLog("KADI_V1_LOGO_SIZE_INVALID");
+          return ok(null);
+        }
+        if (!detectLogoImageType(buffer)) {
+          safeLog("KADI_V1_LOGO_TYPE_UNSUPPORTED");
+          return ok(null);
+        }
+        return ok(buffer);
+      }
+      return ok(null);
     },
   });
 }
@@ -625,7 +752,9 @@ function createKadiV1WhatsAppDeliveryProvider({
 
 module.exports = {
   STORAGE_PREFIX,
+  APPROVED_LOGO_BUCKETS,
   createKadiV1BalanceReader,
+  createKadiV1IssuerLogoLoader,
   createKadiV1IssuerResolver,
   createKadiV1RechargeRuntime,
   createKadiV1WhatsAppDeliveryProvider,

@@ -28,7 +28,7 @@ function documentRuntime() {
       sharedPipeline: createSharedDocumentPipeline({ repository }),
       dischargePipeline: createDischargePipeline({ repository }),
       documentRepository: repository,
-      issuerResolver: { getIssuerProfileId: async () => ({ ok: true, value: { issuerProfileId: "issuer:1" } }) },
+      issuerResolver: { getIssuerProfileId: async () => ({ ok: true, value: { issuerProfileId: "issuer:1" } }), getIssuerProfileById: async () => ({ ok: true, value: { business_name: "Kadi Boutique", owner_name: "Awa Traoré" } }) },
     }),
   };
 }
