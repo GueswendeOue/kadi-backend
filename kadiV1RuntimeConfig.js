@@ -12,6 +12,8 @@ const FEATURE_ENV_KEYS = Object.freeze({
   recharge: "KADI_V1_RECHARGE_ENABLED",
   history: "KADI_V1_HISTORY_ENABLED",
   webhook: "KADI_V1_WEBHOOK_ENABLED",
+  conversationalMultimodalV1: "KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED",
+  geminiAudioV1: "KADI_GEMINI_AUDIO_V1_ENABLED",
 });
 
 const FLOW_ENV_KEYS = Object.freeze({

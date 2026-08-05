@@ -47,6 +47,12 @@ Une décision ne passe à `APPROVED` qu'avec une validation explicite et une mis
 
 ### KFD-003 — Absence totale de tampon
 
+* **Précision de portée (postérieure à cette fiche) :** cette fiche décrit
+  la décision telle qu'elle s'appliquait à la V1 au moment de sa rédaction.
+  Le fondateur a depuis confirmé que l'abandon du tampon est **produit-wide
+  et permanent**, pas limité à la V1 — voir `AGENTS.md` §3/§17 (version
+  courante, qui fait foi) et la fiche K de
+  [`KADI_ENGINEERING_MEMORY.md`](../KADI_ENGINEERING_MEMORY.md).
 * **Question :** Kadi propose-t-elle ou facture-t-elle un tampon ?
 * **État :** `APPROVED`.
 * **Recommandation :** aucune génération, conservation, application ou facturation de tampon dans la V1.

@@ -39,6 +39,18 @@ Statuts utilisés dans tous les documents de ce dossier :
 | [`runbooks/DEBUG_WHATSAPP_FLOW.md`](runbooks/DEBUG_WHATSAPP_FLOW.md) | Diagnostiquer un Flow WhatsApp qui ne répond pas comme attendu |
 | [`runbooks/ROLLBACK_PRODUCTION.md`](runbooks/ROLLBACK_PRODUCTION.md) | Revenir en arrière après un incident |
 
+## Fondations de fonctionnalité en développement (branches non fusionnées)
+
+| Document | Contenu | Quand le lire |
+|---|---|---|
+| [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md) | Fondation de compréhension conversationnelle multimodale (`kadiV1ConversationalMultimodalContracts.js`, `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`) — statut `IMPLEMENTED_NOT_DEPLOYED`, branche `feat/kadi-conversational-multimodal-v1`, non fusionnée, non déployée, tous les flags à `false` par défaut | Avant toute mission touchant à cette fondation, à son câblage dans l'orchestrateur, ou à la compréhension multimodale en général |
+| [`KADI_CONVERSATION_POLICY.md`](KADI_CONVERSATION_POLICY.md) | Politique de conversation Kadi formalisée pour cette fondation, consolidée depuis `AGENTS.md` §14 | Avec le document ci-dessus, avant toute mission composant des réponses utilisateur pour cette fondation |
+
+Ces documents décrivent du code présent sur une branche de fonctionnalité,
+**pas l'état de production actuel** — voir
+[`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md) pour ce qui est réellement
+déployé.
+
 ## Documents techniques historiques
 
 Le dossier `docs/` contient aussi des documents de conception antérieurs

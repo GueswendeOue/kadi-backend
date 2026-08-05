@@ -71,6 +71,7 @@ const AUTHORITY_FIELDS = new Set([
   "payment_confirmed",
   "final_generation",
   "generate_final",
+  "generation_cost",
   "issued_at",
   "document_number",
   "subtotal",
@@ -294,6 +295,7 @@ function validateBrainResult(rawResult, { minimumConfidence = 0.6 } = {}) {
 }
 
 module.exports = {
+  AUTHORITY_FIELDS,
   BRAIN_DOCUMENT_TYPES,
   BRAIN_INTENTS,
   BRAIN_MODALITIES,
@@ -303,4 +305,6 @@ module.exports = {
   normalizeDocumentType,
   validateBrainRequest,
   validateBrainResult,
+  validateItems,
+  validateSimpleValue,
 };
