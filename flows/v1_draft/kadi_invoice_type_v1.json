@@ -1,0 +1,65 @@
+{
+  "version": "7.3",
+  "routing_model": { "INVOICE_TYPE": [] },
+  "screens": [
+    {
+      "id": "INVOICE_TYPE",
+      "title": "Quel type de facture souhaitez-vous créer ?",
+      "terminal": true,
+      "data": {
+        "session_id": { "type": "string", "__example__": "session_example" },
+        "invoice_kinds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "FINAL", "title": "Facture définitive" },
+            { "id": "PROFORMA", "title": "Facture proforma" }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "Choisissez le type de facture à préparer."
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "invoice_kind",
+                "label": "Type de facture",
+                "required": true,
+                "data-source": "${data.invoice_kinds}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "INVOICE_TYPE",
+                    "action": "SAVE_INVOICE_TYPE",
+                    "data": {
+                      "invoice_kind": "${form.invoice_kind}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

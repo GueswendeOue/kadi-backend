@@ -240,6 +240,11 @@ function formatReceiptSummary(preview) {
   return lines.length > 0 ? lines.join("\n") : "Informations du reçu à renseigner.";
 }
 
+const INVOICE_KIND_LABELS = Object.freeze({
+  FINAL: "Facture définitive",
+  PROFORMA: "Facture proforma",
+});
+
 const PREVIEW_INTROS = Object.freeze({
   FACTURE: "Parfait, votre facture est presque prête. Vérifiez les informations avant de la générer.",
   DEVIS: "Parfait, votre devis est presque prêt. Vérifiez les informations avant de le générer.",
@@ -287,7 +292,11 @@ function formatContentLine(document, preview) {
 
 function buildPreviewSummary(document, issuerProfile) {
   if (!isPlainObject(document)) return "Aperçu prêt.";
-  const intro = PREVIEW_INTROS[document.document_type] || "Vérifiez les informations avant de générer le document.";
+  const invoiceKind = document.document_type === "FACTURE" ? document.options?.invoice_kind : null;
+  const invoiceKindLabel = INVOICE_KIND_LABELS[invoiceKind];
+  const intro = invoiceKindLabel
+    ? `Parfait, votre ${invoiceKindLabel.toLowerCase()} est presque prête. Vérifiez les informations avant de la générer.`
+    : PREVIEW_INTROS[document.document_type] || "Vérifiez les informations avant de générer le document.";
   let preview = null;
   try { preview = buildPreviewData(document); } catch { preview = null; }
   const lines = [intro, ""];
@@ -477,10 +486,11 @@ function nextFlowForReply(action, resultValue) {
 
   if (action === "PREPARE_DOCUMENT") return "DOCUMENT_TYPE";
   if (action === "SELECT_DOCUMENT_TYPE") {
-    return document?.document_type === "DECHARGE"
-      ? "DISCHARGE_DETAILS"
-      : "DOCUMENT_CLIENT";
+    if (document?.document_type === "DECHARGE") return "DISCHARGE_DETAILS";
+    if (document?.document_type === "FACTURE") return "INVOICE_TYPE";
+    return "DOCUMENT_CLIENT";
   }
+  if (action === "SAVE_INVOICE_TYPE") return "DOCUMENT_CLIENT";
   // ARTICLE_FORM is now its own independent flow_key/Flow (Meta refused
   // opening it as a second screen of DOCUMENT_CONTENT — #131009). The item
   // form is always reached via ARTICLE_FORM; DOCUMENT_CONTENT is the

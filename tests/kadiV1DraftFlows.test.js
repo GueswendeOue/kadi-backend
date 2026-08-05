@@ -81,7 +81,7 @@ test("draft catalog covers every closed runtime flow key exactly once", () => {
 // declared screen. Every draft Flow — including DOCUMENT_CONTENT and its
 // former second screen ARTICLE_FORM, now split into two independent
 // flow_keys/Flows — is locked to exactly one terminal, complete-only screen.
-test("all sixteen draft files use the locked one-screen Flow JSON contract", () => {
+test("all seventeen draft files use the locked one-screen Flow JSON contract", () => {
   for (const key of FLOW_KEYS) {
     const { entry, absolute, json } = readFlow(key);
     assert.ok(fs.existsSync(absolute), `${key} file missing`);

@@ -13,6 +13,7 @@ const FLOW_IDS = Object.freeze({
   ONBOARDING: "100001",
   MENU: "100002",
   DOCUMENT_TYPE: "100003",
+  INVOICE_TYPE: "100017",
   DOCUMENT_CLIENT: "100004",
   DOCUMENT_CONTENT: "100005",
   ARTICLE_FORM: "100016",
@@ -76,9 +77,9 @@ function issuerProfileReaderStub(profile) {
   };
 }
 
-test("all sixteen draft Flows expose one matching entry screen and session input, including the independent ARTICLE_FORM Flow", () => {
+test("all seventeen draft Flows expose one matching entry screen and session input, including the independent ARTICLE_FORM and INVOICE_TYPE Flows", () => {
   const registry = loadFlowRegistry();
-  assert.equal(Object.keys(registry).length, 16);
+  assert.equal(Object.keys(registry).length, 17);
   assert.ok(Object.hasOwn(registry, "ARTICLE_FORM"));
   for (const [flowKey, contract] of Object.entries(registry)) {
     assert.equal(contract.entryScreen, flowKey);
@@ -377,6 +378,101 @@ test("START_ADD_CONTENT opens the independent ARTICLE_FORM Flow, never DOCUMENT_
   assert.ok(Array.isArray(parameters.flow_action_payload.data.unit_options));
   assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "description"), false, "ARTICLE_FORM must never carry a stale prefill");
   assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "quantity"), false, "ARTICLE_FORM must never carry a stale prefill");
+});
+
+test("choosing FACTURE opens INVOICE_TYPE, never DOCUMENT_CLIENT directly", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:select-facture",
+    result: {
+      handled: true,
+      action: "SELECT_DOCUMENT_TYPE",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 1,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.INVOICE_TYPE);
+  assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
+  assert.equal(parameters.flow_action_payload.screen, "INVOICE_TYPE");
+});
+
+test("choosing DEVIS or RECU still opens DOCUMENT_CLIENT directly, never INVOICE_TYPE", async () => {
+  for (const documentType of ["DEVIS", "RECU"]) {
+    const { presenter, calls } = harness();
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:select-${documentType}`,
+      result: {
+        handled: true,
+        action: "SELECT_DOCUMENT_TYPE",
+        duplicate: false,
+        result: { document_id: "document:1", version: 1, document_type: documentType, status: "COLLECTING" },
+      },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    const parameters = payload.interactive.action.parameters;
+    assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
+    assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CLIENT");
+  }
+});
+
+test("SAVE_INVOICE_TYPE opens DOCUMENT_CLIENT next, for both FINAL and PROFORMA", async () => {
+  for (const invoiceKind of ["FINAL", "PROFORMA"]) {
+    const { presenter, calls } = harness();
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:save-invoice-type-${invoiceKind}`,
+      result: {
+        handled: true,
+        action: "SAVE_INVOICE_TYPE",
+        duplicate: false,
+        result: {
+          document_id: "document:1",
+          version: 2,
+          document_type: "FACTURE",
+          status: "COLLECTING",
+          options: { invoice_kind: invoiceKind },
+        },
+      },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    const parameters = payload.interactive.action.parameters;
+    assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CLIENT);
+    assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CLIENT");
+  }
+});
+
+test("DOCUMENT_PREVIEW intro names the precise invoice kind once it is set", async () => {
+  for (const [invoiceKind, expectedIntro] of [
+    ["FINAL", "Parfait, votre facture définitive est presque prête. Vérifiez les informations avant de la générer."],
+    ["PROFORMA", "Parfait, votre facture proforma est presque prête. Vérifiez les informations avant de la générer."],
+  ]) {
+    const { presenter, calls } = harness();
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER,
+      messageId: `wamid:verify-kind-${invoiceKind}`,
+      result: {
+        handled: true,
+        action: "VERIFY",
+        duplicate: false,
+        result: {
+          document_id: "document:1", version: 1, document_type: "FACTURE", status: "VERIFIED",
+          items: [], client: null, receipt: null, options: { invoice_kind: invoiceKind },
+        },
+      },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    const summary = payload.interactive.action.parameters.flow_action_payload.data.preview_summary;
+    assert.ok(summary.startsWith(expectedIntro), summary);
+  }
 });
 
 test("FINISH_CONTENT opens DOCUMENT_OPTIONS directly and never reopens DOCUMENT_CONTENT or ARTICLE_FORM", async () => {

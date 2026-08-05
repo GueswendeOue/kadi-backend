@@ -31,6 +31,7 @@ function passiveCommandDependencies(onboardingRuntime) {
     onboardingRuntime,
     documentRuntime: {
       start: noop,
+      setInvoiceKind: noop,
       setClient: noop,
       startAddContent: noop,
       addContent: noop,

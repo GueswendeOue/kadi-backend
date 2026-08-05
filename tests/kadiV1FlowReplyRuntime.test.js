@@ -186,6 +186,24 @@ test("recoverable command failure can be retried through consumed-session replay
   assert.equal(attempts, 2);
 });
 
+test("SAVE_INVOICE_TYPE accepts only the exact FINAL or PROFORMA values", () => {
+  assert.equal(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "FINAL" }).ok, true);
+  assert.equal(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "PROFORMA" }).ok, true);
+});
+
+test("SAVE_INVOICE_TYPE fails closed on empty, unknown, lowercase or free-text values", () => {
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "" }), { ok: false, error: "KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID" });
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "final" }), { ok: false, error: "KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID" });
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "AUTRE" }), { ok: false, error: "KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID" });
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "Facture définitive" }), { ok: false, error: "KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID" });
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", {}), { ok: false, error: "KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID" });
+});
+
+test("SAVE_INVOICE_TYPE rejects any field other than invoice_kind and rejects a mismatched flow_key", () => {
+  assert.deepEqual(validateActionPayload("INVOICE_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "FINAL", document_type: "FACTURE" }), { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  assert.deepEqual(validateActionPayload("DOCUMENT_TYPE", "SAVE_INVOICE_TYPE", { invoice_kind: "FINAL" }), { ok: false, error: "KADI_V1_FLOW_REPLY_ACTION_FORBIDDEN" });
+});
+
 test("oversized and excessively deep payloads fail closed", () => {
   const oversized = validateActionPayload("HISTORY_SEARCH", "SEARCH", { query: "x".repeat(17000) });
   assert.equal(oversized.error, "KADI_V1_FLOW_REPLY_PAYLOAD_TOO_LARGE");

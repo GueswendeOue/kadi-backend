@@ -35,7 +35,7 @@ function documentIdentity(command) {
 
 function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline, documentRepository, issuerResolver } = {}) {
   const shared = assertMethods(sharedPipeline, [
-    "createDraft", "applyBrainExtraction", "setClientOrPayer", "addContent", "updateContent",
+    "createDraft", "applyBrainExtraction", "setInvoiceKind", "setClientOrPayer", "addContent", "updateContent",
     "removeContent", "setOptions", "markReadyForReview", "verifyDocument", "reopenForCorrection", "cancelDocument",
   ], "KADI_V1_SHARED_PIPELINE");
   const discharge = assertMethods(dischargePipeline, [
@@ -48,7 +48,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
   function pipelineFor(type) { return type === "DECHARGE" ? discharge : shared; }
   function sharedKey(operation, source, scope) {
     const prefixes = {
-      createDraft: "create_draft:", applyBrainExtraction: "brain_extraction:", setClientOrPayer: "set_party:",
+      createDraft: "create_draft:", applyBrainExtraction: "brain_extraction:", setInvoiceKind: "set_invoice_kind:", setClientOrPayer: "set_party:",
       addContent: "add_content:", updateContent: "update_content:", removeContent: "remove_content:",
       setOptions: "set_options:", markReadyForReview: "mark_ready:", verifyDocument: "verify:",
       reopenForCorrection: "reopen:", cancelDocument: "cancel:",
@@ -104,6 +104,15 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     const applied = type === "DECHARGE" ? await discharge.applyBrainExtraction(command) : await shared.applyBrainExtraction(command);
     if (!applied.ok) return applied;
     return advanceIfComplete(applied.value, ownerWaId, idempotencyKey);
+  }
+  async function setInvoiceKind(command) {
+    const checked = documentIdentity(command);
+    if (!checked.ok) return checked;
+    if (command.documentType !== "FACTURE") return fail("KADI_V1_INVOICE_KIND_FLOW_FORBIDDEN");
+    return shared.setInvoiceKind({
+      ownerWaId: command.ownerWaId, documentId: command.documentId, expectedVersion: command.expectedVersion,
+      invoiceKind: command.invoiceKind, idempotencyKey: sharedKey("setInvoiceKind", command.idempotencyKey),
+    });
   }
   async function setClient(command) {
     const checked = documentIdentity(command);
@@ -240,7 +249,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 
-  return Object.freeze({ start, apply, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
+  return Object.freeze({ start, apply, setInvoiceKind, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
 }
 
 function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderService, generationQuoteService } = {}) {

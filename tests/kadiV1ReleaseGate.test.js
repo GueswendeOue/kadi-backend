@@ -54,7 +54,7 @@ test("release rehearsal passes only with master and webhook flags disabled", () 
   assert.equal(report.ok, true);
   assert.equal(report.verdict, "KADI_V1_RELEASE_REHEARSAL_PASS");
   assert.deepEqual(report.blockers, []);
-  assert.equal(report.summary.valid_draft_flow_count, 16);
+  assert.equal(report.summary.valid_draft_flow_count, Object.keys(FLOW_ENV_KEYS).length);
   assert.equal(report.summary.configured_flow_count, 0);
 });
 

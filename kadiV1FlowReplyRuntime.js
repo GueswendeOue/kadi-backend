@@ -9,12 +9,14 @@ const MAX_PAYLOAD_BYTES = 16 * 1024;
 const MAX_DEPTH = 5;
 
 const CONTENT_NUMERIC_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
+const VALID_INVOICE_KINDS = new Set(["FINAL", "PROFORMA"]);
 const UNIT_CUSTOM_ACTIONS = new Set(["ADD_CONTENT", "UPDATE_CONTENT"]);
 
 const FLOW_ACTIONS = Object.freeze({
   ONBOARDING: Object.freeze(["START"]),
   MENU: Object.freeze(["PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP"]),
   DOCUMENT_TYPE: Object.freeze(["SELECT_DOCUMENT_TYPE"]),
+  INVOICE_TYPE: Object.freeze(["SAVE_INVOICE_TYPE"]),
   DOCUMENT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
   DOCUMENT_CONTENT: Object.freeze(["START_ADD_CONTENT", "FINISH_CONTENT"]),
   ARTICLE_FORM: Object.freeze(["ADD_CONTENT"]),
@@ -38,6 +40,7 @@ const ACTION_FIELDS = Object.freeze({
   BALANCE: Object.freeze([]),
   HELP: Object.freeze([]),
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
+  SAVE_INVOICE_TYPE: Object.freeze(["invoice_kind"]),
   SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
   ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
@@ -164,6 +167,11 @@ function validateActionPayload(flowKey, action, data) {
   if (action === "START") {
     if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
     if (data.owner_name.trim().replace(/\s+/g, " ").length < 2) return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
+  }
+  if (action === "SAVE_INVOICE_TYPE") {
+    if (typeof data.invoice_kind !== "string" || !VALID_INVOICE_KINDS.has(data.invoice_kind)) {
+      return fail("KADI_V1_FLOW_REPLY_INVOICE_KIND_INVALID");
+    }
   }
   if (action === "ADD_CONTENT") {
     if (typeof data.description !== "string" || !data.description.trim()) return fail("KADI_V1_FLOW_REPLY_DESCRIPTION_REQUIRED");
