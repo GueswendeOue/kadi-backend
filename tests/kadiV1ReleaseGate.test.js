@@ -207,6 +207,27 @@ test("draft asset inspection fails closed for a missing or malformed file", () =
   assert.ok(result.errors.some((error) => error.flow_key === "ONBOARDING" && error.code === ASSET_ERROR_CODES.FLOW_FILE_INVALID_JSON));
 });
 
+test("draft asset inspection rejects the exact routing_model shape Meta refused for DOCUMENT_CONTENT", () => {
+  const root = copyDraftAssets();
+  const target = path.join(root, KADI_V1_DRAFT_FLOW_CATALOG.DOCUMENT_CONTENT.file);
+  const json = JSON.parse(fs.readFileSync(target, "utf8"));
+  // Meta's rejection: "ARTICLE_FORM n'est pas connecté au reste des écrans".
+  json.routing_model.DOCUMENT_CONTENT = [];
+  fs.writeFileSync(target, JSON.stringify(json), "utf8");
+  const result = inspectDraftFlowAssets({ rootDir: root });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.flow_key === "DOCUMENT_CONTENT" && error.code === ASSET_ERROR_CODES.FLOW_FILE_CONTRACT_INVALID));
+});
+
+test("draft asset inspection accepts DOCUMENT_CONTENT -> ARTICLE_FORM as the only non-empty routing_model entry", () => {
+  const root = copyDraftAssets();
+  const target = path.join(root, KADI_V1_DRAFT_FLOW_CATALOG.DOCUMENT_CONTENT.file);
+  const json = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.deepEqual(json.routing_model, { DOCUMENT_CONTENT: ["ARTICLE_FORM"], ARTICLE_FORM: [] });
+  const result = inspectDraftFlowAssets({ rootDir: root });
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
 test("draft asset inspection rejects paths outside the repository boundary", () => {
   const catalog = {
     ...KADI_V1_DRAFT_FLOW_CATALOG,

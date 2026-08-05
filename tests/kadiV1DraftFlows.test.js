@@ -109,7 +109,11 @@ test("DOCUMENT_CONTENT uses its targeted two-screen contract: DOCUMENT_CONTENT a
   assert.equal(json.version, "7.3");
   assert.equal(Object.hasOwn(json, "data_api_version"), false);
   assert.deepEqual(Object.keys(json.routing_model).sort(), [...expectedScreenIds].sort());
-  for (const screenId of expectedScreenIds) assert.deepEqual(json.routing_model[screenId], []);
+  // Meta rejected an all-empty routing_model here ("ARTICLE_FORM n'est pas
+  // connecté au reste des écrans"): DOCUMENT_CONTENT must declare
+  // ARTICLE_FORM as reachable; ARTICLE_FORM itself points nowhere further.
+  assert.deepEqual(json.routing_model.DOCUMENT_CONTENT, ["ARTICLE_FORM"]);
+  assert.deepEqual(json.routing_model.ARTICLE_FORM, []);
   assert.equal(json.screens.length, expectedScreenIds.length);
   assert.deepEqual(json.screens.map((screen) => screen.id).sort(), [...expectedScreenIds].sort());
   for (const screenId of expectedScreenIds) {
@@ -168,6 +172,18 @@ test("DOCUMENT_CONTENT registry loading rejects a third screen, a wrong id, a no
     delete json.screens[1].data.session_id;
     return json;
   }, "screen missing session_id must be rejected");
+
+  writeAndExpectRejection((json) => {
+    // The exact shape Meta refused: ARTICLE_FORM isolated, unreachable
+    // from DOCUMENT_CONTENT's routing_model.
+    json.routing_model.DOCUMENT_CONTENT = [];
+    return json;
+  }, "an isolated ARTICLE_FORM (empty DOCUMENT_CONTENT routing_model) must be rejected");
+
+  writeAndExpectRejection((json) => {
+    json.routing_model.ARTICLE_FORM = ["DOCUMENT_CONTENT"];
+    return json;
+  }, "ARTICLE_FORM pointing to another screen must be rejected");
 
   fs.writeFileSync(targetFile, JSON.stringify(base), "utf8");
   assert.doesNotThrow(() => loadFlowRegistry(tempRoot), "unmodified fixture must still load");

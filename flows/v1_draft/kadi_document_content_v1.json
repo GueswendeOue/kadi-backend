@@ -1,7 +1,7 @@
 {
   "version": "7.3",
   "routing_model": {
-    "DOCUMENT_CONTENT": [],
+    "DOCUMENT_CONTENT": ["ARTICLE_FORM"],
     "ARTICLE_FORM": []
   },
   "screens": [
