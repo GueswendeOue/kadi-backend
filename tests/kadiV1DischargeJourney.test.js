@@ -169,6 +169,65 @@ test("purpose/reason and notes/observations are persisted correctly under their 
   assert.equal(saved.value.discharge.subject.amount, 50000);
 });
 
+test("a successful MONEY discharge is truly persisted: reloading independently from the repository confirms every field", async () => {
+  const { runtime, repository } = fixture();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:persist-money" });
+  assert.equal(started.ok, true, started.error);
+  const saved = await runtime.saveDischargeDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "DECHARGE", idempotencyKey: "flow_command:save-details:persist-money",
+    details: {
+      giver: "Awa", recipient: "Issa", transferred_content_type: "MONEY",
+      amount: 50000, reason: "Remise de fonds", observations: "Remis en main propre",
+    },
+  });
+  assert.equal(saved.ok, true, saved.error);
+
+  // Independent reload: do not trust saved.value alone.
+  const reloaded = await repository.getDocumentById({ documentId: started.value.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.ok, true, reloaded.error);
+  const document = reloaded.value;
+
+  assert.equal(document.discharge.giver, "Awa");
+  assert.equal(document.discharge.receiver, "Issa");
+  assert.equal(document.discharge.subject.type, "MONEY");
+  assert.equal(document.discharge.subject.amount, 50000);
+  assert.equal(typeof document.discharge.subject.amount, "number");
+  assert.equal(document.currency, "XOF");
+  assert.equal(document.discharge.reason, "Remise de fonds");
+  assert.equal(document.discharge.observations, "Remis en main propre");
+  assert.equal(document.total, 50000);
+  // No invoice/client/items structure was introduced by the discharge path.
+  assert.equal(Object.hasOwn(document, "client"), false);
+  assert.equal(Object.hasOwn(document, "items"), false);
+  assert.equal(document.status, "READY_FOR_REVIEW");
+});
+
+test("a successful non-money (GOODS) discharge is truly persisted: description and quantity land, no monetary amount", async () => {
+  const { runtime, repository } = fixture();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:persist-goods" });
+  assert.equal(started.ok, true, started.error);
+  const saved = await runtime.saveDischargeDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "DECHARGE", idempotencyKey: "flow_command:save-details:persist-goods",
+    details: {
+      giver: "Awa", recipient: "Issa", transferred_content_type: "GOODS",
+      description: "Clés du magasin", quantity: 2, reason: "Remise convenue",
+    },
+  });
+  assert.equal(saved.ok, true, saved.error);
+
+  const reloaded = await repository.getDocumentById({ documentId: started.value.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.ok, true, reloaded.error);
+  const document = reloaded.value;
+
+  assert.equal(document.discharge.subject.type, "GOODS");
+  assert.equal(document.discharge.subject.description, "Clés du magasin");
+  assert.equal(document.discharge.quantity, 2);
+  assert.equal(document.discharge.subject.amount, null);
+  assert.equal(document.status, "READY_FOR_REVIEW");
+});
+
 test("a complete discharge (single submission) advances all the way to READY_FOR_REVIEW", async () => {
   const { runtime } = fixture();
   const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:2" });

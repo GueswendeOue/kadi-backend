@@ -261,33 +261,55 @@ test("beneficiary falls back to owner_name when business_name is absent, per the
   assert.equal(saved.value.receipt.beneficiary, "Awa Traoré");
 });
 
-test("a receipt fails closed (no document mutation) when no valid issuer identity can be resolved", async () => {
-  const notConfigured = documentRuntimeFixture({ issuerProfileById: async () => ({ ok: false, error: "KADI_V1_ISSUER_PROFILE_NOT_FOUND" }) });
-  const startedA = await notConfigured.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3a" });
-  const resultA = await notConfigured.runtime.setReceiptDetails({
-    ownerWaId: OWNER, documentId: startedA.value.document_id, expectedVersion: startedA.value.version,
-    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3a",
-    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
-  });
-  assert.deepEqual(resultA, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+async function assertUnresolvedBeneficiaryMutatesNothing(fixtureOptions, suffix) {
+  const { runtime, repository } = documentRuntimeFixture(fixtureOptions);
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: `flow_command:start:${suffix}` });
+  assert.equal(started.ok, true, started.error);
 
-  const emptyName = documentRuntimeFixture({ issuerProfileById: async () => ({ ok: true, value: { business_name: "", owner_name: "" } }) });
-  const startedB = await emptyName.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3b" });
-  const resultB = await emptyName.runtime.setReceiptDetails({
-    ownerWaId: OWNER, documentId: startedB.value.document_id, expectedVersion: startedB.value.version,
-    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3b",
-    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
-  });
-  assert.deepEqual(resultB, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+  // Snapshot the real persisted state before the call, independently of
+  // whatever setReceiptDetails is about to return.
+  const before = await repository.getDocumentById({ documentId: started.value.document_id, ownerWaId: OWNER });
+  assert.equal(before.ok, true, before.error);
 
-  const throwingResolver = documentRuntimeFixture({ issuerProfileById: async () => { throw new Error("network down"); } });
-  const startedC = await throwingResolver.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3c" });
-  const resultC = await throwingResolver.runtime.setReceiptDetails({
-    ownerWaId: OWNER, documentId: startedC.value.document_id, expectedVersion: startedC.value.version,
-    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3c",
+  const result = await runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "RECU", idempotencyKey: `flow_command:save-receipt:${suffix}`,
     details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
   });
-  assert.deepEqual(resultC, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+  assert.deepEqual(result, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+
+  // Reload independently — do not trust the failure result alone — and
+  // prove beneficiary resolution happens strictly before the first
+  // document mutation: nothing in the receipt or options changed.
+  const after = await repository.getDocumentById({ documentId: started.value.document_id, ownerWaId: OWNER });
+  assert.equal(after.ok, true, after.error);
+  assert.equal(after.value.version, before.value.version);
+  assert.equal(after.value.status, before.value.status);
+  assert.equal(after.value.status, "COLLECTING");
+  assert.deepEqual(after.value.receipt, before.value.receipt);
+  assert.equal(after.value.receipt?.payer, undefined);
+  assert.equal(after.value.receipt?.beneficiary, undefined);
+  assert.equal(after.value.receipt?.amount, undefined);
+  assert.equal(after.value.receipt?.reason, undefined);
+  assert.equal(after.value.receipt?.payment_method, undefined);
+  assert.equal(after.value.receipt?.reference, undefined);
+  assert.deepEqual(after.value.options, before.value.options);
+  assert.equal(after.value.options?.receipt_format, undefined);
+}
+
+test("a receipt fails closed with zero document mutation when no valid issuer identity can be resolved", async () => {
+  await assertUnresolvedBeneficiaryMutatesNothing(
+    { issuerProfileById: async () => ({ ok: false, error: "KADI_V1_ISSUER_PROFILE_NOT_FOUND" }) },
+    "3a"
+  );
+  await assertUnresolvedBeneficiaryMutatesNothing(
+    { issuerProfileById: async () => ({ ok: true, value: { business_name: "", owner_name: "" } }) },
+    "3b"
+  );
+  await assertUnresolvedBeneficiaryMutatesNothing(
+    { issuerProfileById: async () => { throw new Error("network down"); } },
+    "3c"
+  );
 });
 
 test("the derived beneficiary appears in the review/preview projection", async () => {
@@ -301,6 +323,44 @@ test("the derived beneficiary appears in the review/preview projection", async (
   assert.equal(saved.ok, true, saved.error);
   const preview = buildPreviewData(saved.value);
   assert.equal(preview.beneficiary, "Kadi Boutique");
+});
+
+test("a successful receipt is truly persisted: reloading independently from the repository confirms every field, for both A4 and TICKET_80", async () => {
+  for (const receiptFormat of ["A4", "TICKET_80"]) {
+    const { runtime, repository } = documentRuntimeFixture();
+    const started = await runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: `flow_command:start:persist-${receiptFormat}` });
+    assert.equal(started.ok, true, started.error);
+    const saved = await runtime.setReceiptDetails({
+      ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+      documentType: "RECU", idempotencyKey: `flow_command:save-receipt:persist-${receiptFormat}`,
+      details: {
+        payer: "Client Test", amount: 75000, reason: "Paiement prestation",
+        payment_method: "Espèces", reference: "REF-PERSIST-1", receipt_format: receiptFormat,
+      },
+    });
+    assert.equal(saved.ok, true, saved.error);
+
+    // Independent reload: do not trust saved.value alone — go back through
+    // the repository exactly as a fresh request would.
+    const reloaded = await repository.getDocumentById({ documentId: started.value.document_id, ownerWaId: OWNER });
+    assert.equal(reloaded.ok, true, reloaded.error);
+    const document = reloaded.value;
+
+    assert.equal(document.receipt.payer, "Client Test");
+    assert.equal(document.receipt.beneficiary, "Kadi Boutique");
+    assert.equal(document.receipt.amount, 75000);
+    assert.equal(typeof document.receipt.amount, "number");
+    assert.equal(document.receipt.reason, "Paiement prestation");
+    assert.equal(document.receipt.payment_method, "Espèces");
+    assert.equal(document.receipt.reference, "REF-PERSIST-1");
+    assert.equal(document.options.receipt_format, receiptFormat);
+    assert.ok(["A4", "TICKET_80"].includes(document.options.receipt_format));
+    // start() (v1) -> addContent (v2) -> setReceiptFormat (v3). The implicit
+    // markReadyForReview promotion triggered by advanceIfComplete is a
+    // state transition, not a patch, so it does not bump the version.
+    assert.equal(document.version, 3);
+    assert.equal(document.status, "READY_FOR_REVIEW");
+  }
 });
 
 // --- Category: pipeline persistence (mission items 10, 11, 12) ---
