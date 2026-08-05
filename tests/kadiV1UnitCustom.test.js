@@ -12,7 +12,7 @@ const { RECOVERABLE_TEXT } = require("../kadiV1WebhookRuntime");
 // ── Identifiants historiques conservés ───────────────────────────────────────
 
 test("identifiant historique 'unité' est toujours accepté sans unit_custom", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit: "unité",
@@ -24,7 +24,7 @@ test("identifiant historique 'unité' est toujours accepté sans unit_custom", (
 });
 
 test("identifiant 'heure' est accepté", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Prestation",
     quantity: 4,
     unit: "heure",
@@ -35,7 +35,7 @@ test("identifiant 'heure' est accepté", () => {
 });
 
 test("identifiant 'forfait' est accepté", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Installation",
     quantity: 1,
     unit: "forfait",
@@ -48,7 +48,7 @@ test("identifiant 'forfait' est accepté", () => {
 // ── unit === "autre" : unit_custom devient l'unité ───────────────────────────
 
 test("unit 'autre' + unit_custom 'bobine' → unit devient 'bobine'", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Fil électrique",
     quantity: 3,
     unit: "autre",
@@ -61,7 +61,7 @@ test("unit 'autre' + unit_custom 'bobine' → unit devient 'bobine'", () => {
 });
 
 test("unit 'autre' + unit_custom avec espaces est nettoyé", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Produit",
     quantity: 1,
     unit: "autre",
@@ -74,7 +74,7 @@ test("unit 'autre' + unit_custom avec espaces est nettoyé", () => {
 });
 
 test("unit 'autre' + unit_custom trop long (>50) est refusé avant session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Produit",
     quantity: 1,
     unit: "autre",
@@ -86,7 +86,7 @@ test("unit 'autre' + unit_custom trop long (>50) est refusé avant session", () 
 });
 
 test("unit 'autre' + unit_custom vide (chaîne vide) est refusé avant session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Produit",
     quantity: 1,
     unit: "autre",
@@ -98,7 +98,7 @@ test("unit 'autre' + unit_custom vide (chaîne vide) est refusé avant session",
 });
 
 test("unit 'autre' + unit_custom espaces uniquement est refusé avant session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Produit",
     quantity: 1,
     unit: "autre",
@@ -110,7 +110,7 @@ test("unit 'autre' + unit_custom espaces uniquement est refusé avant session", 
 });
 
 test("unit 'autre' sans unit_custom est refusé", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Produit",
     quantity: 1,
     unit: "autre",
@@ -121,7 +121,7 @@ test("unit 'autre' sans unit_custom est refusé", () => {
 });
 
 test("unit_custom présent sans unit 'autre' est silencieusement supprimé", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit: "sac",
@@ -166,7 +166,7 @@ test("unit_custom n'atteint jamais le command runtime", async () => {
   await sessions.open({
     ownerWaId: "22670626055",
     document: { document_id: "document:1", version: 1, document_type: "FACTURE", status: "COLLECTING" },
-    expectedFlowKey: "DOCUMENT_CONTENT",
+    expectedFlowKey: "ARTICLE_FORM",
     returnState: "COLLECTING",
     idempotencyKey: "open:unit:custom:1",
   });
@@ -185,7 +185,7 @@ test("unit_custom n'atteint jamais le command runtime", async () => {
   const result = await runtime.handle({
     ownerWaId: "22670626055",
     sessionId: "kadi_session:unit:custom:1",
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: {
       description: "Câble",
@@ -203,16 +203,16 @@ test("unit_custom n'atteint jamais le command runtime", async () => {
   assert.equal(Object.hasOwn(dispatched[0].data, "unit_custom"), false, "unit_custom ne doit pas atteindre le command runtime");
 });
 
-// ── Flow JSON : unités étendues dans DOCUMENT_CONTENT ────────────────────────
+// ── Flow JSON : unités étendues dans ARTICLE_FORM ─────────────────────────────
 
-test("ARTICLE_FORM (écran d'article de DOCUMENT_CONTENT) contient 'unité', 'heure', 'forfait' et 'autre' dans unit_options", () => {
+test("ARTICLE_FORM (Flow indépendante) contient 'unité', 'heure', 'forfait' et 'autre' dans unit_options", () => {
   const raw = fs.readFileSync(
-    path.join(__dirname, "..", "flows", "v1_draft", "kadi_document_content_v1.json"),
+    path.join(__dirname, "..", "flows", "v1_draft", "kadi_article_form_v1.json"),
     "utf8"
   );
   const flow = JSON.parse(raw);
-  const screen = flow.screens.find((candidate) => candidate.id === "ARTICLE_FORM");
-  assert.ok(screen, "l'écran ARTICLE_FORM doit exister dans kadi_document_content_v1.json");
+  const screen = flow.screens[0];
+  assert.equal(screen.id, "ARTICLE_FORM", "ARTICLE_FORM doit être le seul écran de sa propre Flow");
   const units = screen.data.unit_options.__example__;
   const ids = units.map((u) => u.id);
   assert.equal(ids.includes("unité"), true, "'unité' manquant");

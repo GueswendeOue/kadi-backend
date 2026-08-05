@@ -51,7 +51,7 @@ test("FINISH_CONTENT avec champs de formulaire remplis est accepté", () => {
 // ── validateActionPayload : ADD_CONTENT strict sur les champs requis ──────────
 
 test("ADD_CONTENT sans description est rejeté avant consommation de session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "",
     quantity: "2",
     unit_price: "5000",
@@ -61,7 +61,7 @@ test("ADD_CONTENT sans description est rejeté avant consommation de session", (
 });
 
 test("ADD_CONTENT avec description espaces uniquement est rejeté", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "   ",
     quantity: 1,
     unit_price: 1000,
@@ -71,7 +71,7 @@ test("ADD_CONTENT avec description espaces uniquement est rejeté", () => {
 });
 
 test("ADD_CONTENT sans quantity est rejeté avant consommation de session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     unit_price: "5000",
   });
@@ -80,7 +80,7 @@ test("ADD_CONTENT sans quantity est rejeté avant consommation de session", () =
 });
 
 test("ADD_CONTENT sans unit_price est rejeté avant consommation de session", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "2",
   });
@@ -89,7 +89,7 @@ test("ADD_CONTENT sans unit_price est rejeté avant consommation de session", ()
 });
 
 test("ADD_CONTENT valide est toujours accepté et normalisé", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "2",
     unit: "sac",
@@ -142,7 +142,7 @@ function makeSessionService(id = "kadi_session:content:finish:1") {
   });
 }
 
-async function openContentSession(service, sessionId = "kadi_session:content:finish:1") {
+async function openContentSession(service, sessionId = "kadi_session:content:finish:1", overrides = {}) {
   const opened = await service.open({
     ownerWaId: OWNER,
     document: {
@@ -154,6 +154,7 @@ async function openContentSession(service, sessionId = "kadi_session:content:fin
     expectedFlowKey: "DOCUMENT_CONTENT",
     returnState: "COLLECTING",
     idempotencyKey: `open:content:${sessionId}`,
+    ...overrides,
   });
   assert.equal(opened.ok, true);
   return opened.value;
@@ -200,7 +201,7 @@ test("FINISH_CONTENT avec articles transmet la commande au command runtime", asy
 
 test("ADD_CONTENT vide ne consomme pas la session", async () => {
   const sessions = makeSessionService("kadi_session:content:empty:1");
-  await openContentSession(sessions, "kadi_session:content:empty:1");
+  await openContentSession(sessions, "kadi_session:content:empty:1", { expectedFlowKey: "ARTICLE_FORM" });
 
   let commandCalled = false;
   const runtime = createKadiV1FlowReplyRuntime({
@@ -216,7 +217,7 @@ test("ADD_CONTENT vide ne consomme pas la session", async () => {
   const result = await runtime.handle({
     ownerWaId: OWNER,
     sessionId: "kadi_session:content:empty:1",
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: { description: "", quantity: "2", unit_price: "5000" },
     idempotencyKey: "reply:add:empty:1",

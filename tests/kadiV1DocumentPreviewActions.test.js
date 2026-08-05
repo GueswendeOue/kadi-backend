@@ -12,7 +12,7 @@ const {
   validateCommand,
   createKadiV1FlowCommandRuntime,
 } = require("../kadiV1FlowCommandRuntime");
-const { nextFlowForReply, nextScreenForReply } = require("../kadiV1ProductionPresenter");
+const { nextFlowForReply } = require("../kadiV1ProductionPresenter");
 
 // P8.A1-B objective 3 — DOCUMENT_PREVIEW now exposes explicit actions
 // (PREPARE_PDF, EDIT_CLIENT, EDIT_CONTENT, EDIT_OPTIONS, SAVE_FOR_LATER,
@@ -132,10 +132,4 @@ test("SAVE_FOR_LATER and CANCEL open no next Flow", () => {
   const result = { document_id: "document:1", version: 2, document_type: "FACTURE", status: "COLLECTING", items: [], client: null };
   assert.equal(nextFlowForReply("SAVE_FOR_LATER", result), null);
   assert.equal(nextFlowForReply("CANCEL", result), null);
-});
-
-test("nextScreenForReply defers to the entry screen for every DOCUMENT_PREVIEW-originated Flow", () => {
-  for (const flowKey of ["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"]) {
-    assert.equal(nextScreenForReply(flowKey, "EDIT_CLIENT", {}), null);
-  }
 });

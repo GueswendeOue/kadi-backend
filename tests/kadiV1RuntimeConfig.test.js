@@ -57,6 +57,23 @@ test("les IDs Meta sont lus uniquement depuis l'environnement et validés", () =
   assert.deepEqual(resolveConfiguredFlowId(config, "ONBOARDING"), { ok: false, error: "KADI_V1_FLOW_ID_MISSING" });
 });
 
+test("KADI_V1_FLOW_ARTICLE_FORM_ID est lu et validé comme les autres IDs Meta (5 à 30 chiffres)", () => {
+  assert.equal(FLOW_ENV_KEYS.ARTICLE_FORM, "KADI_V1_FLOW_ARTICLE_FORM_ID");
+  const config = createKadiV1RuntimeConfig({
+    KADI_V1_ENABLED: "true",
+    KADI_V1_FLOW_ARTICLE_FORM_ID: "987654321098765",
+  });
+  assert.equal(config.flowIds.ARTICLE_FORM, "987654321098765");
+  assert.deepEqual(resolveConfiguredFlowId(config, "ARTICLE_FORM"), { ok: true, value: "987654321098765" });
+
+  const invalid = createKadiV1RuntimeConfig({
+    KADI_V1_ENABLED: "true",
+    KADI_V1_FLOW_ARTICLE_FORM_ID: "123",
+  });
+  assert.equal(invalid.flowIds.ARTICLE_FORM, null, "moins de 5 chiffres doit être rejeté");
+  assert.deepEqual(resolveConfiguredFlowId(invalid, "ARTICLE_FORM"), { ok: false, error: "KADI_V1_FLOW_ID_MISSING" });
+});
+
 test("la résolution d'un Flow refuse la V1 désactivée et les clés inconnues", () => {
   const disabled = createKadiV1RuntimeConfig({ KADI_V1_FLOW_MENU_ID: "123456" });
   assert.deepEqual(resolveConfiguredFlowId(disabled, "MENU"), { ok: false, error: "KADI_V1_DISABLED" });

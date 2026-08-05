@@ -120,38 +120,11 @@ function defaultForSchema(schema) {
   return null;
 }
 
-// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
-// contract: it stays a single flow_key but opens either its decision screen
-// or the ARTICLE_FORM item-entry screen, both terminal and complete-only.
-// Screens are always resolved by id (never by array position) and any id
-// outside this closed registry is rejected.
-const MULTI_SCREEN_ENTRIES = Object.freeze({
-  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
-});
-
-// Meta rejected an all-empty routing_model for DOCUMENT_CONTENT
-// ("ARTICLE_FORM n'est pas connecté au reste des écrans"); DOCUMENT_CONTENT
-// must declare ARTICLE_FORM as reachable, while ARTICLE_FORM itself points
-// nowhere further. Every single-screen Flow keeps an empty array (default).
-const EXPECTED_ROUTING_TARGETS = Object.freeze({
-  DOCUMENT_CONTENT: Object.freeze({
-    DOCUMENT_CONTENT: Object.freeze(["ARTICLE_FORM"]),
-    ARTICLE_FORM: Object.freeze([]),
-  }),
-});
-
-function sameStringArray(actual, expected) {
-  return (
-    Array.isArray(actual) &&
-    actual.length === expected.length &&
-    actual.every((value, index) => value === expected[index])
-  );
-}
-
-function expectedRoutingTargets(flowKey, screenId) {
-  return EXPECTED_ROUTING_TARGETS[flowKey]?.[screenId] ?? [];
-}
-
+// Meta rejects opening any screen other than a Flow's first declared
+// screen ((#131009) "Specified screen ARTICLE_FORM is not allowed as
+// first screen of this flow"). Every draft Flow is therefore locked to
+// exactly one terminal, complete-only screen; ARTICLE_FORM is its own
+// independent flow_key/Flow, not a second screen of DOCUMENT_CONTENT.
 function loadFlowRegistry(rootDir = __dirname) {
   const registry = {};
 
@@ -162,66 +135,37 @@ function loadFlowRegistry(rootDir = __dirname) {
     const absolutePath = path.join(rootDir, catalog.file);
     const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
     const screens = Array.isArray(parsed.screens) ? parsed.screens : [];
-    const expectedScreenIds = MULTI_SCREEN_ENTRIES[flowKey] || [flowKey];
+    const first = screens[0];
     const routingKeys =
       parsed.routing_model &&
       typeof parsed.routing_model === "object"
         ? Object.keys(parsed.routing_model)
         : [];
 
-    const screensById = {};
-    for (const screen of screens) {
-      if (isPlainObject(screen) && typeof screen.id === "string") {
-        screensById[screen.id] = screen;
-      }
-    }
-
-    const contractValid =
-      screens.length === expectedScreenIds.length &&
-      Object.keys(screensById).length === expectedScreenIds.length &&
-      expectedScreenIds.every((id) => Object.hasOwn(screensById, id)) &&
-      routingKeys.length === expectedScreenIds.length &&
-      expectedScreenIds.every(
-        (id) =>
-          routingKeys.includes(id) &&
-          sameStringArray(parsed.routing_model[id], expectedRoutingTargets(flowKey, id))
-      ) &&
-      expectedScreenIds.every((id) => screensById[id]?.terminal === true) &&
-      expectedScreenIds.every(
-        (id) =>
-          isPlainObject(screensById[id]?.data) &&
-          Object.hasOwn(screensById[id].data, "session_id")
-      );
-
-    if (!contractValid) {
+    if (
+      screens.length !== 1 ||
+      first?.id !== flowKey ||
+      routingKeys.length !== 1 ||
+      routingKeys[0] !== flowKey ||
+      !Array.isArray(parsed.routing_model[flowKey]) ||
+      parsed.routing_model[flowKey].length !== 0 ||
+      first?.terminal !== true ||
+      !isPlainObject(first.data) ||
+      !Object.hasOwn(first.data, "session_id")
+    ) {
       throw new TypeError(`KADI_V1_FLOW_ENTRY_CONTRACT_INVALID:${flowKey}`);
     }
 
-    const defaultsByScreenId = {};
-    const screensRegistry = {};
-    for (const id of expectedScreenIds) {
-      const screenData = screensById[id].data;
-      const defaults = {};
-      for (const [key, schema] of Object.entries(screenData)) {
-        defaults[key] = defaultForSchema(schema);
-      }
-      defaultsByScreenId[id] = Object.freeze(defaults);
-      screensRegistry[id] = Object.freeze({
-        id,
-        dataKeys: Object.freeze(Object.keys(screenData)),
-      });
+    const defaults = {};
+    for (const [key, schema] of Object.entries(first.data)) {
+      defaults[key] = defaultForSchema(schema);
     }
-
-    const entryScreen = flowKey;
 
     registry[flowKey] = Object.freeze({
       flowKey,
-      entryScreen,
-      allowedScreenIds: Object.freeze([...expectedScreenIds]),
-      screensById: Object.freeze(screensRegistry),
-      defaultsByScreenId: Object.freeze(defaultsByScreenId),
-      dataKeys: screensRegistry[entryScreen].dataKeys,
-      defaults: defaultsByScreenId[entryScreen],
+      entryScreen: first.id,
+      dataKeys: Object.freeze(Object.keys(first.data)),
+      defaults: Object.freeze(defaults),
       card: Object.freeze({
         body: String(catalog.card?.body || "Continuez avec Kadi.").slice(
           0,
@@ -378,12 +322,12 @@ function buildItemsSummary(document) {
   }
 }
 
-function safeFlowData(contract, screen, sessionId, suggested = {}) {
-  const output = clone(contract.defaultsByScreenId[screen]);
+function safeFlowData(contract, sessionId, suggested = {}) {
+  const output = clone(contract.defaults);
   output.session_id = sessionId;
 
   const source = isPlainObject(suggested) ? suggested : {};
-  for (const key of contract.screensById[screen].dataKeys) {
+  for (const key of contract.dataKeys) {
     if (
       key === "session_id" ||
       FORBIDDEN_META_DATA_KEYS.has(key) ||
@@ -403,7 +347,7 @@ function safeFlowData(contract, screen, sessionId, suggested = {}) {
   }
 
   if (
-    contract.screensById[screen].dataKeys.includes("document_label") &&
+    contract.dataKeys.includes("document_label") &&
     typeof source.document_type === "string"
   ) {
     output.document_label = documentLabel(source.document_type);
@@ -420,16 +364,12 @@ function buildV1FlowMessage({
   flowMode,
   contract,
   data,
-  screen,
 }) {
   if (!OWNER_PATTERN.test(to || "")) {
     throw new TypeError("KADI_V1_PRESENTER_OWNER_INVALID");
   }
-  if (!FLOW_KEYS.includes(flowKey) || contract?.flowKey !== flowKey) {
+  if (!FLOW_KEYS.includes(flowKey) || contract?.entryScreen !== flowKey) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
-  }
-  if (!contract?.allowedScreenIds?.includes(screen)) {
-    throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
   }
   if (!FLOW_ID_PATTERN.test(flowId || "")) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_INVALID");
@@ -459,7 +399,7 @@ function buildV1FlowMessage({
           flow_cta: contract.card.cta,
           flow_action: "navigate",
           flow_action_payload: Object.freeze({
-            screen,
+            screen: contract.entryScreen,
             data,
           }),
         }),
@@ -541,10 +481,13 @@ function nextFlowForReply(action, resultValue) {
       ? "DISCHARGE_DETAILS"
       : "DOCUMENT_CLIENT";
   }
-  if (action === "SAVE_CLIENT") return "DOCUMENT_CONTENT";
-  if (
-    ["START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)
-  ) {
+  // ARTICLE_FORM is now its own independent flow_key/Flow (Meta refused
+  // opening it as a second screen of DOCUMENT_CONTENT — #131009). The item
+  // form is always reached via ARTICLE_FORM; DOCUMENT_CONTENT is the
+  // decision screen reached after an item is saved or content is finished.
+  if (action === "SAVE_CLIENT") return "ARTICLE_FORM";
+  if (action === "START_ADD_CONTENT") return "ARTICLE_FORM";
+  if (["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"].includes(action)) {
     return "DOCUMENT_CONTENT";
   }
   if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
@@ -556,15 +499,6 @@ function nextFlowForReply(action, resultValue) {
   if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
   if (action === "SELECT_PACK") return "RECHARGE";
   return null;
-}
-
-function nextScreenForReply(flowKey, action, resultValue) {
-  if (flowKey !== "DOCUMENT_CONTENT") return null;
-  if (action === "START_ADD_CONTENT") return "ARTICLE_FORM";
-  if (action === "ADD_CONTENT") return "DOCUMENT_CONTENT";
-  const document = extractDocument(resultValue);
-  const hasItems = Array.isArray(document?.items) && document.items.length > 0;
-  return hasItems ? "DOCUMENT_CONTENT" : "ARTICLE_FORM";
 }
 
 function quoteFromResult(value) {
@@ -794,7 +728,6 @@ function createKadiV1ProductionPresenter({
     flowKey,
     document = null,
     suggestedData = {},
-    screen = null,
   }) {
     if (!FLOW_KEYS.includes(flowKey)) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_KEY_INVALID");
@@ -803,13 +736,8 @@ function createKadiV1ProductionPresenter({
     if (!FLOW_ID_PATTERN.test(flowId || "")) {
       throw new TypeError("KADI_V1_PRESENTER_FLOW_ID_MISSING");
     }
-    const contract = registry[flowKey];
-    const targetScreen = screen == null ? contract.entryScreen : screen;
-    if (!contract.allowedScreenIds.includes(targetScreen)) {
-      throw new TypeError("KADI_V1_PRESENTER_SCREEN_INVALID");
-    }
 
-    const source = `${messageId || ownerWaId}:${flowKey}:${targetScreen}:${
+    const source = `${messageId || ownerWaId}:${flowKey}:${
       document?.document_id || "none"
     }:${document?.version || 0}`;
     const opened = await sessions.open({
@@ -823,9 +751,9 @@ function createKadiV1ProductionPresenter({
       throw new Error(opened?.error || "KADI_V1_PRESENTER_SESSION_OPEN_FAILED");
     }
 
+    const contract = registry[flowKey];
     const data = safeFlowData(
       contract,
-      targetScreen,
       opened.value.session_id,
       suggestedData
     );
@@ -837,12 +765,10 @@ function createKadiV1ProductionPresenter({
       flowMode,
       contract,
       data,
-      screen: targetScreen,
     });
     await messaging.sendFlow(payload);
     return Object.freeze({
       flow_key: flowKey,
-      screen: targetScreen,
       session_id: opened.value.session_id,
       duplicate: opened.duplicate === true,
     });
@@ -1016,7 +942,6 @@ function createKadiV1ProductionPresenter({
           result.result,
           { issuerProfile }
         ),
-        screen: nextScreenForReply(flowKey, result.action, result.result),
       });
     }
 
@@ -1074,6 +999,5 @@ module.exports = {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
   nextFlowForReply,
-  nextScreenForReply,
   safeFlowData,
 };

@@ -41,64 +41,22 @@ function isPathInside(rootDir, candidate) {
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
-// contract: exactly two terminal, complete-only screens (DOCUMENT_CONTENT,
-// ARTICLE_FORM), resolved by id, never by array position. Every other Flow
-// keeps the original single-screen contract unchanged.
-const MULTI_SCREEN_ENTRIES = Object.freeze({
-  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
-});
-
-// Meta rejected an all-empty routing_model for DOCUMENT_CONTENT
-// ("ARTICLE_FORM n'est pas connecté au reste des écrans"); DOCUMENT_CONTENT
-// must declare ARTICLE_FORM as reachable, while ARTICLE_FORM itself points
-// nowhere further. Every single-screen Flow keeps an empty array (default).
-const EXPECTED_ROUTING_TARGETS = Object.freeze({
-  DOCUMENT_CONTENT: Object.freeze({
-    DOCUMENT_CONTENT: Object.freeze(["ARTICLE_FORM"]),
-    ARTICLE_FORM: Object.freeze([]),
-  }),
-});
-
-function sameStringArray(actual, expected) {
-  return (
-    Array.isArray(actual) &&
-    actual.length === expected.length &&
-    actual.every((value, index) => value === expected[index])
-  );
-}
-
-function expectedRoutingTargets(flowKey, screenId) {
-  return EXPECTED_ROUTING_TARGETS[flowKey]?.[screenId] ?? [];
-}
-
+// Meta rejects opening any screen other than a Flow's first declared
+// screen ((#131009) "Specified screen ARTICLE_FORM is not allowed as
+// first screen of this flow"). Every draft Flow is therefore locked to
+// exactly one terminal, complete-only screen; ARTICLE_FORM is its own
+// independent flow_key/Flow, not a second screen of DOCUMENT_CONTENT.
 function validateFlowJson(flowKey, json) {
-  const expectedScreenIds = MULTI_SCREEN_ENTRIES[flowKey] || [flowKey];
-  if (
-    !json
-    || json.version !== "7.3"
-    || Object.hasOwn(json, "data_api_version")
-    || !json.routing_model
-    || !Array.isArray(json.screens)
-    || json.screens.length !== expectedScreenIds.length
-  ) {
-    return false;
-  }
-  const routingKeys = Object.keys(json.routing_model);
-  if (routingKeys.length !== expectedScreenIds.length) return false;
-  const screensById = {};
-  for (const screen of json.screens) {
-    if (screen && typeof screen === "object" && typeof screen.id === "string") {
-      screensById[screen.id] = screen;
-    }
-  }
-  if (Object.keys(screensById).length !== expectedScreenIds.length) return false;
-  return expectedScreenIds.every((id) => (
-    Object.hasOwn(screensById, id)
-    && screensById[id]?.terminal === true
-    && routingKeys.includes(id)
-    && sameStringArray(json.routing_model[id], expectedRoutingTargets(flowKey, id))
-  ));
+  return json
+    && json.version === "7.3"
+    && !Object.hasOwn(json, "data_api_version")
+    && json.routing_model
+    && Array.isArray(json.routing_model[flowKey])
+    && json.routing_model[flowKey].length === 0
+    && Array.isArray(json.screens)
+    && json.screens.length === 1
+    && json.screens[0]?.id === flowKey
+    && json.screens[0]?.terminal === true;
 }
 
 function inspectDraftFlowAssets({
