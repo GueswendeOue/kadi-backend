@@ -1,4 +1,66 @@
-# Kadi AI — Instructions permanentes Codex
+# Kadi AI — Instructions permanentes pour tout agent IA
+
+Ce fichier est la porte d'entrée universelle pour toute IA travaillant sur
+ce dépôt (Codex, Claude ou autre). Les sections qui suivent (1 à 20)
+restent les instructions permanentes détaillées. Cette section 0 fixe la
+discipline documentaire et de contexte qui les complète.
+
+## 0. Contexte multi-agents et documentation permanente
+
+Avant toute modification importante :
+
+* lire [`docs/CONTEXT_INDEX.md`](docs/CONTEXT_INDEX.md), qui indexe tous les
+  documents de contexte permanents ;
+* consulter [`docs/KADI_ENGINEERING_MEMORY.md`](docs/KADI_ENGINEERING_MEMORY.md)
+  avant tout diagnostic — un symptôme rencontré a peut-être déjà une cause
+  confirmée documentée ;
+* consulter [`docs/KADI_RELEASE_CHECKLIST.md`](docs/KADI_RELEASE_CHECKLIST.md)
+  avant toute mission de livraison ;
+* inspecter le code réel et les tests avant de formuler une hypothèse — le
+  dépôt est la source de vérité technique, pas un document historique.
+
+### Table : quel document lire selon la mission
+
+| Type de mission | Document(s) à lire en premier |
+|---|---|
+| Prise de contexte générale | [`docs/CONTEXT_INDEX.md`](docs/CONTEXT_INDEX.md) |
+| Comprendre pourquoi le projet existe | [`docs/KADI_PROJECT_VISION.md`](docs/KADI_PROJECT_VISION.md) |
+| Savoir ce qui est déployé aujourd'hui | [`docs/KADI_CURRENT_STATE.md`](docs/KADI_CURRENT_STATE.md) |
+| Modification technique (routage, persistance, runtime) | [`docs/KADI_ARCHITECTURE.md`](docs/KADI_ARCHITECTURE.md) |
+| Modification touchant la logique métier | [`docs/KADI_PRODUCT_RULES.md`](docs/KADI_PRODUCT_RULES.md) |
+| Diagnostic d'un bug ou d'un comportement inattendu | [`docs/KADI_ENGINEERING_MEMORY.md`](docs/KADI_ENGINEERING_MEMORY.md) |
+| Livraison, déploiement, publication Meta, migration | [`docs/KADI_RELEASE_CHECKLIST.md`](docs/KADI_RELEASE_CHECKLIST.md) et le runbook correspondant dans `docs/runbooks/` |
+| Situer une mission dans la trajectoire produit | [`docs/KADI_ROADMAP.md`](docs/KADI_ROADMAP.md) |
+| Comprendre pourquoi un choix d'architecture a été fait | `docs/decisions/ADR-*.md` |
+
+### Règles permanentes de discipline (résumé, détail dans les sections 1 à 20)
+
+* ne jamais modifier une migration Supabase déjà appliquée ; toute
+  correction est une nouvelle migration forward-only ; ne jamais exécuter de
+  migration Supabase distante sans autorisation explicite ;
+* ne jamais committer, pousser ou fusionner directement sur `main`, et ne
+  jamais déployer, sans autorisation explicite de la mission ;
+* ne jamais faire basculer le rollout de `CANARY` vers `FULL`, ni ajouter un
+  numéro CANARY, sans autorisation explicite du fondateur ;
+* ne jamais modifier les services `kadi-beta-cleanup` ou
+  `kadi-beta-notify` ;
+* ne jamais supprimer de données, et ne jamais effectuer de réécriture
+  générale du code sans mission explicite le demandant ;
+* ne jamais afficher ou journaliser un secret, un token, un `wa_id` complet
+  ou un payload complet — voir aussi la section 5 ;
+* commencer chaque mission de correction en lecture seule, présenter le
+  diagnostic et le plan avant toute modification, et ajouter un test qui
+  reproduit le bug avant de le corriger ;
+* exécuter les tests ciblés avant la suite complète (voir section 7) ;
+* ajouter un test de non-régression pour toute nouvelle erreur corrigée, et
+  documenter sa cause confirmée dans
+  [`docs/KADI_ENGINEERING_MEMORY.md`](docs/KADI_ENGINEERING_MEMORY.md) —
+  n'y consigner que des causes réellement confirmées, jamais une hypothèse ;
+* distinguer strictement le Flow Meta (écran WhatsApp), la session
+  conversationnelle (temporaire) et le document métier (persistant) — voir
+  [`docs/KADI_ARCHITECTURE.md`](docs/KADI_ARCHITECTURE.md) ;
+* ne jamais stocker une décision métier confirmée uniquement dans une
+  session WhatsApp temporaire ; elle doit être écrite dans le document réel.
 
 ## 1. Projet
 
