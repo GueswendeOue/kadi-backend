@@ -80,6 +80,27 @@ test("startAddContent revalidates ownership and version without mutating the doc
   assert.deepEqual(opened.value.items, started.value.items);
 });
 
+test("setInvoiceKind persists the chosen kind on a FACTURE document", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:invoice-kind" });
+  const saved = await runtime.setInvoiceKind({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "FACTURE", invoiceKind: "PROFORMA", idempotencyKey: "flow_command:save-invoice-type:1",
+  });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.value.options.invoice_kind, "PROFORMA");
+});
+
+test("setInvoiceKind is forbidden for a non-FACTURE document", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "DEVIS", idempotencyKey: "flow_command:start:invoice-kind-devis" });
+  const saved = await runtime.setInvoiceKind({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "DEVIS", invoiceKind: "FINAL", idempotencyKey: "flow_command:save-invoice-type:2",
+  });
+  assert.deepEqual(saved, { ok: false, error: "KADI_V1_INVOICE_KIND_FLOW_FORBIDDEN" });
+});
+
 test("startAddContent is forbidden for DECHARGE", async () => {
   const { runtime } = documentRuntime();
   const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:1c" });

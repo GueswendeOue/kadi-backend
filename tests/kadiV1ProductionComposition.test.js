@@ -288,6 +288,7 @@ test("production composition can derive the orchestrator without boot I/O", () =
       sharedPipeline: {
         createDraft: noop,
         applyBrainExtraction: noop,
+        setInvoiceKind: noop,
         setClientOrPayer: noop,
         addContent: noop,
         updateContent: noop,

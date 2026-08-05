@@ -15,7 +15,7 @@ function makeRuntime(calls) {
   return createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: record("continueOnboarding") },
     documentRuntime: {
-      start: record("start"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
+      start: record("start"), setInvoiceKind: record("setInvoiceKind"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
       updateContent: record("updateContent"), removeContent: record("removeContent"), finishContent: record("finishContent"),
       setOptions: record("setOptions"), verify: record("verify"), beginEdit: record("beginEdit"),
       saveForLater: record("saveForLater"), saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancelDocument"),
@@ -66,6 +66,15 @@ test("document type selection starts the correct document", async () => {
     name: "start",
     payload: { ownerWaId: "22670000000", idempotencyKey: "flow_command:reply:1", documentType: "DEVIS" },
   });
+});
+
+test("invoice kind selection is routed to the document adapter with the chosen value", async () => {
+  const calls = [];
+  await makeRuntime(calls).execute(command({ flowKey: "INVOICE_TYPE", action: "SAVE_INVOICE_TYPE", data: { invoice_kind: "PROFORMA" } }));
+  assert.equal(calls[0].name, "setInvoiceKind");
+  assert.equal(calls[0].payload.invoiceKind, "PROFORMA");
+  assert.equal(calls[0].payload.documentId, "document:1");
+  assert.equal(calls[0].payload.expectedVersion, 3);
 });
 
 test("client update uses only server-bound document identity and version", async () => {
@@ -152,7 +161,7 @@ test("adapter exceptions become closed recoverable failures", async () => {
   const bad = createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
     documentRuntime: {
-      start: async () => { throw new Error("secret"); }, setClient: async () => ({}), startAddContent: async () => ({}), addContent: async () => ({}),
+      start: async () => { throw new Error("secret"); }, setInvoiceKind: async () => ({}), setClient: async () => ({}), startAddContent: async () => ({}), addContent: async () => ({}),
       updateContent: async () => ({}), removeContent: async () => ({}), finishContent: async () => ({}),
       setOptions: async () => ({}), verify: async () => ({}),
       beginEdit: async () => ({}), saveForLater: async () => ({}), saveDischargeDetails: async () => ({}), cancel: async () => ({}),

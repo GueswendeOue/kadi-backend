@@ -17,10 +17,12 @@ const {
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const RESERVED_BRAIN_FIELDS = new Set(["date_read", "document_number_read", "total_read"]);
 const TECHNICAL_USER_TERMS = /\b(?:flow|payload|session|endpoint|openai|gemini|ocr)\b/i;
+const VALID_INVOICE_KINDS = new Set(["FINAL", "PROFORMA"]);
 const OPERATION_PREFIXES = Object.freeze({
   createDraft: "create_draft:",
   applyBrainExtraction: "brain_extraction:",
   setIssuer: "set_issuer:",
+  setInvoiceKind: "set_invoice_kind:",
   setClientOrPayer: "set_party:",
   addContent: "add_content:",
   updateContent: "update_content:",
@@ -212,6 +214,15 @@ function createSharedDocumentPipeline({
     return persistModified(command, "setIssuer", "ISSUER_SET", {
       issuer_profile_id: command.issuerProfileId,
     }, { resolvedFields: ["issuer"] });
+  }
+
+  async function setInvoiceKind(command) {
+    const loaded = await loadMutation(command, "setInvoiceKind");
+    if (!loaded.ok || loaded.duplicate) return loaded;
+    if (loaded.value.document_type !== "FACTURE") return fail("DOCUMENT_INVOICE_KIND_NOT_APPLICABLE");
+    if (!VALID_INVOICE_KINDS.has(command.invoiceKind)) return fail("DOCUMENT_INVOICE_KIND_INVALID");
+    const options = { ...(loaded.value.options || {}), invoice_kind: command.invoiceKind };
+    return persistModifiedLoaded(loaded.value, command, "INVOICE_KIND_SET", { options }, ["invoice_kind"]);
   }
 
   async function setClientOrPayer(command) {
@@ -489,6 +500,7 @@ function createSharedDocumentPipeline({
     removeContent,
     reopenForCorrection,
     setClientOrPayer,
+    setInvoiceKind,
     setIssuer,
     setOptions,
     updateContent,

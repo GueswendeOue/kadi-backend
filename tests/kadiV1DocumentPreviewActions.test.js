@@ -64,7 +64,7 @@ function makeRuntime(calls) {
   return createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: record("continueOnboarding") },
     documentRuntime: {
-      start: record("start"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
+      start: record("start"), setInvoiceKind: record("setInvoiceKind"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
       updateContent: record("updateContent"), removeContent: record("removeContent"), finishContent: record("finishContent"),
       setOptions: record("setOptions"), verify: record("verify"), beginEdit: record("beginEdit"),
       saveForLater: record("saveForLater"), saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancel"),

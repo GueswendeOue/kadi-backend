@@ -18,6 +18,11 @@ const KADI_V1_DRAFT_FLOW_CATALOG = Object.freeze({
     environment_variable: "KADI_V1_FLOW_DOCUMENT_TYPE_ID",
     card: Object.freeze({ header: "Préparer un document", body: "Facture, devis, reçu ou décharge.", cta: "Choisir" }),
   }),
+  INVOICE_TYPE: Object.freeze({
+    file: path.join("flows", "v1_draft", "kadi_invoice_type_v1.json"),
+    environment_variable: "KADI_V1_FLOW_INVOICE_TYPE_ID",
+    card: Object.freeze({ header: "Type de facture", body: "Facture définitive ou facture proforma ?", cta: "Choisir" }),
+  }),
   DOCUMENT_CLIENT: Object.freeze({
     file: path.join("flows", "v1_draft", "kadi_document_client_v1.json"),
     environment_variable: "KADI_V1_FLOW_DOCUMENT_CLIENT_ID",

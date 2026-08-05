@@ -74,6 +74,20 @@ test("KADI_V1_FLOW_ARTICLE_FORM_ID est lu et validé comme les autres IDs Meta (
   assert.deepEqual(resolveConfiguredFlowId(invalid, "ARTICLE_FORM"), { ok: false, error: "KADI_V1_FLOW_ID_MISSING" });
 });
 
+test("KADI_V1_FLOW_INVOICE_TYPE_ID est lu et validé comme les autres IDs Meta, et échoue fermé si absent", () => {
+  assert.equal(FLOW_ENV_KEYS.INVOICE_TYPE, "KADI_V1_FLOW_INVOICE_TYPE_ID");
+  const config = createKadiV1RuntimeConfig({
+    KADI_V1_ENABLED: "true",
+    KADI_V1_FLOW_INVOICE_TYPE_ID: "555666777888999",
+  });
+  assert.equal(config.flowIds.INVOICE_TYPE, "555666777888999");
+  assert.deepEqual(resolveConfiguredFlowId(config, "INVOICE_TYPE"), { ok: true, value: "555666777888999" });
+
+  const missing = createKadiV1RuntimeConfig({ KADI_V1_ENABLED: "true" });
+  assert.equal(missing.flowIds.INVOICE_TYPE, null);
+  assert.deepEqual(resolveConfiguredFlowId(missing, "INVOICE_TYPE"), { ok: false, error: "KADI_V1_FLOW_ID_MISSING" });
+});
+
 test("la résolution d'un Flow refuse la V1 désactivée et les clés inconnues", () => {
   const disabled = createKadiV1RuntimeConfig({ KADI_V1_FLOW_MENU_ID: "123456" });
   assert.deepEqual(resolveConfiguredFlowId(disabled, "MENU"), { ok: false, error: "KADI_V1_DISABLED" });

@@ -35,6 +35,7 @@ function fixture({ quoteValidityRequired = false } = {}) {
 function command(document, operation, suffix = "1", extra = {}) {
   const prefixes = {
     setIssuer: "set_issuer",
+    setInvoiceKind: "set_invoice_kind",
     setClientOrPayer: "set_party",
     addContent: "add_content",
     updateContent: "update_content",
@@ -386,6 +387,50 @@ test("cancelDocument persists an atomic terminal transition", async () => {
   assert.equal(result.ok, true, result.error);
   assert.equal(result.value.status, "CANCELLED");
   assert.equal((await f.repository.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER })).value.status, "CANCELLED");
+});
+
+test("setInvoiceKind persists FINAL or PROFORMA in the document's own options bag, not a new column", async () => {
+  const f = fixture();
+  for (const invoiceKind of ["FINAL", "PROFORMA"]) {
+    const document = await createDraft(f, "FACTURE", `invoice-kind-${invoiceKind}`);
+    const result = await f.pipeline.setInvoiceKind(command(document, "setInvoiceKind", invoiceKind, { invoiceKind }));
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.value.options.invoice_kind, invoiceKind);
+    const reloaded = await f.repository.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+    assert.equal(reloaded.value.options.invoice_kind, invoiceKind);
+  }
+});
+
+test("setInvoiceKind rejects any value other than exactly FINAL or PROFORMA", async () => {
+  const f = fixture();
+  for (const invalid of ["", "final", "proforma", "AUTRE", null, undefined]) {
+    const document = await createDraft(f, "FACTURE", `invoice-kind-invalid-${String(invalid)}`);
+    const result = await f.pipeline.setInvoiceKind(command(document, "setInvoiceKind", String(invalid), { invoiceKind: invalid }));
+    assert.deepEqual(result, { ok: false, error: "DOCUMENT_INVOICE_KIND_INVALID" });
+  }
+});
+
+test("setInvoiceKind refuses to apply to a document type other than FACTURE", async () => {
+  const f = fixture();
+  const document = await createDraft(f, "DEVIS", "invoice-kind-devis");
+  const result = await f.pipeline.setInvoiceKind(command(document, "setInvoiceKind", "1", { invoiceKind: "FINAL" }));
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_INVOICE_KIND_NOT_APPLICABLE" });
+});
+
+test("setInvoiceKind is idempotent and preserves the rest of the options bag", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "FACTURE", "invoice-kind-idempotent");
+  const withOptions = await f.pipeline.setOptions(command(document, "setOptions", "1", { options: { options: { custom_note: "Merci" } } }));
+  assert.equal(withOptions.ok, true, withOptions.error);
+  document = withOptions.value;
+  const setKind = command(document, "setInvoiceKind", "once", { invoiceKind: "FINAL" });
+  const first = await f.pipeline.setInvoiceKind(setKind);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.value.options.custom_note, "Merci");
+  assert.equal(first.value.options.invoice_kind, "FINAL");
+  const replay = await f.pipeline.setInvoiceKind(setKind);
+  assert.equal(replay.ok, true, replay.error);
+  assert.equal(replay.duplicate, true);
 });
 
 test("shared pipeline has no Meta, PDF, wallet, payment or provider SDK dependency", () => {

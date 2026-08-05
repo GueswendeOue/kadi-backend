@@ -7,6 +7,7 @@ const FLOW_KEYS = Object.freeze([
   "ONBOARDING",
   "MENU",
   "DOCUMENT_TYPE",
+  "INVOICE_TYPE",
   "DOCUMENT_CLIENT",
   "DOCUMENT_CONTENT",
   "ARTICLE_FORM",
@@ -61,6 +62,7 @@ const GENERATION_CONFIRMATION_STATES = new Set([
   "COST_CALCULATED",
   "AWAITING_GENERATION_CONFIRMATION",
 ]);
+const VALID_INVOICE_KINDS = new Set(["FINAL", "PROFORMA"]);
 
 function fail(error) {
   return { ok: false, error };
@@ -76,7 +78,7 @@ function validateDocumentContext({ documentType, documentState }) {
   return success(true);
 }
 
-function resolveFlowKey({ intent, documentType = null, documentState = null, ownerMatched = true } = {}) {
+function resolveFlowKey({ intent, documentType = null, documentState = null, ownerMatched = true, invoiceKind = null } = {}) {
   if (ownerMatched !== true) return fail("KADI_V1_OWNER_MISMATCH");
   if (!FLOW_INTENTS.includes(intent)) return fail("KADI_V1_FLOW_INTENT_UNKNOWN");
 
@@ -97,7 +99,11 @@ function resolveFlowKey({ intent, documentType = null, documentState = null, own
 
   if (intent === "COLLECT_CLIENT") {
     if (!COLLECTION_STATES.has(documentState)) return fail("KADI_V1_FLOW_STATE_INCOMPATIBLE");
-    return documentType === "DECHARGE" ? success("DISCHARGE_DETAILS") : success("DOCUMENT_CLIENT");
+    if (documentType === "DECHARGE") return success("DISCHARGE_DETAILS");
+    if (documentType === "FACTURE" && !VALID_INVOICE_KINDS.has(invoiceKind)) {
+      return success("INVOICE_TYPE");
+    }
+    return success("DOCUMENT_CLIENT");
   }
 
   if (intent === "COLLECT_CONTENT") {
