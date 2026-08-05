@@ -1,8 +1,8 @@
 # État courant de Kadi V1
 
 **Mise à jour :** 2026-08-05
-**Base vérifiée :** `main` au commit `caf876e` (merge « add Kadi permanent
-agent context »).
+**Base vérifiée :** `main` au commit `f95be84b98d3d9ad6308a6aebbc3e11590717ae2`
+(merge « correct Kadi V1 receipt and discharge journeys »).
 
 Ce document reflète l'état réel observé dans le dépôt et ses tests à la date
 ci-dessus. En cas de doute, le code et les tests font foi ; ce fichier doit
@@ -13,7 +13,8 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ## Rollout
 
-* Mode de rollout : **CANARY** exclusivement.
+* Mode de rollout : **CANARY** exclusivement. État du service Render
+  `kadi-backend` : **READY**.
 * Aucun passage en `FULL` n'est autorisé sans autorisation explicite du
   fondateur (voir [`../AGENTS.md`](../AGENTS.md)).
 * Le ou les numéros WhatsApp autorisés en CANARY sont définis uniquement par
@@ -38,7 +39,11 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ### P8.A2 — INVOICE_TYPE (facture définitive / proforma)
 
-* **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED` → publication Meta et configuration
+  Render désormais confirmées (voir ci-dessous) ; validation en conditions
+  réelles CANARY (nouveau parcours WhatsApp, fiche F de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) non encore
+  confirmée, donc pas encore `VALIDATED_CANARY`.**
 * Le code est fusionné dans `main` (commit de merge `1fb1329`), avec 862
   tests locaux au vert au moment du merge.
 * Étape ajoutée : entre `DOCUMENT_TYPE` (choix FACTURE) et
@@ -48,12 +53,12 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 * Migration Supabase **écrite mais non confirmée appliquée en distant** :
   `supabase/migrations/20260805030000_add_kadi_v1_invoice_type_flow_key.sql`
   (ajoute `INVOICE_TYPE` à la même contrainte, 17 valeurs au total).
-* Flow Meta prévu : **`KADI_INVOICE_TYPE_V1`** — **non publié**.
-* Variable Render prévue : **`KADI_V1_FLOW_INVOICE_TYPE_ID`** — **non
-  confirmée configurée en production**.
-* Tant que ces trois étapes (migration distante, publication Meta, variable
-  Render) ne sont pas confirmées, `INVOICE_TYPE` ne doit pas être présenté
-  comme actif pour un utilisateur CANARY réel.
+* Flow Meta : **`KADI_INVOICE_TYPE_V1`** — **`PUBLISHED`** (Flow ID
+  `2500135057170722`, zéro erreur de validation, confirmé sur le Graph API
+  Meta).
+* Variable Render `KADI_V1_FLOW_INVOICE_TYPE_ID` : confirmée configurée.
+* La migration Supabase distante reste le seul des trois prérequis non
+  confirmé pour cet écran.
 
 ### Onboarding — blocage de navigation
 
@@ -68,20 +73,22 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ### RECU — parcours dédié RECEIPT_DETAILS
 
-* **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED` → publication Meta, migration
+  Supabase et configuration Render désormais confirmées (voir ci-dessous) ;
+  validation en conditions réelles CANARY non encore confirmée, donc pas
+  encore `VALIDATED_CANARY`.**
 * Corrige un bug confirmé : le reçu passait auparavant par les écrans
   génériques `DOCUMENT_CLIENT` puis `ARTICLE_FORM`/`DOCUMENT_CONTENT`, qui
   collectaient des champs inadaptés (nom/téléphone/e-mail au lieu de
   payeur/bénéficiaire/montant/motif) et autorisaient des articles, alors que
   RECU les interdit explicitement. L'utilisateur recevait ensuite une erreur
   générique.
-* Nouveau Flow Meta indépendant mono-écran prévu : **`KADI_RECEIPT_DETAILS_V1`**
-  — **non publié**.
-* Variable Render prévue : **`KADI_V1_FLOW_RECEIPT_DETAILS_ID`** — **non
-  confirmée configurée en production**.
+* Flow Meta indépendant mono-écran : **`KADI_RECEIPT_DETAILS_V1`** —
+  **`PUBLISHED`** (Flow ID `1325710445984629`, zéro erreur de validation).
+* Variable Render `KADI_V1_FLOW_RECEIPT_DETAILS_ID` : confirmée configurée.
 * Champ nouveau `receipt_format` (`A4` ou `TICKET_80`), obligatoire avant
   `READY_FOR_REVIEW`, persisté dans `document.options.receipt_format`.
-* Migration Supabase écrite mais non confirmée appliquée en distant :
+* Migration Supabase confirmée appliquée en distant :
   `supabase/migrations/20260805040000_add_kadi_v1_receipt_details_flow_key.sql`.
 * Le format persistant est propagé jusqu'au rendu PDF réel
   (`A4` → moteur A4, `TICKET_80` → moteur compact), sans repli silencieux
@@ -92,7 +99,9 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ### DECHARGE — écran initial corrigé
 
-* **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED` → publication Meta et configuration
+  Render désormais confirmées (voir ci-dessous) ; validation en conditions
+  réelles CANARY non encore confirmée, donc pas encore `VALIDATED_CANARY`.**
 * Corrige un bug confirmé : l'écran initial mélangeait la saisie des
   informations et un sélecteur d'action « Prochaine étape » (Enregistrer /
   C'est bon / Modifier / Annuler) alors que rien n'était encore renseigné,
@@ -107,6 +116,15 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 * Une fois complète, la décharge suit désormais le même chemin que les
   autres documents : `DISCHARGE_DETAILS` → `DOCUMENT_REVIEW` →
   `DOCUMENT_PREVIEW` → `GENERATION_CONFIRMATION`.
+* Le Flow publié pour ce correctif est **`KADI_DISCHARGE_DETAILS_V2`**
+  (Flow ID `1725047255448294`, **`PUBLISHED`**, zéro erreur de validation,
+  déployé en CANARY) — un nouveau Flow, pas une mise à jour de
+  `KADI_V1_DISCHARGE_DETAILS` (id historique
+  `1995626954420510`), car Meta interdit la modification d'un Flow déjà
+  publié. L'ancien Flow reste publié et intact, conservé pour rollback ; il
+  ne doit pas être supprimé ou déprécié. Variable Render
+  `KADI_V1_FLOW_DISCHARGE_DETAILS_ID` : confirmée configurée et pointant
+  vers `1725047255448294`.
 
 ### Décharges et parcours document restants (hors ce correctif)
 
@@ -124,28 +142,61 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ## Séquence prévue pour la suite d'INVOICE_TYPE
 
-1. documentation (cette mission) ;
-2. publication du Flow `KADI_INVOICE_TYPE_V1` sur Meta ;
-3. configuration de `KADI_V1_FLOW_INVOICE_TYPE_ID` sur Render ;
+1. documentation (cette mission) ; **fait** ;
+2. publication du Flow `KADI_INVOICE_TYPE_V1` sur Meta ; **fait** — Flow ID
+   `2500135057170722`, `PUBLISHED` ;
+3. configuration de `KADI_V1_FLOW_INVOICE_TYPE_ID` sur Render ; **fait** ;
 4. application de la migration
    `20260805030000_add_kadi_v1_invoice_type_flow_key.sql` sur Supabase
-   distant ;
-5. déploiement Render du service `kadi-backend` ;
+   distant ; **non confirmée** — seule étape restante pour cet écran ;
+5. déploiement Render du service `kadi-backend` ; **fait** (service
+   `READY`) ;
 6. nouveau parcours de test en CANARY (jamais de reprise d'un ancien Flow
    ouvert avant publication — voir
    [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) fiche F).
+   **Non encore confirmé** — c'est ce qui manque encore pour passer
+   `INVOICE_TYPE`, `RECEIPT_DETAILS` et `DISCHARGE_DETAILS` à
+   `VALIDATED_CANARY`.
 
-La même séquence, et la même mise en garde, s'appliquent à `RECEIPT_DETAILS`
-avant toute validation CANARY : publication du Flow
-`KADI_RECEIPT_DETAILS_V1`, variable `KADI_V1_FLOW_RECEIPT_DETAILS_ID`,
-application de la migration `20260805040000_add_kadi_v1_receipt_details_flow_key.sql`,
-déploiement, puis **un nouveau parcours WhatsApp démarré après la
-publication** — une session déjà ouverte avant la publication du Flow
-continue de représenter l'ancienne version et ne doit jamais servir à
-valider ce correctif.
+La même séquence s'applique à `RECEIPT_DETAILS` (Flow `KADI_RECEIPT_DETAILS_V1`,
+Flow ID `1325710445984629`, `PUBLISHED` ; variable
+`KADI_V1_FLOW_RECEIPT_DETAILS_ID` configurée ; migration
+`20260805040000_add_kadi_v1_receipt_details_flow_key.sql` confirmée
+appliquée) et à `DISCHARGE_DETAILS` (Flow `KADI_DISCHARGE_DETAILS_V2`, Flow
+ID `1725047255448294`, `PUBLISHED`, déployé en CANARY ; ancien Flow
+`KADI_V1_DISCHARGE_DETAILS` conservé intact pour rollback) : les étapes 1 à
+5 sont faites pour les trois écrans. La seule étape encore ouverte pour les
+trois est l'étape 6 — **un nouveau parcours WhatsApp démarré après la
+publication**, jamais la reprise d'une session déjà ouverte avant la
+publication du Flow, qui continuerait de représenter l'ancienne version et
+ne doit jamais servir à valider ces correctifs.
 
 ## Prochaine étape produit après validation d'INVOICE_TYPE
 
 * **Statut : `PLANNED`.** Reçu au format A4 et reçu au format ticket 80 mm
   (`receipt_format = A4 | TICKET_80`, voir
   [`KADI_PRODUCT_RULES.md`](KADI_PRODUCT_RULES.md)).
+
+## DÉVELOPPEMENT / NON FUSIONNÉ / NON DÉPLOYÉ — `KADI_CONVERSATIONAL_MULTIMODAL_V1`
+
+**Ceci n'est pas de la production actuelle.** Section séparée à dessein —
+voir [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
+pour le détail complet.
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`**, et plus précisément **non
+  fusionné** : le code existe uniquement sur la branche
+  `feat/kadi-conversational-multimodal-v1`, jamais sur `main`.
+* Nouveaux fichiers : `kadiV1ConversationalMultimodalContracts.js`,
+  `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`.
+* Nouveaux flags, tous `false` par défaut et indépendants :
+  `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`, `KADI_GEMINI_AUDIO_V1_ENABLED`.
+* **Non câblé** dans `kadiV1ConversationOrchestrator.js` ni dans
+  `kadiV1ProductionBootstrap.js` — aucun trafic, CANARY ou autre, ne passe
+  par ce code.
+* La release CANARY actuelle (voir section « Rollout » en tête de ce
+  document) est donc **entièrement indépendante** de cette branche.
+* Ne pas confondre avec l'infrastructure `kadiV1Brain*.js`
+  (`KADI_V1_BRAIN_ENABLED`) déjà présente sur `main` avant cette branche :
+  cette dernière est un fait de production existante (désactivée par
+  défaut), tandis que `KADI_CONVERSATIONAL_MULTIMODAL_V1` est une couche
+  additive qui la réutilise, elle, pas encore fusionnée.

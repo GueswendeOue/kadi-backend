@@ -230,3 +230,86 @@ test("visual provider has no document persistence, wallet, PDF generation or web
   assert.doesNotMatch(source, /require\([^\n]*(supabase|whatsapp|wallet|payment|pdfkit|kadiV1DocumentRepository)/i);
   assert.doesNotMatch(source, /\.debit\(|persistDocument\(|generatePdf\(|sendMessage\(/i);
 });
+
+// --- Authority-boundary hardening: canonical AUTHORITY_FIELDS reuse ---
+// These lock in that no authority-shaped value can pass through Gemini
+// Vision structured extraction, regardless of which layer (top-level key
+// allowlist, per-field key allowlist, item key allowlist, or the final
+// validateBrainResult pass) is what actually blocks it.
+
+test("a top-level credit_debit key is rejected", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({ document_type: "FACTURE", fields: {}, confidence: 0.9, credit_debit: 500 }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("a top-level delivered key is rejected", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({ document_type: "FACTURE", fields: {}, confidence: 0.9, delivered: true }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("a field literally named credit_debit is rejected", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({
+      document_type: "FACTURE",
+      fields: { credit_debit: { value: 500, confidence: 0.9, source_reference: "page:1" } },
+      confidence: 0.9,
+    }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("a field name in a different casing (Delivered) is still rejected, not bypassed by case", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({
+      document_type: "FACTURE",
+      fields: { Delivered: { value: true, confidence: 0.9, source_reference: "page:1" } },
+      confidence: 0.9,
+    }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("an authority-shaped key nested inside an allowed field's value is rejected", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({
+      document_type: "FACTURE",
+      fields: { client: { value: { name: "Moussa", total: 999999999, credit_debit: true }, confidence: 0.95, source_reference: "page:1" } },
+      confidence: 0.9,
+    }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("an authority-shaped key inside an item in the items array is rejected", () => {
+  assert.throws(
+    () => normalizeStructuredExtraction({
+      document_type: "FACTURE",
+      fields: {
+        items: {
+          value: [{ description: "x", quantity: 1, unit_price: 1, total: 999999, confidence: 1, status: "CONFIRMED", source_reference: "page:1" }],
+          confidence: 0.9,
+          source_reference: "page:1",
+        },
+      },
+      confidence: 0.9,
+    }, { model: "m" }),
+    (error) => error instanceof GeminiVisionError
+  );
+});
+
+test("FORBIDDEN_AUTHORITY_KEYS is not a second independent list: every canonical AUTHORITY_FIELDS entry is covered", () => {
+  const { AUTHORITY_FIELDS } = require("../kadiV1BrainContracts");
+  const source = fs.readFileSync(path.join(__dirname, "..", "kadiV1GeminiVisionProvider.js"), "utf8");
+  assert.doesNotMatch(source, /const FORBIDDEN_AUTHORITY_KEYS = new Set/, "must import the canonical list, not redefine it");
+  for (const field of AUTHORITY_FIELDS) {
+    assert.throws(
+      () => normalizeStructuredExtraction({ document_type: "FACTURE", fields: {}, confidence: 0.9, [field]: "x" }, { model: "m" }),
+      (error) => error instanceof GeminiVisionError,
+      `${field} should be forbidden`
+    );
+  }
+});

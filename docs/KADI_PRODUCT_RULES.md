@@ -74,8 +74,18 @@ l'utilisateur (voir [`../AGENTS.md`](../AGENTS.md) §3 et §16).
 
 ## Autres règles verrouillées
 
-* **tampon numérique désactivé** : aucune génération, stockage, application
-  ni coût lié à un tampon, en aucune circonstance ;
+* **tampon numérique abandonné définitivement pour l'ensemble du produit
+  Kadi** (pas seulement Kadi V1) : aucune génération, stockage,
+  application, exposition, commercialisation, tarification ni extension
+  d'un tampon, en aucune circonstance, sauf demande future explicite du
+  fondateur qui reviendrait sur cette décision. Le fait qu'une
+  implémentation legacy pré-V1 du tampon existe encore dans le dépôt
+  (`kadiStamp*.js` et fichiers associés, voir
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) ne signifie
+  pas que la fonctionnalité reste supportée : c'est de la dette technique
+  en attente d'une mission de nettoyage distincte et explicitement
+  autorisée, jamais une justification pour la restaurer, l'étendre ou la
+  documenter comme active ;
 * le PDF final porte une date d'émission (`issued_at`, avec les secondes) et
   un numéro de document produits **uniquement côté serveur** ; l'utilisateur
   ne choisit jamais la date ;

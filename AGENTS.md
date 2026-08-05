@@ -121,8 +121,28 @@ Ne jamais publier le Flow, l’uploader de nouveau ou modifier Meta sans autoris
 
 ## 3. Règles métier verrouillées
 
-* Aucun tampon généré, stocké ou appliqué.
-* Aucun coût lié au tampon.
+* Le tampon/cachet est **abandonné définitivement pour l'ensemble du
+  produit Kadi**, pas seulement pour Kadi V1 : aucun tampon généré,
+  stocké, appliqué, exposé, commercialisé, tarifé ou étendu, dans aucun
+  parcours, présent ou futur — décision du fondateur, à ne restaurer que
+  sur demande explicite et future de sa part. Voir KFD-003 dans
+  [`docs/kadi_v1_foundational_decisions.md`](docs/kadi_v1_foundational_decisions.md)
+  (dont la portée doit être lue comme produit-wide, pas V1-only) et la
+  fiche correspondante dans
+  [`docs/KADI_ENGINEERING_MEMORY.md`](docs/KADI_ENGINEERING_MEMORY.md).
+  Le code legacy pré-V1 qui implémente encore le tampon (`kadiStamp*.js`,
+  `kadiStampFlow.js`, `kadiPdfFlow.js`, `kadiMenus.js`, `kadiPricing.js`,
+  `kadiPriorityRouter.js`, `kadiCommandFlow.js`, `kadiInteractiveFlow.js`,
+  etc.) reste aujourd'hui **effectivement atteignable par de vrais
+  utilisateurs de production** (tout utilisateur hors de la liste CANARY
+  passe encore par ce chemin — voir `KADI_ENGINEERING_MEMORY.md`). Sa
+  présence est de la dette technique tolérée en attendant une mission de
+  nettoyage contrôlée et explicitement autorisée ; elle ne signifie **pas**
+  que le tampon reste une fonctionnalité supportée, et ne doit jamais être
+  invoquée pour justifier de le restaurer, l'étendre ou le documenter comme
+  actif. Ne pas supprimer ou modifier ce code legacy sans mission explicite
+  distincte.
+* Aucun coût lié au tampon, dans aucun parcours (même portée que ci-dessus).
 * `issued_at` est produit uniquement côté serveur.
 * `issued_at` comprend les secondes.
 * L’utilisateur ne choisit pas la date du document.
@@ -377,7 +397,9 @@ Si le solde est insuffisant : ne rien débiter, conserver le brouillon et ouvrir
 
 ## 17. Règles produit non négociables
 
-* Aucune fonctionnalité ni aucun coût de tampon.
+* Aucune fonctionnalité ni aucun coût de tampon, pour l'ensemble du produit
+  Kadi, présent et futur (voir §3 pour le détail et la portée exacte de
+  cette règle).
 * `issued_at` est produit côté serveur, avec les secondes ; aucune date manuelle.
 * Aucun débit et aucun PDF final en mode `DRAFT`.
 * Le sous-total est recalculé depuis les articles sauvegardés.

@@ -335,3 +335,92 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 * **Test de non-régression :** « initial DISCHARGE_DETAILS JSON has no
   action selector... » et « MONEY requires a positive integer amount »
   dans `tests/kadiV1DischargeJourney.test.js`.
+
+---
+
+## K. Fondation `KADI_CONVERSATIONAL_MULTIMODAL_V1` déjà largement présente avant sa mission de création
+
+* **Statut :** `IMPLEMENTED_NOT_DEPLOYED` (fondation sur branche non
+  fusionnée `feat/kadi-conversational-multimodal-v1`).
+* **Période :** mission de création de la fondation, puis mission de revue
+  du même travail.
+* **Symptôme :** une mission demandant de « créer la fondation isolée » de
+  la compréhension conversationnelle multimodale a démarré sans savoir que
+  `kadiV1BrainContracts.js`, `kadiV1Brain.js`, `kadiV1BrainProviders.js`,
+  `kadiV1GeminiVisionProvider.js`, `kadiV1SpeechToText.js` et le
+  classificateur déterministe `detectNaturalIntent` /
+  `validateCanonicalText` de `kadiV1ConversationOrchestrator.js` existaient
+  déjà, testés, et couvraient une large part du périmètre demandé — le tout
+  déjà désactivé par défaut (`KADI_V1_BRAIN_ENABLED` etc.).
+* **Cause racine confirmée :** l'audit de lecture seule en phase 1 n'avait
+  pas été fait avant la première mission de rédaction de code ; la mission
+  elle-même ne mentionnait pas cette infrastructure.
+* **Fausses pistes importantes :**
+  * ne pas confondre « le cerveau IA (`kadiV1Brain*.js`) est désactivé en
+    production » avec « le cerveau IA n'existe pas encore » — l'audit de
+    lecture seule (§0 et §9 de `AGENTS.md`) doit précéder toute mission de
+    création de fonctionnalité IA/conversationnelle ;
+  * **correction (mission de pré-commit suivante) :** une première rédaction
+    de cette fiche avait qualifié l'abandon du tampon de décision
+    « V1-only », en confondant « `AGENTS.md` §3/§17 et KFD-003 parlent
+    d'abord du chemin V1 » avec « la décision produit elle-même est limitée
+    à V1 ». Le fondateur a corrigé : **l'abandon du tampon est une décision
+    produit-wide, permanente, pour tout Kadi présent et futur**, pas
+    seulement pour Kadi V1. Voir `AGENTS.md` §3/§17 (portée corrigée) ;
+  * ne pas confondre non plus « le tampon est abandonné comme décision
+    produit » avec « le code legacy de tampon a été supprimé ou n'est plus
+    joignable » — un audit en lecture seule (voir ci-dessous) a confirmé que
+    le chemin webhook legacy (`kadiPriorityRouter.js`, `kadiMenus.js`,
+    `kadiStampFlow.js`, `kadiPdfFlow.js`, `kadiPricing.js`,
+    `kadiCommandFlow.js`, `kadiInteractiveFlow.js`) reste **effectivement
+    exécuté pour tout utilisateur non listé dans `KADI_V1_CANARY_WA_IDS`**
+    (`kadiFlowMonitoringWebhook.js` → `dispatchWhatsAppWebhook` appelle
+    `kadiV1WebhookHandler` en premier, et ne retombe sur
+    `handleIncomingMessage` — le chemin legacy — que si celui-ci ne
+    « handle » pas le message, ce qui est le cas par défaut hors CANARY).
+    Le tampon est donc aujourd'hui **réellement offert à de vrais
+    utilisateurs de production**, pas seulement présent en code mort. Sa
+    présence reste de la dette technique tolérée en attendant une mission
+    de nettoyage distincte et explicitement autorisée — jamais une preuve
+    que la fonctionnalité est encore un choix produit accepté.
+* **Correctif :** la fondation a été reconstruite comme couche additive fine
+  (`kadiV1ConversationalMultimodalContracts.js`,
+  `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`)
+  qui réutilise l'existant plutôt que de le dupliquer. La revue qui a suivi
+  a trouvé et corrigé deux duplications réelles introduites par la première
+  passe :
+  1. une liste `AUTHORITY_FIELDS` recopiée à la main (au lieu d'être
+     importée de `kadiV1BrainContracts.js`, désormais exportée) ;
+  2. un classificateur déterministe FR indépendant du
+     `detectNaturalIntent` réellement utilisé par l'orchestrateur en
+     production (désormais remplacé par un appel direct à
+     `detectNaturalIntent`/`validateCanonicalText`, tous deux désormais
+     exportés et réutilisés).
+  Un troisième défaut, plus sérieux, a aussi été trouvé et corrigé : la
+  validation d'un candidat extrait (`extracted_entities.<champ>.value`)
+  n'appliquait qu'un contrôle superficiel (`!= null`), ce qui permettait à
+  une sortie de fournisseur malformée de transporter une clé d'autorité
+  (`total`, `debit`, etc.) imbriquée **sous** un champ autorisé (ex.
+  `client.value.total`), contournant ainsi le contrôle `AUTHORITY_FIELDS`
+  de premier niveau. Corrigé en réutilisant
+  `validateSimpleValue`/`validateItems` de `kadiV1BrainContracts.js`
+  (désormais exportées), qui appliquent déjà une liste fermée récursive et
+  bornée en profondeur.
+* **Commit ou migration :** sans objet (branche non fusionnée à la date de
+  rédaction).
+* **Preuve de validation :** `tests/kadiV1ConversationalMultimodalContracts.test.js`,
+  `tests/kadiV1ConversationalMultimodalPolicy.test.js` (dont des tests de
+  parité explicites contre `detectNaturalIntent`),
+  `tests/kadiV1GeminiAudioProvider.test.js`, `tests/kadiV1RuntimeConfig.test.js`.
+* **Prévention :** avant toute mission de création d'une capacité IA ou
+  conversationnelle, exécuter d'abord l'audit de lecture seule de la phase 1
+  (`kadiV1Brain*.js`, `kadiV1ConversationOrchestrator.js`,
+  `kadiV1GeminiVisionProvider.js`, `kadiV1SpeechToText.js`,
+  `kadiV1RuntimeAdapters.js`) et documenter explicitement ce qui existe déjà
+  avant d'écrire du nouveau code ; pour toute validation d'autorité
+  (`AUTHORITY_FIELDS`), toujours valider récursivement la forme des valeurs
+  imbriquées, jamais seulement les clés de premier niveau.
+* **Test de non-régression :** « un champ d'autorité imbriqué dans la
+  valeur d'un candidat est rejeté » et les tests de parité d'intention dans
+  `tests/kadiV1ConversationalMultimodalContracts.test.js` /
+  `tests/kadiV1ConversationalMultimodalPolicy.test.js`.

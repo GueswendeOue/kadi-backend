@@ -2,7 +2,7 @@
 
 const crypto = require("node:crypto");
 const { createBrainProvider } = require("./kadiV1BrainProviders");
-const { EXTRACTED_FIELD_KEYS, normalizeDocumentType, validateBrainResult } = require("./kadiV1BrainContracts");
+const { AUTHORITY_FIELDS, EXTRACTED_FIELD_KEYS, normalizeDocumentType, validateBrainResult } = require("./kadiV1BrainContracts");
 const { assertTemporaryMediaStore } = require("./kadiV1TemporaryMediaStore");
 
 const VISION_POLICIES = Object.freeze(["GEMINI_PRIMARY_ONLY", "CONTROLLED_FALLBACK", "SHADOW_COMPARE"]);
@@ -10,10 +10,13 @@ const VISION_EVENTS = new Set([
   "vision_analysis_started", "vision_analysis_succeeded", "vision_analysis_failed",
   "structured_extraction_validated", "structured_extraction_rejected",
 ]);
-const FORBIDDEN_AUTHORITY_KEYS = new Set([
-  "total", "subtotal", "final_total", "issued_at", "document_number", "debit",
-  "payment_confirmed", "generation_cost", "delivery", "generate_final",
-]);
+// Imported from kadiV1BrainContracts.js rather than redefined here — this
+// used to be a second, independently-maintained list that had drifted from
+// the canonical one (missing credit_debit and delivered). Not currently
+// exploitable on its own (EXTRACTED_FIELD_KEYS, RAW_RESULT_KEYS and the
+// final validateBrainResult pass already close every gap independently),
+// but a duplicated security-relevant list is still a real drift risk.
+const FORBIDDEN_AUTHORITY_KEYS = AUTHORITY_FIELDS;
 const RAW_RESULT_KEYS = new Set(["document_type", "fields", "missing_fields", "uncertainties", "confidence", "multiple_documents"]);
 const RAW_FIELD_KEYS = new Set(["value", "status", "confidence", "source_reference", "uncertainty_reason"]);
 const RAW_ITEM_KEYS = new Set(["description", "label", "quantity", "unit", "unit_price", "confidence", "status", "source_reference"]);
