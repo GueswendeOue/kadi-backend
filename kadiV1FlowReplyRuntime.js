@@ -44,7 +44,7 @@ const ACTION_FIELDS = Object.freeze({
   HELP: Object.freeze([]),
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
   SAVE_INVOICE_TYPE: Object.freeze(["invoice_kind"]),
-  SAVE_RECEIPT_DETAILS: Object.freeze(["payer", "beneficiary", "amount", "reason", "payment_method", "reference", "receipt_format"]),
+  SAVE_RECEIPT_DETAILS: Object.freeze(["payer", "amount", "reason", "payment_method", "reference", "receipt_format"]),
   SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
   ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
@@ -229,7 +229,6 @@ function validateActionPayload(flowKey, action, data) {
   }
   if (action === "SAVE_RECEIPT_DETAILS") {
     if (typeof data.payer !== "string" || !data.payer.trim()) return fail("KADI_V1_FLOW_REPLY_RECEIPT_PAYER_REQUIRED");
-    if (typeof data.beneficiary !== "string" || !data.beneficiary.trim()) return fail("KADI_V1_FLOW_REPLY_RECEIPT_BENEFICIARY_REQUIRED");
     if (typeof data.reason !== "string" || !data.reason.trim()) return fail("KADI_V1_FLOW_REPLY_RECEIPT_REASON_REQUIRED");
     if (!Object.hasOwn(data, "amount")) return fail("KADI_V1_FLOW_REPLY_RECEIPT_AMOUNT_INVALID");
     if (typeof data.receipt_format !== "string" || !VALID_RECEIPT_FORMATS.has(data.receipt_format)) {

@@ -43,13 +43,6 @@
               },
               {
                 "type": "TextInput",
-                "name": "beneficiary",
-                "label": "Qui reçoit le paiement",
-                "required": true,
-                "input-type": "text"
-              },
-              {
-                "type": "TextInput",
                 "name": "amount",
                 "label": "Montant reçu",
                 "required": true,
@@ -94,7 +87,6 @@
                     "action": "SAVE_RECEIPT_DETAILS",
                     "data": {
                       "payer": "${form.payer}",
-                      "beneficiary": "${form.beneficiary}",
                       "amount": "${form.amount}",
                       "reason": "${form.reason}",
                       "payment_method": "${form.payment_method}",

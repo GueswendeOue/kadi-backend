@@ -43,7 +43,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     "setReason", "setOptions", "markReadyForReview", "verifyDischarge", "reopenForCorrection", "cancelDischarge",
   ], "KADI_V1_DISCHARGE_PIPELINE");
   const documents = assertMethods(documentRepository, ["getDocumentById"], "KADI_V1_DOCUMENT_REPOSITORY");
-  const issuers = assertMethods(issuerResolver, ["getIssuerProfileId"], "KADI_V1_ISSUER_RESOLVER");
+  const issuers = assertMethods(issuerResolver, ["getIssuerProfileId", "getIssuerProfileById"], "KADI_V1_ISSUER_RESOLVER");
 
   function pipelineFor(type) { return type === "DECHARGE" ? discharge : shared; }
   function sharedKey(operation, source, scope) {
@@ -122,6 +122,23 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     if (!details) return fail("KADI_V1_RECEIPT_DETAILS_INVALID");
     let current = await load(command);
     if (!current.ok) return current;
+    // The beneficiary is never typed by the user: it is the issuer/business
+    // itself, derived server-side from the authoritative issuer profile
+    // (business_name, falling back to owner_name — never a generic value),
+    // so the receipt fails closed rather than persisting a guessed identity.
+    if (typeof current.value.issuer_profile_id !== "string" || !current.value.issuer_profile_id) {
+      return fail("KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED");
+    }
+    let resolvedIssuer;
+    try {
+      resolvedIssuer = await issuers.getIssuerProfileById({ issuerProfileId: current.value.issuer_profile_id });
+    } catch {
+      return fail("KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED");
+    }
+    const beneficiary = typeof resolvedIssuer?.value?.business_name === "string" ? resolvedIssuer.value.business_name.trim() : "";
+    if (!resolvedIssuer?.ok || !beneficiary) {
+      return fail("KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED");
+    }
     let step = 0;
     async function mutate(method, payload) {
       const result = await shared[method]({
@@ -134,7 +151,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     const content = await mutate("addContent", {
       content: {
         payer: details.payer,
-        beneficiary: details.beneficiary,
+        beneficiary,
         amount: details.amount,
         reason: details.reason,
         payment_method: details.payment_method,

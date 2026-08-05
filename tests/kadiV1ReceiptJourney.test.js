@@ -11,16 +11,17 @@ const { createKadiV1DocumentRuntimeAdapter } = require("../kadiV1RuntimeAdapters
 const { buildPreviewData } = require("../kadiV1PreviewService");
 const { previewToDocData, resolveReceiptFormat } = require("../kadiV1TemporaryRenderService");
 const { resolveRenderer } = require("../pdf/kadiPdfRouter");
-const { createKadiV1IssuerLogoLoader } = require("../kadiV1ProductionInfrastructure");
+const { createKadiV1IssuerLogoLoader, APPROVED_LOGO_BUCKETS } = require("../kadiV1ProductionInfrastructure");
 
 const OWNER = "22670000000";
 
 // --- Category: reply-runtime validation (mission items 5, 6, 7, 8, 9) ---
+// beneficiary is intentionally absent from the visible Flow payload — see
+// the "beneficiary UX" category below.
 
 function validPayload(overrides = {}) {
   return {
     payer: "Client Test",
-    beneficiary: "Entreprise Test",
     amount: "75000",
     reason: "Paiement prestation",
     payment_method: "Espèces",
@@ -71,18 +72,21 @@ test("invalid, empty, lowercase and free-text receipt_format values fail closed"
   }
 });
 
-test("payer, beneficiary and reason are required and non-empty", () => {
-  for (const field of ["payer", "beneficiary", "reason"]) {
+test("payer and reason are required and non-empty", () => {
+  for (const field of ["payer", "reason"]) {
     const payload = validPayload({ [field]: "" });
     const result = validateActionPayload("RECEIPT_DETAILS", "SAVE_RECEIPT_DETAILS", payload);
     assert.equal(result.ok, false, `${field} empty should be rejected`);
   }
 });
 
-test("unknown fields on SAVE_RECEIPT_DETAILS are rejected, including the old generic-form field names", () => {
+test("unknown fields on SAVE_RECEIPT_DETAILS are rejected, including the old generic-form field names and beneficiary", () => {
   const result = validateActionPayload("RECEIPT_DETAILS", "SAVE_RECEIPT_DETAILS", { ...validPayload(), name: "Should not exist" });
   assert.equal(result.ok, false);
   assert.equal(result.error, "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
+  const withBeneficiary = validateActionPayload("RECEIPT_DETAILS", "SAVE_RECEIPT_DETAILS", { ...validPayload(), beneficiary: "Should not be user-supplied" });
+  assert.equal(withBeneficiary.ok, false);
+  assert.equal(withBeneficiary.error, "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
 });
 
 // --- Category: routing (mission items 1, 2, 3, 4) ---
@@ -114,7 +118,7 @@ function documentRuntimeStub(calls) {
   };
 }
 
-test("SAVE_RECEIPT_DETAILS command is routed to the document adapter's setReceiptDetails with server-bound identity", async () => {
+test("SAVE_RECEIPT_DETAILS command is routed to the document adapter's setReceiptDetails with server-bound identity, without a client-supplied beneficiary", async () => {
   const calls = [];
   const runtime = createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
@@ -129,7 +133,7 @@ test("SAVE_RECEIPT_DETAILS command is routed to the document adapter's setReceip
     ownerWaId: OWNER,
     flowKey: "RECEIPT_DETAILS",
     action: "SAVE_RECEIPT_DETAILS",
-    data: { payer: "Client", beneficiary: "Entreprise", amount: 5000, reason: "Test", receipt_format: "A4" },
+    data: { payer: "Client", amount: 5000, reason: "Test", receipt_format: "A4" },
     idempotencyKey: "flow_command:reply:1",
     documentContext: {
       document_id: "document:1", document_version: 2, document_type: "RECU",
@@ -140,8 +144,163 @@ test("SAVE_RECEIPT_DETAILS command is routed to the document adapter's setReceip
   assert.equal(calls[0].payload.documentId, "document:1");
   assert.equal(calls[0].payload.expectedVersion, 2);
   assert.deepEqual(calls[0].payload.details, {
-    payer: "Client", beneficiary: "Entreprise", amount: 5000, reason: "Test", receipt_format: "A4",
+    payer: "Client", amount: 5000, reason: "Test", receipt_format: "A4",
   });
+  assert.equal(Object.hasOwn(calls[0].payload.details, "beneficiary"), false);
+});
+
+// --- Category: beneficiary UX (server-derived from the issuer profile) ---
+
+test("the RECEIPT_DETAILS Flow JSON never asks the user to type a beneficiary", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const json = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "flows", "v1_draft", "kadi_receipt_details_v1.json"), "utf8"));
+  const names = [];
+  function walk(node) {
+    if (!node || typeof node !== "object") return;
+    if (typeof node.name === "string") names.push(node.name);
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    for (const value of Object.values(node)) if (value && typeof value === "object") walk(value);
+  }
+  walk(json.screens[0].layout);
+  assert.equal(names.includes("beneficiary"), false, "beneficiary must not be a visible form field");
+  assert.equal(JSON.stringify(json).includes("beneficiary"), false, "beneficiary must not appear anywhere in the Flow payload");
+});
+
+function documentRuntimeFixture({ issuerProfileById } = {}) {
+  let idIndex = 0;
+  const repository = createInMemoryV1DocumentRepository();
+  const sharedPipeline = createSharedDocumentPipeline({ repository, idFactory: (kind) => `${kind}:${++idIndex}` });
+  const runtime = createKadiV1DocumentRuntimeAdapter({
+    sharedPipeline,
+    dischargePipeline: { // RECU never reaches the discharge pipeline; a
+      // throwing stub proves that and satisfies the port contract.
+      createDischargeDraft: async () => { throw new Error("unused"); },
+      applyBrainExtraction: async () => { throw new Error("unused"); },
+      setIssuerOrGiver: async () => { throw new Error("unused"); },
+      setRecipient: async () => { throw new Error("unused"); },
+      setTransferredContent: async () => { throw new Error("unused"); },
+      setReason: async () => { throw new Error("unused"); },
+      setOptions: async () => { throw new Error("unused"); },
+      markReadyForReview: async () => { throw new Error("unused"); },
+      verifyDischarge: async () => { throw new Error("unused"); },
+      reopenForCorrection: async () => { throw new Error("unused"); },
+      cancelDischarge: async () => { throw new Error("unused"); },
+    },
+    documentRepository: repository,
+    issuerResolver: {
+      getIssuerProfileId: async () => ({ ok: true, value: { issuerProfileId: "issuer:1" } }),
+      getIssuerProfileById: issuerProfileById || (async () => ({ ok: true, value: { business_name: "Kadi Boutique", owner_name: "Awa Traoré" } })),
+    },
+  });
+  return { repository, runtime };
+}
+
+test("beneficiary is derived from the issuer profile's business_name and persisted in receipt.beneficiary", async () => {
+  const { runtime } = documentRuntimeFixture();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:1" });
+  assert.equal(started.ok, true, started.error);
+  const saved = await runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:1",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.value.receipt.beneficiary, "Kadi Boutique");
+  assert.equal(saved.value.receipt.payer, "Client Test");
+});
+
+test("beneficiary falls back to owner_name when business_name is absent, per the required preference order", async () => {
+  // Exercised through the real createKadiV1IssuerResolver (not a hand-rolled
+  // mock): its business_name/owner_name fallback is the single source of
+  // truth for this preference order (see also
+  // kadiV1IssuerProfileResolution.test.js), and setReceiptDetails must
+  // simply trust that contract rather than re-implementing the fallback.
+  const { createKadiV1IssuerResolver } = require("../kadiV1ProductionInfrastructure");
+  const fakeClient = {
+    from(table) {
+      assert.equal(table, "business_profiles");
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: { id: "issuer:1", owner_name: "Awa Traoré", business_name: null }, error: null }),
+          }),
+        }),
+      };
+    },
+    rpc() { throw new Error("RPC_FORBIDDEN"); },
+    storage: { from() { throw new Error("STORAGE_FORBIDDEN"); } },
+  };
+  const realIssuerResolver = createKadiV1IssuerResolver({ client: fakeClient });
+  let idIndex = 0;
+  const repository = createInMemoryV1DocumentRepository();
+  const sharedPipeline = createSharedDocumentPipeline({ repository, idFactory: (kind) => `${kind}:${++idIndex}` });
+  const runtime = createKadiV1DocumentRuntimeAdapter({
+    sharedPipeline,
+    dischargePipeline: {
+      createDischargeDraft: async () => { throw new Error("unused"); }, applyBrainExtraction: async () => { throw new Error("unused"); },
+      setIssuerOrGiver: async () => { throw new Error("unused"); }, setRecipient: async () => { throw new Error("unused"); },
+      setTransferredContent: async () => { throw new Error("unused"); }, setReason: async () => { throw new Error("unused"); },
+      setOptions: async () => { throw new Error("unused"); }, markReadyForReview: async () => { throw new Error("unused"); },
+      verifyDischarge: async () => { throw new Error("unused"); }, reopenForCorrection: async () => { throw new Error("unused"); },
+      cancelDischarge: async () => { throw new Error("unused"); },
+    },
+    documentRepository: repository,
+    issuerResolver: {
+      getIssuerProfileId: async () => ({ ok: true, value: { issuerProfileId: "issuer:1" } }),
+      getIssuerProfileById: realIssuerResolver.getIssuerProfileById,
+    },
+  });
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:2" });
+  const saved = await runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:2",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.value.receipt.beneficiary, "Awa Traoré");
+});
+
+test("a receipt fails closed (no document mutation) when no valid issuer identity can be resolved", async () => {
+  const notConfigured = documentRuntimeFixture({ issuerProfileById: async () => ({ ok: false, error: "KADI_V1_ISSUER_PROFILE_NOT_FOUND" }) });
+  const startedA = await notConfigured.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3a" });
+  const resultA = await notConfigured.runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: startedA.value.document_id, expectedVersion: startedA.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3a",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.deepEqual(resultA, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+
+  const emptyName = documentRuntimeFixture({ issuerProfileById: async () => ({ ok: true, value: { business_name: "", owner_name: "" } }) });
+  const startedB = await emptyName.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3b" });
+  const resultB = await emptyName.runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: startedB.value.document_id, expectedVersion: startedB.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3b",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.deepEqual(resultB, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+
+  const throwingResolver = documentRuntimeFixture({ issuerProfileById: async () => { throw new Error("network down"); } });
+  const startedC = await throwingResolver.runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:3c" });
+  const resultC = await throwingResolver.runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: startedC.value.document_id, expectedVersion: startedC.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:3c",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.deepEqual(resultC, { ok: false, error: "KADI_V1_RECEIPT_BENEFICIARY_UNRESOLVED" });
+});
+
+test("the derived beneficiary appears in the review/preview projection", async () => {
+  const { runtime } = documentRuntimeFixture();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "RECU", idempotencyKey: "flow_command:start:4" });
+  const saved = await runtime.setReceiptDetails({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "RECU", idempotencyKey: "flow_command:save-receipt:4",
+    details: { payer: "Client Test", amount: 5000, reason: "Test", receipt_format: "A4" },
+  });
+  assert.equal(saved.ok, true, saved.error);
+  const preview = buildPreviewData(saved.value);
+  assert.equal(preview.beneficiary, "Kadi Boutique");
 });
 
 // --- Category: pipeline persistence (mission items 10, 11, 12) ---
@@ -268,51 +427,106 @@ test("resolveReceiptFormat fails closed on a missing or invalid persisted format
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
-function fakeSupabaseWithStorage(downloadImpl) {
+function fakeSupabaseWithStorage(downloadByBucket) {
   return {
     from() { throw new Error("TABLE_ACCESS_FORBIDDEN"); },
     rpc() { throw new Error("RPC_FORBIDDEN"); },
-    storage: { from: (bucket) => ({ bucket, download: downloadImpl }) },
+    storage: {
+      from: (bucket) => ({
+        bucket,
+        download: (path) => {
+          const impl = typeof downloadByBucket === "function" ? downloadByBucket : downloadByBucket[bucket];
+          if (!impl) return Promise.resolve({ data: null, error: { message: "bucket not found" } });
+          return impl(path);
+        },
+      }),
+    },
   };
 }
 
-test("a valid logo is downloaded, validated and returned as a buffer", async () => {
-  const client = fakeSupabaseWithStorage(async (path) => {
-    assert.equal(path, "profiles/issuer1/logo.png");
-    return { data: { arrayBuffer: async () => PNG_MAGIC.buffer.slice(PNG_MAGIC.byteOffset, PNG_MAGIC.byteOffset + PNG_MAGIC.byteLength) }, error: null };
+function pngResponse() {
+  return { data: { arrayBuffer: async () => PNG_MAGIC.buffer.slice(PNG_MAGIC.byteOffset, PNG_MAGIC.byteOffset + PNG_MAGIC.byteLength) }, error: null };
+}
+
+test("the approved bucket allowlist is exactly logos and kadi-logos", () => {
+  assert.deepEqual(APPROVED_LOGO_BUCKETS, ["logos", "kadi-logos"]);
+});
+
+test("a valid object from the current bucket (logos) is loaded", async () => {
+  const client = fakeSupabaseWithStorage({ logos: async (path) => { assert.equal(path, "22670000000/logo.png"); return pngResponse(); } });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
+  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "22670000000/logo.png", no_logo: false } });
+  assert.equal(result.ok, true);
+  assert.ok(Buffer.isBuffer(result.value) && result.value.length > 0);
+});
+
+test("a valid object from the legacy bucket (kadi-logos) is loaded when the current bucket has nothing at that path", async () => {
+  const client = fakeSupabaseWithStorage({
+    logos: async () => ({ data: null, error: { message: "not found" } }),
+    "kadi-logos": async (path) => { assert.equal(path, "22670000000/logo.png"); return pngResponse(); },
   });
-  const loader = createKadiV1IssuerLogoLoader({ client, bucket: "logos" });
-  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "profiles/issuer1/logo.png", no_logo: false } });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
+  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "22670000000/logo.png", no_logo: false } });
+  assert.equal(result.ok, true);
+  assert.ok(Buffer.isBuffer(result.value) && result.value.length > 0);
+});
+
+test("an explicit bucket prefix outside the allowlist is rejected safely, never queried", async () => {
+  let queried = false;
+  const client = fakeSupabaseWithStorage(async () => { queried = true; return pngResponse(); });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
+  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "some-random-bucket:22670000000/logo.png", no_logo: false } });
+  assert.deepEqual(result, { ok: true, value: null });
+  assert.equal(queried, false, "an unapproved bucket must never be queried");
+});
+
+test("constructing the loader with a bucket outside the allowlist throws", () => {
+  const client = fakeSupabaseWithStorage(async () => pngResponse());
+  assert.throws(() => createKadiV1IssuerLogoLoader({ client, buckets: ["arbitrary-bucket"] }), /KADI_V1_LOGO_BUCKET_INVALID/);
+});
+
+test("a bucket-prefixed logo_path within the allowlist is honored directly", async () => {
+  const client = fakeSupabaseWithStorage({ "kadi-logos": async (path) => { assert.equal(path, "issuer1/logo.png"); return pngResponse(); } });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
+  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "kadi-logos:issuer1/logo.png", no_logo: false } });
   assert.equal(result.ok, true);
   assert.ok(Buffer.isBuffer(result.value));
-  assert.ok(result.value.length > 0);
 });
 
 test("no logo configured (no_logo=true or missing logo_path) resolves to null without error", async () => {
   const client = fakeSupabaseWithStorage(async () => { throw new Error("MUST_NOT_BE_CALLED"); });
-  const loader = createKadiV1IssuerLogoLoader({ client, bucket: "logos" });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
   const noLogoFlag = await loader.getLogoBuffer({ issuerProfile: { logo_path: "profiles/x/logo.png", no_logo: true } });
   assert.deepEqual(noLogoFlag, { ok: true, value: null });
   const noPath = await loader.getLogoBuffer({ issuerProfile: { logo_path: null, no_logo: false } });
   assert.deepEqual(noPath, { ok: true, value: null });
 });
 
+test("a path attempting traversal is rejected without any bucket being queried", async () => {
+  let queried = false;
+  const client = fakeSupabaseWithStorage(async () => { queried = true; return pngResponse(); });
+  const loader = createKadiV1IssuerLogoLoader({ client, buckets: ["logos", "kadi-logos"] });
+  const result = await loader.getLogoBuffer({ issuerProfile: { logo_path: "../../etc/passwd", no_logo: false } });
+  assert.deepEqual(result, { ok: true, value: null });
+  assert.equal(queried, false);
+});
+
 test("logo download failure, decode failure, oversized or unsupported-type buffers are all non-blocking (resolve to null)", async () => {
   const failingDownload = fakeSupabaseWithStorage(async () => ({ data: null, error: { message: "not found" } }));
-  const loaderA = createKadiV1IssuerLogoLoader({ client: failingDownload, bucket: "logos" });
+  const loaderA = createKadiV1IssuerLogoLoader({ client: failingDownload, buckets: ["logos"] });
   assert.deepEqual(await loaderA.getLogoBuffer({ issuerProfile: { logo_path: "a.png", no_logo: false } }), { ok: true, value: null });
 
   const throwingDownload = fakeSupabaseWithStorage(async () => { throw new Error("network down"); });
-  const loaderB = createKadiV1IssuerLogoLoader({ client: throwingDownload, bucket: "logos" });
+  const loaderB = createKadiV1IssuerLogoLoader({ client: throwingDownload, buckets: ["logos"] });
   assert.deepEqual(await loaderB.getLogoBuffer({ issuerProfile: { logo_path: "b.png", no_logo: false } }), { ok: true, value: null });
 
   const wrongType = fakeSupabaseWithStorage(async () => ({ data: { arrayBuffer: async () => Buffer.from("not an image").buffer }, error: null }));
-  const loaderC = createKadiV1IssuerLogoLoader({ client: wrongType, bucket: "logos" });
+  const loaderC = createKadiV1IssuerLogoLoader({ client: wrongType, buckets: ["logos"] });
   assert.deepEqual(await loaderC.getLogoBuffer({ issuerProfile: { logo_path: "c.png", no_logo: false } }), { ok: true, value: null });
 
   const oversized = Buffer.concat([PNG_MAGIC, Buffer.alloc(3 * 1024 * 1024)]);
   const tooBig = fakeSupabaseWithStorage(async () => ({ data: { arrayBuffer: async () => oversized.buffer }, error: null }));
-  const loaderD = createKadiV1IssuerLogoLoader({ client: tooBig, bucket: "logos" });
+  const loaderD = createKadiV1IssuerLogoLoader({ client: tooBig, buckets: ["logos"] });
   assert.deepEqual(await loaderD.getLogoBuffer({ issuerProfile: { logo_path: "d.png", no_logo: false } }), { ok: true, value: null });
 });
 
@@ -320,7 +534,7 @@ test("logo loader never logs the storage path, a token or a raw error payload", 
   const events = [];
   const logger = { log: (scope, details) => events.push({ scope, details }) };
   const failingDownload = fakeSupabaseWithStorage(async () => ({ data: null, error: { message: "SECRET_DETAIL_should_not_leak" } }));
-  const loader = createKadiV1IssuerLogoLoader({ client: failingDownload, bucket: "logos", logger });
+  const loader = createKadiV1IssuerLogoLoader({ client: failingDownload, buckets: ["logos", "kadi-logos"], logger });
   await loader.getLogoBuffer({ issuerProfile: { logo_path: "private/issuer42/logo.png", no_logo: false } });
   assert.ok(events.length > 0);
   const serialized = JSON.stringify(events);
@@ -342,11 +556,13 @@ test("createExistingPdfTemporaryRenderer only attempts a logo for RECU + TICKET_
   const a4Preview = { structured_preview: { document_type: "RECU", issuer: { profile_id: "issuer:1" }, document_number: null, issued_at: null, payer: "x", reason: "y", total: 1, receipt_format: "A4" } };
   const a4Result = await renderer.render({ preview: a4Preview });
   assert.equal(a4Result.ok, true, a4Result.error);
+  assert.equal(a4Result.value.buffer.toString(), "no-logo", "A4 rendering must not be affected by logo availability");
   assert.equal(logoCalls.length, 0, "A4 must never trigger a logo lookup");
 
   const compactPreview = { structured_preview: { document_type: "RECU", issuer: { profile_id: "issuer:1" }, document_number: null, issued_at: null, payer: "x", reason: "y", total: 1, receipt_format: "TICKET_80" } };
   const compactResult = await renderer.render({ preview: compactPreview });
   assert.equal(compactResult.ok, true, compactResult.error);
+  assert.equal(compactResult.value.buffer.toString(), "with-logo", "TICKET_80 must receive the resolved logo buffer");
   assert.equal(logoCalls.length, 1, "TICKET_80 must trigger exactly one logo lookup");
 });
 

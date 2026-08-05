@@ -384,13 +384,17 @@ function createKadiV1ProductionBootstrap({
       repository: documentRepository,
     });
     const issuerResolver = createKadiV1IssuerResolver({ client: supabase });
-    // Reuses the exact bucket the legacy profile upload path (store.js)
-    // already writes business_profiles.logo_path into — never a separate
-    // KADI_V1_-prefixed bucket, to avoid pointing at logos that do not
-    // exist there.
+    // Reuses the exact buckets the legacy profile upload paths already
+    // write business_profiles.logo_path into — never a separate
+    // KADI_V1_-prefixed bucket. "logos" (store.js) is the current, actively
+    // written bucket and is tried first; "kadi-logos" (supabaseStorage.js)
+    // is the legacy bucket some existing rows may still point into.
     const logoLoader = createKadiV1IssuerLogoLoader({
       client: supabase,
-      bucket: env.SUPABASE_LOGO_BUCKET || "logos",
+      buckets: [
+        env.SUPABASE_LOGO_BUCKET || "logos",
+        env.SUPABASE_BUCKET_LOGOS || "kadi-logos",
+      ],
       logger,
     });
 

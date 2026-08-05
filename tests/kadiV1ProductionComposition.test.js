@@ -317,6 +317,10 @@ test("production composition can derive the orchestrator without boot I/O", () =
           externalCalls += 1;
           throw new Error("BOOT_ISSUER_FORBIDDEN");
         },
+        async getIssuerProfileById() {
+          externalCalls += 1;
+          throw new Error("BOOT_ISSUER_FORBIDDEN");
+        },
       },
       historyService: {
         async searchDocuments() {

@@ -84,6 +84,9 @@ function baseDependencies(overrides = {}) {
       async getIssuerProfileId() {
         throw new Error("BOOT_ISSUER_FORBIDDEN");
       },
+      async getIssuerProfileById() {
+        throw new Error("BOOT_ISSUER_FORBIDDEN");
+      },
     },
     historyService: {
       async searchDocuments() {
