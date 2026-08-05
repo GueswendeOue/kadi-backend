@@ -88,7 +88,7 @@
               {
                 "type": "TextInput",
                 "name": "unit_custom",
-                "label": "Autre unité (si besoin)",
+                "label": "Autre unité",
                 "required": false,
                 "input-type": "text"
               },
