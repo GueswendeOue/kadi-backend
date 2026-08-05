@@ -8,6 +8,7 @@ const {
   idempotencyFor,
   mapMetaMessageToConversationInput,
   parseNfmReply,
+  safeInternalReason,
 } = require("../kadiV1WebhookRuntime");
 
 function enabledConfig(overrides = {}) {
@@ -164,6 +165,85 @@ test("runtime logs only safe message references and controlled reasons", async (
   await runtime.handleIncomingValue({ messages: [textMessage({ text: { body: "Client secret 70000000" } })] });
   const serialized = JSON.stringify(calls.filter(([name]) => name === "log"));
   assert.doesNotMatch(serialized, /Client secret|70000000|22670000000/);
+});
+
+test("safeInternalReason accepts only the closed KADI_V1_ code pattern", () => {
+  assert.equal(safeInternalReason(new Error("KADI_V1_SESSION_CREATE_FAILED"), "FALLBACK"), "KADI_V1_SESSION_CREATE_FAILED");
+  assert.equal(safeInternalReason(new Error("KADI_V1_" + "X".repeat(80)), "FALLBACK"), "KADI_V1_" + "X".repeat(80));
+  assert.equal(safeInternalReason(new Error("KADI_V1_" + "X".repeat(81)), "FALLBACK"), "FALLBACK", "over 80 chars after the prefix must be rejected");
+  assert.equal(safeInternalReason(new Error("kadi_v1_session_create_failed"), "FALLBACK"), "FALLBACK", "lowercase must be rejected");
+  assert.equal(safeInternalReason(new Error("KADI_V1_SESSION_CREATE_FAILED extra"), "FALLBACK"), "FALLBACK", "trailing content must be rejected");
+  assert.equal(safeInternalReason(new Error("connection refused"), "FALLBACK"), "FALLBACK");
+  assert.equal(safeInternalReason(new Error(""), "FALLBACK"), "FALLBACK");
+  assert.equal(safeInternalReason({}, "FALLBACK"), "FALLBACK");
+  assert.equal(safeInternalReason(null, "FALLBACK"), "FALLBACK");
+});
+
+test("a safe internal reason from a failed presentFlowReply is logged and returned", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      presenter: {
+        presentConversation: async (input) => calls.push(["present_conversation", input]),
+        presentFlowReply: async () => { throw new Error("KADI_V1_SESSION_CREATE_FAILED"); },
+        presentRecoverableError: async (input) => calls.push(["present_error", input]),
+      },
+    },
+  });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "DOCUMENT_CONTENT", action: "ADD_CONTENT", data: { description: "Ciment", quantity: 2, unit_price: 6500 } });
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.deepEqual(result.results[0], { handled: true, accepted: false, reason: "KADI_V1_SESSION_CREATE_FAILED" });
+  const logs = calls.filter(([name]) => name === "log");
+  assert.ok(logs.some(([, entry]) => entry.record.reason === "KADI_V1_SESSION_CREATE_FAILED"));
+});
+
+test("an arbitrary presentFlowReply failure message is replaced by the generic presentation-failed reason", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      presenter: {
+        presentConversation: async (input) => calls.push(["present_conversation", input]),
+        presentFlowReply: async () => { throw new Error("connection refused to db.internal:5432 for wa_id 22670000000"); },
+        presentRecoverableError: async (input) => calls.push(["present_error", input]),
+      },
+    },
+  });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "DOCUMENT_CONTENT", action: "ADD_CONTENT", data: { description: "Ciment", quantity: 2, unit_price: 6500 } });
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.deepEqual(result.results[0], { handled: true, accepted: false, reason: "KADI_V1_FLOW_REPLY_PRESENTATION_FAILED" });
+  const serialized = JSON.stringify(calls.filter(([name]) => name === "log"));
+  assert.doesNotMatch(serialized, /connection refused|db\.internal|5432|22670000000/);
+});
+
+test("presentFlowReply failures never log a WhatsApp number, payload, message content, token or raw PostgreSQL detail", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      presenter: {
+        presentConversation: async (input) => calls.push(["present_conversation", input]),
+        presentFlowReply: async () => {
+          throw new Error(
+            'insert or update on table "kadi_v1_conversation_sessions" violates check constraint ' +
+            '"kadi_v1_conversation_sessions_expected_flow_key_check" DETAIL: Failing row contains ' +
+            '(kadi_session:1, 22670000000, ..., Bearer sk-secret-token-123).'
+          );
+        },
+        presentRecoverableError: async (input) => calls.push(["present_error", input]),
+      },
+    },
+  });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "DOCUMENT_CONTENT", action: "ADD_CONTENT", data: { description: "Ciment", quantity: 2, unit_price: 6500 } });
+  await runtime.handleIncomingValue({ messages: [message] });
+  const serialized = JSON.stringify(calls.filter(([name]) => name === "log"));
+  assert.doesNotMatch(serialized, /22670000000|sk-secret-token|Bearer|DETAIL|check constraint|Failing row/);
+});
+
+test("the normal presentFlowReply path (no throw) is unaffected by the named catch", async () => {
+  const { runtime, calls } = harness();
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "DOCUMENT_CONTENT", action: "ADD_CONTENT", data: { description: "Ciment", quantity: 2, unit_price: 6500 } });
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(calls.filter(([name]) => name === "present_flow_reply").length, 1);
+  assert.equal(calls.some(([name]) => name === "present_error"), false);
 });
 
 test("canary rollout sends only allowlisted owners to V1", async () => {
