@@ -1,7 +1,10 @@
 # KADI_CONVERSATIONAL_MULTIMODAL_V1 — Fondation isolée
 
-**Statut :** `PLANNED` (fondation posée sur la branche `feat/kadi-conversational-multimodal-v1`,
-non fusionnée, non déployée, désactivée par défaut).
+**Statut :** `IMPLEMENTED_NOT_DEPLOYED` — implémentée et testée, engagée
+(commit) sur la branche `feat/kadi-conversational-multimodal-v1`
+([PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8), `DRAFT`),
+**non fusionnée** dans `main`, **non déployée**, tous les flags désactivés
+par défaut. Ce n'est pas de la production.
 
 Ce document décrit la fondation de compréhension conversationnelle multimodale
 construite dans cette mission. Il complète, sans le remplacer,
@@ -76,10 +79,14 @@ cerveau existant et du classificateur déterministe.
   autorisation, persistance, génération PDF, validation finale ;
 * **aucun modèle ne peut débiter un crédit, finaliser un document ou écrire
   une donnée arbitraire sans validation backend** — appliqué techniquement
-  par la liste fermée `AUTHORITY_FIELDS` dans `kadiV1BrainContracts.js`
-  (existante) et sa réplique dans `kadiV1ConversationalMultimodalContracts.js`
-  (nouvelle), qui rejettent toute sortie contenant `debit`, `total`,
-  `issued_at`, `document_number`, `final_generation`, etc.
+  par une **liste fermée `AUTHORITY_FIELDS` unique**, définie et exportée
+  par `kadiV1BrainContracts.js`, puis **importée telle quelle** (jamais
+  recopiée) par `kadiV1ConversationalMultimodalContracts.js` et par
+  `kadiV1GeminiVisionProvider.js` — les trois points d'entrée IA partagent
+  donc exactement la même liste, sans copie indépendante susceptible de
+  diverger. Elle rejette toute sortie contenant `debit`, `total`,
+  `issued_at`, `document_number`, `final_generation`, `generation_cost`,
+  etc.
 
 ## 3. Contrat de requête normalisé (nouveau)
 
@@ -129,11 +136,19 @@ déploiement ultérieure, explicitement autorisée.
 Câblé et testé dans cette fondation :
 
 * `kadiV1ConversationalMultimodalContracts.js` — validation de requête/résultat ;
-* `kadiV1ConversationalMultimodalPolicy.js` — classification déterministe
-  (CANCEL/HELP/CHECK_BALANCE/RECHARGE/SEARCH_HISTORY/ambiguïté), et
-  interprétation via le cerveau existant (`brain.understand`, jamais
-  réimplémenté) pour CREATE_DOCUMENT/UPDATE_DOCUMENT, avec détection
-  d'opération (correction/ajout/retrait/changement de type) ;
+* `kadiV1ConversationalMultimodalPolicy.js` — classification déterministe :
+  CANCEL/HELP/CHECK_BALANCE/SEARCH_HISTORY réutilisent directement
+  `detectNaturalIntent` (et `validateCanonicalText`) de
+  `kadiV1ConversationOrchestrator.js`, avec des tests de parité qui
+  comparent les deux sorties sur le même texte ; seuls RECHARGE et
+  l'ambiguïté « quel document » — que `detectNaturalIntent` ne couvre pas
+  aujourd'hui — sont classifiés localement. CREATE_DOCUMENT n'est jamais
+  court-circuité par ce chemin déterministe : il retombe systématiquement
+  sur le cerveau existant (`brain.understand`, jamais réimplémenté), pour
+  ne pas perdre les entités présentes dans le même message (ex. « Moussa »
+  dans « Fais une facture pour Moussa »). Ce chemin gère aussi la détection
+  d'opération (correction/ajout/retrait/changement de type) sur
+  UPDATE_DOCUMENT ;
 * `kadiV1GeminiAudioProvider.js` — extraction structurée directe depuis
   l'audio, désactivée par défaut, réutilise
   `normalizeStructuredExtraction` de `kadiV1GeminiVisionProvider.js`.

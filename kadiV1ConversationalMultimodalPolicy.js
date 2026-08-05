@@ -17,7 +17,7 @@
 // its own reviewed mission, not something an "isolated foundation" branch
 // should do silently.
 
-const { SCHEMA_VERSION } = require("./kadiV1ConversationalMultimodalContracts");
+const { SCHEMA_VERSION, validateConversationalResult } = require("./kadiV1ConversationalMultimodalContracts");
 const { detectNaturalIntent, validateCanonicalText } = require("./kadiV1ConversationOrchestrator");
 
 const DETERMINISTIC_MIN_CONFIDENCE = 0.99; // rule matches are certain about intent, not about field values.
@@ -225,6 +225,7 @@ async function interpretConversationalInput({
   const rawText = source === "TEXT" ? text : source === "AUDIO" ? transcription : "";
   const language = detectLanguage(rawText);
 
+  let envelope;
   if (source === "FLOW") {
     if (!flowReply) throw new TypeError("KADI_CONVERSATIONAL_MULTIMODAL_FLOW_REPLY_REQUIRED");
     // A Flow reply's data is already validated by the existing, separate
@@ -237,36 +238,45 @@ async function interpretConversationalInput({
     // orchestrator-integration mission (see architecture doc §5). Emitting
     // an unverified "CORRECT_FIELD" here would be exactly the kind of
     // silently-invented certainty this contract exists to prevent.
-    return baseResult({
+    envelope = baseResult({
       intent: "UPDATE_DOCUMENT",
       operation: null,
       language,
       needs_confirmation: false,
       provider_metadata: classifierMetadata("DETERMINISTIC", { model: null }),
     });
+  } else {
+    envelope = ["TEXT", "AUDIO"].includes(source) ? classifyDeterministicIntent(rawText, language) : null;
+    if (!envelope) {
+      const brainModality = source === "TEXT" ? "TEXT" : source === "AUDIO" ? "TRANSCRIPTION" : source;
+      const documentTypeHint = activeDocument?.document_type
+        || (["TEXT", "AUDIO"].includes(source) ? detectDocumentTypeHint(rawText) : null);
+      const brainRequest = {
+        request_id: requestId,
+        modality: brainModality,
+        conversation_context: { has_active_document: Boolean(activeDocument) },
+        document_type_hint: documentTypeHint,
+        collected_data: activeDocument ? JSON.parse(JSON.stringify(activeDocument)) : {},
+      };
+      if (brainModality === "TEXT") brainRequest.text = text;
+      else if (brainModality === "TRANSCRIPTION") brainRequest.transcription = transcription;
+      else brainRequest.media = media;
+
+      const brainResult = await brain.understand(brainRequest);
+      envelope = fromBrainResult({ brainResult, rawText, language, activeDocument });
+    }
   }
 
-  if (["TEXT", "AUDIO"].includes(source)) {
-    const deterministic = classifyDeterministicIntent(rawText, language);
-    if (deterministic) return deterministic;
-  }
-
-  const brainModality = source === "TEXT" ? "TEXT" : source === "AUDIO" ? "TRANSCRIPTION" : source;
-  const documentTypeHint = activeDocument?.document_type
-    || (["TEXT", "AUDIO"].includes(source) ? detectDocumentTypeHint(rawText) : null);
-  const brainRequest = {
-    request_id: requestId,
-    modality: brainModality,
-    conversation_context: { has_active_document: Boolean(activeDocument) },
-    document_type_hint: documentTypeHint,
-    collected_data: activeDocument ? JSON.parse(JSON.stringify(activeDocument)) : {},
-  };
-  if (brainModality === "TEXT") brainRequest.text = text;
-  else if (brainModality === "TRANSCRIPTION") brainRequest.transcription = transcription;
-  else brainRequest.media = media;
-
-  const brainResult = await brain.understand(brainRequest);
-  return fromBrainResult({ brainResult, rawText, language, activeDocument });
+  // Phase 2 requirement: "the normalized contract must be validated before
+  // it is allowed to affect a document draft." This is the single exit
+  // point for every path above (FLOW / deterministic / brain-backed), so
+  // nothing can return without passing through it — including from a
+  // future, non-conforming `brain` implementation that skips its own
+  // validateBrainResult call. Fails closed and also normalizes (e.g.
+  // document_type casing) rather than silently trusting the derived shape.
+  const checked = validateConversationalResult(envelope);
+  if (!checked.ok) throw new TypeError(checked.error);
+  return checked.value;
 }
 
 // Phase 7 — formal Kadi conversation policy check (see

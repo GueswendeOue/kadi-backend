@@ -321,6 +321,34 @@ test("English input is accepted and detected as such", async () => {
   assertValidEnvelope(result);
 });
 
+test("interpretConversationalInput valide sa propre sortie et ne fait pas confiance aveuglément à un brain non conforme (Phase 2 : \"validated before it is allowed to affect a document draft\")", async () => {
+  const misbehavingBrain = { understand: async () => ({
+    intent: "CREATE_DOCUMENT",
+    document_type: "facture", // minuscule : invalide face à l'énumération canonique
+    extracted_fields: {},
+    missing_fields: [], uncertainties: [], confidence: 0.9,
+    suggested_next_action: "REVIEW_EXTRACTED_DATA", user_facing_message_draft: null,
+    provider_metadata: { provider: "OPENAI" },
+  })};
+  const result = await interpretConversationalInput({ requestId: "req-r2", source: "TEXT", text: "Fais une facture.", brain: misbehavingBrain });
+  assert.equal(result.document_type, "FACTURE", "la sortie doit être normalisée par le contrat, jamais renvoyée telle quelle depuis un brain non conforme");
+});
+
+test("interpretConversationalInput échoue fermé si un brain renvoie quelque chose que le contrat rejette réellement", async () => {
+  const brokenBrain = { understand: async () => ({
+    intent: "CREATE_DOCUMENT",
+    document_type: "CONTRACT", // n'existe pas dans l'énumération canonique
+    extracted_fields: {},
+    missing_fields: [], uncertainties: [], confidence: 0.9,
+    suggested_next_action: "REVIEW_EXTRACTED_DATA", user_facing_message_draft: null,
+    provider_metadata: { provider: "OPENAI" },
+  })};
+  await assert.rejects(
+    interpretConversationalInput({ requestId: "req-r3", source: "TEXT", text: "Fais une facture.", brain: brokenBrain }),
+    (error) => /CONVERSATIONAL_DOCUMENT_TYPE_INVALID/.test(error.message || error.code || "")
+  );
+});
+
 test("une entrée FLOW ne fabrique pas une opération non vérifiée et ne débloque jamais needs_confirmation à tort", async () => {
   const brain = mockBrain(async () => { throw new Error("le cerveau ne doit jamais être appelé pour une entrée FLOW"); });
   const result = await interpretConversationalInput({

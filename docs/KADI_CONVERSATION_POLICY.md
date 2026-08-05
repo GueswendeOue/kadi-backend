@@ -29,13 +29,16 @@ Toute réponse utilisateur doit :
 ## Ce que le validateur exécutable vérifie
 
 `validateCanonicalResponseText` (`kadiV1ConversationalMultimodalPolicy.js`)
-vérifie mécaniquement, sur un texte de réponse déjà composé :
+vérifie mécaniquement, sur un texte de réponse déjà composé. Elle délègue le
+contrôle de longueur et de vocabulaire interne à `validateCanonicalText`,
+déjà exportée par `kadiV1ConversationOrchestrator.js` et donc réutilisée
+(pas recopiée), et n'ajoute que ce que cette fonction ne couvre pas encore :
 
 | Règle | Vérifiable automatiquement | Comment |
 |---|---|---|
-| Longueur raisonnable | Oui | ≤ 700 caractères |
-| Pas de nom de fournisseur exposé | Oui | Motif fermé (OpenAI/Gemini/GPT/Whisper) |
-| Pas de jargon interne exposé | Oui | Motif fermé (`flow_token`, `payload`, `OCR`, `endpoint`, `nfm_reply`, `draft_id`, `brouillon technique`) |
+| Longueur raisonnable | Oui | ≤ 700 caractères (plus strict que le plafond de 1200 de `validateCanonicalText`, propre aux réponses conversationnelles) |
+| Pas de nom de fournisseur ni de jargon interne déjà couverts | Oui | Réutilise `validateCanonicalText` (`flow`/`payload`/`session`/`endpoint`/`openai`/`gemini`/`ocr`) |
+| Termes supplémentaires propres à cette fondation | Oui | Motif fermé additionnel (`flow_token`, `nfm_reply`, `draft_id`, `brouillon technique`, `GPT-\d`, `Whisper`) |
 | Au plus une question | Oui | Comptage des `?` |
 | Ton chaleureux et naturel | Non | Jugement humain / revue de conversation réelle avant publication d'un Flow (voir §18 AGENTS.md) |
 | Absence de succès prématuré | Non | Nécessite le contexte métier réel (l'état backend), pas seulement le texte |
