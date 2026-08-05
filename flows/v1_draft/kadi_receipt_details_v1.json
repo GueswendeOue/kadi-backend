@@ -1,0 +1,113 @@
+{
+  "version": "7.3",
+  "routing_model": { "RECEIPT_DETAILS": [] },
+  "screens": [
+    {
+      "id": "RECEIPT_DETAILS",
+      "title": "Informations du reçu",
+      "terminal": true,
+      "data": {
+        "session_id": { "type": "string", "__example__": "session_example" },
+        "receipt_formats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "A4", "title": "Reçu A4" },
+            { "id": "TICKET_80", "title": "Ticket 80 mm" }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "Renseignez les informations du reçu."
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "payer",
+                "label": "Qui paie",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "beneficiary",
+                "label": "Qui reçoit le paiement",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "amount",
+                "label": "Montant reçu",
+                "required": true,
+                "input-type": "number"
+              },
+              {
+                "type": "TextInput",
+                "name": "reason",
+                "label": "Motif du paiement",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "payment_method",
+                "label": "Moyen de paiement",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "reference",
+                "label": "Référence",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "receipt_format",
+                "label": "Format du reçu",
+                "required": true,
+                "data-source": "${data.receipt_formats}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continuer",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "RECEIPT_DETAILS",
+                    "action": "SAVE_RECEIPT_DETAILS",
+                    "data": {
+                      "payer": "${form.payer}",
+                      "beneficiary": "${form.beneficiary}",
+                      "amount": "${form.amount}",
+                      "reason": "${form.reason}",
+                      "payment_method": "${form.payment_method}",
+                      "reference": "${form.reference}",
+                      "receipt_format": "${form.receipt_format}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -487,10 +487,13 @@ function nextFlowForReply(action, resultValue) {
   if (action === "PREPARE_DOCUMENT") return "DOCUMENT_TYPE";
   if (action === "SELECT_DOCUMENT_TYPE") {
     if (document?.document_type === "DECHARGE") return "DISCHARGE_DETAILS";
+    if (document?.document_type === "RECU") return "RECEIPT_DETAILS";
     if (document?.document_type === "FACTURE") return "INVOICE_TYPE";
     return "DOCUMENT_CLIENT";
   }
   if (action === "SAVE_INVOICE_TYPE") return "DOCUMENT_CLIENT";
+  if (action === "SAVE_RECEIPT_DETAILS") return "DOCUMENT_REVIEW";
+  if (action === "SAVE_DETAILS") return "DOCUMENT_REVIEW";
   // ARTICLE_FORM is now its own independent flow_key/Flow (Meta refused
   // opening it as a second screen of DOCUMENT_CONTENT — #131009). The item
   // form is always reached via ARTICLE_FORM; DOCUMENT_CONTENT is the
@@ -503,9 +506,11 @@ function nextFlowForReply(action, resultValue) {
   if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
   if (action === "SAVE_OPTIONS") return "DOCUMENT_REVIEW";
   if (action === "VERIFY") return "DOCUMENT_PREVIEW";
-  if (action === "EDIT_CLIENT") return "EDIT_CLIENT";
-  if (action === "EDIT_CONTENT") return "EDIT_CONTENT";
-  if (action === "EDIT_OPTIONS") return "EDIT_OPTIONS";
+  if (["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"].includes(action)) {
+    if (document?.document_type === "DECHARGE") return "DISCHARGE_DETAILS";
+    if (document?.document_type === "RECU") return "RECEIPT_DETAILS";
+    return action;
+  }
   if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
   if (action === "SELECT_PACK") return "RECHARGE";
   return null;
@@ -561,6 +566,7 @@ function canonicalReplyText(action, value) {
     START: "Merci. Votre profil est enregistré. Que voulez-vous préparer aujourd’hui ?",
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
     SELECT_DOCUMENT_TYPE: "Le type de document est enregistré.",
+    SAVE_RECEIPT_DETAILS: "Les informations du reçu sont enregistrées. Votre reçu est prêt pour vérification.",
     SAVE_CLIENT: "Les informations du client sont enregistrées.",
     START_ADD_CONTENT: "Ajoutons un article.",
     ADD_CONTENT: "L’article est enregistré. Que souhaitez-vous faire ?",

@@ -5,13 +5,13 @@ const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const IDEMPOTENCY_PATTERN = /^flow_command:[A-Za-z0-9:_.-]{1,187}$/;
 const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 const FLOW_KEYS = Object.freeze([
-  "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT", "ARTICLE_FORM",
+  "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "RECEIPT_DETAILS", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT", "ARTICLE_FORM",
   "DOCUMENT_OPTIONS", "DOCUMENT_REVIEW", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS",
   "DOCUMENT_PREVIEW", "GENERATION_CONFIRMATION", "RECHARGE", "HISTORY_SEARCH", "DISCHARGE_DETAILS",
 ]);
 const ACTIONS = Object.freeze([
   "START", "PREPARE_DOCUMENT", "HISTORY_SEARCH", "BALANCE", "HELP", "SELECT_DOCUMENT_TYPE",
-  "SAVE_INVOICE_TYPE", "SAVE_CLIENT", "START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT", "SAVE_OPTIONS", "VERIFY",
+  "SAVE_INVOICE_TYPE", "SAVE_RECEIPT_DETAILS", "SAVE_CLIENT", "START_ADD_CONTENT", "ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT", "SAVE_OPTIONS", "VERIFY",
   "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL", "EDIT", "PREPARE_PDF",
   "SAVE_FOR_LATER", "CONFIRM_GENERATION", "SELECT_PACK", "CHECK_PAYMENT", "SEARCH",
   "OPEN_DOCUMENT", "SAVE_DETAILS",
@@ -59,7 +59,7 @@ function createKadiV1FlowCommandRuntime({
 } = {}) {
   const onboarding = assertPort(onboardingRuntime, ["continueOnboarding"], "KADI_V1_ONBOARDING_COMMAND_RUNTIME");
   const documents = assertPort(documentRuntime, [
-    "start", "setInvoiceKind", "setClient", "startAddContent", "addContent", "updateContent", "removeContent", "finishContent", "setOptions",
+    "start", "setInvoiceKind", "setReceiptDetails", "setClient", "startAddContent", "addContent", "updateContent", "removeContent", "finishContent", "setOptions",
     "verify", "beginEdit", "saveForLater", "saveDischargeDetails", "cancel",
   ], "KADI_V1_DOCUMENT_COMMAND_RUNTIME");
   const previews = assertPort(previewRuntime, ["prepare"], "KADI_V1_PREVIEW_COMMAND_RUNTIME");
@@ -128,6 +128,7 @@ function createKadiV1FlowCommandRuntime({
 
     const operations = {
       SAVE_INVOICE_TYPE: [documents, "setInvoiceKind", { ...documentBase, invoiceKind: data.invoice_kind }, "KADI_V1_DOCUMENT_INVOICE_KIND_FAILED"],
+      SAVE_RECEIPT_DETAILS: [documents, "setReceiptDetails", { ...documentBase, details: structuredClone(data) }, "KADI_V1_DOCUMENT_RECEIPT_DETAILS_FAILED"],
       SAVE_CLIENT: [documents, "setClient", { ...documentBase, client: structuredClone(data) }, "KADI_V1_DOCUMENT_CLIENT_FAILED"],
       START_ADD_CONTENT: [documents, "startAddContent", documentBase, "KADI_V1_DOCUMENT_CONTENT_START_FAILED"],
       ADD_CONTENT: [documents, "addContent", { ...documentBase, content: structuredClone(data) }, "KADI_V1_DOCUMENT_CONTENT_ADD_FAILED"],

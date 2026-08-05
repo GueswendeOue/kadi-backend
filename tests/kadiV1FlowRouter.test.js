@@ -10,7 +10,7 @@ const {
 
 test("le routeur expose toutes les clés logiques V1 attendues", () => {
   assert.deepEqual(FLOW_KEYS, [
-    "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT",
+    "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "RECEIPT_DETAILS", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT",
     "ARTICLE_FORM", "DOCUMENT_OPTIONS", "DOCUMENT_REVIEW", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS",
     "DOCUMENT_PREVIEW", "GENERATION_CONFIRMATION", "RECHARGE", "HISTORY_SEARCH", "DISCHARGE_DETAILS",
   ]);
@@ -24,13 +24,24 @@ test("les routes générales ne nécessitent aucun document", () => {
   assert.equal(resolveFlowKey({ intent: "RECHARGE" }).value, "RECHARGE");
 });
 
-test("facture, devis et reçu utilisent les Flows documentaires partagés", () => {
-  for (const documentType of ["FACTURE", "DEVIS", "RECU"]) {
+test("facture et devis utilisent les Flows documentaires partagés", () => {
+  for (const documentType of ["FACTURE", "DEVIS"]) {
     const invoiceKind = documentType === "FACTURE" ? "FINAL" : undefined;
     assert.equal(resolveFlowKey({ intent: "COLLECT_CLIENT", documentType, documentState: "COLLECTING", invoiceKind }).value, "DOCUMENT_CLIENT");
     assert.equal(resolveFlowKey({ intent: "COLLECT_CONTENT", documentType, documentState: "INCOMPLETE" }).value, "DOCUMENT_CONTENT");
     assert.equal(resolveFlowKey({ intent: "COLLECT_OPTIONS", documentType, documentState: "COLLECTING" }).value, "DOCUMENT_OPTIONS");
     assert.equal(resolveFlowKey({ intent: "REVIEW", documentType, documentState: "READY_FOR_REVIEW" }).value, "DOCUMENT_REVIEW");
+  }
+});
+
+test("le reçu utilise son propre Flow dédié, jamais les écrans client/article génériques", () => {
+  for (const intent of ["COLLECT_CLIENT", "COLLECT_CONTENT", "COLLECT_OPTIONS"]) {
+    const documentState = intent === "COLLECT_CONTENT" ? "INCOMPLETE" : "COLLECTING";
+    assert.equal(resolveFlowKey({ intent, documentType: "RECU", documentState }).value, "RECEIPT_DETAILS");
+  }
+  assert.equal(resolveFlowKey({ intent: "REVIEW", documentType: "RECU", documentState: "READY_FOR_REVIEW" }).value, "DOCUMENT_REVIEW");
+  for (const intent of ["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"]) {
+    assert.equal(resolveFlowKey({ intent, documentType: "RECU", documentState: "VERIFIED" }).value, "RECEIPT_DETAILS");
   }
 });
 
@@ -48,7 +59,7 @@ test("une facture avec invoice_kind déjà valide ne redemande pas INVOICE_TYPE"
 
 test("l'exigence invoice_kind ne s'applique pas au devis ou au reçu", () => {
   assert.equal(resolveFlowKey({ intent: "COLLECT_CLIENT", documentType: "DEVIS", documentState: "COLLECTING" }).value, "DOCUMENT_CLIENT");
-  assert.equal(resolveFlowKey({ intent: "COLLECT_CLIENT", documentType: "RECU", documentState: "COLLECTING" }).value, "DOCUMENT_CLIENT");
+  assert.equal(resolveFlowKey({ intent: "COLLECT_CLIENT", documentType: "RECU", documentState: "COLLECTING" }).value, "RECEIPT_DETAILS");
 });
 
 test("la décharge conserve son Flow métier propre", () => {

@@ -35,7 +35,7 @@ function documentIdentity(command) {
 
 function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline, documentRepository, issuerResolver } = {}) {
   const shared = assertMethods(sharedPipeline, [
-    "createDraft", "applyBrainExtraction", "setInvoiceKind", "setClientOrPayer", "addContent", "updateContent",
+    "createDraft", "applyBrainExtraction", "setInvoiceKind", "setReceiptFormat", "setClientOrPayer", "addContent", "updateContent",
     "removeContent", "setOptions", "markReadyForReview", "verifyDocument", "reopenForCorrection", "cancelDocument",
   ], "KADI_V1_SHARED_PIPELINE");
   const discharge = assertMethods(dischargePipeline, [
@@ -48,7 +48,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
   function pipelineFor(type) { return type === "DECHARGE" ? discharge : shared; }
   function sharedKey(operation, source, scope) {
     const prefixes = {
-      createDraft: "create_draft:", applyBrainExtraction: "brain_extraction:", setInvoiceKind: "set_invoice_kind:", setClientOrPayer: "set_party:",
+      createDraft: "create_draft:", applyBrainExtraction: "brain_extraction:", setInvoiceKind: "set_invoice_kind:", setReceiptFormat: "set_receipt_format:", setClientOrPayer: "set_party:",
       addContent: "add_content:", updateContent: "update_content:", removeContent: "remove_content:",
       setOptions: "set_options:", markReadyForReview: "mark_ready:", verifyDocument: "verify:",
       reopenForCorrection: "reopen:", cancelDocument: "cancel:",
@@ -113,6 +113,38 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
       ownerWaId: command.ownerWaId, documentId: command.documentId, expectedVersion: command.expectedVersion,
       invoiceKind: command.invoiceKind, idempotencyKey: sharedKey("setInvoiceKind", command.idempotencyKey),
     });
+  }
+  async function setReceiptDetails(command) {
+    const checked = documentIdentity(command);
+    if (!checked.ok) return checked;
+    if (command.documentType !== "RECU") return fail("KADI_V1_RECEIPT_DETAILS_FLOW_FORBIDDEN");
+    const details = command.details && typeof command.details === "object" ? clone(command.details) : null;
+    if (!details) return fail("KADI_V1_RECEIPT_DETAILS_INVALID");
+    let current = await load(command);
+    if (!current.ok) return current;
+    let step = 0;
+    async function mutate(method, payload) {
+      const result = await shared[method]({
+        ownerWaId: command.ownerWaId, documentId: command.documentId, expectedVersion: current.value.version,
+        ...payload, idempotencyKey: sharedKey(method, command.idempotencyKey, String(++step)),
+      });
+      if (result.ok) current = result;
+      return result;
+    }
+    const content = await mutate("addContent", {
+      content: {
+        payer: details.payer,
+        beneficiary: details.beneficiary,
+        amount: details.amount,
+        reason: details.reason,
+        payment_method: details.payment_method,
+        reference: details.reference,
+      },
+    });
+    if (!content.ok) return content;
+    const format = await mutate("setReceiptFormat", { receiptFormat: details.receipt_format });
+    if (!format.ok) return format;
+    return advanceIfComplete(current.value, command.ownerWaId, command.idempotencyKey);
   }
   async function setClient(command) {
     const checked = documentIdentity(command);
@@ -249,7 +281,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 
-  return Object.freeze({ start, apply, setInvoiceKind, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
+  return Object.freeze({ start, apply, setInvoiceKind, setReceiptDetails, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
 }
 
 function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderService, generationQuoteService } = {}) {

@@ -8,6 +8,7 @@ const FLOW_KEYS = Object.freeze([
   "MENU",
   "DOCUMENT_TYPE",
   "INVOICE_TYPE",
+  "RECEIPT_DETAILS",
   "DOCUMENT_CLIENT",
   "DOCUMENT_CONTENT",
   "ARTICLE_FORM",
@@ -100,6 +101,7 @@ function resolveFlowKey({ intent, documentType = null, documentState = null, own
   if (intent === "COLLECT_CLIENT") {
     if (!COLLECTION_STATES.has(documentState)) return fail("KADI_V1_FLOW_STATE_INCOMPATIBLE");
     if (documentType === "DECHARGE") return success("DISCHARGE_DETAILS");
+    if (documentType === "RECU") return success("RECEIPT_DETAILS");
     if (documentType === "FACTURE" && !VALID_INVOICE_KINDS.has(invoiceKind)) {
       return success("INVOICE_TYPE");
     }
@@ -108,12 +110,16 @@ function resolveFlowKey({ intent, documentType = null, documentState = null, own
 
   if (intent === "COLLECT_CONTENT") {
     if (!COLLECTION_STATES.has(documentState)) return fail("KADI_V1_FLOW_STATE_INCOMPATIBLE");
-    return documentType === "DECHARGE" ? success("DISCHARGE_DETAILS") : success("DOCUMENT_CONTENT");
+    if (documentType === "DECHARGE") return success("DISCHARGE_DETAILS");
+    if (documentType === "RECU") return success("RECEIPT_DETAILS");
+    return success("DOCUMENT_CONTENT");
   }
 
   if (intent === "COLLECT_OPTIONS") {
     if (!COLLECTION_STATES.has(documentState)) return fail("KADI_V1_FLOW_STATE_INCOMPATIBLE");
-    return documentType === "DECHARGE" ? success("DISCHARGE_DETAILS") : success("DOCUMENT_OPTIONS");
+    if (documentType === "DECHARGE") return success("DISCHARGE_DETAILS");
+    if (documentType === "RECU") return success("RECEIPT_DETAILS");
+    return success("DOCUMENT_OPTIONS");
   }
 
   if (intent === "REVIEW") {
@@ -125,6 +131,7 @@ function resolveFlowKey({ intent, documentType = null, documentState = null, own
   if (["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"].includes(intent)) {
     if (!EDITABLE_STATES.has(documentState)) return fail("KADI_V1_FLOW_STATE_INCOMPATIBLE");
     if (documentType === "DECHARGE") return success("DISCHARGE_DETAILS");
+    if (documentType === "RECU") return success("RECEIPT_DETAILS");
     return success(intent);
   }
 

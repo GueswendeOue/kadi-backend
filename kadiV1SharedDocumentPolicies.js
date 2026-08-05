@@ -10,6 +10,7 @@ const COMMON_OPTION_FIELDS = new Set([
   "payment_terms",
 ]);
 const CLIENT_FIELDS = new Set(["name", "phone", "address", "email", "ifu", "rccm"]);
+const VALID_RECEIPT_FORMATS = new Set(["A4", "TICKET_80"]);
 
 function ok(value) {
   return { ok: true, value };
@@ -115,6 +116,7 @@ function receiptMissing(document) {
   if (!document.receipt?.beneficiary) missing.push("beneficiary");
   if (!Number.isSafeInteger(document.receipt?.amount) || document.receipt.amount <= 0) missing.push("amount");
   if (!document.receipt?.reason) missing.push("reason");
+  if (!VALID_RECEIPT_FORMATS.has(document.options?.receipt_format)) missing.push("receipt_format");
   return missing;
 }
 

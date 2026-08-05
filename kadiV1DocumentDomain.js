@@ -9,6 +9,7 @@ const {
 const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 const COMMON_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
 const DISCHARGE_SUBJECT_TYPES = Object.freeze(["MONEY", "GOODS", "DOCUMENT", "OTHER"]);
+const RECEIPT_FORMATS = Object.freeze(["A4", "TICKET_80"]);
 const DOCUMENT_PURPOSES = Object.freeze({
   FACTURE: "PAYMENT_DUE",
   DEVIS: "COMMERCIAL_PROPOSAL",
@@ -395,6 +396,9 @@ function validateForReview(document) {
     if (!receipt?.payer || !receipt?.beneficiary || !receipt?.reason || !Number.isSafeInteger(receipt?.amount) || receipt.amount <= 0) {
       return fail("DOCUMENT_RECEIPT_INCOMPLETE");
     }
+    if (!RECEIPT_FORMATS.includes(document.options?.receipt_format)) {
+      return fail("DOCUMENT_RECEIPT_FORMAT_REQUIRED");
+    }
   }
   if (document.document_type === "DECHARGE") {
     const discharge = document.discharge;
@@ -602,6 +606,7 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
 module.exports = {
   COMMON_DOCUMENT_TYPES,
   DISCHARGE_SUBJECT_TYPES,
+  RECEIPT_FORMATS,
   DOCUMENT_EVENTS,
   DOCUMENT_PURPOSES,
   DOCUMENT_STATES,

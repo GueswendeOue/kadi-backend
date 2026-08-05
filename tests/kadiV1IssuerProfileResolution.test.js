@@ -48,6 +48,8 @@ test("resolves owner_name and business_name into the exact PDF renderer shape", 
     address: "Ouaga",
     phone: "+22670000000",
     email: null,
+    logo_path: null,
+    no_logo: false,
   });
   assert.deepEqual(client.calls, ["business_profiles", "*", ["id", "issuer:1"]]);
 });

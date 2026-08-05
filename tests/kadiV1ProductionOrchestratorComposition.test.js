@@ -31,7 +31,7 @@ function sharedPipeline() {
   return {
     createDraft: noop,
     applyBrainExtraction: noop,
-    setInvoiceKind: noop,
+    setInvoiceKind: noop, setReceiptFormat: noop,
     setClientOrPayer: noop,
     addContent: noop,
     updateContent: noop,

@@ -225,6 +225,11 @@ function normalizeIssuerProfileRow(row) {
     address: optionalText(row?.address),
     phone: optionalText(row?.phone),
     email: optionalText(row?.email),
+    // Logo metadata only — never a signed URL or byte content. Consumed
+    // exclusively by createKadiV1IssuerLogoLoader, which is the single
+    // place that turns logo_path into bytes.
+    logo_path: optionalText(row?.logo_path),
+    no_logo: row?.no_logo === true,
   });
 }
 
@@ -262,6 +267,87 @@ function createKadiV1IssuerResolver({ client } = {}) {
       if (result?.error) return fail("KADI_V1_ISSUER_PROFILE_LOOKUP_FAILED");
       const normalized = normalizeIssuerProfileRow(result?.data);
       return normalized ? ok(normalized) : fail("KADI_V1_ISSUER_PROFILE_NOT_FOUND");
+    },
+  });
+}
+
+const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+const LOGO_PATH_PATTERN = /^[A-Za-z0-9._/-]{1,300}$/;
+
+function detectLogoImageType(buffer) {
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "jpeg";
+  }
+  return null;
+}
+
+// Server-side only. Turns a business_profiles.logo_path into image bytes
+// for the compact (TICKET_80) receipt renderer. Never exposes the storage
+// path, a signed URL or the service-role key to the caller; every failure
+// path (missing logo, unreadable file, unsupported type, oversized file)
+// resolves to "no logo" rather than throwing, so a bad logo never blocks
+// PDF generation.
+function createKadiV1IssuerLogoLoader({ client, bucket, logger = null } = {}) {
+  const supabase = assertSupabaseClient(client);
+  const bucketName = String(bucket || "").trim().toLowerCase();
+  if (!PRIVATE_BUCKET_PATTERN.test(bucketName)) {
+    throw new TypeError("KADI_V1_LOGO_BUCKET_INVALID");
+  }
+  const storage = supabase.storage.from(bucketName);
+  if (!storage || typeof storage.download !== "function") {
+    throw new TypeError("KADI_V1_LOGO_STORAGE_API_REQUIRED");
+  }
+
+  function safeLog(code) {
+    try {
+      logger?.log?.("KADI_V1_LOGO_LOADER", Object.freeze({
+        event: "LOGO_LOAD_SKIPPED",
+        code: typeof code === "string" ? code.slice(0, 80) : "UNKNOWN",
+      }));
+    } catch {
+      // Logo loading is never allowed to fail the render because of a
+      // logging problem.
+    }
+  }
+
+  return Object.freeze({
+    async getLogoBuffer({ issuerProfile } = {}) {
+      if (!issuerProfile || issuerProfile.no_logo === true) return ok(null);
+      const logoPath = issuerProfile.logo_path;
+      if (typeof logoPath !== "string" || !LOGO_PATH_PATTERN.test(logoPath) || logoPath.includes("..")) {
+        return ok(null);
+      }
+      let downloaded;
+      try {
+        downloaded = await storage.download(logoPath);
+      } catch {
+        safeLog("KADI_V1_LOGO_DOWNLOAD_EXCEPTION");
+        return ok(null);
+      }
+      if (downloaded?.error || downloaded?.data == null) {
+        safeLog("KADI_V1_LOGO_DOWNLOAD_FAILED");
+        return ok(null);
+      }
+      let buffer;
+      try {
+        const maybeBuffer = bufferFromDownload(downloaded.data);
+        buffer = maybeBuffer && typeof maybeBuffer.then === "function" ? await maybeBuffer : maybeBuffer;
+      } catch {
+        safeLog("KADI_V1_LOGO_DECODE_FAILED");
+        return ok(null);
+      }
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > LOGO_MAX_BYTES) {
+        safeLog("KADI_V1_LOGO_SIZE_INVALID");
+        return ok(null);
+      }
+      if (!detectLogoImageType(buffer)) {
+        safeLog("KADI_V1_LOGO_TYPE_UNSUPPORTED");
+        return ok(null);
+      }
+      return ok(buffer);
     },
   });
 }
@@ -626,6 +712,7 @@ function createKadiV1WhatsAppDeliveryProvider({
 module.exports = {
   STORAGE_PREFIX,
   createKadiV1BalanceReader,
+  createKadiV1IssuerLogoLoader,
   createKadiV1IssuerResolver,
   createKadiV1RechargeRuntime,
   createKadiV1WhatsAppDeliveryProvider,

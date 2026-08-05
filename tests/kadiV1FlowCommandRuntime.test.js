@@ -15,7 +15,7 @@ function makeRuntime(calls) {
   return createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: record("continueOnboarding") },
     documentRuntime: {
-      start: record("start"), setInvoiceKind: record("setInvoiceKind"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
+      start: record("start"), setInvoiceKind: record("setInvoiceKind"), setReceiptDetails: record("setReceiptDetails"), setClient: record("setClient"), startAddContent: record("startAddContent"), addContent: record("addContent"),
       updateContent: record("updateContent"), removeContent: record("removeContent"), finishContent: record("finishContent"),
       setOptions: record("setOptions"), verify: record("verify"), beginEdit: record("beginEdit"),
       saveForLater: record("saveForLater"), saveDischargeDetails: record("saveDischargeDetails"), cancel: record("cancelDocument"),
@@ -161,7 +161,7 @@ test("adapter exceptions become closed recoverable failures", async () => {
   const bad = createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
     documentRuntime: {
-      start: async () => { throw new Error("secret"); }, setInvoiceKind: async () => ({}), setClient: async () => ({}), startAddContent: async () => ({}), addContent: async () => ({}),
+      start: async () => { throw new Error("secret"); }, setInvoiceKind: async () => ({}), setReceiptDetails: async () => ({}), setClient: async () => ({}), startAddContent: async () => ({}), addContent: async () => ({}),
       updateContent: async () => ({}), removeContent: async () => ({}), finishContent: async () => ({}),
       setOptions: async () => ({}), verify: async () => ({}),
       beginEdit: async () => ({}), saveForLater: async () => ({}), saveDischargeDetails: async () => ({}), cancel: async () => ({}),
