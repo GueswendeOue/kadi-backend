@@ -129,6 +129,29 @@ const MULTI_SCREEN_ENTRIES = Object.freeze({
   DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
 });
 
+// Meta rejected an all-empty routing_model for DOCUMENT_CONTENT
+// ("ARTICLE_FORM n'est pas connecté au reste des écrans"); DOCUMENT_CONTENT
+// must declare ARTICLE_FORM as reachable, while ARTICLE_FORM itself points
+// nowhere further. Every single-screen Flow keeps an empty array (default).
+const EXPECTED_ROUTING_TARGETS = Object.freeze({
+  DOCUMENT_CONTENT: Object.freeze({
+    DOCUMENT_CONTENT: Object.freeze(["ARTICLE_FORM"]),
+    ARTICLE_FORM: Object.freeze([]),
+  }),
+});
+
+function sameStringArray(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
+
+function expectedRoutingTargets(flowKey, screenId) {
+  return EXPECTED_ROUTING_TARGETS[flowKey]?.[screenId] ?? [];
+}
+
 function loadFlowRegistry(rootDir = __dirname) {
   const registry = {};
 
@@ -161,8 +184,7 @@ function loadFlowRegistry(rootDir = __dirname) {
       expectedScreenIds.every(
         (id) =>
           routingKeys.includes(id) &&
-          Array.isArray(parsed.routing_model[id]) &&
-          parsed.routing_model[id].length === 0
+          sameStringArray(parsed.routing_model[id], expectedRoutingTargets(flowKey, id))
       ) &&
       expectedScreenIds.every((id) => screensById[id]?.terminal === true) &&
       expectedScreenIds.every(
