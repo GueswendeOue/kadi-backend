@@ -10,6 +10,15 @@ const MAX_RESPONSE_JSON_BYTES = 16 * 1024;
 const MAX_TEXT_LENGTH = 4000;
 const RECOVERABLE_TEXT = "Je n’ai pas pu terminer cette étape. Réessayez dans un instant.";
 const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data", "flow_token"]);
+// Presentation failures may throw for many reasons (Supabase/Postgres
+// errors included); only a closed-set internal code — never raw driver
+// text, a payload, or PII — may ever reach the log or the caller.
+const SAFE_INTERNAL_REASON_PATTERN = /^KADI_V1_[A-Z0-9_]{1,80}$/;
+
+function safeInternalReason(error, fallback) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  return SAFE_INTERNAL_REASON_PATTERN.test(message) ? message : fallback;
+}
 
 function ok(value) { return { ok: true, value }; }
 function fail(error) { return { ok: false, error }; }
@@ -194,7 +203,9 @@ function createKadiV1WebhookRuntime({
       if (!result?.ok) return recover(ownerWaId, message, result?.error || "KADI_V1_FLOW_REPLY_FAILED");
       try {
         await output.presentFlowReply({ ownerWaId, messageId: message?.id || null, result: result.value });
-      } catch { return recover(ownerWaId, message, "KADI_V1_FLOW_REPLY_PRESENTATION_FAILED"); }
+      } catch (presentationError) {
+        return recover(ownerWaId, message, safeInternalReason(presentationError, "KADI_V1_FLOW_REPLY_PRESENTATION_FAILED"));
+      }
       log("flow_reply_handled", message, result.value?.duplicate === true ? "DUPLICATE" : null);
       return { handled: true, accepted: true, duplicate: result.value?.duplicate === true };
     }
@@ -245,4 +256,5 @@ module.exports = {
   isNfmReply,
   mapMetaMessageToConversationInput,
   parseNfmReply,
+  safeInternalReason,
 };
