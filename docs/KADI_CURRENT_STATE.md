@@ -177,26 +177,37 @@ ne doit jamais servir à valider ces correctifs.
   (`receipt_format = A4 | TICKET_80`, voir
   [`KADI_PRODUCT_RULES.md`](KADI_PRODUCT_RULES.md)).
 
-## DÉVELOPPEMENT / NON FUSIONNÉ / NON DÉPLOYÉ — `KADI_CONVERSATIONAL_MULTIMODAL_V1`
+## FUSIONNÉ, DÉSACTIVÉ, NON CÂBLÉ — `KADI_CONVERSATIONAL_MULTIMODAL_V1`
 
-**Ceci n'est pas de la production actuelle.** Section séparée à dessein —
-voir [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
+**Ceci n'est pas un comportement utilisateur actif.** Section séparée à
+dessein — voir
+[`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
 pour le détail complet.
 
-* **Statut : `IMPLEMENTED_NOT_DEPLOYED`**, et plus précisément **non
-  fusionné** : le code existe uniquement sur la branche
-  `feat/kadi-conversational-multimodal-v1`, jamais sur `main`.
-* Nouveaux fichiers : `kadiV1ConversationalMultimodalContracts.js`,
+* **Statut : `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED`.** Le
+  code a été fusionné dans `main` via
+  [PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8), commit de
+  merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`. Le déploiement Render de
+  ce commit n'est pas vérifiable depuis cet environnement (aucun accès
+  Render) — ne pas déduire qu'il a été déployé, ni qu'il ne l'a pas été.
+* **Aucun impact utilisateur, déployé ou non** : les deux flags restent
+  `false` par défaut (`KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`,
+  `KADI_GEMINI_AUDIO_V1_ENABLED`), et **le code n'est câblé nulle part** —
+  ni dans `kadiV1ConversationOrchestrator.js`, ni dans
+  `kadiV1ProductionBootstrap.js`. Même si Render a déployé ce commit,
+  aucun trafic, CANARY ou autre, ne peut l'atteindre : l'absence de
+  câblage bloque toute activation indépendamment de l'état des flags.
+* Fichiers : `kadiV1ConversationalMultimodalContracts.js`,
   `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`.
-* Nouveaux flags, tous `false` par défaut et indépendants :
-  `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`, `KADI_GEMINI_AUDIO_V1_ENABLED`.
-* **Non câblé** dans `kadiV1ConversationOrchestrator.js` ni dans
-  `kadiV1ProductionBootstrap.js` — aucun trafic, CANARY ou autre, ne passe
-  par ce code.
+* Gemini Audio reste expérimental et désactivé — aucun appel Gemini
+  d'aucune sorte n'est câblé pour l'audio en production.
 * La release CANARY actuelle (voir section « Rollout » en tête de ce
-  document) est donc **entièrement indépendante** de cette branche.
+  document) reste **entièrement inchangée** par cette fusion.
 * Ne pas confondre avec l'infrastructure `kadiV1Brain*.js`
-  (`KADI_V1_BRAIN_ENABLED`) déjà présente sur `main` avant cette branche :
-  cette dernière est un fait de production existante (désactivée par
-  défaut), tandis que `KADI_CONVERSATIONAL_MULTIMODAL_V1` est une couche
-  additive qui la réutilise, elle, pas encore fusionnée.
+  (`KADI_V1_BRAIN_ENABLED`) déjà présente sur `main` avant cette fusion :
+  cette dernière est un fait de production existant plus ancien (désactivé
+  par défaut), que `KADI_CONVERSATIONAL_MULTIMODAL_V1` réutilise sans le
+  remplacer.
+* **Prochaine étape (hors périmètre de ce commit) :** câblage explicite
+  dans l'orchestrateur et le bootstrap de production, dans une mission
+  dédiée et revue séparément, avant toute activation CANARY.
