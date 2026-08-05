@@ -1,8 +1,8 @@
 # État courant de Kadi V1
 
 **Mise à jour :** 2026-08-05
-**Base vérifiée :** `main` au commit `404a3fa` (merge « track Supabase remote
-migration history »).
+**Base vérifiée :** `main` au commit `caf876e` (merge « add Kadi permanent
+agent context »).
 
 Ce document reflète l'état réel observé dans le dépôt et ses tests à la date
 ci-dessus. En cas de doute, le code et les tests font foi ; ce fichier doit
@@ -66,11 +66,52 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   `404a3fa`). La garde empêchant qu'une réponse vide marque le profil comme
   terminé fait partie du correctif.
 
-### Décharges et parcours document restants
+### RECU — parcours dédié RECEIPT_DETAILS
 
-* **Statut : `PLANNED`** — traité après la stabilisation d'INVOICE_TYPE, par
-  décision explicite consignée dans les missions précédentes (« le parcours
-  document et les bugs de décharge viennent après »).
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+* Corrige un bug confirmé : le reçu passait auparavant par les écrans
+  génériques `DOCUMENT_CLIENT` puis `ARTICLE_FORM`/`DOCUMENT_CONTENT`, qui
+  collectaient des champs inadaptés (nom/téléphone/e-mail au lieu de
+  payeur/bénéficiaire/montant/motif) et autorisaient des articles, alors que
+  RECU les interdit explicitement. L'utilisateur recevait ensuite une erreur
+  générique.
+* Nouveau Flow Meta indépendant mono-écran prévu : **`KADI_RECEIPT_DETAILS_V1`**
+  — **non publié**.
+* Variable Render prévue : **`KADI_V1_FLOW_RECEIPT_DETAILS_ID`** — **non
+  confirmée configurée en production**.
+* Champ nouveau `receipt_format` (`A4` ou `TICKET_80`), obligatoire avant
+  `READY_FOR_REVIEW`, persisté dans `document.options.receipt_format`.
+* Migration Supabase écrite mais non confirmée appliquée en distant :
+  `supabase/migrations/20260805040000_add_kadi_v1_receipt_details_flow_key.sql`.
+* Le format persistant est propagé jusqu'au rendu PDF réel
+  (`A4` → moteur A4, `TICKET_80` → moteur compact), sans repli silencieux
+  vers A4 en cas de valeur absente ou invalide.
+* Le reçu compact (`TICKET_80`) peut désormais afficher le logo de
+  l'émetteur lorsqu'un logo privé valide existe ; un logo manquant,
+  illisible ou corrompu ne bloque jamais la génération du PDF.
+
+### DECHARGE — écran initial corrigé
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+* Corrige un bug confirmé : l'écran initial mélangeait la saisie des
+  informations et un sélecteur d'action « Prochaine étape » (Enregistrer /
+  C'est bon / Modifier / Annuler) alors que rien n'était encore renseigné,
+  et les champs envoyés par le Flow (`purpose`, `notes`,
+  `transferred_content`) ne correspondaient pas aux noms réellement lus par
+  l'adaptateur (`reason`, `observations`, `description`/`amount`), ce qui
+  produisait un message générique de repli.
+* Le sélecteur d'action a été retiré du formulaire initial ; l'écran ne
+  collecte plus que les informations métier (`giver`, `recipient`,
+  `transferred_content_type`, `amount` ou `description`/`quantity` selon le
+  type, `reason`, `observations`).
+* Une fois complète, la décharge suit désormais le même chemin que les
+  autres documents : `DISCHARGE_DETAILS` → `DOCUMENT_REVIEW` →
+  `DOCUMENT_PREVIEW` → `GENERATION_CONFIRMATION`.
+
+### Décharges et parcours document restants (hors ce correctif)
+
+* **Statut : `PLANNED`** — les correctifs additionnels de décharge non
+  couverts par la mission ci-dessus restent à traiter séparément.
 
 ## Blocages connus
 
@@ -93,6 +134,15 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 6. nouveau parcours de test en CANARY (jamais de reprise d'un ancien Flow
    ouvert avant publication — voir
    [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) fiche F).
+
+La même séquence, et la même mise en garde, s'appliquent à `RECEIPT_DETAILS`
+avant toute validation CANARY : publication du Flow
+`KADI_RECEIPT_DETAILS_V1`, variable `KADI_V1_FLOW_RECEIPT_DETAILS_ID`,
+application de la migration `20260805040000_add_kadi_v1_receipt_details_flow_key.sql`,
+déploiement, puis **un nouveau parcours WhatsApp démarré après la
+publication** — une session déjà ouverte avant la publication du Flow
+continue de représenter l'ancienne version et ne doit jamais servir à
+valider ce correctif.
 
 ## Prochaine étape produit après validation d'INVOICE_TYPE
 

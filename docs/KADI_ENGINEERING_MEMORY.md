@@ -246,3 +246,92 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md).
 * **Test de non-régression :** `tests/kadiV1FlowRouter.test.js` (« une
   facture sans invoice_kind valide reprend sur INVOICE_TYPE... »).
+
+---
+
+## I. RECU réutilisait les écrans génériques client/article
+
+* **Statut :** `IMPLEMENTED_NOT_DEPLOYED`.
+* **Période :** confirmé et corrigé dans la mission `fix/kadi-v1-receipt-discharge`.
+* **Symptôme :** après avoir choisi RECU, l'utilisateur atteignait
+  `DOCUMENT_CLIENT` (champs nom/téléphone/e-mail/adresse/identifiant
+  fiscal), puis le parcours article (`ARTICLE_FORM`/`DOCUMENT_CONTENT`),
+  alors que le reçu interdit explicitement toute ligne d'article.
+* **Message visible :** une erreur générique récupérable, sans rapport
+  avec le reçu.
+* **Cause racine confirmée :** `nextFlowForReply` (routage par action) et
+  `resolveFlowKey` (routage par intention/reprise) ne distinguaient pas
+  RECU des types FACTURE/DEVIS pour les intentions
+  `COLLECT_CLIENT`/`COLLECT_CONTENT`/`COLLECT_OPTIONS`/`EDIT_CLIENT`/
+  `EDIT_CONTENT`/`EDIT_OPTIONS` ; RECU tombait donc systématiquement sur les
+  écrans partagés facture/devis alors que son modèle métier
+  (`payer`/`beneficiary`/`amount`/`reason`) est incompatible.
+* **Fausses pistes importantes :** le pipeline métier
+  (`kadiV1SharedDocumentPipeline.js`) traitait déjà correctement les
+  champs reçu via `addContent` (policy `normalizeReceiptContent`) — la
+  cause n'était pas la persistance mais uniquement le routage vers le bon
+  écran.
+* **Correctif :** nouveau Flow Meta indépendant mono-écran
+  `RECEIPT_DETAILS` (`flows/v1_draft/kadi_receipt_details_v1.json`),
+  ajouté à tous les registres fermés (FLOW_KEYS, FLOW_ENV_KEYS, catalogue,
+  actions/champs autorisés, routage présentateur, contrainte Supabase).
+  Un nouveau champ `invoice`-style `receipt_format` (`A4`/`TICKET_80`) a
+  été ajouté, obligatoire avant `READY_FOR_REVIEW`, persisté dans
+  `document.options.receipt_format` via une nouvelle fonction dédiée
+  `setReceiptFormat`.
+* **Commit ou migration :**
+  `supabase/migrations/20260805040000_add_kadi_v1_receipt_details_flow_key.sql`
+  (+ copie `migrations/`).
+* **Preuve de validation :** `tests/kadiV1ReceiptJourney.test.js`,
+  `tests/kadiV1FlowRouter.test.js`, `tests/kadiV1ReceiptDetailsSessionMigration.test.js`.
+* **Prévention :** tout nouveau type de document dont le modèle métier
+  diffère de facture/devis doit avoir son propre Flow dédié dès la
+  conception, jamais réutiliser `DOCUMENT_CLIENT`/`ARTICLE_FORM` « en
+  attendant ».
+* **Test de non-régression :** « RECU never routes to DOCUMENT_CLIENT,
+  ARTICLE_FORM or DOCUMENT_CONTENT... » dans `tests/kadiV1ReceiptJourney.test.js`.
+
+---
+
+## J. DECHARGE — écran mixte saisie/action et champs désynchronisés
+
+* **Statut :** `IMPLEMENTED_NOT_DEPLOYED`.
+* **Période :** confirmé et corrigé dans la mission `fix/kadi-v1-receipt-discharge`.
+* **Symptôme :** l'écran `DISCHARGE_DETAILS` affichait un sélecteur
+  « Prochaine étape » (Enregistrer / C'est bon / Modifier / Annuler) dès la
+  première ouverture, avant que la moindre information ne soit saisie ;
+  tous les champs métier étaient facultatifs, ce qui laissait l'utilisateur
+  continuer sans informations réelles et produisait le message générique
+  « Je n'ai pas pu terminer cette étape. Réessayez dans un instant. ».
+* **Cause racine confirmée (double) :**
+  1. un même écran mélangeait saisie initiale et actions de révision,
+     normalement séparées (`DOCUMENT_REVIEW` gère déjà VERIFY/EDIT/CANCEL
+     de façon générique, y compris pour DECHARGE, via le branchement
+     `document_type === "DECHARGE"` dans les adaptateurs `verify`/`cancel`) ;
+  2. le Flow envoyait `purpose`, `notes` et `transferred_content` alors que
+     l'adaptateur (`kadiV1RuntimeAdapters.js:saveDischargeDetails`) lisait
+     déjà `reason`, `observations`, `description`/`amount` — ces champs
+     n'étaient donc jamais renseignés, quelle que soit la saisie utilisateur.
+* **Fausses pistes importantes :** le pipeline
+  (`kadiV1DischargePipeline.js`) et la politique
+  (`kadiV1DischargePolicy.js`) étaient déjà corrects et utilisaient déjà
+  les types canoniques `MONEY`/`GOODS`/`DOCUMENT`/`OTHER` — la cause était
+  entièrement dans le JSON du Flow et le nommage des champs qu'il envoyait.
+* **Correctif :** sélecteur d'action retiré du formulaire initial ; champs
+  renommés directement dans le JSON (`reason`, `observations`,
+  `description`, nouveaux champs `amount`/`quantity` structurés) ;
+  `FLOW_ACTIONS.DISCHARGE_DETAILS` réduit à `["SAVE_DETAILS"]` seul (VERIFY/
+  EDIT/CANCEL retirés, gérés par `DOCUMENT_REVIEW`) ; validation stricte
+  ajoutée côté `kadiV1FlowReplyRuntime.js` (montant entier positif
+  obligatoire pour `MONEY`, description obligatoire sinon, montant interdit
+  hors `MONEY`).
+* **Commit ou migration :** aucune migration nécessaire (aucun nouveau
+  `flow_key`, `DISCHARGE_DETAILS` existait déjà dans la contrainte).
+* **Preuve de validation :** `tests/kadiV1DischargeJourney.test.js`.
+* **Prévention :** ne jamais faire porter par un même écran à la fois la
+  saisie initiale et les actions de révision d'un document ; vérifier
+  systématiquement que les noms de champs envoyés par un Flow JSON
+  correspondent exactement à ceux lus par l'adaptateur correspondant.
+* **Test de non-régression :** « initial DISCHARGE_DETAILS JSON has no
+  action selector... » et « MONEY requires a positive integer amount »
+  dans `tests/kadiV1DischargeJourney.test.js`.

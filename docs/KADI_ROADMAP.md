@@ -14,10 +14,16 @@ l'état réel à date.
    également l'appelant de production manquant pour la reprise
    conversationnelle (fiche H de
    [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
-2. **Reçu A4 / reçu ticket 80 mm** (`receipt_format = A4 | TICKET_80`) —
-   `PLANNED`.
-3. **Finaliser facture, reçu, devis et décharge** — parcours document et
-   correctifs de décharge restants — `PLANNED`.
+2. **Finaliser et valider RECEIPT_DETAILS et l'écran initial DECHARGE** —
+   `IMPLEMENTED_NOT_DEPLOYED`. Reçu A4 / reçu ticket 80 mm
+   (`receipt_format = A4 | TICKET_80`) désormais implémentés avec un Flow
+   dédié et un logo optionnel sur le format compact ; reste à publier le
+   Flow `KADI_RECEIPT_DETAILS_V1`, poser `KADI_V1_FLOW_RECEIPT_DETAILS_ID`,
+   appliquer la migration distante, déployer et valider par un nouveau
+   parcours CANARY (voir
+   [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md)).
+3. **Finaliser facture, reçu, devis et décharge** — correctifs de décharge
+   restants non couverts par le point 2 — `PLANNED`.
 
 ## Moyen terme
 

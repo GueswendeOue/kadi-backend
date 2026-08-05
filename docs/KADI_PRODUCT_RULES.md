@@ -14,12 +14,40 @@ bug, pas une variante acceptable. Statuts :
 * Aucune autre valeur n'est acceptée pour `invoice_kind` ; toute valeur
   invalide, vide ou en minuscules est rejetée de façon fermée.
 
-## Reçu — formats prévus
+## Reçu — format et parcours dédié
 
-* `receipt_format = A4 | TICKET_80`. **Statut : `PLANNED`**, prochaine étape
-  produit après la validation d'INVOICE_TYPE (voir
-  [`KADI_ROADMAP.md`](KADI_ROADMAP.md)). Ne pas présenter ce champ comme
-  disponible tant qu'il n'apparaît pas dans le code et les tests.
+* `receipt_format = A4 | TICKET_80`. **Statut : `IMPLEMENTED_NOT_DEPLOYED`**
+  (voir [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md)). Aucune autre
+  valeur n'est acceptée ; le choix n'est jamais déduit ou choisi
+  silencieusement par défaut, l'utilisateur le choisit explicitement.
+* `receipt_format` est obligatoire avant que le reçu puisse passer à
+  `READY_FOR_REVIEW` ; persisté dans `document.options.receipt_format`.
+* Le reçu utilise son propre Flow Meta indépendant (`RECEIPT_DETAILS`),
+  jamais les écrans génériques client/article (`DOCUMENT_CLIENT`,
+  `ARTICLE_FORM`, `DOCUMENT_CONTENT`) : un reçu n'a ni client au sens
+  facture/devis, ni article/ligne.
+* Pour le reçu au format `TICKET_80` uniquement, le logo de l'émetteur est
+  affiché lorsqu'un logo privé valide existe ; un logo absent, illisible ou
+  corrompu ne bloque jamais la génération du PDF et n'expose jamais de
+  chemin de stockage, d'URL signée ou de clé de service.
+
+## Décharge — champs structurés
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** pour l'écran initial corrigé (voir
+  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md)).
+* Le type de contenu remis utilise les valeurs canoniques internes
+  `MONEY | GOODS | DOCUMENT | OTHER` ; les libellés visibles peuvent rester
+  en français (« Argent », « Bien », « Document », « Autre »).
+* Le formulaire utilise des champs structurés distincts (type, montant,
+  description, quantité), jamais un champ unique ambigu du type « Montant,
+  bien ou document ».
+* `MONEY` exige un montant entier positif et interdit toute quantité ;
+  `GOODS`/`DOCUMENT`/`OTHER` exigent une description et interdisent tout
+  montant.
+* L'écran initial ne collecte que les informations métier ; les actions
+  (confirmer, modifier, annuler) ne sont proposées qu'une fois les
+  informations enregistrées, via l'écran de vérification partagé
+  (`DOCUMENT_REVIEW`), jamais avant.
 
 ## Crédits
 
@@ -71,7 +99,6 @@ l'utilisateur (voir [`../AGENTS.md`](../AGENTS.md) §3 et §16).
 * débit de crédit lié spécifiquement au choix `invoice_kind` (le choix
   lui-même ne débite jamais) ;
 * facturation électronique certifiée ;
-* reçu A4 / reçu ticket 80 mm ;
 * support utilisateur automatisé, vocal sortant en production, OCR photo.
 
 Tous ces éléments sont `PLANNED` ou `DEFERRED` — voir
