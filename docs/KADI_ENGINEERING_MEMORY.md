@@ -340,10 +340,12 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## K. Fondation `KADI_CONVERSATIONAL_MULTIMODAL_V1` déjà largement présente avant sa mission de création
 
-* **Statut :** `IMPLEMENTED_NOT_DEPLOYED` (fondation sur branche non
-  fusionnée `feat/kadi-conversational-multimodal-v1`).
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED` —
+  fondation fusionnée dans `main` via PR #8 (commit de merge
+  `c3030c909fdb526c5341622afe5a8b5389f0a77d`), toujours désactivée par
+  défaut et non câblée dans l'orchestrateur ni le bootstrap de production.
 * **Période :** mission de création de la fondation, puis mission de revue
-  du même travail.
+  du même travail, puis fusion.
 * **Symptôme :** une mission demandant de « créer la fondation isolée » de
   la compréhension conversationnelle multimodale a démarré sans savoir que
   `kadiV1BrainContracts.js`, `kadiV1Brain.js`, `kadiV1BrainProviders.js`,
@@ -406,8 +408,10 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   `validateSimpleValue`/`validateItems` de `kadiV1BrainContracts.js`
   (désormais exportées), qui appliquent déjà une liste fermée récursive et
   bornée en profondeur.
-* **Commit ou migration :** sans objet (branche non fusionnée à la date de
-  rédaction).
+* **Commit ou migration :** commits `57b661a` (fondation) et `20beb8c`
+  (correctifs de revue), fusionnés dans `main` par le commit de merge
+  `c3030c909fdb526c5341622afe5a8b5389f0a77d` (PR #8). Aucune migration
+  Supabase associée.
 * **Preuve de validation :** `tests/kadiV1ConversationalMultimodalContracts.test.js`,
   `tests/kadiV1ConversationalMultimodalPolicy.test.js` (dont des tests de
   parité explicites contre `detectNaturalIntent`),

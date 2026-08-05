@@ -1,10 +1,14 @@
 # KADI_CONVERSATIONAL_MULTIMODAL_V1 — Fondation isolée
 
-**Statut :** `IMPLEMENTED_NOT_DEPLOYED` — implémentée et testée, engagée
-(commit) sur la branche `feat/kadi-conversational-multimodal-v1`
-([PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8), `DRAFT`),
-**non fusionnée** dans `main`, **non déployée**, tous les flags désactivés
-par défaut. Ce n'est pas de la production.
+**Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED` —
+implémentée, testée, revue et **fusionnée dans `main`** via
+[PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8) (commit de
+merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`). Le déploiement Render de
+ce commit n'est pas vérifiable depuis cet environnement — ne pas en déduire
+qu'il a ou n'a pas été déployé. Dans tous les cas, **aucun comportement
+utilisateur n'est affecté** : les deux flags restent désactivés par défaut
+et aucun câblage n'existe dans l'orchestrateur ni le bootstrap de
+production (voir §5). Ce n'est pas un comportement actif en production.
 
 Ce document décrit la fondation de compréhension conversationnelle multimodale
 construite dans cette mission. Il complète, sans le remplacer,
@@ -221,10 +225,15 @@ Aucune collecte de donnée de production n'est démarrée par cette mission.
 
 Cette fondation est un ensemble de nouveaux fichiers plus deux ajouts
 additifs (`FEATURE_ENV_KEYS` dans `kadiV1RuntimeConfig.js`) sans câblage dans
-l'orchestrateur ni dans le bootstrap de production. Revenir en arrière
-revient à ne pas fusionner la branche `feat/kadi-conversational-multimodal-v1`
-— aucune action de rollback en production n'est nécessaire tant qu'elle
-n'est pas fusionnée, déployée et activée.
+l'orchestrateur ni dans le bootstrap de production. Maintenant que la
+branche est fusionnée dans `main` (commit `c3030c909fdb526c5341622afe5a8b5389f0a77d`),
+**aucune action de rollback en production n'est nécessaire tant que
+l'orchestrateur et le bootstrap ne sont pas câblés et qu'aucun flag n'est
+activé** — le code présent sur `main` n'a, par construction, aucun chemin
+d'exécution atteignable par un utilisateur réel. Si un rollback devenait
+nécessaire malgré tout avant tout câblage, un simple `git revert` du commit
+de merge suffit, sans coordination Render ni Supabase puisque rien n'est
+activé ni migré.
 
 ## 11. Rappels produit non négociables
 
