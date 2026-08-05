@@ -30,7 +30,7 @@ async function openSession(service, overrides = {}) {
       document_type: "FACTURE",
       status: "COLLECTING",
     },
-    expectedFlowKey: "DOCUMENT_CONTENT",
+    expectedFlowKey: "ARTICLE_FORM",
     returnState: "COLLECTING",
     idempotencyKey: "open:reply1",
     ...overrides,
@@ -43,7 +43,7 @@ function reply(overrides = {}) {
   return {
     ownerWaId: "22670000000",
     sessionId: "kadi_session:reply1",
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: { description: "Ciment", quantity: 2, unit: "sac", unit_price: 6500 },
     idempotencyKey: "reply:1",
@@ -62,12 +62,12 @@ test("server-authoritative fields are rejected before session consumption", () =
 });
 
 test("unknown top-level fields are rejected", () => {
-  const checked = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", { description: "Ciment", hidden: "x" });
+  const checked = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", { description: "Ciment", hidden: "x" });
   assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
 });
 
 test("nested forbidden authority fields are rejected", () => {
-  const checked = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", { description: { label: "Ciment", issued_at: "2026-08-02" } });
+  const checked = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", { description: { label: "Ciment", issued_at: "2026-08-02" } });
   assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN" });
 });
 
@@ -94,7 +94,7 @@ test("valid reply dispatches only server-bound document context", async () => {
     document_state: "COLLECTING",
     return_state: "COLLECTING",
   });
-  assert.equal(calls[0].flowKey, "DOCUMENT_CONTENT");
+  assert.equal(calls[0].flowKey, "ARTICLE_FORM");
   assert.equal(calls[0].idempotencyKey, "flow_command:reply:1");
   assert.equal(Object.hasOwn(calls[0].data, "document_id"), false);
 });
@@ -123,6 +123,20 @@ test("unexpected logical screen is rejected", async () => {
   const result = await runtime.handle(reply({ flowKey: "DOCUMENT_OPTIONS", action: "SAVE_OPTIONS", data: {} }));
   assert.equal(result.ok, false);
   assert.equal(result.error, "KADI_V1_SESSION_UNEXPECTED_FLOW");
+});
+
+test("ADD_CONTENT is rejected when the open session was opened for DOCUMENT_CONTENT, not ARTICLE_FORM", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "DOCUMENT_CONTENT" });
+  let executed = false;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { executed = true; return { ok: true, value: null }; } },
+  });
+  const result = await runtime.handle(reply({ flowKey: "ARTICLE_FORM", action: "ADD_CONTENT" }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "KADI_V1_SESSION_UNEXPECTED_FLOW");
+  assert.equal(executed, false);
 });
 
 test("duplicate webhook reuses the same command idempotency key", async () => {

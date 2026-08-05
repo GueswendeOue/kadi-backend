@@ -1,0 +1,127 @@
+{
+  "version": "7.3",
+  "routing_model": {
+    "ARTICLE_FORM": []
+  },
+  "screens": [
+    {
+      "id": "ARTICLE_FORM",
+      "title": "Nouvel article",
+      "terminal": true,
+      "data": {
+        "session_id": {
+          "type": "string",
+          "__example__": "session_example"
+        },
+        "document_label": {
+          "type": "string",
+          "__example__": "Facture"
+        },
+        "unit_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          },
+          "__example__": [
+            { "id": "unité", "title": "Unité" },
+            { "id": "piece", "title": "Pièce" },
+            { "id": "lot", "title": "Lot" },
+            { "id": "paquet", "title": "Paquet" },
+            { "id": "carton", "title": "Carton" },
+            { "id": "sac", "title": "Sac" },
+            { "id": "kilogramme", "title": "Kilogramme" },
+            { "id": "gramme", "title": "Gramme" },
+            { "id": "litre", "title": "Litre" },
+            { "id": "metre", "title": "Mètre" },
+            { "id": "metre_carre", "title": "Mètre carré" },
+            { "id": "metre_cube", "title": "Mètre cube" },
+            { "id": "kilometre", "title": "Kilomètre" },
+            { "id": "heure", "title": "Heure" },
+            { "id": "jour", "title": "Jour" },
+            { "id": "mois", "title": "Mois" },
+            { "id": "forfait", "title": "Forfait" },
+            { "id": "service", "title": "Service" },
+            { "id": "autre", "title": "Autre" }
+          ]
+        },
+        "unit_custom": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.document_label}"
+          },
+          {
+            "type": "Form",
+            "name": "kadi_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "description",
+                "label": "Produit ou service",
+                "required": true,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "quantity",
+                "label": "Quantité",
+                "required": true,
+                "input-type": "number"
+              },
+              {
+                "type": "Dropdown",
+                "name": "unit",
+                "label": "Unité",
+                "required": true,
+                "data-source": "${data.unit_options}"
+              },
+              {
+                "type": "TextInput",
+                "name": "unit_custom",
+                "label": "Autre unité (si besoin)",
+                "required": false,
+                "input-type": "text"
+              },
+              {
+                "type": "TextInput",
+                "name": "unit_price",
+                "label": "Prix unitaire",
+                "required": true,
+                "input-type": "number"
+              },
+              {
+                "type": "Footer",
+                "label": "Enregistrer l’article",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "session_id": "${data.session_id}",
+                    "flow_key": "ARTICLE_FORM",
+                    "action": "ADD_CONTENT",
+                    "data": {
+                      "description": "${form.description}",
+                      "quantity": "${form.quantity}",
+                      "unit": "${form.unit}",
+                      "unit_custom": "${form.unit_custom}",
+                      "unit_price": "${form.unit_price}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

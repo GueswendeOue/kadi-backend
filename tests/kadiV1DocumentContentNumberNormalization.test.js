@@ -32,7 +32,7 @@ async function openContentSession(service) {
       document_type: "FACTURE",
       status: "COLLECTING",
     },
-    expectedFlowKey: "DOCUMENT_CONTENT",
+    expectedFlowKey: "ARTICLE_FORM",
     returnState: "COLLECTING",
     idempotencyKey: "open:content:1",
   });
@@ -43,7 +43,7 @@ async function openContentSession(service) {
 // ── Payload réel WhatsApp Flow : chaînes numériques ──────────────────────────
 
 test("real WhatsApp Flow payload with string quantity and unit_price is accepted and normalized", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "2",
     unit: "unité",
@@ -57,7 +57,7 @@ test("real WhatsApp Flow payload with string quantity and unit_price is accepted
 });
 
 test("integer quantity and unit_price are still accepted without change", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Sable",
     quantity: 5,
     unit: "sac",
@@ -69,7 +69,7 @@ test("integer quantity and unit_price are still accepted without change", () => 
 });
 
 test("unit_price zero is accepted (article gratuit)", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Bonus",
     quantity: "1",
     unit_price: "0",
@@ -103,7 +103,7 @@ test("UPDATE_CONTENT without quantity or unit_price is accepted as partial updat
 // ── Rejets : quantity invalide ────────────────────────────────────────────────
 
 test("empty string quantity is rejected before session consumption", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "",
     unit_price: "6000",
@@ -112,7 +112,7 @@ test("empty string quantity is rejected before session consumption", () => {
 });
 
 test("non-numeric string quantity is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "deux",
     unit_price: 6000,
@@ -121,7 +121,7 @@ test("non-numeric string quantity is rejected", () => {
 });
 
 test("zero quantity string is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "0",
     unit_price: 6000,
@@ -130,7 +130,7 @@ test("zero quantity string is rejected", () => {
 });
 
 test("zero integer quantity is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 0,
     unit_price: 6000,
@@ -139,7 +139,7 @@ test("zero integer quantity is rejected", () => {
 });
 
 test("negative integer quantity is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: -1,
     unit_price: 6000,
@@ -148,7 +148,7 @@ test("negative integer quantity is rejected", () => {
 });
 
 test("decimal string quantity is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: "1.5",
     unit_price: 6000,
@@ -159,7 +159,7 @@ test("decimal string quantity is rejected", () => {
 // ── Rejets : unit_price invalide ─────────────────────────────────────────────
 
 test("empty string unit_price is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit_price: "",
@@ -168,7 +168,7 @@ test("empty string unit_price is rejected", () => {
 });
 
 test("non-numeric string unit_price is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit_price: "gratuit",
@@ -177,7 +177,7 @@ test("non-numeric string unit_price is rejected", () => {
 });
 
 test("negative integer unit_price is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit_price: -1,
@@ -186,7 +186,7 @@ test("negative integer unit_price is rejected", () => {
 });
 
 test("negative string unit_price is rejected", () => {
-  const result = validateActionPayload("DOCUMENT_CONTENT", "ADD_CONTENT", {
+  const result = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
     description: "Ciment",
     quantity: 2,
     unit_price: "-500",
@@ -214,7 +214,7 @@ test("invalid string quantity does not consume the session", async () => {
   const result = await runtime.handle({
     ownerWaId: OWNER,
     sessionId: "kadi_session:content:1",
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: { description: "Ciment", quantity: "abc", unit_price: 6000 },
     idempotencyKey: "reply:content:invalid:1",
@@ -245,7 +245,7 @@ test("string quantity and unit_price are normalized before reaching the command 
   const result = await runtime.handle({
     ownerWaId: OWNER,
     sessionId: "kadi_session:content:1",
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: {
       description: "Ciment",

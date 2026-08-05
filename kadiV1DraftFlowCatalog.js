@@ -26,7 +26,12 @@ const KADI_V1_DRAFT_FLOW_CATALOG = Object.freeze({
   DOCUMENT_CONTENT: Object.freeze({
     file: path.join("flows", "v1_draft", "kadi_document_content_v1.json"),
     environment_variable: "KADI_V1_FLOW_DOCUMENT_CONTENT_ID",
-    card: Object.freeze({ header: "Produits ou services", body: "Ajoutez un article avec sa quantité et son prix.", cta: "Ajouter" }),
+    card: Object.freeze({ header: "Produits ou services", body: "L’article est enregistré. Que voulez-vous faire ?", cta: "Continuer" }),
+  }),
+  ARTICLE_FORM: Object.freeze({
+    file: path.join("flows", "v1_draft", "kadi_article_form_v1.json"),
+    environment_variable: "KADI_V1_FLOW_ARTICLE_FORM_ID",
+    card: Object.freeze({ header: "Nouvel article", body: "Ajoutez le produit ou le service, la quantité et le prix.", cta: "Ajouter" }),
   }),
   DOCUMENT_OPTIONS: Object.freeze({
     file: path.join("flows", "v1_draft", "kadi_document_options_v1.json"),

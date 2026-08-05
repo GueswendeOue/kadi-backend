@@ -15,6 +15,7 @@ const FLOW_IDS = Object.freeze({
   DOCUMENT_TYPE: "100003",
   DOCUMENT_CLIENT: "100004",
   DOCUMENT_CONTENT: "100005",
+  ARTICLE_FORM: "100016",
   DOCUMENT_OPTIONS: "100006",
   DOCUMENT_REVIEW: "100007",
   EDIT_CLIENT: "100008",
@@ -75,37 +76,19 @@ function issuerProfileReaderStub(profile) {
   };
 }
 
-test("all fifteen draft Flows expose one matching entry screen and session input", () => {
+test("all sixteen draft Flows expose one matching entry screen and session input, including the independent ARTICLE_FORM Flow", () => {
   const registry = loadFlowRegistry();
-  assert.equal(Object.keys(registry).length, 15);
+  assert.equal(Object.keys(registry).length, 16);
+  assert.ok(Object.hasOwn(registry, "ARTICLE_FORM"));
   for (const [flowKey, contract] of Object.entries(registry)) {
     assert.equal(contract.entryScreen, flowKey);
     assert.ok(contract.dataKeys.includes("session_id"));
   }
+  assert.ok(registry.ARTICLE_FORM.dataKeys.includes("unit_options"));
+  assert.equal(registry.ARTICLE_FORM.dataKeys.includes("description"), false);
 });
 
-test("DOCUMENT_CONTENT registry exposes both terminal screens through a closed screen registry", () => {
-  const registry = loadFlowRegistry();
-  const contract = registry.DOCUMENT_CONTENT;
-  assert.equal(contract.entryScreen, "DOCUMENT_CONTENT");
-  assert.deepEqual([...contract.allowedScreenIds].sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
-  assert.deepEqual(Object.keys(contract.screensById).sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
-  assert.deepEqual(Object.keys(contract.defaultsByScreenId).sort(), ["ARTICLE_FORM", "DOCUMENT_CONTENT"]);
-  assert.ok(contract.screensById.ARTICLE_FORM.dataKeys.includes("session_id"));
-  assert.ok(contract.screensById.ARTICLE_FORM.dataKeys.includes("unit_options"));
-  assert.equal(contract.screensById.ARTICLE_FORM.dataKeys.includes("description"), false);
-});
-
-test("the fourteen other Flows expose only their own screen id in the registry", () => {
-  const registry = loadFlowRegistry();
-  for (const [flowKey, contract] of Object.entries(registry)) {
-    if (flowKey === "DOCUMENT_CONTENT") continue;
-    assert.deepEqual(contract.allowedScreenIds, [flowKey]);
-    assert.deepEqual(Object.keys(contract.screensById), [flowKey]);
-  }
-});
-
-test("buildV1FlowMessage refuses a screen outside the Flow's allowed screen registry", () => {
+test("buildV1FlowMessage refuses a contract/flowKey mismatch", () => {
   const registry = loadFlowRegistry();
   assert.throws(() => buildV1FlowMessage({
     to: OWNER,
@@ -113,10 +96,9 @@ test("buildV1FlowMessage refuses a screen outside the Flow's allowed screen regi
     flowId: FLOW_IDS.DOCUMENT_CONTENT,
     sessionId: "kadi_session:screen-guard",
     flowMode: "draft",
-    contract: registry.DOCUMENT_CONTENT,
+    contract: registry.ARTICLE_FORM,
     data: { session_id: "kadi_session:screen-guard" },
-    screen: "SOME_UNDECLARED_SCREEN",
-  }), /KADI_V1_PRESENTER_SCREEN_INVALID/);
+  }), /KADI_V1_PRESENTER_FLOW_KEY_INVALID/);
 });
 
 test("conversation sends canonical text before a server-bound Flow", async () => {
@@ -366,7 +348,7 @@ test("preview result opens generation confirmation with the authoritative quote 
   );
 });
 
-test("START_ADD_CONTENT reopens the same Flow directly on the empty ARTICLE_FORM screen", async () => {
+test("START_ADD_CONTENT opens the independent ARTICLE_FORM Flow, never DOCUMENT_CONTENT's own id, with an empty form", async () => {
   const { presenter, calls } = harness();
   await presenter.presentFlowReply({
     ownerWaId: OWNER,
@@ -386,8 +368,12 @@ test("START_ADD_CONTENT reopens the same Flow directly on the empty ARTICLE_FORM
   });
   const payload = calls.find(([name]) => name === "flow")[1];
   const parameters = payload.interactive.action.parameters;
-  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
+  assert.equal(parameters.flow_id, FLOW_IDS.ARTICLE_FORM);
+  assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
   assert.equal(parameters.flow_action_payload.screen, "ARTICLE_FORM");
+  const session = calls.find(([name]) => name === "session")[1];
+  assert.equal(session.expectedFlowKey, "ARTICLE_FORM");
+  assert.equal(session.document.document_id, "document:1", "ARTICLE_FORM session must carry the current document/document_id");
   assert.ok(Array.isArray(parameters.flow_action_payload.data.unit_options));
   assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "description"), false, "ARTICLE_FORM must never carry a stale prefill");
   assert.equal(Object.hasOwn(parameters.flow_action_payload.data, "quantity"), false, "ARTICLE_FORM must never carry a stale prefill");
@@ -438,7 +424,37 @@ test("a successful ADD_CONTENT reopens the DOCUMENT_CONTENT decision screen", as
   });
   const payload = calls.find(([name]) => name === "flow")[1];
   const parameters = payload.interactive.action.parameters;
+  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
   assert.equal(parameters.flow_action_payload.screen, "DOCUMENT_CONTENT");
+});
+
+test("a second ADD_CONTENT keeps the previously saved article in the decision screen's summary", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:add-content-second",
+    result: {
+      handled: true,
+      action: "ADD_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 4,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [
+          { item_id: "item:1", description: "Ordinateur", quantity_millis: 1000, unit: "unité", unit_price: 250000, line_total: 250000 },
+          { item_id: "item:2", description: "Souris", quantity_millis: 1000, unit: "unité", unit_price: 5000, line_total: 5000 },
+        ],
+        subtotal: 255000, taxes: 0, discount: 0, total: 255000, client: null, receipt: null,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.items_summary;
+  assert.match(summary, /Ordinateur/, "the article added first must still be listed");
+  assert.match(summary, /Souris/, "the newly added article must also be listed");
+  assert.match(summary, /Total : 255\s000 FCFA/);
 });
 
 test("items_summary reflects the real saved items: description, quantity, unit, price, line total and document total", async () => {
@@ -533,7 +549,7 @@ test("RECU gets its own items_summary shape instead of a forced item list", asyn
   assert.doesNotMatch(summary, /Articles enregistrés/);
 });
 
-test("SAVE_CLIENT on a document with no items yet opens ARTICLE_FORM directly instead of the decision screen", async () => {
+test("SAVE_CLIENT always opens the independent ARTICLE_FORM Flow, never DOCUMENT_CONTENT", async () => {
   const { presenter, calls } = harness();
   await presenter.presentFlowReply({
     ownerWaId: OWNER,
@@ -553,7 +569,8 @@ test("SAVE_CLIENT on a document with no items yet opens ARTICLE_FORM directly in
   });
   const payload = calls.find(([name]) => name === "flow")[1];
   const parameters = payload.interactive.action.parameters;
-  assert.equal(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
+  assert.equal(parameters.flow_id, FLOW_IDS.ARTICLE_FORM);
+  assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
   assert.equal(parameters.flow_action_payload.screen, "ARTICLE_FORM");
 });
 

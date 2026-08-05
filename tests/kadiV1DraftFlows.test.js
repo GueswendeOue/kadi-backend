@@ -13,12 +13,6 @@ const { KADI_V1_DRAFT_FLOW_CATALOG } = require("../kadiV1DraftFlowCatalog");
 const { loadFlowRegistry } = require("../kadiV1ProductionPresenter");
 
 const ROOT = path.resolve(__dirname, "..");
-// DOCUMENT_CONTENT is the only Flow allowed to relax the locked one-screen
-// contract: it stays a single flow_key but opens either its decision screen
-// or the ARTICLE_FORM item-entry screen, both terminal and complete-only.
-const MULTI_SCREEN_FLOWS = Object.freeze({
-  DOCUMENT_CONTENT: Object.freeze(["DOCUMENT_CONTENT", "ARTICLE_FORM"]),
-});
 const VISIBLE_KEYS = new Set(["title", "label", "text", "helper-text"]);
 const FORBIDDEN_VISIBLE = /(?:créer guidé|vérifier le client|soumettre|tapez menu|\bflow\b|payload|session|openai|gemini|ocr|endpoint)/i;
 const FORBIDDEN_INPUT_NAMES = new Set([
@@ -83,9 +77,12 @@ test("draft catalog covers every closed runtime flow key exactly once", () => {
   assert.equal(new Set(files).size, FLOW_KEYS.length);
 });
 
-test("all draft files except DOCUMENT_CONTENT use the locked one-screen Flow JSON contract", () => {
+// (#131009) Meta rejects opening any screen other than a Flow's first
+// declared screen. Every draft Flow — including DOCUMENT_CONTENT and its
+// former second screen ARTICLE_FORM, now split into two independent
+// flow_keys/Flows — is locked to exactly one terminal, complete-only screen.
+test("all sixteen draft files use the locked one-screen Flow JSON contract", () => {
   for (const key of FLOW_KEYS) {
-    if (Object.hasOwn(MULTI_SCREEN_FLOWS, key)) continue;
     const { entry, absolute, json } = readFlow(key);
     assert.ok(fs.existsSync(absolute), `${key} file missing`);
     assert.equal(json.version, "7.3");
@@ -102,38 +99,7 @@ test("all draft files except DOCUMENT_CONTENT use the locked one-screen Flow JSO
   }
 });
 
-test("DOCUMENT_CONTENT uses its targeted two-screen contract: DOCUMENT_CONTENT and ARTICLE_FORM, both terminal and complete-only", () => {
-  const { entry, absolute, json } = readFlow("DOCUMENT_CONTENT");
-  const expectedScreenIds = MULTI_SCREEN_FLOWS.DOCUMENT_CONTENT;
-  assert.ok(fs.existsSync(absolute), "DOCUMENT_CONTENT file missing");
-  assert.equal(json.version, "7.3");
-  assert.equal(Object.hasOwn(json, "data_api_version"), false);
-  assert.deepEqual(Object.keys(json.routing_model).sort(), [...expectedScreenIds].sort());
-  // Meta rejected an all-empty routing_model here ("ARTICLE_FORM n'est pas
-  // connecté au reste des écrans"): DOCUMENT_CONTENT must declare
-  // ARTICLE_FORM as reachable; ARTICLE_FORM itself points nowhere further.
-  assert.deepEqual(json.routing_model.DOCUMENT_CONTENT, ["ARTICLE_FORM"]);
-  assert.deepEqual(json.routing_model.ARTICLE_FORM, []);
-  assert.equal(json.screens.length, expectedScreenIds.length);
-  assert.deepEqual(json.screens.map((screen) => screen.id).sort(), [...expectedScreenIds].sort());
-  for (const screenId of expectedScreenIds) {
-    const screen = json.screens.find((candidate) => candidate.id === screenId);
-    assert.ok(screen, `${screenId} screen missing`);
-    assert.equal(screen.terminal, true, `${screenId} must be terminal`);
-    assert.equal(screen.layout?.type, "SingleColumnLayout");
-    assert.equal(screen.data?.session_id?.type, "string", `${screenId} must declare session_id`);
-    const footer = footerFor(screen);
-    assert.equal(footer["on-click-action"]?.name, "complete", `${screenId} must complete, never navigate`);
-  }
-  assert.equal(entry.environment_variable, FLOW_ENV_KEYS.DOCUMENT_CONTENT);
-
-  // No EmbeddedLink and no navigate anywhere in this relaxed Flow.
-  const encoded = JSON.stringify(json);
-  assert.doesNotMatch(encoded, /EmbeddedLink/);
-  assert.doesNotMatch(encoded, /"name"\s*:\s*"navigate"/);
-});
-
-test("DOCUMENT_CONTENT registry loading rejects a third screen, a wrong id, a non-terminal screen and a missing session_id", () => {
+test("DOCUMENT_CONTENT registry loading rejects a second screen, a wrong id, a non-terminal screen and a missing session_id", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kadi-v1-document-content-contract-"));
   for (const flowEntry of Object.values(KADI_V1_DRAFT_FLOW_CATALOG)) {
     const source = path.join(ROOT, flowEntry.file);
@@ -151,42 +117,61 @@ test("DOCUMENT_CONTENT registry loading rejects a third screen, a wrong id, a no
   }
 
   writeAndExpectRejection((json) => {
-    json.screens.push({ ...json.screens[1], id: "EXTRA_SCREEN" });
-    json.routing_model.EXTRA_SCREEN = [];
+    // The exact shape Meta refused: (#131009) "Specified screen
+    // ARTICLE_FORM is not allowed as first screen of this flow."
+    json.screens.push({ ...json.screens[0], id: "ARTICLE_FORM" });
+    json.routing_model.DOCUMENT_CONTENT = ["ARTICLE_FORM"];
+    json.routing_model.ARTICLE_FORM = [];
     return json;
-  }, "third screen must be rejected");
+  }, "a second screen (even named ARTICLE_FORM) must be rejected");
 
   writeAndExpectRejection((json) => {
-    json.screens[1].id = "WRONG_ID";
-    delete json.routing_model.ARTICLE_FORM;
-    json.routing_model.WRONG_ID = [];
+    json.screens[0].id = "WRONG_ID";
     return json;
-  }, "unauthorized screen id must be rejected");
+  }, "a wrong screen id must be rejected");
 
   writeAndExpectRejection((json) => {
-    json.screens[1].terminal = false;
+    json.screens[0].terminal = false;
     return json;
-  }, "non-terminal screen must be rejected");
+  }, "a non-terminal screen must be rejected");
 
   writeAndExpectRejection((json) => {
-    delete json.screens[1].data.session_id;
+    delete json.screens[0].data.session_id;
     return json;
-  }, "screen missing session_id must be rejected");
-
-  writeAndExpectRejection((json) => {
-    // The exact shape Meta refused: ARTICLE_FORM isolated, unreachable
-    // from DOCUMENT_CONTENT's routing_model.
-    json.routing_model.DOCUMENT_CONTENT = [];
-    return json;
-  }, "an isolated ARTICLE_FORM (empty DOCUMENT_CONTENT routing_model) must be rejected");
-
-  writeAndExpectRejection((json) => {
-    json.routing_model.ARTICLE_FORM = ["DOCUMENT_CONTENT"];
-    return json;
-  }, "ARTICLE_FORM pointing to another screen must be rejected");
+  }, "a screen missing session_id must be rejected");
 
   fs.writeFileSync(targetFile, JSON.stringify(base), "utf8");
   assert.doesNotThrow(() => loadFlowRegistry(tempRoot), "unmodified fixture must still load");
+});
+
+test("DOCUMENT_CONTENT contains only the decision screen: no item fields, no reference to ARTICLE_FORM anywhere", () => {
+  const { json } = readFlow("DOCUMENT_CONTENT");
+  assert.equal(json.screens.length, 1);
+  const screen = json.screens[0];
+  const forbiddenFieldNames = new Set(["description", "quantity", "unit", "unit_custom", "unit_price"]);
+  walk(screen, (node) => {
+    if (node && typeof node === "object" && typeof node.name === "string") {
+      assert.equal(forbiddenFieldNames.has(node.name), false, `DOCUMENT_CONTENT must not declare field ${node.name}`);
+    }
+  });
+  assert.doesNotMatch(JSON.stringify(json), /ARTICLE_FORM/, "DOCUMENT_CONTENT must not reference ARTICLE_FORM as an internal screen");
+  assert.deepEqual(Object.keys(screen.data).sort(), ["content_actions", "document_label", "items_summary", "session_id"].sort());
+});
+
+test("ARTICLE_FORM contains only the item-entry form: no decision fields, no reference to DOCUMENT_CONTENT as an internal screen", () => {
+  const { json } = readFlow("ARTICLE_FORM");
+  assert.equal(json.screens.length, 1);
+  const screen = json.screens[0];
+  assert.equal(Object.hasOwn(screen.data, "content_actions"), false);
+  assert.equal(Object.hasOwn(screen.data, "items_summary"), false);
+  const fieldNames = [];
+  walk(screen.layout, (node) => {
+    if (node && typeof node === "object" && ["TextInput", "Dropdown"].includes(node.type)) fieldNames.push(node.name);
+  });
+  assert.deepEqual(
+    [...new Set(fieldNames)].sort(),
+    ["description", "quantity", "unit", "unit_custom", "unit_price"].sort()
+  );
 });
 
 test("each Flow completes with the secure webhook envelope and allowed actions", () => {

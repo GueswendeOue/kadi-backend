@@ -12,10 +12,10 @@ const {
   createMemoryConversationSessionRepository,
 } = require("../kadiV1ConversationSession");
 
-// P8.A1 — DOCUMENT_CONTENT relaxes the locked one-screen contract into two
-// terminal screens (DOCUMENT_CONTENT decision, ARTICLE_FORM item entry)
-// under the same flow_key. These tests exercise the reply-runtime path a
-// real WhatsApp Flow completion takes for each screen.
+// P8.A1-C — DOCUMENT_CONTENT (decision) and ARTICLE_FORM (item entry) are
+// two independent flow_keys/Meta Flows (Meta refused opening ARTICLE_FORM
+// as a second screen of DOCUMENT_CONTENT — #131009). These tests exercise
+// the reply-runtime path a real WhatsApp Flow completion takes for each.
 
 const OWNER = "22670626055";
 let tick = 0;
@@ -94,10 +94,10 @@ test("START_ADD_CONTENT reply dispatches to the command runtime under the DOCUME
   assert.equal(dispatched[0].flowKey, "DOCUMENT_CONTENT");
 });
 
-test("ADD_CONTENT submitted from the ARTICLE_FORM screen still carries flow_key=DOCUMENT_CONTENT and is dispatched once", async () => {
+test("ADD_CONTENT is submitted under its own flow_key=ARTICLE_FORM and is dispatched once", async () => {
   const sessionId = "kadi_session:article-form:add:1";
   const sessions = makeSessionService(sessionId);
-  await openContentSession(sessions, sessionId);
+  await openContentSession(sessions, sessionId, { expectedFlowKey: "ARTICLE_FORM" });
 
   const dispatched = [];
   const runtime = createKadiV1FlowReplyRuntime({
@@ -119,7 +119,7 @@ test("ADD_CONTENT submitted from the ARTICLE_FORM screen still carries flow_key=
   const result = await runtime.handle({
     ownerWaId: OWNER,
     sessionId,
-    flowKey: "DOCUMENT_CONTENT",
+    flowKey: "ARTICLE_FORM",
     action: "ADD_CONTENT",
     data: { description: "Ciment", quantity: "2", unit: "sac", unit_price: "5000" },
     idempotencyKey: "reply:article-form:add:1",
@@ -127,8 +127,30 @@ test("ADD_CONTENT submitted from the ARTICLE_FORM screen still carries flow_key=
 
   assert.equal(result.ok, true);
   assert.equal(dispatched.length, 1);
-  assert.equal(dispatched[0].flowKey, "DOCUMENT_CONTENT");
+  assert.equal(dispatched[0].flowKey, "ARTICLE_FORM");
   assert.equal(dispatched[0].action, "ADD_CONTENT");
+});
+
+test("ADD_CONTENT is rejected under flow_key=DOCUMENT_CONTENT (that action no longer exists on the decision screen)", async () => {
+  const sessionId = "kadi_session:article-form:wrong-key:1";
+  const sessions = makeSessionService(sessionId);
+  await openContentSession(sessions, sessionId, { expectedFlowKey: "ARTICLE_FORM" });
+  let executed = false;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { executed = true; return { ok: true, value: {} }; } },
+  });
+  const result = await runtime.handle({
+    ownerWaId: OWNER,
+    sessionId,
+    flowKey: "DOCUMENT_CONTENT",
+    action: "ADD_CONTENT",
+    data: { description: "Ciment", quantity: "2", unit: "sac", unit_price: "5000" },
+    idempotencyKey: "reply:article-form:wrong-key:1",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "KADI_V1_FLOW_REPLY_ACTION_FORBIDDEN");
+  assert.equal(executed, false);
 });
 
 test("a second START_ADD_CONTENT reply on the same idempotency key is reported as a duplicate", async () => {
