@@ -1491,3 +1491,156 @@ Render** (voir statut en tête de fiche).
   libre sans bouton de parcours guidé), sans lien avec l'échec de
   livraison, non corrigé dans cette mission ; appartient à une future
   mission hybride guidé/conversationnel.
+
+### Suite de revue finale : reprise depuis l'historique et sécurité de l'issue de livraison (2026-08-06)
+
+* **Statut : `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — même branche, un
+  second commit, toujours non fusionné, non déployé, migrations écrites
+  mais **non appliquées à distance**.
+* **Trois constats confirmés par la revue adversariale indépendante de la
+  R0 ci-dessus, tous corrigés dans ce suivi :**
+  1. **Le document CANARY réel du fondateur (`FA-20260806190633-A0EAC605`)
+     restait inatteignable même après la R0** : le libellé `RETRY_DELIVERY`
+     calculé par `kadiV1HistoryService.js` n'était consommé par aucun
+     présentateur/webhook en dehors du tout premier échec — rouvrir le
+     document depuis l'historique affichait encore le texte générique
+     « Le document est ouvert. ». **Corrigé :** `kadiV1ProductionPresenter.js`'s
+     `presentFlowReply` détecte désormais `action === "OPEN_DOCUMENT"` et,
+     quand `summary.actions` contient `RETRY_DELIVERY`, affiche le bon
+     bouton au lieu du texte générique.
+  2. **Une tentative de livraison peut rester bloquée en `IN_PROGRESS`
+     indéfiniment** si l'appel fournisseur a eu lieu (ou était sur le point
+     d'avoir lieu) mais que l'écriture de finalisation échoue ou que le
+     processus s'interrompt — prouvé de façon empirique par une sonde de
+     diagnostic locale, hors dépôt, avant tout correctif.
+  3. **Une expiration après un envoi WhatsApp potentiellement réussi**
+     pouvait mener à un renvoi externe incontrôlé, faute d'idempotence
+     côté fournisseur pour connaître l'issue réelle.
+* **Défaut de schéma supplémentaire découvert pendant le diagnostic en
+  lecture seule (avant tout correctif de code) :** la contrainte `check`
+  de `kadi_v1_delivery_attempts.status` (migration
+  `20260803022133_add_kadi_v1_generation_lifecycle.sql`) n'autorisait que
+  `'PENDING'`, `'DELIVERED'`, `'RECOVERABLE_FAILURE'` — **`'IN_PROGRESS'`
+  n'y figurait pas**, alors que le mécanisme de capture atomique de la R0
+  l'écrit déjà. Contre la base de test en mémoire cela passait silencieusement ;
+  contre la vraie base Postgres, chaque capture aurait échoué avec
+  `check_violation` (23514) avant même d'atteindre le fournisseur. Aucune
+  colonne d'horodatage de capture (`claimed_at`) n'existait non plus.
+  **Corrigé sans invention d'un minuteur en mémoire :** `claim()` dans
+  `kadiV1DeliveryService.js` réutilise désormais la colonne déjà existante
+  `last_attempt_at`, en l'écrivant au moment même de la capture (et non
+  plus seulement à la finalisation) — un horodatage réel, persisté,
+  utilisable par plusieurs instances et survivant à un redémarrage.
+* **Deux migrations forward-only écrites, non appliquées à distance,
+  autorisation séparée requise avant tout déploiement de cette PR :**
+  - `supabase/migrations/20260806020000_add_kadi_v1_delivery_attempt_in_progress_status.sql`
+    — élargit la contrainte `status` pour autoriser `'IN_PROGRESS'`.
+  - `supabase/migrations/20260806030000_add_kadi_v1_delivery_outcome_to_history_bundle.sql`
+    — `create or replace function public.kadi_v1_owned_history_bundle` pour
+    exposer `last_error_code` dans l'objet `delivery` (déjà réservé
+    `service_role` uniquement, portée inchangée), nécessaire pour
+    distinguer un échec confirmé d'une issue inconnue depuis l'historique.
+* **Modèle à trois issues introduit, sans nouvelle valeur d'énumération
+  `status` pour la partie « issue inconnue »** : `CONFIRMED_FAILURE` et
+  `OUTCOME_UNKNOWN` réutilisent tous deux `status = 'RECOVERABLE_FAILURE'`
+  côté base ; seul `last_error_code = 'DELIVERY_OUTCOME_UNKNOWN'` distingue
+  la seconde — évite d'élargir encore la contrainte `status`. Le
+  fournisseur WhatsApp actuel (`kadiV1ProductionInfrastructure.js`'s
+  `getDeliveryStatus`) ne renvoie honnêtement que `UNKNOWN` en toute
+  circonstance : aucune preuve de succès/échec n'est aujourd'hui
+  disponible après coup. La réconciliation consulte quand même ce point de
+  vérité en premier (pour honorer sans changement de code une future
+  capacité réelle du fournisseur), mais ne conclut **jamais** à un succès
+  confirmé sans confirmation positive — en pratique, aujourd'hui, toute
+  reconciliation d'une capture expirée aboutit à `OUTCOME_UNKNOWN`, jamais
+  à un renvoi silencieux.
+* **Renvoi d'une issue inconnue : confirmation explicite à deux temps,
+  jamais automatique.** `kadiV1GenerationLifecycleService.js`'s
+  `runRetryDelivery` accepte désormais un paramètre `confirmed` : sur une
+  tentative `RECOVERABLE_FAILURE`/`DELIVERY_OUTCOME_UNKNOWN`, une première
+  pression sur le bouton renvoie
+  `DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED` sans jamais appeler le
+  fournisseur ; seule une seconde pression, sur un bouton distinct
+  (`RESEND_UNKNOWN_DELIVERY:<id>`, jamais le même identifiant que
+  `RETRY_DELIVERY:<id>`), déclenche réellement l'envoi. `Annuler`
+  (`CANCEL_UNKNOWN_DELIVERY:<id>`) n'appelle jamais le runtime de reprise
+  de livraison — aucun état n'est modifié.
+* **Écritures de finalisation bornées et rejouables :**
+  `kadiV1DeliveryService.js`'s `execute()` retente désormais l'écriture de
+  finalisation (celle qui suit l'appel fournisseur) jusqu'à
+  `FINALIZE_MAX_ATTEMPTS` fois (horloge injectable, aucun `setTimeout` réel
+  dans les tests). Si toutes les tentatives échouent, la ligne reste
+  délibérément à `IN_PROGRESS` et la fonction retourne
+  `DELIVERY_FINALIZE_UNRESOLVED` — jamais un succès ou un échec confirmé
+  deviné. Seule la réconciliation de capture expirée pourra la résoudre
+  plus tard, et seulement vers `OUTCOME_UNKNOWN`.
+* **Limite résiduelle documentée, non corrigée dans cette mission :**
+  `deliverFinal` (le tout premier échec, pas la reprise) retourne toujours
+  littéralement `DELIVERY_RECOVERABLE_FAILURE` au webhook, sans distinguer
+  un échec confirmé d'une issue de finalisation non résolue. Une pression
+  immédiate sur « Réenvoyer le PDF » juste après ce premier échec peut donc
+  temporairement recevoir le message générique « réessayez dans un
+  instant » plutôt que l'offre à deux boutons, le temps que la capture
+  devienne éligible à réconciliation. Aucun risque de sécurité (jamais de
+  double envoi, jamais de perte de document) — seulement une offre
+  initiale moins précise dans cette fenêtre étroite.
+* **Commit ou migration :** deux migrations forward-only écrites (voir
+  ci-dessus), non appliquées à distance. Second commit sur la même branche
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0`.
+* **Preuve de validation :** nouveaux fichiers
+  `tests/kadiV1DeliveryStaleReconciliation.test.js` (réconciliation de
+  capture expirée, retries de finalisation, horodatage de capture),
+  extensions de `tests/kadiV1DeliveryRetryEligibility.test.js` (capture
+  expirée bout en bout via le vrai service, confirmation à deux temps,
+  épuisement des retries de finalisation, reprise réelle depuis
+  l'historique), `tests/kadiV1HistorySearch.test.js` (classification
+  `CONFIRMED_FAILURE`/`OUTCOME_UNKNOWN`/`IN_PROGRESS`, jamais le code brut
+  exposé), `tests/kadiV1ProductionPresenter.test.js` et
+  `tests/kadiV1WebhookRuntime.test.js` (nouveaux boutons, dispatch
+  `OPEN_DOCUMENT`).
+* **Défaut confirmé par la propre revue adversariale fraîche de cette
+  suite, corrigé avant commit :** deux angles du même problème structurel
+  ont été trouvés — (1) `finalizeWithRetries` dans
+  `kadiV1DeliveryService.js` ne distinguait pas « l'écriture a réellement
+  échoué » de « l'écriture a réellement abouti côté serveur mais
+  l'accusé de réception a été perdu » (panne réseau réelle, pas seulement
+  hypothétique) : comme toutes les tentatives de la même boucle
+  réutilisent le même `expectedStatus: "IN_PROGRESS"`, une réussite
+  silencieuse à la première tentative faisait échouer toutes les
+  suivantes sur ce même contrôle de concurrence, et la fonction retournait
+  à tort `DELIVERY_FINALIZE_UNRESOLVED` alors que la ligne était déjà
+  réellement réglée. **Corrigé :** après épuisement des tentatives,
+  `finalizeWithRetries` relit l'état réel de la ligne ; si elle a déjà
+  quitté `IN_PROGRESS`, c'est la véritable issue déjà réglée, jamais un
+  « non résolu » deviné à tort. (2) `finishAlreadyDelivered` dans
+  `kadiV1GenerationLifecycleService.js` ne savait guérir
+  `document.status` que depuis `RECOVERABLE_FAILURE` (via `RESUME` puis
+  `MARK_DELIVERED`), jamais depuis `GENERATED` — or un document reste
+  exactement à `GENERATED` si le tout premier appel de livraison plante
+  avant que `deliverFinal` n'ait pu enregistrer un échec, laissant la
+  tentative de livraison elle-même authentiquement `DELIVERED` mais le
+  document bloqué indéfiniment. **Corrigé :** `finishAlreadyDelivered`
+  guérit désormais aussi depuis `GENERATED` (transition `MARK_DELIVERED`
+  directe, sans `RESUME`, exactement comme le chemin normal de
+  `deliverFinal`). Nouveaux tests couvrant les deux cas dans
+  `tests/kadiV1DeliveryStaleReconciliation.test.js` (perte d'accusé de
+  réception, sur les deux branches succès/échec) et
+  `tests/kadiV1DeliveryRetryEligibility.test.js` (guérison depuis
+  `GENERATED` via un scénario de plantage simulé bout en bout). Aucun
+  risque de double envoi ni de double débit trouvé dans les deux cas —
+  uniquement une incohérence d'état permanente et silencieuse, dans un
+  déclencheur étroit mais réel.
+* **Prévention :** vérifier qu'un état intermédiaire ajouté côté
+  application (ici `IN_PROGRESS`) est réellement accepté par la contrainte
+  de base de données correspondante avant de le considérer opérationnel —
+  un test unitaire contre un dépôt en mémoire ne le garantit pas. Quand
+  l'issue réelle d'une opération externe ne peut pas être prouvée après
+  coup, ne jamais deviner : introduire une classification explicite «
+  inconnue » et exiger une confirmation humaine distincte avant tout effet
+  de bord supplémentaire. Pour une boucle de retry qui réutilise le même
+  `expectedStatus` à chaque tentative, prévoir explicitement le cas où une
+  tentative antérieure de la même boucle a réussi sans que l'appelant le
+  sache (relecture de l'état réel après épuisement, jamais un simple
+  abandon) ; et quand une fonction de guérison ne couvre qu'un seul état
+  de départ, vérifier explicitement tous les états réellement atteignables
+  à ce point du code, pas seulement le plus fréquent.

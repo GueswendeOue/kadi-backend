@@ -16,8 +16,8 @@ function assertMethods(target, methods, name) {
 
 function createKadiV1DeliveryRetryRuntime({ generationRuntime } = {}) {
   const generation = assertMethods(generationRuntime, ["retryDelivery"], "KADI_V1_GENERATION_RUNTIME");
-  async function handle({ ownerWaId, documentId, idempotencyKey }) {
-    return generation.retryDelivery({ ownerWaId, documentId, idempotencyKey });
+  async function handle({ ownerWaId, documentId, idempotencyKey, confirmed = false }) {
+    return generation.retryDelivery({ ownerWaId, documentId, idempotencyKey, confirmed: confirmed === true });
   }
   return Object.freeze({ handle });
 }

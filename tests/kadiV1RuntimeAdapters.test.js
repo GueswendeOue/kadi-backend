@@ -264,7 +264,8 @@ test("generation adapter's retryDelivery only forwards ownerWaId/documentId — 
     quoteId: "quote:attacker-supplied", deliveryAttemptId: "delivery:attacker-supplied", amount: 0,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(Object.keys(received).sort(), ["documentId", "idempotencyKey", "ownerWaId"]);
+  assert.deepEqual(Object.keys(received).sort(), ["confirmed", "documentId", "idempotencyKey", "ownerWaId"]);
+  assert.equal(received.confirmed, false);
   assert.equal(received.ownerWaId, OWNER);
   assert.equal(received.documentId, "document:1");
   assert.match(received.idempotencyKey, /^delivery_retry:/);

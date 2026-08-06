@@ -762,6 +762,89 @@ test("delivery retry outcome messages match exactly what the mission specifies, 
   assert.doesNotMatch(texts[2], /DELIVERY_RETRY_NOT_ELIGIBLE|documentId|GENERATION_ATTEMPT/);
 });
 
+test("outcome-unknown offer sends two distinct buttons (resend / cancel) with the exact required French copy, no technical term exposed", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryOutcomeUnknownWithRetry({
+    ownerWaId: OWNER, messageId: "wamid:unknown", documentId: "document:8a2445480a88eb66f64301faa0eac605",
+  });
+  const [, { to, body, buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(to, OWNER);
+  assert.equal(body, "Nous ne sommes pas certains que votre document ait été envoyé la dernière fois.\nSouhaitez-vous le renvoyer ?\nAucun crédit supplémentaire ne sera débité.");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].id, "RESEND_UNKNOWN_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  assert.equal(buttons[0].title, "Renvoyer le PDF");
+  assert.equal(buttons[1].id, "CANCEL_UNKNOWN_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  assert.equal(buttons[1].title, "Annuler");
+  const serialized = JSON.stringify(calls);
+  for (const forbidden of ["DELIVERY_OUTCOME_UNKNOWN", "flow_token", "RECOVERABLE_FAILURE"]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden));
+  }
+});
+
+test("cancelling an outcome-unknown resend sends a neutral acknowledgment and nothing else", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryRetryCancelled({ ownerWaId: OWNER, messageId: "wamid:cancel", documentId: "document:1" });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "D’accord, je ne renvoie rien pour le moment. Vous pourrez le faire plus tard depuis l’historique.");
+});
+
+test("a still-fresh in-progress delivery offers a single check-status button, not a resend offer", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryInProgress({ ownerWaId: OWNER, messageId: "wamid:progress", documentId: "document:1" });
+  const [, { body, buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(body, "L’envoi de votre document est toujours en cours.");
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:1");
+});
+
+test("opening a document from history whose delivery needs attention offers the retry action instead of the generic 'document is open' text — confirmed failure", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: {
+        summary: { document_id: "document:stuck", actions: ["VIEW", "DOWNLOAD", "RETRY_DELIVERY"] },
+        delivery: { status: "RECOVERABLE_FAILURE", outcome: "CONFIRMED_FAILURE" },
+      },
+    },
+  });
+  const [, { buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:stuck");
+  assert.equal(calls.some(([name]) => name === "text"), false, "must not also send the generic OPEN_DOCUMENT text");
+});
+
+test("opening a document from history classified as outcome-unknown offers the two-button confirmation instead of an immediate resend", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open-unknown",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: {
+        summary: { document_id: "document:stuck", actions: ["VIEW", "DOWNLOAD", "RETRY_DELIVERY"] },
+        delivery: { status: "RECOVERABLE_FAILURE", outcome: "OUTCOME_UNKNOWN" },
+      },
+    },
+  });
+  const [, { buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].id, "RESEND_UNKNOWN_DELIVERY:document:stuck");
+});
+
+test("opening a document with no delivery issue keeps the ordinary generic OPEN_DOCUMENT presentation", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open-normal",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: { summary: { document_id: "document:ok", actions: ["VIEW", "DOWNLOAD"] }, delivery: { status: "DELIVERED", outcome: null } },
+    },
+  });
+  assert.equal(calls.some(([name]) => name === "buttons"), false);
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "Le document est ouvert.");
+});
+
 test("voice failure is non-blocking after the mandatory text", async () => {
   const { presenter, calls } = harness({
     voiceResponseEngine: {

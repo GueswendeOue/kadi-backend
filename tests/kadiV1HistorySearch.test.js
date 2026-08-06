@@ -135,6 +135,32 @@ test("result actions reflect state and available final file", async () => {
   assert.equal(byId.doc_retry.includes("RETRY_DELIVERY"), true);
 });
 
+test("a still IN_PROGRESS delivery also exposes RETRY_DELIVERY (lets the user trigger a stale-claim check), unlike a plain DELIVERED or PENDING one", async () => {
+  const { service } = setup([
+    bundle({ id: "doc_in_progress", status: "RECOVERABLE_FAILURE", final: true, delivery: { status: "IN_PROGRESS", attempt_count: 1 } }),
+    bundle({ id: "doc_pending", status: "AWAITING_GENERATION_CONFIRMATION", final: false, delivery: { status: "PENDING", attempt_count: 0 } }),
+  ]);
+  const rows = (await service.listRecentDocuments({ ownerWaId: OWNER })).value.documents;
+  const byId = Object.fromEntries(rows.map((row) => [row.document_id, row.actions]));
+  assert.equal(byId.doc_in_progress.includes("RETRY_DELIVERY"), true);
+  assert.equal(byId.doc_pending.includes("RETRY_DELIVERY"), false);
+});
+
+test("document details classify a confirmed delivery failure and an outcome-unknown one distinctly, without ever exposing the raw error code", async () => {
+  const confirmed = bundle({ id: "doc_confirmed", status: "RECOVERABLE_FAILURE", final: true, delivery: { status: "RECOVERABLE_FAILURE", attempt_count: 1, last_error_code: "DELIVERY_PROVIDER_FAILED" } });
+  const unknown = bundle({ id: "doc_unknown", status: "RECOVERABLE_FAILURE", final: true, delivery: { status: "RECOVERABLE_FAILURE", attempt_count: 1, last_error_code: "DELIVERY_OUTCOME_UNKNOWN" } });
+  const inProgress = bundle({ id: "doc_in_flight", status: "GENERATED", final: true, delivery: { status: "IN_PROGRESS", attempt_count: 1 } });
+  const { service } = setup([confirmed, unknown, inProgress]);
+  const confirmedDetails = await service.getDocumentDetails({ ownerWaId: OWNER, documentId: "doc_confirmed" });
+  const unknownDetails = await service.getDocumentDetails({ ownerWaId: OWNER, documentId: "doc_unknown" });
+  const inProgressDetails = await service.getDocumentDetails({ ownerWaId: OWNER, documentId: "doc_in_flight" });
+  assert.equal(confirmedDetails.value.delivery.outcome, "CONFIRMED_FAILURE");
+  assert.equal(unknownDetails.value.delivery.outcome, "OUTCOME_UNKNOWN");
+  assert.equal(inProgressDetails.value.delivery.outcome, "IN_PROGRESS");
+  const serialized = JSON.stringify([confirmedDetails, unknownDetails, inProgressDetails]);
+  assert.doesNotMatch(serialized, /DELIVERY_PROVIDER_FAILED|DELIVERY_OUTCOME_UNKNOWN/, "the raw last_error_code value itself must never leak into the response — outcome is a closed-set classification, not the raw code");
+});
+
 test("details expose safe business state but not private file internals or event metadata", async () => {
   const source = bundle({ id: "doc_safe", final: true });
   source.preview = { preview_id: "preview_1", status: "ACTIVE", structured_preview: { total: 1000 } };

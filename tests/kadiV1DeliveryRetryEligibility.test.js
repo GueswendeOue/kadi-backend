@@ -25,7 +25,11 @@ async function pdf(pages = 1) {
   return Buffer.from(await document.save());
 }
 
-async function fixture({ deliveryResults = [{ ok: false, error: "CHANNEL_TEMPORARY" }, { ok: true, value: { reference: "retry-ok" } }], balance = 20 } = {}) {
+async function fixture({
+  deliveryResults = [{ ok: false, error: "CHANNEL_TEMPORARY" }, { ok: true, value: { reference: "retry-ok" } }],
+  balance = 20, wrapRepository = (repository) => repository,
+  hangDeliverDocumentCalls = 0, getDeliveryStatus = async () => ({ ok: true, value: null }),
+} = {}) {
   const clock = () => NOW;
   const domain = createDocumentDomain({ clock });
   const documents = createInMemoryV1DocumentRepository();
@@ -50,15 +54,23 @@ async function fixture({ deliveryResults = [{ ok: false, error: "CHANNEL_TEMPORA
   await artifacts.createTemporaryRender({ render, idempotencyKey: "render:eligibility:create" });
   const quote = { quote_id: "quote:eligibility", document_id: document.document_id, document_version: 1, owner_wa_id: OWNER, preview_id: preview.preview_id, temporary_render_id: render.render_id, page_count: 1, total_credits: 4, pricing_version: "test-v1", status: "ACTIVE", expires_at: "2026-08-06T13:00:00.000Z" };
   await artifacts.createGenerationQuote({ quote, idempotencyKey: "quote:eligibility:create" });
-  const repository = createInMemoryGenerationLifecycleRepository({ balances: { [OWNER]: balance } });
+  const repository = wrapRepository(createInMemoryGenerationLifecycleRepository({ balances: { [OWNER]: balance } }));
   const wallet = createWalletReservationService({ repository, clock });
   const finalStorage = createInMemoryFinalFileStorage();
   const calls = { delivery: 0, render: 0 };
   const renderer = { render: async () => { calls.render += 1; return { ok: true, value: { buffer: await pdf(1), mime_type: "application/pdf" } }; } };
   const finalGeneration = createFinalGenerationService({ repository, storage: finalStorage, renderer, clock });
   const provider = {
-    async deliverDocument() { const result = deliveryResults[Math.min(calls.delivery, deliveryResults.length - 1)]; calls.delivery += 1; return result; },
-    async getDeliveryStatus() { return { ok: true, value: null }; },
+    async deliverDocument() {
+      const index = calls.delivery;
+      calls.delivery += 1;
+      // Simulates a crash mid-flight: the call never resolves, so the
+      // caller's continuation (deliverFinal's MARK_DELIVERED/recordFailure)
+      // never runs either — only claim()'s IN_PROGRESS write ever lands.
+      if (index < hangDeliverDocumentCalls) return new Promise(() => {});
+      return deliveryResults[Math.min(index, deliveryResults.length - 1)];
+    },
+    getDeliveryStatus,
   };
   const delivery = createDeliveryService({ repository, provider, clock });
   const quoteService = { async validateGenerationQuote({ quoteId, ownerWaId }) {
@@ -166,6 +178,156 @@ test("concurrency: two concurrent retryDelivery calls for the same document prod
   assert.equal(state.finalFiles.length, 1, "never a second final artifact");
   assert.equal(f.calls.render, 1, "never a second render");
   assert.ok(outcomes.some((entry) => entry.ok === true), "at least one of the two concurrent callers must succeed");
+});
+
+// --- PR #14 final-review follow-up: existing-document recovery and
+// delivery outcome safety (fiche R) ---
+
+test("stale claim: a delivery attempt stuck IN_PROGRESS beyond the staleness window is reconciled to an outcome-unknown recoverable failure, never a confirmed one, and never resent without explicit confirmation", async () => {
+  const f = await failedDelivery();
+  const state = f.repository.inspect();
+  const attemptId = state.deliveries[0].delivery_attempt_id;
+  // Simulate the crash: the provider call happened (or was about to) but
+  // the finalize write never landed, leaving the row claimed a long time
+  // ago — force this directly rather than via a real timeout.
+  await f.repository.updateDeliveryAttempt({
+    deliveryAttemptId: attemptId, expectedStatus: "RECOVERABLE_FAILURE",
+    changes: { status: "IN_PROGRESS", last_attempt_at: "2020-01-01T00:00:00.000Z" },
+  });
+  const callsBefore = f.calls.delivery;
+  const result = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:stale-claim" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED");
+  assert.equal(f.calls.delivery, callsBefore, "reconciliation must never call the provider again");
+  const reconciled = f.repository.inspect().deliveries.find((entry) => entry.delivery_attempt_id === attemptId);
+  assert.equal(reconciled.status, "RECOVERABLE_FAILURE");
+  assert.equal(reconciled.last_error_code, "DELIVERY_OUTCOME_UNKNOWN");
+});
+
+test("stale claim: a delivery attempt still fresh (claimed recently) is left completely untouched — rejected as still in progress, no reconciliation, no provider call", async () => {
+  const f = await failedDelivery();
+  const state = f.repository.inspect();
+  const attemptId = state.deliveries[0].delivery_attempt_id;
+  await f.repository.updateDeliveryAttempt({
+    deliveryAttemptId: attemptId, expectedStatus: "RECOVERABLE_FAILURE",
+    changes: { status: "IN_PROGRESS", last_attempt_at: NOW },
+  });
+  const callsBefore = f.calls.delivery;
+  const result = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:fresh-claim" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_ALREADY_IN_PROGRESS");
+  assert.equal(f.calls.delivery, callsBefore);
+  const untouched = f.repository.inspect().deliveries.find((entry) => entry.delivery_attempt_id === attemptId);
+  assert.equal(untouched.status, "IN_PROGRESS");
+  assert.equal(untouched.last_attempt_at, NOW);
+});
+
+test("a crash during the very first delivery attempt (claim lands, provider call never returns, deliverFinal's continuation never runs) leaves the document at GENERATED — a later stale-claim reconciliation that confirms success must still heal the document to DELIVERED, not strand it forever (independent-review finding)", async () => {
+  const f = await fixture({
+    hangDeliverDocumentCalls: 1,
+    getDeliveryStatus: async () => ({ ok: true, value: { status: "DELIVERED" } }),
+  });
+  // Fire-and-forget: confirmGeneration will hang forever inside the first
+  // deliverDocument() call, exactly like a crashed process never resuming.
+  f.service.confirmGeneration(command).catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const stuck = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(stuck.value.status, "GENERATED", "document must still be GENERATED — deliverFinal's continuation never ran");
+  const stuckDelivery = f.repository.inspect().deliveries.find((entry) => entry.final_file_id);
+  assert.equal(stuckDelivery.status, "IN_PROGRESS");
+  // Force the claim to look stale without waiting for real time to pass.
+  await f.repository.updateDeliveryAttempt({
+    deliveryAttemptId: stuckDelivery.delivery_attempt_id, expectedStatus: "IN_PROGRESS",
+    changes: { status: "IN_PROGRESS", last_attempt_at: "2020-01-01T00:00:00.000Z" },
+  });
+  const healed = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:heal-generated" });
+  assert.equal(healed.ok, true, healed.error);
+  assert.equal(healed.value.document.status, "DELIVERED", "must heal from GENERATED, not just RECOVERABLE_FAILURE — this is exactly what the independent review flagged as missing");
+});
+
+test("outcome-unknown resend requires an explicit second confirmation; a plain retry press never resends, only the confirmed press does", async () => {
+  const f = await failedDelivery();
+  const state = f.repository.inspect();
+  const attemptId = state.deliveries[0].delivery_attempt_id;
+  await f.repository.updateDeliveryAttempt({
+    deliveryAttemptId: attemptId, expectedStatus: "RECOVERABLE_FAILURE",
+    changes: { status: "IN_PROGRESS", last_attempt_at: "2020-01-01T00:00:00.000Z" },
+  });
+  const callsBeforeUnconfirmed = f.calls.delivery;
+  const unconfirmed = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:unconfirmed" });
+  assert.equal(unconfirmed.ok, false);
+  assert.equal(unconfirmed.error, "DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED");
+  assert.equal(f.calls.delivery, callsBeforeUnconfirmed, "must never call the provider before explicit confirmation");
+  const confirmed = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:confirmed", confirmed: true });
+  assert.equal(confirmed.ok, true, confirmed.error);
+  assert.equal(confirmed.value.document.status, "DELIVERED");
+  assert.equal(f.calls.delivery, callsBeforeUnconfirmed + 1, "exactly one provider call, only after explicit confirmation");
+});
+
+test("finalize-write exhaustion after a real provider call leaves the attempt IN_PROGRESS for later reconciliation — never a confirmed outcome", async () => {
+  // The DB write immediately following a claim (status expectedStatus
+  // IN_PROGRESS) is the finalize write this test forces to fail every
+  // time — simulating a DB failure/crash after the provider already
+  // responded. Wrapped in before the delivery/lifecycle services are
+  // built, since the in-memory repository object is frozen.
+  function wrapRepository(repository) {
+    const wrapped = {};
+    for (const key of Object.keys(repository)) wrapped[key] = repository[key];
+    let inProgressCallIndex = 0;
+    wrapped.updateDeliveryAttempt = async (args) => {
+      if (args.expectedStatus === "IN_PROGRESS") {
+        const index = inProgressCallIndex;
+        inProgressCallIndex += 1;
+        // Let the very first finalize write (the initial confirmGeneration
+        // recording the seeded provider failure) succeed normally, so the
+        // fixture reaches its expected RECOVERABLE_FAILURE baseline; force
+        // every finalize write after that — i.e. the retry's — to fail.
+        if (index > 0) return { ok: false, error: "SIMULATED_DB_FAILURE" };
+      }
+      return repository.updateDeliveryAttempt(args);
+    };
+    return wrapped;
+  }
+  const f = await failedDelivery({ wrapRepository });
+  const result = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "retry:finalize-unresolved" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_OUTCOME_UNKNOWN");
+  const attemptId = f.repository.inspect().deliveries[0].delivery_attempt_id;
+  const stuck = f.repository.inspect().deliveries.find((entry) => entry.delivery_attempt_id === attemptId);
+  assert.equal(stuck.status, "IN_PROGRESS", "never silently marked DELIVERED or RECOVERABLE_FAILURE on a finalize-write failure");
+});
+
+test("history-driven recovery surface: a document shaped exactly like the confirmed stuck-document incident exposes a reachable RETRY_DELIVERY action from history, classified as a confirmed failure", async () => {
+  const f = await failedDelivery();
+  const { createV1HistoryService } = require("../kadiV1HistoryService");
+  const state = f.repository.inspect();
+  const deliveryRow = state.deliveries[0];
+  const finalFileRow = state.finalFiles[0];
+  const historyRepository = {
+    async searchOwnedDocuments() { return { ok: true, value: [] }; },
+    async getOwnedDocumentBundle({ ownerWaId, documentId }) {
+      const doc = await f.documents.getDocumentById({ documentId, ownerWaId });
+      if (!doc.ok) return doc;
+      return {
+        ok: true,
+        value: {
+          classification: "V1_NATIVE",
+          document: doc.value,
+          current_snapshot: doc.value,
+          versions: [], events: [],
+          final_file: finalFileRow,
+          delivery: { status: deliveryRow.status, attempt_count: deliveryRow.attempt_count, last_error_code: deliveryRow.last_error_code },
+        },
+      };
+    },
+    async findDuplicateByIdempotencyKey() { return { ok: true, value: null }; },
+    async rememberDuplicate() { return { ok: true, value: null }; },
+  };
+  const history = createV1HistoryService({ historyRepository, documentRepository: f.documents });
+  const details = await history.getDocumentDetails({ ownerWaId: OWNER, documentId: command.documentId });
+  assert.equal(details.ok, true);
+  assert.ok(details.value.summary.actions.includes("RETRY_DELIVERY"), "the exact reachability gap this fix closes");
+  assert.equal(details.value.delivery.outcome, "CONFIRMED_FAILURE");
 });
 
 test("full production path: pressing the reachable button through the real webhook, real presenter and real lifecycle service delivers exactly once", async () => {

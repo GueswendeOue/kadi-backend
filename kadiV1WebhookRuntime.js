@@ -30,6 +30,12 @@ const GENERATION_RETRY_REASONS = new Set([
 // deliverFinal/retryDelivery and docs/KADI_ENGINEERING_MEMORY.md fiche P/Q.
 const DELIVERY_RECOVERABLE_REASON = "DELIVERY_RECOVERABLE_FAILURE";
 const RETRY_DELIVERY_BUTTON_PATTERN = /^RETRY_DELIVERY:([A-Za-z0-9:_-]{1,200})$/;
+// Outcome-unknown resend requires an explicit, distinct second
+// confirmation (never the same button id as the ordinary confirmed-failure
+// retry) — see kadiV1GenerationLifecycleService.js's runRetryDelivery and
+// docs/KADI_ENGINEERING_MEMORY.md fiche R.
+const RESEND_UNKNOWN_DELIVERY_BUTTON_PATTERN = /^RESEND_UNKNOWN_DELIVERY:([A-Za-z0-9:_-]{1,200})$/;
+const CANCEL_UNKNOWN_DELIVERY_BUTTON_PATTERN = /^CANCEL_UNKNOWN_DELIVERY:([A-Za-z0-9:_-]{1,200})$/;
 const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data", "flow_token"]);
 // Presentation failures may throw for many reasons (Supabase/Postgres
 // errors included); only a closed-set internal code — never raw driver
@@ -223,14 +229,29 @@ function createKadiV1WebhookRuntime({
     return typeof id === "string" ? id : null;
   }
 
-  async function handleDeliveryRetryButton(ownerWaId, message, documentId) {
+  async function handleDeliveryRetryButton(ownerWaId, message, documentId, confirmed = false) {
     log("delivery_retry_button_pressed", message, null);
     if (!deliveryRetry) return { handled: true, accepted: false, reason: "KADI_V1_DELIVERY_RETRY_RUNTIME_UNAVAILABLE" };
     let result;
     try {
-      result = await deliveryRetry.handle({ ownerWaId, documentId, idempotencyKey: idempotencyFor("delivery_retry", message) });
+      result = await deliveryRetry.handle({ ownerWaId, documentId, idempotencyKey: idempotencyFor("delivery_retry", message), confirmed });
     } catch {
       result = { ok: false, error: "KADI_V1_DELIVERY_RETRY_RUNTIME_FAILED" };
+    }
+    // The outcome is genuinely unknown and this exact press did not carry
+    // an explicit confirmation yet — show the two-choice offer instead of
+    // the generic outcome text, and never call the provider on this press.
+    if (!confirmed && result?.error === "DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED" && typeof output.presentDeliveryOutcomeUnknownWithRetry === "function") {
+      try {
+        await output.presentDeliveryOutcomeUnknownWithRetry({ ownerWaId, messageId: message?.id || null, documentId });
+        return { handled: true, accepted: false, reason: result.error };
+      } catch { /* fall through to the generic presentation below */ }
+    }
+    if (result?.error === "DELIVERY_ALREADY_IN_PROGRESS" && typeof output.presentDeliveryInProgress === "function") {
+      try {
+        await output.presentDeliveryInProgress({ ownerWaId, messageId: message?.id || null, documentId });
+        return { handled: true, accepted: false, reason: result.error };
+      } catch { /* fall through to the generic presentation below */ }
     }
     const outcome = result?.ok
       ? "SUCCEEDED"
@@ -243,6 +264,19 @@ function createKadiV1WebhookRuntime({
       } catch { /* one failed presentation must not expose the message to legacy routing */ }
     }
     return { handled: true, accepted: result?.ok === true, reason: result?.ok ? null : (result?.error || "KADI_V1_DELIVERY_RETRY_FAILED") };
+  }
+
+  // The user explicitly declined to resend an outcome-unknown delivery —
+  // never calls the delivery-retry runtime at all, so no provider call and
+  // no state change can ever result from this button.
+  async function handleCancelUnknownDeliveryButton(ownerWaId, message, documentId) {
+    log("delivery_retry_cancelled", message, null);
+    if (typeof output.presentDeliveryRetryCancelled === "function") {
+      try {
+        await output.presentDeliveryRetryCancelled({ ownerWaId, messageId: message?.id || null, documentId });
+      } catch { /* non-blocking */ }
+    }
+    return { handled: true, accepted: false, reason: "DELIVERY_RETRY_CANCELLED" };
   }
 
   async function handleMessage(value, message) {
@@ -270,8 +304,13 @@ function createKadiV1WebhookRuntime({
     // matching this exact closed pattern falls through unchanged to
     // existing handling (e.g. the ordinary MENU_ACTION path).
     if (message?.type === "interactive" && !isNfmReply(message)) {
-      const match = RETRY_DELIVERY_BUTTON_PATTERN.exec(retryButtonId(message) || "");
-      if (match) return handleDeliveryRetryButton(ownerWaId, message, match[1]);
+      const buttonId = retryButtonId(message) || "";
+      const resendMatch = RESEND_UNKNOWN_DELIVERY_BUTTON_PATTERN.exec(buttonId);
+      if (resendMatch) return handleDeliveryRetryButton(ownerWaId, message, resendMatch[1], true);
+      const cancelMatch = CANCEL_UNKNOWN_DELIVERY_BUTTON_PATTERN.exec(buttonId);
+      if (cancelMatch) return handleCancelUnknownDeliveryButton(ownerWaId, message, cancelMatch[1]);
+      const match = RETRY_DELIVERY_BUTTON_PATTERN.exec(buttonId);
+      if (match) return handleDeliveryRetryButton(ownerWaId, message, match[1], false);
     }
 
     if (isNfmReply(message)) {

@@ -373,12 +373,12 @@ function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {
   // (quote, delivery attempt, final file, destination, credit amount) is
   // resolved server-side by kadiV1GenerationLifecycleService.js's own
   // eligibility checks — this adapter trusts none of it.
-  async function retryDelivery({ ownerWaId, documentId, idempotencyKey }) {
+  async function retryDelivery({ ownerWaId, documentId, idempotencyKey, confirmed = false }) {
     if (!/^\d{8,20}$/.test(ownerWaId || "") || !/^[A-Za-z0-9:_-]{1,200}$/.test(documentId || "")) {
       return fail("KADI_V1_DELIVERY_RETRY_INPUT_INVALID");
     }
     return lifecycle.retryDelivery({
-      ownerWaId, documentId, idempotencyKey: runtimeKey("delivery_retry:", idempotencyKey),
+      ownerWaId, documentId, confirmed: confirmed === true, idempotencyKey: runtimeKey("delivery_retry:", idempotencyKey),
     });
   }
   return Object.freeze({ confirm, retryDelivery });

@@ -295,6 +295,22 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   ouvre une demande de texte libre, sans bouton de parcours guidé ; ceci
   appartient à une future mission hybride guidé/conversationnel proposant
   les deux entrées.
+* **Suite (2026-08-06), même branche, second commit, statut
+  `IMPLEMENTED_REVIEWED_NOT_DEPLOYED` inchangé :** la revue adversariale
+  indépendante de ce correctif a confirmé que la reprise n'était toujours
+  pas atteignable pour un document déjà stocké (seule l'offre au moment
+  même du premier échec l'était), qu'une capture pouvait rester bloquée
+  `IN_PROGRESS` indéfiniment après un plantage, et qu'une expiration après
+  un envoi WhatsApp potentiellement réussi pouvait mener à un renvoi
+  externe incontrôlé. Voir la sous-section « Suite de revue finale » de la
+  fiche R dans
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet, y compris **deux migrations forward-only écrites mais non
+  appliquées à distance** (élargissement de la contrainte `status` de
+  `kadi_v1_delivery_attempts` pour `IN_PROGRESS`, exposition de
+  `last_error_code` dans le paquet historique) — nécessaires avant tout
+  déploiement de cette PR, car sans elles la capture atomique `IN_PROGRESS`
+  échoue contre la vraie base Postgres.
 
 ## Blocages connus
 

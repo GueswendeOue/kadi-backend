@@ -68,6 +68,9 @@ function harness(overrides = {}) {
       presentFlowReply: async (input) => calls.push(["present_flow_reply", input]),
       presentRecoverableError: async (input) => calls.push(["present_error", input]),
       presentDeliveryFailureWithRetry: async (input) => calls.push(["present_delivery_failure", input]),
+      presentDeliveryOutcomeUnknownWithRetry: async (input) => calls.push(["present_delivery_unknown", input]),
+      presentDeliveryRetryCancelled: async (input) => calls.push(["present_delivery_cancelled", input]),
+      presentDeliveryInProgress: async (input) => calls.push(["present_delivery_in_progress", input]),
       presentDeliveryRetryOutcome: async (input) => calls.push(["present_delivery_outcome", input]),
     },
     deliveryRetryRuntime: overrides.deliveryRetryRuntime || {
@@ -188,6 +191,48 @@ test("an ineligible retry (wrong owner, wrong state, replay after success, …) 
   // level only needs to prove the *outcome* dispatched is the safe,
   // closed-set "REJECTED" value, not the raw internal error string.
   assert.notEqual(outcome[1].outcome, "DELIVERY_RETRY_NOT_ELIGIBLE");
+});
+
+test("an outcome-unknown result shows the two-choice offer instead of the generic outcome text, and never calls the provider on this press (confirmed:false forwarded)", async () => {
+  const { runtime, calls } = harness({ deliveryRetryResult: { ok: false, error: "DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED", documentId: "document:1" } });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Réenvoyer le PDF");
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  const dispatched = calls.find(([name]) => name === "delivery_retry");
+  assert.equal(dispatched[1].confirmed, false);
+  assert.equal(calls.some(([name]) => name === "present_delivery_unknown"), true);
+  assert.equal(calls.some(([name]) => name === "present_delivery_outcome"), false, "must not also send the generic outcome text");
+});
+
+test("pressing Renvoyer le PDF on an outcome-unknown offer forwards confirmed:true and presents the ordinary outcome text", async () => {
+  const { runtime, calls } = harness({ deliveryRetryResult: { ok: true, value: { document: { status: "DELIVERED" } } } });
+  const message = buttonMessage("RESEND_UNKNOWN_DELIVERY:document:1", "Renvoyer le PDF");
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  const dispatched = calls.find(([name]) => name === "delivery_retry");
+  assert.ok(dispatched, "must dispatch to the delivery-retry runtime");
+  assert.equal(dispatched[1].confirmed, true);
+  assert.equal(dispatched[1].documentId, "document:1");
+  const outcome = calls.find(([name]) => name === "present_delivery_outcome");
+  assert.equal(outcome[1].outcome, "SUCCEEDED");
+});
+
+test("pressing Annuler on an outcome-unknown offer never dispatches to the delivery-retry runtime and only sends the neutral acknowledgment", async () => {
+  const { runtime, calls } = harness();
+  const message = buttonMessage("CANCEL_UNKNOWN_DELIVERY:document:1", "Annuler");
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(calls.some(([name]) => name === "delivery_retry"), false, "cancel must never call the delivery-retry runtime");
+  assert.equal(calls.some(([name]) => name === "conversation"), false);
+  assert.equal(calls.some(([name]) => name === "present_delivery_cancelled"), true);
+});
+
+test("a still-in-progress rejection presents the calm in-progress message instead of the generic rejected text", async () => {
+  const { runtime, calls } = harness({ deliveryRetryResult: { ok: false, error: "DELIVERY_ALREADY_IN_PROGRESS" } });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Vérifier l’envoi");
+  await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(calls.some(([name]) => name === "present_delivery_in_progress"), true);
+  assert.equal(calls.some(([name]) => name === "present_delivery_outcome"), false);
 });
 
 test("a malformed or unrecognized button id falls through to ordinary menu-action handling, never a false-positive delivery retry", async () => {

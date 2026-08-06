@@ -120,6 +120,15 @@ l'utilisateur (voir [`../AGENTS.md`](../AGENTS.md) §3 et §16).
   jamais un nouveau rendu ni une nouvelle capture (voir fiche R de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)). **Statut :
   `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — non encore actif en production.
+* quand l'issue réelle d'un envoi WhatsApp ne peut pas être prouvée après
+  coup (capture bloquée `IN_PROGRESS`, expiration après un envoi
+  potentiellement réussi), le système ne devine jamais et ne renvoie jamais
+  automatiquement : il classe l'issue comme inconnue et exige une
+  **confirmation explicite et distincte de l'utilisateur** avant tout
+  nouvel envoi — jamais la même pression de bouton qui a révélé
+  l'ambiguïté. Voir la sous-section « Suite de revue finale » de la fiche R
+  de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). **Statut :
+  `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`**.
 
 ## Bonus de bienvenue
 

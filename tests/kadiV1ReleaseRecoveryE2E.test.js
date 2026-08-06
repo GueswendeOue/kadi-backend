@@ -218,6 +218,11 @@ async function createRecoveryHarness({
       return result;
     },
     async retryDelivery({ deliveryAttemptId }) { return this.deliver({ deliveryAttemptId }); },
+    async reconcileStaleClaim({ deliveryAttemptId }) {
+      const current = await generationRepository.getDeliveryAttempt({ deliveryAttemptId });
+      if (!current.ok) return current;
+      return { ok: true, value: current.value, reconciled: false };
+    },
   };
 
   const quoteService = {

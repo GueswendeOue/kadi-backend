@@ -55,9 +55,23 @@ function actionsFor(bundle) {
   if (MUTABLE_STATES.has(status)) actions.push("CONTINUE_DRAFT");
   if (trustedArtifacts && bundle.final_file) actions.push("DOWNLOAD");
   if ((bundle.classification || "V1_NATIVE") === "V1_NATIVE") actions.push("DUPLICATE");
-  if (trustedArtifacts && bundle.final_file && bundle.delivery?.status === "RECOVERABLE_FAILURE") actions.push("RETRY_DELIVERY");
+  if (trustedArtifacts && bundle.final_file && ["RECOVERABLE_FAILURE", "IN_PROGRESS"].includes(bundle.delivery?.status)) actions.push("RETRY_DELIVERY");
   if (CANCELLABLE_STATES.has(status)) actions.push("CANCEL");
   return actions;
+}
+
+// Internal-only classification used to pick the right presentation branch
+// (kadiV1ProductionPresenter.js) — never the raw last_error_code itself,
+// which is never sent to the user as text. Both CONFIRMED_FAILURE and
+// OUTCOME_UNKNOWN share the same RECOVERABLE_FAILURE database status;
+// last_error_code is the only thing that tells them apart.
+function deliveryOutcomeFor(delivery) {
+  if (!delivery) return null;
+  if (delivery.status === "RECOVERABLE_FAILURE") {
+    return delivery.last_error_code === "DELIVERY_OUTCOME_UNKNOWN" ? "OUTCOME_UNKNOWN" : "CONFIRMED_FAILURE";
+  }
+  if (delivery.status === "IN_PROGRESS") return "IN_PROGRESS";
+  return null;
 }
 
 function listProjection(bundle) {
@@ -174,7 +188,7 @@ function createV1HistoryService({ historyRepository, documentRepository, clock =
       preview: bundle.preview?.status === "ACTIVE" ? clone(bundle.preview) : null,
       generation_quote: bundle.generation_quote?.status === "ACTIVE" ? clone(bundle.generation_quote) : null,
       final_file: bundle.classification !== "LEGACY_UNKNOWN" && bundle.final_file ? safeFinalFile(bundle.final_file, bundle.document, bundle.current_snapshot) : null,
-      delivery: bundle.delivery ? { status: bundle.delivery.status, attempt_count: bundle.delivery.attempt_count ?? 0 } : null,
+      delivery: bundle.delivery ? { status: bundle.delivery.status, attempt_count: bundle.delivery.attempt_count ?? 0, outcome: deliveryOutcomeFor(bundle.delivery) } : null,
       recharge_resume: bundle.recharge_resume ? { status: bundle.recharge_resume.resume_status } : null,
     });
   }

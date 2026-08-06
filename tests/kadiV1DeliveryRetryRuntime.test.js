@@ -16,7 +16,21 @@ test("handle forwards ownerWaId/documentId/idempotencyKey to generationRuntime.r
   });
   const result = await runtime.handle({ ownerWaId: "22670000000", documentId: "document:1", idempotencyKey: "webhook:1" });
   assert.equal(result.ok, true);
-  assert.deepEqual(received, { ownerWaId: "22670000000", documentId: "document:1", idempotencyKey: "webhook:1" });
+  assert.deepEqual(received, { ownerWaId: "22670000000", documentId: "document:1", idempotencyKey: "webhook:1", confirmed: false });
+});
+
+test("handle forwards an explicit confirmed:true through to generationRuntime.retryDelivery", async () => {
+  let received;
+  const runtime = createKadiV1DeliveryRetryRuntime({
+    generationRuntime: {
+      async retryDelivery(command) {
+        received = command;
+        return { ok: true, value: { document: { status: "DELIVERED" } } };
+      },
+    },
+  });
+  await runtime.handle({ ownerWaId: "22670000000", documentId: "document:1", idempotencyKey: "webhook:1", confirmed: true });
+  assert.equal(received.confirmed, true);
 });
 
 test("construction requires a generationRuntime exposing retryDelivery", () => {

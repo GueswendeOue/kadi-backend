@@ -65,6 +65,9 @@ function completeComponents(calls) {
         calls.presentRecoverableError += 1;
       },
       presentDeliveryFailureWithRetry: async () => {},
+      presentDeliveryOutcomeUnknownWithRetry: async () => {},
+      presentDeliveryRetryCancelled: async () => {},
+      presentDeliveryInProgress: async () => {},
       presentDeliveryRetryOutcome: async () => {},
     },
     deliveryRetryRuntime: {
@@ -273,6 +276,9 @@ test("production composition can derive the orchestrator without boot I/O", () =
         async presentFlowReply() {},
         async presentRecoverableError() {},
         async presentDeliveryFailureWithRetry() {},
+        async presentDeliveryOutcomeUnknownWithRetry() {},
+        async presentDeliveryRetryCancelled() {},
+        async presentDeliveryInProgress() {},
         async presentDeliveryRetryOutcome() {},
       },
       deliveryRetryRuntime: {

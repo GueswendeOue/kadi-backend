@@ -939,6 +939,29 @@ function createKadiV1ProductionPresenter({
       });
     }
 
+    // History-driven recovery surface: opening a document whose delivery
+    // needs attention offers the same real, reachable action the founder's
+    // stuck document had no way to reach before this fix — never just the
+    // generic "document is open" text. documentId here is the same opaque
+    // reference already used for the original in-the-moment retry offer,
+    // never a secret. See docs/KADI_ENGINEERING_MEMORY.md fiche R.
+    if (result.action === "OPEN_DOCUMENT") {
+      const documentId = result.result?.summary?.document_id;
+      const actions = result.result?.summary?.actions;
+      const outcome = result.result?.delivery?.outcome;
+      if (Array.isArray(actions) && actions.includes("RETRY_DELIVERY") && ID_PATTERN.test(documentId || "")) {
+        if (outcome === "OUTCOME_UNKNOWN") {
+          await presentDeliveryOutcomeUnknownWithRetry({ ownerWaId, messageId, documentId });
+        } else if (outcome === "IN_PROGRESS") {
+          await presentDeliveryInProgress({ ownerWaId, messageId, documentId });
+        } else {
+          await presentDeliveryFailureWithRetry({ ownerWaId, messageId, documentId });
+        }
+        safeLog(logger, "flow_reply_presented", { flowKey: null, businessAction: result.action });
+        return Object.freeze({ duplicate: false, text_sent: false, flow_sent: false, buttons_sent: true });
+      }
+    }
+
     const canonicalText = canonicalReplyText(
       result.action,
       result.result
@@ -1006,6 +1029,58 @@ function createKadiV1ProductionPresenter({
     return Object.freeze({ buttons_sent: true });
   }
 
+  // Offered when a stale IN_PROGRESS claim has just been reconciled (or a
+  // document opened from history already carries this classification from
+  // a prior reconciliation) — the provider outcome is genuinely unknown, so
+  // resending requires this explicit, distinct second confirmation rather
+  // than the single-button immediate retry used for a confirmed failure.
+  async function presentDeliveryOutcomeUnknownWithRetry({ ownerWaId, messageId = null, documentId } = {}) {
+    if (!OWNER_PATTERN.test(ownerWaId || "") || !ID_PATTERN.test(documentId || "")) {
+      throw new TypeError("KADI_V1_PRESENTER_DELIVERY_OUTCOME_UNKNOWN_INVALID");
+    }
+    await maybeTyping(messageId);
+    await messaging.sendButtons(
+      ownerWaId,
+      "Nous ne sommes pas certains que votre document ait été envoyé la dernière fois.\nSouhaitez-vous le renvoyer ?\nAucun crédit supplémentaire ne sera débité.",
+      [
+        { id: `RESEND_UNKNOWN_DELIVERY:${documentId}`, title: "Renvoyer le PDF" },
+        { id: `CANCEL_UNKNOWN_DELIVERY:${documentId}`, title: "Annuler" },
+      ]
+    );
+    safeLog(logger, "delivery_retry_unknown_outcome_offered", {});
+    return Object.freeze({ buttons_sent: true });
+  }
+
+  // The user explicitly chose not to resend — state is left exactly as is;
+  // no service call is made at all.
+  async function presentDeliveryRetryCancelled({ ownerWaId, messageId = null, documentId } = {}) {
+    if (!OWNER_PATTERN.test(ownerWaId || "") || !ID_PATTERN.test(documentId || "")) {
+      throw new TypeError("KADI_V1_PRESENTER_DELIVERY_RETRY_CANCELLED_INVALID");
+    }
+    await maybeTyping(messageId);
+    await messaging.sendText(ownerWaId, "D’accord, je ne renvoie rien pour le moment. Vous pourrez le faire plus tard depuis l’historique.");
+    safeLog(logger, "delivery_retry_cancelled_presented", {});
+    return Object.freeze({ text_sent: true });
+  }
+
+  // A claim still genuinely fresh (not yet stale) — shown when opening the
+  // document from history, or after a check that found nothing to
+  // reconcile yet. The button lets the user explicitly ask again later
+  // without guessing whether one exists.
+  async function presentDeliveryInProgress({ ownerWaId, messageId = null, documentId } = {}) {
+    if (!OWNER_PATTERN.test(ownerWaId || "") || !ID_PATTERN.test(documentId || "")) {
+      throw new TypeError("KADI_V1_PRESENTER_DELIVERY_IN_PROGRESS_INVALID");
+    }
+    await maybeTyping(messageId);
+    await messaging.sendButtons(
+      ownerWaId,
+      "L’envoi de votre document est toujours en cours.",
+      [{ id: `RETRY_DELIVERY:${documentId}`, title: "Vérifier l’envoi" }]
+    );
+    safeLog(logger, "delivery_in_progress_presented", {});
+    return Object.freeze({ buttons_sent: true });
+  }
+
   const DELIVERY_RETRY_OUTCOME_TEXT = Object.freeze({
     SUCCEEDED: "Votre document a bien été renvoyé.",
     FAILED_PERSISTENT: "Le PDF est toujours disponible.\nL’envoi n’a pas abouti et aucun crédit supplémentaire n’a été débité.\nVous pourrez réessayer.",
@@ -1058,6 +1133,9 @@ function createKadiV1ProductionPresenter({
     presentFlowReply,
     presentRecoverableError,
     presentDeliveryFailureWithRetry,
+    presentDeliveryOutcomeUnknownWithRetry,
+    presentDeliveryRetryCancelled,
+    presentDeliveryInProgress,
     presentDeliveryRetryOutcome,
     readiness: Object.freeze({
       ready: true,
