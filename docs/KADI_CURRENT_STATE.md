@@ -133,28 +133,37 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ### PDF final state, titre proforma, libellé reçu, taxe en pourcentage
 
-* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_APPLIED_AWAITING_FINAL_REVIEW`**
-  — code implémenté, committé
-  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la branche
-  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
-  `8718e6461151ccf075527bc4afac957530a8e0a3`), **PR #12 ouverte en
-  DRAFT** contre `main`, **non fusionnée**. Migration Supabase
-  `20260806010000_add_kadi_v1_finalization_identity` **appliquée et
-  vérifiée en distant** sur le projet `cmhargmwkyskbobmkrcj` le
-  2026-08-06 (une seule fois, historique distant par ailleurs cohérent,
-  fonctions et permissions déployées vérifiées en lecture seule contre la
-  source de la migration, aucune ligne de donnée applicative modifiée).
-  Aucun Flow `DOCUMENT_OPTIONS` republié, aucun déploiement Render
-  effectué, Render non modifié, aucun test WhatsApp de production
-  réalisé. **Le préalable requis avant la fusion de cette PR — la
-  migration appliquée et vérifiée en distant, car `main` peut
-  auto-déployer sur Render — est désormais satisfait** ; voir
-  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour la suite
-  de la séquence (revue finale, fusion, déploiement, publication Meta,
-  CANARY). Ne pas présenter comme actif en production tant que ces
-  étapes restantes n'ont pas eu lieu. Voir fiche P de
-  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
-  complet des causes confirmées et des correctifs.
+* **Statut : `MERGED_DEPLOYED_HEALTHY_CANARY_PENDING`**
+  — code implémenté, committé (`59f365e31737cf4f1b475ab0172322cdccac6932`),
+  revu de façon adversariale, **[PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
+  fusionnée dans `main`** (commit de fusion
+  `35358e5f301e821ac0ad8f6953c118146521878c`, 2026-08-06T12:48:49Z).
+  Migration Supabase `20260806010000_add_kadi_v1_finalization_identity`
+  appliquée et vérifiée en distant sur le projet `cmhargmwkyskbobmkrcj` le
+  2026-08-06T12:11:31Z (une seule fois, historique distant par ailleurs
+  cohérent, fonctions et permissions vérifiées en lecture seule, aucune
+  ligne de donnée applicative modifiée). **Déployé sur Render par
+  déclenchement manuel explicite** (`kadi-backend`,
+  `srv-d5a93m1r0fns73879big`, déploiement `dep-d9q97g9t0dsc73cgisog`,
+  déclenché 2026-08-06T14:01:37.902341Z, `live` à
+  2026-08-06T14:02:47.395578Z, commit vérifié
+  `35358e5f301e821ac0ad8f6953c118146521878c`) — build réussi, boot propre,
+  `KADI_V1_WEBHOOK_READY` confirme `ready:true, active:true,
+  state:"READY", rollout_mode:"CANARY", blocker:null`. **Correctif
+  important (2026-08-06) : contrairement à ce que ce document affirmait
+  auparavant, fusionner une PR dans `main` ne déploie pas automatiquement
+  `kadi-backend` sur Render** — l'API Render confirme `autoDeploy:"no"` pour
+  ce service ; un déploiement manuel explicite est systématiquement requis
+  et doit être vérifié par les métadonnées Render (`live`, commit exact),
+  jamais déduit du seul statut de fusion GitHub. Voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le récit
+  complet, y compris la fenêtre de compatibilité migration-avant-déploiement
+  que cette hypothèse erronée a laissée ouverte. Aucun Flow
+  `DOCUMENT_OPTIONS` republié, aucune session WhatsApp CANARY fraîche
+  encore exécutée sur ce déploiement — **ne pas présenter la fonctionnalité
+  comme validée en CANARY tant que la matrice de l'étape 9 de
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) n'a pas été
+  exécutée.**
 * Corrige : PDF final affichant « BROUILLON »/date vide/pas de numéro
   (FACTURE, DEVIS, RECU, DECHARGE — même chemin de finalisation partagé) ;
   FACTURE proforma affichée comme « FACTURE » simple ; reçu affichant
@@ -178,17 +187,25 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   nouvelle publication (champ `tax_rate_percent`) reste nécessaire pour que
   la saisie en pourcentage soit visible par un utilisateur réel, mais
   n'est plus un préalable bloquant au déploiement du backend.
-* **Ordre de déploiement obligatoire — voir
+* **Ordre de déploiement — voir
   [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour la
-  procédure complète.** La migration ci-dessus a été appliquée en
-  distant le 2026-08-06, **avant** toute fusion et donc avant tout
-  déploiement du backend — l'ordre requis est respecté. Sans cette
-  application préalable, la RPC `kadi_v1_persist_transition`
-  précédemment en place aurait rejeté explicitement tout `issued_at` non
-  nul envoyé hors de l'état `GENERATED` (`KADI_V1_SERVER_FIELD_FORBIDDEN`)
-  et **la génération finale de tout document, pour tout utilisateur,
-  aurait échoué intégralement** si le backend avait été déployé sans la
-  migration ; ce risque est désormais écarté par l'application confirmée.
+  procédure complète et le récit exact.** La migration a été appliquée en
+  distant le 2026-08-06T12:11:31Z, avant la fusion (2026-08-06T12:48:49Z),
+  elle-même avant le déploiement manuel effectif (`live` à
+  2026-08-06T14:02:47.395578Z). **Une fenêtre de compatibilité réelle
+  d'environ 1h51 s'est ouverte entre l'application de la migration et le
+  déploiement effectif**, parce que la fusion de la PR ne déclenche pas de
+  déploiement sur ce service (`autoDeploy` désactivé, découvert après coup
+  — voir ci-dessus) : pendant cette fenêtre, l'ancien backend encore servi
+  par Render recalculait un `issued_at` différent de celui déjà assigné par
+  la RPC migrée à `START_GENERATION`, et se faisait rejeter par
+  `KADI_V1_SERVER_FIELD_FORBIDDEN` à `MARK_GENERATED` pour tout document
+  atteignant ce point. Cette fenêtre est refermée depuis
+  2026-08-06T14:02:47.395578Z (déploiement manuel confirmé `live` sur le
+  commit fusionné). **Leçon retenue : la compatibilité entre la base de
+  données et le backend doit toujours être vérifiée dans les deux sens**
+  (nouveau backend/ancienne base, **et** ancien backend/nouvelle base) —
+  seule la première direction avait été anticipée avant cet incident.
 * Un document dont le rendu échoue après l'assignation d'identité
   (`START_GENERATION` déjà passé) conserve un `issued_at`/`document_number`
   « réservés » sans jamais avoir produit d'artefact livré — ce n'est ni un
@@ -210,10 +227,12 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet — correctif écrit, testé localement (y compris à travers
   la composition de production réelle, `kadiV1ProductionBootstrap.js`),
-  committé (`59f365e31737cf4f1b475ab0172322cdccac6932`) et proposé via la
-  PR #12 (DRAFT, non fusionnée), **non déployé**. Aucune correction de
-  production ne peut être revendiquée avant déploiement et validation
-  CANARY fraîche.
+  committé (`59f365e31737cf4f1b475ab0172322cdccac6932`), fusionné via la
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) et
+  **déployé sur Render** (voir statut en tête de section). Aucune
+  correction de production ne peut encore être revendiquée comme validée
+  avant l'exécution d'une matrice CANARY fraîche (étape 9 de
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
 
 ## Blocages connus
 

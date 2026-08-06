@@ -1,5 +1,51 @@
 # Runbook — Déployer en CANARY sur Render
 
+## Règle de release obligatoire (confirmée 2026-08-06)
+
+**`kadi-backend` sur Render n'auto-déploie jamais `main`** — l'API Render
+confirme `autoDeploy:"no"` pour ce service ; tout historique de déploiement
+observé est `trigger:"manual"` (ou `"rollback"`), jamais automatique. Une
+fusion GitHub réussie dans `main` **ne prouve jamais**, à elle seule, qu'un
+nouveau code est en cours d'exécution. Voir fiche P de
+[`../KADI_ENGINEERING_MEMORY.md`](../KADI_ENGINEERING_MEMORY.md), sous-section
+« Fenêtre de compatibilité migration-avant-déploiement (2026-08-06) », pour
+l'incident confirmé qu'une hypothèse contraire a causé.
+
+**Ordre obligatoire pour toute release touchant le backend et une migration
+Supabase, dans cet ordre, sans le paralléliser :**
+
+1. **Vérifier le SHA `main` cible** (`git rev-parse origin/main`) avant
+   d'engager quoi que ce soit.
+2. **Vérifier la compatibilité de la migration de base de données dans les
+   deux sens** — nouveau backend face à l'ancienne base, **et** ancien
+   backend face à la nouvelle base (cette seconde direction est facile à
+   oublier ; c'est elle qui a causé l'incident du 2026-08-06).
+3. **Appliquer la migration** uniquement selon l'ordre de release approuvé
+   (voir [`../KADI_RELEASE_CHECKLIST.md`](../KADI_RELEASE_CHECKLIST.md)),
+   avec autorisation explicite.
+4. **Fusionner la PR approuvée** dans `main`.
+5. **Déclencher explicitement un déploiement manuel Render** — la fusion
+   seule ne suffit pas ; il s'agit d'une action distincte et obligatoire.
+6. **Observer le build** jusqu'à son terme (succès ou échec).
+7. **Vérifier que le déploiement passe à `live`** via les métadonnées
+   Render (API ou tableau de bord) — un déploiement « en cours » n'est pas
+   un déploiement terminé.
+8. **Confirmer que les métadonnées du commit `live` correspondent
+   exactement au SHA `main` attendu** (`deploy.commit.id`) — ne jamais
+   déduire l'identité du code déployé depuis `GET /health` seul (réponse
+   statique, sans SHA ni métadonnées de version) ni depuis le seul statut
+   de fusion GitHub.
+9. **Vérifier le boot et la préparation** (logs Render : boot propre,
+   `KADI_V1_WEBHOOK_READY` sans `blocker`, absence de
+   `KADI_V1_SERVER_FIELD_FORBIDDEN` ou d'autre erreur RPC/migration).
+10. **Alors seulement commencer** la publication Meta et la validation
+    CANARY.
+
+**Interdiction explicite : ne jamais supposer qu'un déploiement a eu lieu
+uniquement parce qu'une PR a été fusionnée sur GitHub.** Toute affirmation
+de déploiement doit être appuyée par une vérification directe des
+métadonnées Render (déploiement `live`, commit exact).
+
 ## Portée
 
 * **Service `kadi-backend` uniquement.**

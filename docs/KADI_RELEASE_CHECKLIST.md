@@ -56,67 +56,112 @@ précédente a réussi.
 
 ## Ordre obligatoire — `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (identité de finalisation)
 
-Cette branche introduit une dépendance d'ordonnancement stricte entre la
+Cette branche a introduit une dépendance d'ordonnancement stricte entre la
 migration Supabase et le déploiement backend, confirmée par revue
 adversariale indépendante (voir fiche P de
-[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)). Suivre
-exactement cet ordre, dans ce sens, à ne pas paralléliser :
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)). Séquence
+effectivement suivie, corrections comprises — voir aussi la nouvelle règle
+générale dans [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md) :
 
-**Précision critique :** `kadi-backend` sur Render **auto-déploie `main`**
-(voir [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md)) — le
-déploiement n'est donc pas une étape manuelle séparée exécutée après coup,
-il se produit **au moment de la fusion** de la PR backend dans `main`. Par
-conséquent, l'étape 1 ci-dessous (migration appliquée et vérifiée en
-distant) doit être terminée **avant la fusion de la PR backend**, pas
-seulement « avant un déploiement ultérieur » — fusionner sans avoir
-d'abord appliqué la migration revient, dans les faits, à déployer sans
-elle.
+**Correctif critique (2026-08-06) :** l'hypothèse initiale de cette section
+— « `kadi-backend` sur Render auto-déploie `main` » — était **fausse** et a
+été découverte fausse *après* la fusion de la PR #12, par vérification
+directe de l'API Render (`GET /v1/services/srv-d5a93m1r0fns73879big` →
+`autoDeploy: "no"`, `autoDeployTrigger: "off"`). **Ce service ne déploie
+jamais automatiquement.** Chaque déploiement, historiquement, a toujours été
+`trigger: "manual"` (ou `"rollback"`) — jamais automatique. Fusionner une PR
+dans `main` ne fait donc que mettre à jour `main` sur GitHub ; le code
+précédemment déployé continue de tourner sur Render jusqu'à un déclenchement
+manuel explicite. Voir la fiche P de
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le récit
+complet de la fenêtre de compatibilité que cette hypothèse erronée a
+laissée ouverte plus longtemps que prévu.
 
-1. **Revoir et approuver le code** (revue normale de la PR backend) — ne
-   pas fusionner à cette étape.
-2. **[FAIT — 2026-08-06]** ~~Appliquer~~
+1. **[FAIT]** Revoir et approuver le code (revue adversariale indépendante,
+   corrections appliquées).
+2. **[FAIT — 2026-08-06T12:11:31Z]** Appliquer
    `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
-   en distant (autorisation explicite requise, voir
-   [`runbooks/APPLY_SUPABASE_MIGRATION.md`](runbooks/APPLY_SUPABASE_MIGRATION.md))
-   et ~~vérifier~~ sa présence en distant (lecture seule de la définition
-   de `kadi_v1_persist_transition` / `kadi_v1_generate_document_number`).
-   **Appliquée et vérifiée en distant** sur le projet `cmhargmwkyskbobmkrcj`,
-   présente exactement une fois dans `supabase migration list`, corps des
-   deux fonctions et permissions vérifiés en lecture seule contre la
-   source de la migration. Voir fiche P de
-   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
-3. **Alors seulement, fusionner** la PR backend dans `main` — puisque la
-   fusion déclenche l'auto-déploiement Render, cette étape ne peut avoir
-   lieu qu'après confirmation de l'étape 2 (**désormais satisfaite**),
-   jamais avant ni en parallèle. **Non exécutée par cette mission — la
-   fusion reste une action distincte, non autorisée ici.**
-4. **Vérifier** le démarrage du service et qu'un document de test peut
-   atteindre `GENERATION_IN_PROGRESS` sans erreur `KADI_V1_SERVER_FIELD_FORBIDDEN`
-   ni `DOCUMENT_FINALIZATION_IDENTITY_MISSING`/`DOCUMENT_FINALIZATION_IDENTITY_CORRUPT`.
-5. **Publier** la nouvelle version du Flow Meta `DOCUMENT_OPTIONS` (champ
-   `tax_rate_percent`) — autorisation explicite requise, non effectuée par
-   la mission qui a écrit ce correctif.
-6. **Configurer** un nouvel identifiant/variable d'environnement Render
-   uniquement si la publication en a effectivement créé un nouveau (pas
-   nécessairement le cas pour une simple mise à jour de champ sur un Flow
-   existant).
-7. **Démarrer une session WhatsApp fraîche** pour la validation — jamais la
-   reprise d'une session ouverte avant l'étape 3 ou 5 (voir fiche F de
-   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
-8. **Exécuter la matrice CANARY** : FACTURE FINAL, FACTURE PROFORMA, DEVIS,
-   RECU A4, RECU TICKET_80, DECHARGE (MONEY/GOODS/DOCUMENT/OTHER) — vérifier
-   pour chacun : titre correct, numéro et date réels (jamais BROUILLON),
-   options/taxe atteignables, calcul 18 % correct.
-9. **Seulement ensuite** envisager un rollout plus large.
+   en distant et vérifier sa présence en distant (lecture seule de la
+   définition de `kadi_v1_persist_transition` /
+   `kadi_v1_generate_document_number`) — appliquée et vérifiée sur le
+   projet `cmhargmwkyskbobmkrcj`, présente exactement une fois dans
+   `supabase migration list`, corps des deux fonctions et permissions
+   vérifiés en lecture seule contre la source de la migration. Voir fiche P
+   de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+3. **[FAIT — 2026-08-06T12:48:49Z]** Fusionner la PR backend dans `main` —
+   [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12), commit de
+   fusion `35358e5f301e821ac0ad8f6953c118146521878c`. **Cette fusion, à elle
+   seule, n'a rien déployé** (voir correctif critique ci-dessus) — l'ancien
+   commit `f95be84b98d3d9ad6308a6aebbc3e11590717ae2` est resté `live` sur
+   Render jusqu'à l'étape suivante.
+4. **[FAIT — déclenché 2026-08-06T14:01:37.902341Z, LIVE
+   2026-08-06T14:02:47.395578Z]** Déclencher explicitement **un** déploiement
+   manuel Render (`dep-d9q97g9t0dsc73cgisog`) et attendre le statut `live`
+   confirmé par l'API Render — jamais en déduire l'état depuis le seul
+   statut de fusion GitHub. Build réussi, checkout confirmé sur
+   `35358e5f301e821ac0ad8f6953c118146521878c`, ancien déploiement
+   `dep-d9ppc1lbedkc73e27klg` passé à `deactivated`.
+5. **[FAIT]** Vérifier le démarrage du service et l'absence d'erreur
+   `KADI_V1_SERVER_FIELD_FORBIDDEN` / `DOCUMENT_FINALIZATION_IDENTITY_MISSING`
+   / `DOCUMENT_FINALIZATION_IDENTITY_CORRUPT` — logs de boot Render inspectés
+   directement (`KADI_V1_WEBHOOK_READY`: `ready:true, active:true,
+   state:"READY", rollout_mode:"CANARY", blocker:null, missing_ports:[],
+   missing_capabilities:[]`), zéro log de niveau erreur depuis le boot.
+   **Un document de test réel n'a pas été généré** (interdit par la mission
+   de vérification) — cette étape reste donc une preuve de démarrage/lecture
+   seule, pas une preuve de bout en bout de `MARK_GENERATED` en conditions
+   réelles ; la matrice CANARY (étape 9) reste nécessaire pour cela.
+6. **[EN ATTENTE]** Publier la nouvelle version du Flow Meta
+   `DOCUMENT_OPTIONS` (champ `tax_rate_percent`) — autorisation explicite
+   requise, non encore effectuée.
+7. **[EN ATTENTE]** Configurer un nouvel identifiant/variable d'environnement
+   Render uniquement si la publication en a effectivement créé un nouveau.
+8. **[EN ATTENTE]** Démarrer une session WhatsApp fraîche pour la validation
+   — jamais la reprise d'une session ouverte avant l'étape 4 ou 6 (voir
+   fiche F de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
+9. **[EN ATTENTE]** Exécuter la matrice CANARY : FACTURE FINAL, FACTURE
+   PROFORMA, DEVIS, RECU A4, RECU TICKET_80, DECHARGE (MONEY/GOODS/DOCUMENT/
+   OTHER) — vérifier pour chacun : titre correct, numéro et date réels
+   (jamais BROUILLON), un seul crédit débité, options/taxe atteignables,
+   calcul 18 % correct, historique correct, reprise après échec de rendu.
+   Diagnostiquer le blocage de navigation depuis les logs Render
+   privacy-safe en conditions réelles —
+   `UNRESOLVED_PRODUCTION_DIAGNOSIS_REQUIRED`.
+10. **[EN ATTENTE]** Seulement ensuite envisager un rollout plus large.
+
+**Fenêtre de compatibilité migration-avant-déploiement effectivement
+observée :** de l'application de la migration
+(`2026-08-06T12:11:31Z`) jusqu'à la mise en `live` du déploiement manuel
+correctif (`2026-08-06T14:02:47.395578Z`) — environ 1h51. Pendant cette
+fenêtre, l'ancien backend (`f95be84b...`), toujours servi par Render, restait
+exposé au risque `KADI_V1_SERVER_FIELD_FORBIDDEN` sur `MARK_GENERATED` décrit
+ci-dessous, pour tout utilisateur CANARY réel — voir fiche P de
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour l'analyse
+complète et la confirmation que la fenêtre est refermée depuis
+`2026-08-06T14:02:47.395578Z`.
 
 **Conséquences documentées si l'ordre n'est pas respecté :**
 
-* PR backend fusionnée (donc déployée, auto-déploiement Render) **avant**
-  l'étape 2 : la RPC `kadi_v1_persist_transition` actuellement en place
-  rejette tout `issued_at` non nul hors de l'état `GENERATED` — **panne
-  totale de la génération finale**, tous types de documents, tous
-  utilisateurs, jusqu'à application de la migration.
-* Ancien backend avec un Flow déjà republié (étape 5 avant étape 3) :
+* PR backend fusionnée **avant** l'étape 2 (migration appliquée) : la RPC
+  `kadi_v1_persist_transition` alors en place rejette tout `issued_at` non
+  nul hors de l'état `GENERATED` — **panne totale de la génération finale**,
+  tous types de documents, tous utilisateurs, jusqu'à application de la
+  migration **et** déploiement effectif du nouveau backend (les deux sont
+  requis — voir point suivant).
+* **Nouveau, confirmé le 2026-08-06 :** l'inverse — migration appliquée
+  **avant** que l'ancien backend ne soit remplacé par un déploiement
+  effectif — casse également `MARK_GENERATED` pour l'ancien backend, qui
+  recalcule un `issued_at` différent de celui déjà assigné par la RPC à
+  `START_GENERATION` et se fait rejeter par `KADI_V1_SERVER_FIELD_FORBIDDEN`.
+  **La compatibilité de la base de données doit donc toujours être vérifiée
+  dans les deux sens : nouveau backend avec ancienne base, et ancien backend
+  avec nouvelle base** — cette seconde direction n'avait jamais été
+  envisagée avant cet incident. Une fusion GitHub réussie **ne prouve
+  jamais**, à elle seule, qu'un nouveau code est en cours d'exécution : seul
+  l'état `live` confirmé par les métadonnées Render, sur le commit attendu,
+  en fait foi ; `GET /health` seul ne le prouve pas non plus (réponse
+  statique sans SHA ni métadonnées de version).
+* Ancien backend avec un Flow déjà republié (étape 6 avant étape 4) :
   sans risque grâce à la fenêtre de compatibilité double-champ — le champ
   `tax_rate_percent` du nouveau Flow serait néanmoins rejeté par l'ancien
   backend s'il n'accepte pas encore ce nom de champ ; respecter l'ordre

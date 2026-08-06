@@ -831,20 +831,28 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## P. PDF final présenté comme brouillon, proforma non distinguée, libellé reçu générique, taxe saisie en points de base
 
-* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_APPLIED_AWAITING_FINAL_REVIEW`**
+* **Statut : `MERGED_DEPLOYED_HEALTHY_CANARY_PENDING`**
   — correctifs écrits, testés localement, committés
-  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussés sur la branche
-  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
-  `8718e6461151ccf075527bc4afac957530a8e0a3`) — **PR #12 ouverte en
-  DRAFT, non fusionnée, non déployée. Migration Supabase
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), revus de façon
+  adversariale, fusionnés via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (commit de
+  fusion `35358e5f301e821ac0ad8f6953c118146521878c`,
+  2026-08-06T12:48:49Z) et **déployés sur Render par déclenchement manuel
+  explicite** (`dep-d9q97g9t0dsc73cgisog`, `live` à
+  2026-08-06T14:02:47.395578Z, commit vérifié
+  `35358e5f301e821ac0ad8f6953c118146521878c`, boot propre,
+  `KADI_V1_WEBHOOK_READY` : `ready:true, state:"READY",
+  rollout_mode:"CANARY", blocker:null`). Migration Supabase
   `20260806010000_add_kadi_v1_finalization_identity` appliquée et
   vérifiée en distant sur le projet `cmhargmwkyskbobmkrcj` le
-  2026-08-06 (une seule fois, fonctions et permissions déployées
+  2026-08-06T12:11:31Z (une seule fois, fonctions et permissions
   vérifiées en lecture seule contre la source de la migration, aucune
-  ligne de donnée applicative modifiée).** Ne pas présenter ces
-  correctifs comme actifs en production tant qu'un déploiement et une
-  validation CANARY fraîche n'ont pas eu lieu (voir
-  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
+  ligne de donnée applicative modifiée). **Ne pas présenter ces
+  correctifs comme validés en CANARY** tant qu'une session WhatsApp
+  fraîche et la matrice CANARY complète n'ont pas eu lieu (voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)). Voir la
+  sous-section « Fenêtre de compatibilité migration-avant-déploiement »
+  ci-dessous pour un incident confirmé pendant cette livraison.
 * **Période :** mission « KADI V1 PDF FINAL STATE, PROFORMA AND TAX FLOW —
   DIAGNOSE AND FIX », diagnostic CANARY remonté par le fondateur (5
   symptômes : PDF final affichant « BROUILLON »/date vide/pas de numéro ;
@@ -987,9 +995,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   n'est exposée ni acceptée pour RECU/DECHARGE (non concerné par
   `normalizeOptions`'s branche FACTURE/DEVIS).
 * **Commit ou migration :** committé
-  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
-  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
-  non fusionnée) — migration appliquée et vérifiée en distant (voir
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), fusionné via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) et déployé
+  (voir statut ci-dessus) — migration appliquée et vérifiée en distant (voir
   statut ci-dessus).
 * **Preuve de validation :** `tests/kadiV1DocumentDomain.test.js` (identité
   de finalisation, porte fermée, préfixes par type, idempotence),
@@ -1025,10 +1033,11 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 Une revue adversariale indépendante en lecture seule a examiné le diff
 complet de cette branche avant tout commit et a confirmé plusieurs défauts
 réels, requérant une correction avant que cette branche puisse être
-proposée à la fusion. Tous corrigés ci-dessous ; la branche est désormais
-committée (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussée et
-proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
-(DRAFT), toujours **non fusionnée, non déployée**.
+proposée à la fusion. Tous corrigés ci-dessous ; la branche a ensuite été
+committée (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussée, fusionnée
+via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (commit
+de fusion `35358e5f301e821ac0ad8f6953c118146521878c`) et **déployée sur
+Render** (voir statut en tête de fiche).
 
 * **HIGH confirmé — incompatibilité totale avec le Flow Meta actuellement
   publié :** le correctif initial remplaçait entièrement
@@ -1056,9 +1065,71 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
   utilisateurs. **Aucun correctif de code ne pouvait éliminer cette
   contrainte d'ordre** — voir l'ordre de déploiement obligatoire documenté
   dans [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) et
-  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md). **Ce risque est
-  désormais écarté : la migration a été appliquée et vérifiée en distant
-  le 2026-08-06, avant toute fusion ou déploiement de ce backend.**
+  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md). **Ce risque précis
+  (nouveau backend déployé avant la migration) ne s'est jamais matérialisé**
+  — la migration a été appliquée en distant le 2026-08-06T12:11:31Z, avant
+  toute fusion. **Mais appliquer la migration seule, sans déploiement
+  immédiat du nouveau backend, a ouvert le risque inverse, réellement
+  matérialisé — voir la sous-section « Fenêtre de compatibilité
+  migration-avant-déploiement (2026-08-06) » ci-dessous.**
+
+### Fenêtre de compatibilité migration-avant-déploiement (2026-08-06)
+
+* **Statut : `CONFIRMED_AND_RESOLVED`.**
+* **Symptôme/risque confirmé :** entre l'application de la migration
+  (`2026-08-06T12:11:31Z`) et la fusion de la PR #12
+  (`2026-08-06T12:48:49Z`), puis jusqu'au déploiement Render effectif
+  (`live` à `2026-08-06T14:02:47.395578Z`), **l'ancien backend
+  (`f95be84b98d3d9ad6308a6aebbc3e11590717ae2`) est resté servi par
+  Render**, exposé à la migration déjà appliquée. Cette combinaison n'avait
+  jamais été analysée avant cet incident — toute l'attention précédente
+  portait sur l'ordre inverse (nouveau backend avant migration).
+* **Cause racine confirmée :** l'ancien `kadiV1DocumentDomain.js` assignait
+  un `issued_at` **frais** à chaque transition `MARK_GENERATED`, sans jamais
+  réutiliser une valeur déjà persistée ; `kadiV1SupabaseDocumentRepository.js`
+  (inchangé par cette PR) synchronise déjà `issued_at` depuis le résultat de
+  **chaque** appel `persist_transition`, y compris `START_GENERATION`. Avec
+  la migration appliquée, `START_GENERATION` assigne désormais un
+  `issued_at` serveur dès `GENERATION_IN_PROGRESS` ; l'ancien backend
+  récupérait donc cette valeur, puis l'écrasait par une valeur différente à
+  `MARK_GENERATED` — la RPC migrée rejetait alors cet `issued_at`
+  incohérent avec `KADI_V1_SERVER_FIELD_FORBIDDEN`, cassant la génération
+  finale de tout type de document, pour tout utilisateur CANARY réel
+  atteignant ce point, pendant toute la fenêtre.
+* **Découverte :** identifiée par analyse de code adversariale (pas par
+  incident rapporté) lors de la revue finale de PR #12, avant toute
+  correction — voir la mission « FINAL GITHUB REVIEW BEFORE CONTROLLED
+  MERGE ». Confirmée activement en cours pendant la fusion via
+  vérification directe de l'API Render (`GET
+  /v1/services/srv-d5a93m1r0fns73879big` → `autoDeploy:"no"`), qui a
+  également révélé que **`kadi-backend` ne déploie jamais automatiquement
+  sur fusion `main`** — hypothèse inverse tenue pour acquise dans ce
+  document et dans `KADI_RELEASE_CHECKLIST.md` jusqu'à cette découverte, et
+  corrigée partout où elle apparaissait.
+* **Résolution :** déploiement manuel explicite déclenché
+  (`dep-d9q97g9t0dsc73cgisog`, `2026-08-06T14:01:37.902341Z`), confirmé
+  `live` sur le commit fusionné `35358e5f301e821ac0ad8f6953c118146521878c`
+  à `2026-08-06T14:02:47.395578Z` — ancien déploiement
+  `dep-d9ppc1lbedkc73e27klg` passé à `deactivated`. Boot propre vérifié,
+  `KADI_V1_WEBHOOK_READY` sans blocage. **Fenêtre totale : environ 1h51.**
+  Aucun document réel n'a été généré pour prouver la fermeture de bout en
+  bout (interdit par la mission de vérification) — seule la matrice CANARY
+  (étape 9 de `KADI_RELEASE_CHECKLIST.md`) le fera formellement.
+* **Prévention :** la compatibilité entre backend et base de données doit
+  toujours être vérifiée **dans les deux sens** avant toute migration
+  « forward-only » assignant un nouveau comportement à un état déjà
+  atteignable par le code actuellement déployé — pas seulement dans le sens
+  habituel (nouveau code face à l'ancien schéma). Une fusion GitHub réussie
+  ne doit jamais être interprétée comme une preuve de déploiement : seul
+  l'état `live` des métadonnées Render, sur le commit exact attendu, en
+  fait foi. `GET /health` ne suffit pas non plus (réponse statique sans
+  identité de commit).
+* **Test de non-régression :** aucun test automatisé ne peut couvrir un
+  écart de configuration de plateforme (`autoDeploy`) — la prévention
+  repose sur la procédure documentée dans
+  [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md) (vérification
+  explicite du commit `live` avant de considérer un déploiement terminé),
+  pas sur un test de code.
 * **MEDIUM confirmé — troncature du suffixe SQL à 4 caractères au lieu de
   8 :** `lpad(string, length, fill)` en PostgreSQL **tronque** `string`
   quand il est déjà plus long que `length` — `lpad(right(id, 8), 4, '0')`
@@ -1101,10 +1172,11 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
 ## Q. Reprise de génération après échec du rendu/stockage privé, avant capture
 
 * **Statut :** correctif écrit, testé localement, committé
-  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la même
-  branche `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`, proposé via
-  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT)
-  — **non fusionné, non déployé.**
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), fusionné via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (commit de
+  fusion `35358e5f301e821ac0ad8f6953c118146521878c`) et **déployé sur
+  Render** (`live` à 2026-08-06T14:02:47.395578Z) — pas encore validé par
+  une matrice CANARY fraîche.
 * **Symptôme confirmé :** un document dont le rendu final échoue (erreur du
   renderer ou du stockage privé) était laissé en `RECOVERABLE_FAILURE`,
   crédit relâché, identité (`issued_at`/`document_number`) déjà réservée —
@@ -1170,9 +1242,9 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
   présenté comme généré avec succès dans l'historique, même s'il porte déjà
   un `document_number`/`issued_at` réels.
 * **Commit ou migration :** committé
-  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
-  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
-  non fusionnée).
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), fusionné via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) et déployé
+  (voir statut ci-dessus).
 * **Preuve de validation :** `tests/kadiV1GenerationLifecycle.test.js` —
   neuf nouveaux tests couvrant le scénario complet en 19 étapes (échec du
   rendu → identité réservée → reprise → même identité réutilisée →
@@ -1274,7 +1346,8 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
   inchangé, échec non lié bloqué, propriétaire différent bloqué),
   `tests/kadiV1WebhookRuntime.test.js` (message utilisateur spécifique vs
   générique). Suite complète : voir section TESTS du rapport de mission.
-* **Committé (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussé, proposé
-  via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
-  (DRAFT, non fusionnée) ; toujours non déployé, aucun système distant
-  modifié.**
+* **Committé (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussé, fusionné
+  via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (commit
+  de fusion `35358e5f301e821ac0ad8f6953c118146521878c`) et déployé sur
+  Render (`live` à 2026-08-06T14:02:47.395578Z) ; aucun autre système
+  distant modifié (Meta, environnement Render).**
