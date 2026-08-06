@@ -29,6 +29,37 @@ bug, pas une variante acceptable. Statuts :
   [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md)).
 * Aucune autre valeur n'est acceptée pour `invoice_kind` ; toute valeur
   invalide, vide ou en minuscules est rejetée de façon fermée.
+* Le titre rendu doit toujours refléter `invoice_kind` : FINAL → « FACTURE »,
+  PROFORMA → « FACTURE PRO FORMA » — même `document_type = FACTURE` dans les
+  deux cas, seul le titre/renderer choisi diffère. Correctif écrit et testé
+  sur la branche `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`, non encore
+  déployé ni validé en CANARY — voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+* Le PDF final porte toujours un `issued_at` et un `document_number` réels,
+  assignés avant que le renderer ne produise le PDF livré à l'utilisateur —
+  jamais « BROUILLON », une date vide ou un aperçu pré-finalisation ; même
+  garantie pour DEVIS, RECU et DECHARGE (chemin de finalisation partagé).
+  Correctif écrit et testé sur la même branche, non encore déployé.
+* La taxe est saisie par l'utilisateur sous forme de **pourcentage**
+  (ex. 18 pour 18 %, virgule ou point décimal acceptés), jamais en montant
+  FCFA ; le backend calcule seul le montant de taxe à partir du sous-total
+  réel. Applicable uniquement à FACTURE et DEVIS (RECU et DECHARGE
+  n'exposent ni n'acceptent aucune option de taxe). Correctif écrit et
+  testé sur la même branche ; nécessite une nouvelle publication du Flow
+  Meta `DOCUMENT_OPTIONS` avant que le champ pourcentage ne soit visible
+  par un utilisateur réel — non autorisée par cette mission.
+* **Fenêtre de compatibilité, tant que le nouveau Flow n'est pas publié :**
+  le backend accepte aussi, en points de base bruts (`tax_rate_basis_points`,
+  entier, borné à ]0, 10000]), le champ que le Flow Meta actuellement publié
+  continue d'envoyer — sans quoi le déploiement du backend seul romprait
+  `SAVE_OPTIONS` pour tous les utilisateurs avant même la publication du
+  nouveau Flow. Une seule représentation persistée au final
+  (`tax_rate_basis_points`) ; si les deux champs sont envoyés et ne
+  correspondent pas au même taux, la soumission est rejetée de façon
+  fermée, jamais résolue silencieusement. Voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) et l'ordre de
+  déploiement obligatoire dans
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md).
 
 ## Reçu — format et parcours dédié
 
@@ -46,6 +77,11 @@ bug, pas une variante acceptable. Statuts :
   affiché lorsqu'un logo privé valide existe ; un logo absent, illisible ou
   corrompu ne bloque jamais la génération du PDF et n'expose jamais de
   chemin de stockage, d'URL signée ou de clé de service.
+* Le champ payeur est toujours libellé « Payeur »/« PAYEUR », jamais
+  « Client »/« CLIENT » (terminologie spécifique au reçu). Correctif écrit
+  et testé sur `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`, non encore
+  déployé — voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
 
 ## Décharge — champs structurés
 

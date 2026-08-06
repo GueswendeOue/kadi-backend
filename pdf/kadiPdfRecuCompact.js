@@ -86,7 +86,7 @@ async function buildRecuCompactPdf({
       hr();
 
       pdf.font("Helvetica-Bold").fontSize(8).fillColor("#777");
-      pdf.text("CLIENT", compactLeft, y);
+      pdf.text("PAYEUR", compactLeft, y);
 
       pdf.font("Helvetica").fontSize(9).fillColor("#000");
       pdf.text(client, compactLeft, y + 10, {

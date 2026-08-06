@@ -236,9 +236,9 @@ test("preview adapter persists, renders, counts and quotes in the required order
   assert.equal(calls.some(([, command]) => Object.hasOwn(command, "debit")), false);
 });
 
-test("generation adapter confirms only with immutable document version and quote", async () => {
+test("generation adapter confirms only with immutable document version and quote — routed through confirmOrRetryGeneration, the single production entrypoint for both normal confirmation and render-failure recovery", async () => {
   let received;
-  const adapter = createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: { confirmGeneration: async (command) => { received = command; return { ok: true, value: { delivered: true } }; } } });
+  const adapter = createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: { confirmOrRetryGeneration: async (command) => { received = command; return { ok: true, value: { delivered: true } }; } } });
   const result = await adapter.confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 4, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1" });
   assert.equal(result.ok, true);
   assert.equal(received.documentVersion, 4);

@@ -63,11 +63,11 @@
             "children": [
               {
                 "type": "TextInput",
-                "name": "tax_rate_basis_points",
-                "label": "Taxe en points de base",
+                "name": "tax_rate_percent",
+                "label": "Taxe (%)",
                 "required": false,
                 "input-type": "number",
-                "helper-text": "Exemple : 1800 pour 18 %"
+                "helper-text": "Exemple : 18 pour 18 %. Laissez vide si aucune taxe."
               },
               {
                 "type": "TextInput",
@@ -121,7 +121,7 @@
                     "flow_key": "DOCUMENT_OPTIONS",
                     "action": "SAVE_OPTIONS",
                     "data": {
-                      "tax_rate_basis_points": "${form.tax_rate_basis_points}",
+                      "tax_rate_percent": "${form.tax_rate_percent}",
                       "discount_amount": "${form.discount_amount}",
                       "notes": "${form.notes}",
                       "payment_terms": "${form.payment_terms}",

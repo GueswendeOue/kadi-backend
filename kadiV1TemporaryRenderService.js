@@ -104,7 +104,7 @@ function previewToDocData(preview) {
   const data = preview.structured_preview;
   if (["FACTURE", "DEVIS"].includes(data.document_type)) {
     return {
-      type: data.document_type,
+      type: data.document_type === "FACTURE" && data.invoice_kind === "PROFORMA" ? "FACTURE PRO FORMA" : data.document_type,
       docNumber: data.document_number || "BROUILLON",
       date: data.issued_at || "—",
       client: data.client?.name || "—",

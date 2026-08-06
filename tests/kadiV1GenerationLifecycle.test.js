@@ -24,7 +24,7 @@ async function pdf(pages = 1) {
   return Buffer.from(await document.save());
 }
 
-async function fixture({ balance = 20, pages = 2, deliveryResults = [{ ok: true, value: { reference: "synthetic-delivery" } }], rendererResult = null, storage = null, observer = () => {} } = {}) {
+async function fixture({ balance = 20, pages = 2, deliveryResults = [{ ok: true, value: { reference: "synthetic-delivery" } }], rendererResult = null, rendererResults = null, storage = null, observer = () => {} } = {}) {
   const clock = () => NOW;
   const domain = createDocumentDomain({ clock });
   const documents = createInMemoryV1DocumentRepository();
@@ -52,8 +52,13 @@ async function fixture({ balance = 20, pages = 2, deliveryResults = [{ ok: true,
   const repository = createInMemoryGenerationLifecycleRepository({ balances: { [OWNER]: balance } });
   const wallet = createWalletReservationService({ repository, clock });
   const finalStorage = storage || createInMemoryFinalFileStorage();
-  const calls = { delivery: 0, render: 0 };
-  const renderer = { render: async () => { calls.render += 1; return rendererResult || ({ ok: true, value: { buffer: await pdf(pages), mime_type: "application/pdf" } }); } };
+  const calls = { delivery: 0, render: 0, renderPreviews: [] };
+  const renderer = { render: async ({ preview: renderedPreview }) => {
+    const attemptResult = rendererResults ? rendererResults[Math.min(calls.render, rendererResults.length - 1)] : rendererResult;
+    calls.render += 1;
+    calls.renderPreviews.push(renderedPreview);
+    return attemptResult || ({ ok: true, value: { buffer: await pdf(pages), mime_type: "application/pdf" } });
+  } };
   const finalGeneration = createFinalGenerationService({ repository, storage: finalStorage, renderer, clock });
   const provider = {
     async deliverDocument() { const result = deliveryResults[Math.min(calls.delivery, deliveryResults.length - 1)]; calls.delivery += 1; return result; },
@@ -90,6 +95,28 @@ test("valid confirmation reserves, captures, promotes and delivers exactly once"
     "credits_captured", "final_file_promoted", "delivery_started", "delivery_succeeded",
   ]);
   assert.equal(JSON.stringify(events).includes(OWNER), false);
+});
+
+test("the renderer receives the finalized issued_at/document_number, never the stale pre-finalization placeholder", async () => {
+  const f = await fixture();
+  // The stored preview (built at VERIFIED time, before finalization) never
+  // carries issued_at/document_number — confirm the fixture reproduces that.
+  const storedPreview = (await f.artifacts.getPreview({ previewId: "preview:lifecycle" })).value;
+  assert.equal(storedPreview.structured_preview.issued_at, undefined);
+  assert.equal(storedPreview.structured_preview.document_number, undefined);
+
+  const result = await f.service.confirmGeneration(command);
+  assert.equal(result.ok, true, result.error);
+  const finalDocument = result.value.document;
+  assert.equal(typeof finalDocument.issued_at, "string");
+  assert.notEqual(finalDocument.issued_at, null);
+  assert.match(finalDocument.document_number, /^FA-\d{14}-[A-Z0-9]{8}$/);
+
+  assert.equal(f.calls.renderPreviews.length, 1);
+  const rendered = f.calls.renderPreviews[0].structured_preview;
+  assert.equal(rendered.issued_at, finalDocument.issued_at, "renderer must see the exact same issued_at as the persisted final document");
+  assert.equal(rendered.document_number, finalDocument.document_number, "renderer must see the exact same document_number as the persisted final document");
+  assert.notEqual(rendered.document_number, "BROUILLON");
 });
 
 test("expired and invalidated quotes are rejected before reservation", async () => {
@@ -148,25 +175,354 @@ test("private storage failure releases the reservation before capture", async ()
   assert.equal(f.repository.inspect().ledger.length, 0);
 });
 
-test("renderer exception fails closed and releases the reservation", async () => {
+test("renderer exception fails closed, releases the reservation, and leaves a reserved identity with no delivered artifact", async () => {
   const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
   assert.deepEqual(await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:render-exception" }), { ok: false, error: "FINAL_RENDER_FAILED" });
   assert.equal(f.repository.inspect().reservations[0].status, "RELEASED");
   assert.equal(f.repository.inspect().ledger.length, 0);
+  assert.equal(f.repository.inspect().finalFiles.length, 0);
+  // START_GENERATION already assigned issued_at/document_number before the
+  // render attempt — a failed render does not (and must not) unassign that
+  // reserved identity, even though this specific document was never
+  // delivered and no credit was ever captured for it. See
+  // docs/KADI_ENGINEERING_MEMORY.md fiche P.
+  const document = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(document.ok, true);
+  assert.equal(document.value.status, "RECOVERABLE_FAILURE");
+  assert.equal(typeof document.value.issued_at, "string");
+  assert.match(document.value.document_number, /^FA-\d{14}-[A-Z0-9]{8}$/);
 });
 
-test("promotion failure after capture resumes with the same PDF and no second debit", async () => {
+test("resumeGeneration rejects a RECOVERABLE_FAILURE attempt without mutating anything — it must never absorb a render-stage failure", async () => {
+  const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:resume-order-render-failure" });
+  const before = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(before.value.status, "RECOVERABLE_FAILURE");
+  const resumeStateBefore = before.value.recoverable_failure?.resume_state;
+  assert.equal(resumeStateBefore, "GENERATION_IN_PROGRESS");
+  const versionBefore = before.value.version;
+  const attemptBefore = await f.repository.findByQuoteId({ quoteId: command.quoteId });
+  assert.equal(attemptBefore.value.status, "RECOVERABLE_FAILURE");
+
+  const resumed = await f.service.resumeGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, idempotencyKey: "resume:render-failure-attempt",
+  });
+  assert.deepEqual(resumed, { ok: false, error: "GENERATION_RECONFIRMATION_REQUIRED" });
+
+  const after = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(after.value.status, "RECOVERABLE_FAILURE", "must remain RECOVERABLE_FAILURE, never silently moved to GENERATION_IN_PROGRESS");
+  assert.equal(after.value.recoverable_failure?.resume_state, resumeStateBefore, "resume_state must be unchanged");
+  assert.equal(after.value.version, versionBefore, "document version must be unchanged");
+  const attemptAfter = await f.repository.findByQuoteId({ quoteId: command.quoteId });
+  assert.equal(attemptAfter.value.status, "RECOVERABLE_FAILURE", "attempt status must be unchanged");
+  const state = f.repository.inspect();
+  assert.equal(state.reservations.filter((r) => r.status === "RESERVED").length, 0);
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+  assert.equal(state.deliveries.length, 0);
+});
+
+test("resumeGeneration rejects an unrelated attempt status (STARTED) without mutating anything", async () => {
+  const f = await fixture();
+  const reservation = await f.wallet.reserveCredits({ ownerWaId: OWNER, quoteId: command.quoteId, amount: 4, idempotencyKey: "resume-order:unrelated:reserve" });
+  const started = f.domain.transitionDocument(f.document, DOCUMENT_EVENTS.START_GENERATION).value;
+  await f.documents.persistTransition({ document: started, ownerWaId: OWNER, expectedVersion: 1, fromState: f.document.status, eventType: "TEST_STARTED", idempotencyKey: "resume-order:unrelated:start" });
+  await f.repository.createGenerationAttempt({
+    attempt: { generation_attempt_id: "generation:unrelated", document_id: command.documentId, owner_wa_id: OWNER, document_version: 1, quote_id: command.quoteId, reservation_id: reservation.value.reservation_id, confirmation_key: "resume-order:unrelated:confirm", status: "STARTED", started_at: NOW },
+    idempotencyKey: "resume-order:unrelated:attempt",
+  });
+  const before = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(before.value.status, "GENERATION_IN_PROGRESS");
+
+  const resumed = await f.service.resumeGeneration({ quoteId: command.quoteId, ownerWaId: OWNER, idempotencyKey: "resume:unrelated-attempt" });
+  // Attempt eligibility (step 3 of the required order) is checked before
+  // the document is even loaded — a STARTED attempt is rejected here,
+  // never reaching the "document must be RECOVERABLE_FAILURE" check.
+  assert.deepEqual(resumed, { ok: false, error: "GENERATION_RECONFIRMATION_REQUIRED" });
+
+  const after = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(after.value.status, "GENERATION_IN_PROGRESS", "must be unchanged — resumeGeneration never reached a mutating step");
+  const attemptAfter = await f.repository.findByQuoteId({ quoteId: command.quoteId });
+  assert.equal(attemptAfter.value.status, "STARTED");
+  const state = f.repository.inspect();
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+});
+
+test("renderer failure then retryFailedGeneration: same identity reused, exactly one capture/promotion/delivery, replay of the successful retry is a no-op", async () => {
+  const events = [];
+  const f = await fixture({
+    rendererResults: [
+      { ok: false, error: "FINAL_RENDER_FAILED" },
+      null, // null falls back to the fixture's default successful render
+    ],
+    observer: (event) => events.push(event),
+  });
+
+  // 1-4: create/confirm/START_GENERATION already happened inside fixture()
+  // up to AWAITING_GENERATION_CONFIRMATION; confirmGeneration below drives
+  // START_GENERATION (identity assignment) then the renderer throws before
+  // capture.
+  const first = await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-flow" });
+  assert.deepEqual(first, { ok: false, error: "FINAL_RENDER_FAILED" });
+
+  // 5-9: recoverable state, reservation released, zero capture, zero final
+  // artifact, zero delivery.
+  let state = f.repository.inspect();
+  assert.equal(state.reservations[0].status, "RELEASED");
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+  assert.equal(state.deliveries.length, 0);
+  const beforeRetry = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(beforeRetry.value.status, "RECOVERABLE_FAILURE");
+
+  // 10: record the assigned issued_at/document_number.
+  const reservedIssuedAt = beforeRetry.value.issued_at;
+  const reservedDocumentNumber = beforeRetry.value.document_number;
+  assert.equal(typeof reservedIssuedAt, "string");
+  assert.match(reservedDocumentNumber, /^FA-\d{14}-[A-Z0-9]{8}$/);
+
+  // 11-12: retry generation; renderer succeeds this time.
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:1",
+  });
+  assert.equal(retried.ok, true, retried.error);
+
+  // 13-14: exact same issued_at/document_number reused, nothing new minted.
+  assert.equal(retried.value.document.issued_at, reservedIssuedAt);
+  assert.equal(retried.value.document.document_number, reservedDocumentNumber);
+
+  // 15-18: exactly one capture, one final artifact, one delivery, DELIVERED.
+  state = f.repository.inspect();
+  assert.equal(state.ledger.length, 1);
+  assert.equal(state.finalFiles.length, 1);
+  assert.equal(state.deliveries.length, 1);
+  assert.equal(state.deliveries[0].status, "DELIVERED");
+  assert.equal(retried.value.document.status, "DELIVERED");
+  assert.equal(f.calls.render, 2, "one failed attempt, one successful retry — never a third render");
+
+  // 19: replaying the successful retry (same or a fresh idempotency key)
+  // performs no second debit, render, promotion or delivery — the attempt
+  // is no longer STARTED, so it fails safely instead of reprocessing.
+  const replayed = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:1",
+  });
+  assert.deepEqual(replayed, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  const afterReplay = f.repository.inspect();
+  assert.equal(afterReplay.ledger.length, 1);
+  assert.equal(afterReplay.finalFiles.length, 1);
+  assert.equal(afterReplay.deliveries.length, 1);
+  assert.equal(f.calls.render, 2);
+
+  assert.deepEqual(events.map((entry) => entry.event).filter((name) => name.startsWith("generation_retry")), [
+    "generation_retry_received", "generation_retry_resumed", "generation_retry_started",
+    "generation_retry_received", // the replay — rejected immediately after, before resuming/reserving/rendering again
+  ]);
+});
+
+test("concurrent retries for the same quote never double-render, double-capture or double-deliver", async () => {
+  const f = await fixture({ rendererResults: [{ ok: false, error: "FINAL_RENDER_FAILED" }, null] });
+  const first = await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-concurrent" });
+  assert.equal(first.ok, false);
+
+  const [a, b] = await Promise.all([
+    f.service.retryFailedGeneration({ quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:concurrent:a" }),
+    f.service.retryFailedGeneration({ quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:concurrent:b" }),
+  ]);
+  const results = [a, b];
+  const succeeded = results.filter((r) => r.ok);
+  const rejected = results.filter((r) => !r.ok);
+  assert.equal(succeeded.length, 1, "exactly one concurrent retry succeeds");
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0].error, "GENERATION_RETRY_NOT_ELIGIBLE");
+
+  const state = f.repository.inspect();
+  assert.equal(state.ledger.length, 1, "exactly one capture across both concurrent retries");
+  assert.equal(state.finalFiles.length, 1);
+  assert.equal(state.deliveries.length, 1);
+  assert.equal(f.calls.render, 2, "one failed original attempt, one successful retry — the second concurrent retry never renders");
+});
+
+test("retryFailedGeneration fails closed on a partial finalization identity", async () => {
+  const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-partial" });
+  const loaded = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(loaded.value.status, "RECOVERABLE_FAILURE");
+  assert.equal(typeof loaded.value.issued_at, "string");
+  assert.equal(typeof loaded.value.document_number, "string");
+
+  // The repository refuses to ever unset an already-assigned identity field
+  // (deliberately — see kadiV1DocumentRepository.js), so a real corrupted
+  // row can't be produced through the normal write path. Wrap the
+  // repository read for this one test to simulate exactly that structurally
+  // impossible-in-practice, but still defended-against, shape.
+  const corruptingDocuments = {
+    ...f.documents,
+    async getDocumentById(args) {
+      const result = await f.documents.getDocumentById(args);
+      return result.ok ? { ...result, value: { ...result.value, document_number: null } } : result;
+    },
+  };
+  const quoteServiceForTest = { async validateGenerationQuote({ quoteId, ownerWaId }) {
+    const result = await f.artifacts.getGenerationQuote({ quoteId });
+    if (!result.ok || result.value.owner_wa_id !== ownerWaId || result.value.status !== "ACTIVE") return { ok: false, error: "GENERATION_QUOTE_NOT_ACTIVE" };
+    return result;
+  } };
+  const { createGenerationLifecycleService } = require("../kadiV1GenerationLifecycleService");
+  const serviceWithCorruptRead = createGenerationLifecycleService({
+    documentRepository: corruptingDocuments, previewRepository: f.artifacts, generationRepository: f.repository,
+    quoteService: quoteServiceForTest, walletReservationService: f.wallet, finalGenerationService: f.finalGeneration,
+    deliveryService: f.delivery, domain: f.domain, clock: () => NOW,
+  });
+
+  const retried = await serviceWithCorruptRead.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:partial",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  assert.equal(f.repository.inspect().ledger.length, 0);
+});
+
+test("retryFailedGeneration accepts the correct resume_state (GENERATION_IN_PROGRESS) — proven by the render-failure-then-retry flow succeeding", async () => {
+  const f = await fixture({ rendererResults: [{ ok: false, error: "FINAL_RENDER_FAILED" }, null] });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-correct-resume-state" });
+  const before = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(before.value.recoverable_failure?.resume_state, "GENERATION_IN_PROGRESS");
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:correct-resume-state",
+  });
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(retried.value.document.status, "DELIVERED");
+});
+
+test("retryFailedGeneration rejects a RECOVERABLE_FAILURE document whose resume_state is not GENERATION_IN_PROGRESS, without mutating anything", async () => {
+  const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-wrong-resume-state" });
+  const loaded = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(loaded.value.status, "RECOVERABLE_FAILURE");
+  // Simulate a document that failed for an unrelated reason recorded at a
+  // different lifecycle stage (e.g. still COLLECTING) — attempt.status
+  // alone is not enough to prove eligibility, resume_state must also match.
+  const wrongResumeStateDocuments = {
+    ...f.documents,
+    async getDocumentById(args) {
+      const result = await f.documents.getDocumentById(args);
+      if (!result.ok) return result;
+      return { ...result, value: { ...result.value, recoverable_failure: { ...result.value.recoverable_failure, resume_state: "COLLECTING" } } };
+    },
+  };
+  const quoteServiceForTest = { async validateGenerationQuote({ quoteId, ownerWaId }) {
+    const result = await f.artifacts.getGenerationQuote({ quoteId });
+    if (!result.ok || result.value.owner_wa_id !== ownerWaId || result.value.status !== "ACTIVE") return { ok: false, error: "GENERATION_QUOTE_NOT_ACTIVE" };
+    return result;
+  } };
+  const { createGenerationLifecycleService } = require("../kadiV1GenerationLifecycleService");
+  const serviceWithWrongResumeState = createGenerationLifecycleService({
+    documentRepository: wrongResumeStateDocuments, previewRepository: f.artifacts, generationRepository: f.repository,
+    quoteService: quoteServiceForTest, walletReservationService: f.wallet, finalGenerationService: f.finalGeneration,
+    deliveryService: f.delivery, domain: f.domain, clock: () => NOW,
+  });
+  const retried = await serviceWithWrongResumeState.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:wrong-resume-state",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  assert.equal(f.repository.inspect().ledger.length, 0);
+  assert.equal(f.repository.inspect().reservations.filter((r) => r.status === "RESERVED").length, 0);
+});
+
+test("retryFailedGeneration rejects a RECOVERABLE_FAILURE document with no recoverable_failure record at all, without mutating anything", async () => {
+  const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-absent-resume-state" });
+  const absentResumeStateDocuments = {
+    ...f.documents,
+    async getDocumentById(args) {
+      const result = await f.documents.getDocumentById(args);
+      return result.ok ? { ...result, value: { ...result.value, recoverable_failure: null } } : result;
+    },
+  };
+  const quoteServiceForTest = { async validateGenerationQuote({ quoteId, ownerWaId }) {
+    const result = await f.artifacts.getGenerationQuote({ quoteId });
+    if (!result.ok || result.value.owner_wa_id !== ownerWaId || result.value.status !== "ACTIVE") return { ok: false, error: "GENERATION_QUOTE_NOT_ACTIVE" };
+    return result;
+  } };
+  const { createGenerationLifecycleService } = require("../kadiV1GenerationLifecycleService");
+  const serviceWithAbsentResumeState = createGenerationLifecycleService({
+    documentRepository: absentResumeStateDocuments, previewRepository: f.artifacts, generationRepository: f.repository,
+    quoteService: quoteServiceForTest, walletReservationService: f.wallet, finalGenerationService: f.finalGeneration,
+    deliveryService: f.delivery, domain: f.domain, clock: () => NOW,
+  });
+  const retried = await serviceWithAbsentResumeState.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:absent-resume-state",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  assert.equal(f.repository.inspect().ledger.length, 0);
+});
+
+test("retryFailedGeneration fails closed when the document is not in the eligible recoverable state", async () => {
+  const f = await fixture();
+  // Never confirmed at all — no generation attempt exists for this quote.
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:unrelated",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_ATTEMPT_NOT_FOUND" });
+});
+
+test("retryFailedGeneration fails closed after credit capture (promotion-failure territory, not renderer-failure territory)", async () => {
+  const backing = createInMemoryFinalFileStorage();
+  let failPromotion = true;
+  const storage = { ...backing, async promote(args) { if (failPromotion) { failPromotion = false; return { ok: false, error: "PROMOTION_TEMPORARY" }; } return backing.promote(args); } };
+  const f = await fixture({ storage });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-after-capture" });
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:after-capture",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  assert.equal(f.repository.inspect().ledger.length, 1, "still exactly the one original capture");
+});
+
+test("retryFailedGeneration fails closed after a fully successful generation", async () => {
+  const f = await fixture();
+  const confirmed = await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-after-success" });
+  assert.equal(confirmed.ok, true, confirmed.error);
+  assert.equal(confirmed.value.document.status, "DELIVERED");
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: command.documentVersion, idempotencyKey: "retry:after-success",
+  });
+  assert.deepEqual(retried, { ok: false, error: "GENERATION_RETRY_NOT_ELIGIBLE" });
+  assert.equal(f.repository.inspect().ledger.length, 1);
+  assert.equal(f.repository.inspect().deliveries.length, 1);
+});
+
+test("retryFailedGeneration rejects a stale documentVersion", async () => {
+  const f = await fixture({ rendererResult: { ok: false, error: "FINAL_RENDER_FAILED" } });
+  await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:retry-stale-version" });
+  const retried = await f.service.retryFailedGeneration({
+    quoteId: command.quoteId, ownerWaId: OWNER, documentVersion: 99, idempotencyKey: "retry:stale-version",
+  });
+  assert.deepEqual(retried, { ok: false, error: "DOCUMENT_VERSION_CONFLICT" });
+  assert.equal(f.repository.inspect().ledger.length, 0);
+});
+
+test("promotion failure after capture resumes with the same PDF, no second debit, and the exact same issued_at/document_number", async () => {
   const backing = createInMemoryFinalFileStorage();
   let failPromotion = true;
   const storage = { ...backing, async promote(args) { if (failPromotion) { failPromotion = false; return { ok: false, error: "PROMOTION_TEMPORARY" }; } return backing.promote(args); } };
   const f = await fixture({ storage });
   assert.deepEqual(await f.service.confirmGeneration({ ...command, idempotencyKey: "confirm:promotion-failure" }), { ok: false, error: "FINAL_PROMOTION_RECOVERABLE_FAILURE" });
   assert.equal(f.repository.inspect().ledger.length, 1);
+  const beforeRetry = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(beforeRetry.ok, true);
+  assert.equal(beforeRetry.value.status, "RECOVERABLE_FAILURE");
+  assert.equal(typeof beforeRetry.value.issued_at, "string");
+  assert.match(beforeRetry.value.document_number, /^FA-\d{14}-[A-Z0-9]{8}$/);
+
   const resumed = await f.service.resumeGeneration({ quoteId: command.quoteId, ownerWaId: OWNER, idempotencyKey: "generation:resume-promotion" });
   assert.equal(resumed.ok, true, resumed.error);
   assert.equal(resumed.value.document.status, "DELIVERED");
   assert.equal(f.repository.inspect().ledger.length, 1);
   assert.equal(f.repository.inspect().finalFiles.length, 1);
+
+  assert.equal(resumed.value.document.issued_at, beforeRetry.value.issued_at, "retry must reuse the exact same issued_at, not mint a new one");
+  assert.equal(resumed.value.document.document_number, beforeRetry.value.document_number, "retry must reuse the exact same document_number, not mint a new one");
 });
 
 test("cancellation before capture releases credits and creates no final PDF", async () => {

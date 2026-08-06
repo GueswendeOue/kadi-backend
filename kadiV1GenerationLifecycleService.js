@@ -159,7 +159,21 @@ function createGenerationLifecycleService({
       idempotencyKey: `${command.idempotencyKey}:attempt`,
     });
     if (!attempt.ok) return releaseAndFail({ document: started.value, ownerWaId: command.ownerWaId, reservationId: reservation.value.reservation_id, code: "GENERATION_ATTEMPT_FAILED", key: command.idempotencyKey });
-    const generated = await finalGenerationService.generatePrivate({ generationAttemptId: attemptId, preview, expectedPageCount: quote.page_count });
+    // The stored preview was captured before finalization (issued_at/
+    // document_number were still null then). START_GENERATION just assigned
+    // the real, server-generated identity on `started.value` — the renderer
+    // must receive that finalized identity, never the stale placeholder,
+    // or the delivered PDF would show "BROUILLON"/"—" despite being final.
+    const finalizedPreview = {
+      ...preview,
+      structured_preview: {
+        ...preview.structured_preview,
+        issued_at: started.value.issued_at,
+        document_number: started.value.document_number,
+        invoice_kind: started.value.options?.invoice_kind ?? preview.structured_preview.invoice_kind ?? null,
+      },
+    };
+    const generated = await finalGenerationService.generatePrivate({ generationAttemptId: attemptId, preview: finalizedPreview, expectedPageCount: quote.page_count });
     if (!generated.ok) return releaseAndFail({ document: started.value, ownerWaId: command.ownerWaId, reservationId: reservation.value.reservation_id, attemptId, code: generated.error, key: command.idempotencyKey });
     emit("final_pdf_validated");
     const captured = await walletReservationService.captureReservation({ reservationId: reservation.value.reservation_id, idempotencyKey: `${command.idempotencyKey}:capture` });
@@ -176,21 +190,175 @@ function createGenerationLifecycleService({
     const found = await store.findByQuoteId({ quoteId });
     if (!found.ok || !found.value || found.value.owner_wa_id !== ownerWaId) return fail("GENERATION_ATTEMPT_NOT_FOUND");
     const attempt = found.value;
+    // Eligibility is decided entirely from already-persisted state, before
+    // any mutation. resumeGeneration only continues a generation that
+    // already passed render validation and reservation capture (attempt
+    // CAPTURED/PROMOTED, or PDF_VALIDATED with an actually-captured
+    // reservation) — never a render/private-storage failure (attempt
+    // RECOVERABLE_FAILURE belongs to retryFailedGeneration instead) nor
+    // any other unrelated attempt state (STARTED, CANCELLED). Silently
+    // absorbing an ineligible attempt here would call RESUME anyway,
+    // moving the document to GENERATION_IN_PROGRESS and clearing
+    // recoverable_failure, then dead-ending with no route back to either
+    // recovery path — that ordering bug is exactly what this guard
+    // prevents.
+    let eligible = ["CAPTURED", "PROMOTED"].includes(attempt.status);
+    if (!eligible && attempt.status === "PDF_VALIDATED") {
+      const reservation = await store.getReservation({ reservationId: attempt.reservation_id });
+      eligible = reservation.ok && reservation.value.status === "CAPTURED";
+    }
+    if (!eligible) return fail("GENERATION_RECONFIRMATION_REQUIRED");
     const document = await documents.getDocumentById({ documentId: attempt.document_id, ownerWaId });
     if (!document.ok || document.value.status !== "RECOVERABLE_FAILURE") return fail("GENERATION_NOT_RESUMABLE");
     const resumed = await persistEvent(document.value, DOCUMENT_EVENTS.RESUME, {}, `${idempotencyKey}:resume`, "GENERATION_RESUMED", ownerWaId);
     if (!resumed.ok) return resumed;
-    const reservation = await store.getReservation({ reservationId: attempt.reservation_id });
-    if (attempt.status === "PDF_VALIDATED" && reservation.ok && reservation.value.status === "CAPTURED") {
-      const marked = await finalGenerationService.markCaptured({ generationAttemptId: attempt.generation_attempt_id, reservationId: attempt.reservation_id });
-      if (!marked.ok) return marked;
-      attempt.status = "CAPTURED";
+    const quote = await artifacts.getGenerationQuote({ quoteId });
+    // completeAfterCapture calls markCaptured itself, which is idempotent
+    // (returns duplicate:true if already CAPTURED/PROMOTED) — no separate
+    // capture step needed here.
+    return completeAfterCapture({ document: resumed.value, ownerWaId, quote: quote.value, attemptId: attempt.generation_attempt_id, reservationId: attempt.reservation_id, key: idempotencyKey });
+  }
+
+  // Recovery for a failure at the render/private-storage stage, strictly
+  // before capture — the one gap resumeGeneration does not cover (it only
+  // resumes an attempt already PDF_VALIDATED/CAPTURED/PROMOTED).
+  // releaseAndFail explicitly moves the generation_attempt row itself to
+  // status "RECOVERABLE_FAILURE" on exactly this kind of failure (never
+  // "STARTED" forever, as one might assume from generatePrivate alone) —
+  // that status is this function's sole eligibility signal. It reuses that
+  // exact same row and its existing generation_attempt_id instead of
+  // creating a new one — kadi_v1_generation_attempts has a unique index on
+  // quote_id, so a second row for the same quote could never be created
+  // anyway. Only reservation_id/started_at/status are updated on it, via
+  // the same updateGenerationAttempt used elsewhere; nothing about the
+  // attempt's identity changes. issued_at/document_number are never
+  // regenerated: RESUME does not touch them, and this function never calls
+  // START_GENERATION again — reuse is structural, not merely asserted.
+  async function runRetryFailedGeneration({ quoteId, ownerWaId, documentVersion, idempotencyKey }) {
+    emit("generation_retry_received");
+    const found = await store.findByQuoteId({ quoteId });
+    if (!found.ok || !found.value || found.value.owner_wa_id !== ownerWaId) return fail("GENERATION_ATTEMPT_NOT_FOUND");
+    const attempt = found.value;
+    // Any status other than RECOVERABLE_FAILURE means this attempt never
+    // failed at the render/private-storage stage in the first place, or
+    // this exact retry (or a later one) already progressed past it — never
+    // re-render, re-capture, re-promote or re-deliver in that case,
+    // regardless of whether it succeeded, is mid-flight, or was cancelled.
+    if (attempt.status !== "RECOVERABLE_FAILURE") return fail("GENERATION_RETRY_NOT_ELIGIBLE");
+    const document = await documents.getDocumentById({ documentId: attempt.document_id, ownerWaId });
+    if (!document.ok) return document;
+    if (document.value.status !== "RECOVERABLE_FAILURE") return fail("GENERATION_RETRY_NOT_ELIGIBLE");
+    // Do not rely on document.status/attempt.status alone: a document can
+    // reach RECOVERABLE_FAILURE from stages that have nothing to do with
+    // rendering (e.g. a failure recorded while still COLLECTING). Only a
+    // recorded failure whose resume_state was GENERATION_IN_PROGRESS was
+    // actually recorded at the render/private-storage stage this function
+    // recovers — anything else must never enter the render-retry path.
+    if (document.value.recoverable_failure?.resume_state !== "GENERATION_IN_PROGRESS") {
+      return fail("GENERATION_RETRY_NOT_ELIGIBLE");
     }
-    if (["CAPTURED", "PROMOTED"].includes(attempt.status)) {
-      const quote = await artifacts.getGenerationQuote({ quoteId });
-      return completeAfterCapture({ document: resumed.value, ownerWaId, quote: quote.value, attemptId: attempt.generation_attempt_id, reservationId: attempt.reservation_id, key: idempotencyKey });
+    if (!Number.isSafeInteger(documentVersion) || document.value.version !== documentVersion) {
+      return fail("DOCUMENT_VERSION_CONFLICT");
     }
-    return fail("GENERATION_RECONFIRMATION_REQUIRED");
+    // A complete pair or nothing at all — never one without the other. A
+    // partial identity means something upstream is already structurally
+    // broken; a retry must not paper over that by generating one half.
+    if (
+      typeof document.value.issued_at !== "string" || !document.value.issued_at ||
+      typeof document.value.document_number !== "string" || !document.value.document_number
+    ) {
+      return fail("GENERATION_RETRY_NOT_ELIGIBLE");
+    }
+    const quote = await artifacts.getGenerationQuote({ quoteId });
+    if (!quote.ok || quote.value.status !== "ACTIVE" || quote.value.document_id !== attempt.document_id) {
+      return fail("GENERATION_RETRY_NOT_ELIGIBLE");
+    }
+    const preview = await artifacts.getPreview({ previewId: quote.value.preview_id });
+    if (!preview.ok) return fail("GENERATION_RETRY_NOT_ELIGIBLE");
+
+    const resumed = await persistEvent(document.value, DOCUMENT_EVENTS.RESUME, {}, `${idempotencyKey}:resume`, "GENERATION_RETRY_RESUMED", ownerWaId);
+    if (!resumed.ok) return resumed;
+    emit("generation_retry_resumed");
+
+    const reservation = await walletReservationService.reserveCredits({ ownerWaId, quoteId: quote.value.quote_id, amount: quote.value.total_credits, idempotencyKey: `${idempotencyKey}:reserve` });
+    if (!reservation.ok && reservation.error === "INSUFFICIENT_CREDITS") {
+      const recharge = await persistEvent(resumed.value, DOCUMENT_EVENTS.REQUIRE_RECHARGE, {}, `${idempotencyKey}:recharge`, "GENERATION_RECHARGE_REQUIRED", ownerWaId);
+      return recharge.ok ? fail("INSUFFICIENT_CREDITS") : recharge;
+    }
+    if (!reservation.ok) return reservation;
+    emit("credits_reserved");
+
+    const reattached = await store.updateGenerationAttempt({
+      generationAttemptId: attempt.generation_attempt_id,
+      expectedStatus: "RECOVERABLE_FAILURE",
+      // confirmation_key must move to this retry's idempotencyKey too — not
+      // just status/reservation_id — otherwise a later replay of this exact
+      // retry (e.g. a duplicate webhook, or a normal confirmGeneration call
+      // once the document is no longer RECOVERABLE_FAILURE and
+      // confirmOrRetryGeneration falls back to the normal path) would find
+      // the attempt's confirmation_key still pointing at the *original*
+      // failed confirmation's idempotencyKey, mismatch, and be rejected as
+      // GENERATION_CONFIRMATION_CONFLICT instead of recognized as the
+      // benign duplicate it actually is.
+      changes: {
+        status: "STARTED", reservation_id: reservation.value.reservation_id,
+        started_at: new Date(clock()).toISOString(), confirmation_key: idempotencyKey,
+      },
+    });
+    if (!reattached.ok) {
+      await walletReservationService.releaseReservation({ reservationId: reservation.value.reservation_id, idempotencyKey: `${idempotencyKey}:retry-release` });
+      return reattached;
+    }
+    emit("generation_retry_started");
+
+    const finalizedPreview = {
+      ...preview.value,
+      structured_preview: {
+        ...preview.value.structured_preview,
+        issued_at: resumed.value.issued_at,
+        document_number: resumed.value.document_number,
+        invoice_kind: resumed.value.options?.invoice_kind ?? preview.value.structured_preview.invoice_kind ?? null,
+      },
+    };
+    const generated = await finalGenerationService.generatePrivate({ generationAttemptId: attempt.generation_attempt_id, preview: finalizedPreview, expectedPageCount: quote.value.page_count });
+    if (!generated.ok) {
+      return releaseAndFail({ document: resumed.value, ownerWaId, reservationId: reservation.value.reservation_id, attemptId: attempt.generation_attempt_id, code: generated.error, key: idempotencyKey });
+    }
+    emit("final_pdf_validated");
+    const captured = await walletReservationService.captureReservation({ reservationId: reservation.value.reservation_id, idempotencyKey: `${idempotencyKey}:capture` });
+    if (!captured.ok) {
+      return releaseAndFail({ document: resumed.value, ownerWaId, reservationId: reservation.value.reservation_id, attemptId: attempt.generation_attempt_id, code: captured.error, key: idempotencyKey });
+    }
+    return completeAfterCapture({ document: resumed.value, ownerWaId, quote: quote.value, attemptId: attempt.generation_attempt_id, reservationId: reservation.value.reservation_id, key: idempotencyKey });
+  }
+
+  async function retryFailedGeneration(command) {
+    if (!valid(command?.quoteId)) return fail("GENERATION_RETRY_INVALID");
+    return serializeConfirmation(command.quoteId, () => runRetryFailedGeneration(command));
+  }
+
+  // Single production entrypoint for the existing "confirm final generation"
+  // action — decides between the normal path and the pre-capture render
+  // retry path from persisted state alone, so the same WhatsApp action/Flow
+  // command already used for confirmation transparently also drives
+  // recovery, with no new Meta Flow, no new action name, and no client
+  // input trusted for the decision itself. This is routing only: it
+  // performs no mutation and duplicates no lifecycle logic — each delegate
+  // (confirmGeneration/retryFailedGeneration) independently re-validates
+  // the document/attempt state it needs from repositories before mutating
+  // anything, so a stale read here can never cause an unsafe mutation, only
+  // route to a delegate that then fails closed on its own.
+  async function confirmOrRetryGeneration(command) {
+    if (!valid(command?.documentId) || !valid(command?.ownerWaId)) return fail("GENERATION_CONFIRMATION_INVALID");
+    const document = await documents.getDocumentById({ documentId: command.documentId, ownerWaId: command.ownerWaId });
+    if (!document.ok) return document;
+    if (
+      document.value.status === "RECOVERABLE_FAILURE" &&
+      document.value.recoverable_failure?.resume_state === "GENERATION_IN_PROGRESS"
+    ) {
+      return retryFailedGeneration(command);
+    }
+    return confirmGeneration(command);
   }
 
   async function cancelGeneration({ quoteId, ownerWaId, idempotencyKey }) {
@@ -228,7 +396,7 @@ function createGenerationLifecycleService({
     return ok({ generation_attempt: found.value, reservation: reservation.ok ? reservation.value : null, final_file: finalFile.ok ? finalFile.value : null });
   }
 
-  return Object.freeze({ confirmGeneration, resumeGeneration, cancelGeneration, retryDelivery, getGenerationStatus });
+  return Object.freeze({ confirmGeneration, resumeGeneration, retryFailedGeneration, confirmOrRetryGeneration, cancelGeneration, retryDelivery, getGenerationStatus });
 }
 
 module.exports = { createGenerationLifecycleService };

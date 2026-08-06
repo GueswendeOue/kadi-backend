@@ -277,8 +277,15 @@ function createInMemoryV1DocumentRepository({ failpoint = async () => {} } = {})
           created_at: restored.value.events.at(-1)?.occurred_at || null,
         });
       }
-      const persistedIssuedAt = row.issued_at || (restored.value.status === "GENERATED" ? restored.value.issued_at : null);
-      if (restored.value.status === "GENERATED" && !persistedIssuedAt) return fail("DOCUMENT_ISSUED_AT_REQUIRED");
+      // issued_at/document_number are assigned once, at START_GENERATION
+      // (GENERATION_IN_PROGRESS), well before the document reaches GENERATED
+      // — so once set they must persist through every later transition, not
+      // only be captured when status is exactly GENERATED.
+      const persistedIssuedAt = row.issued_at || restored.value.issued_at || null;
+      const persistedDocumentNumber = row.document_number || restored.value.document_number || null;
+      if (restored.value.status === "GENERATED" && (!persistedIssuedAt || !persistedDocumentNumber)) {
+        return fail("DOCUMENT_ISSUED_AT_REQUIRED");
+      }
       const updatedRow = {
         ...row,
         status: restored.value.status,
@@ -286,6 +293,7 @@ function createInMemoryV1DocumentRepository({ failpoint = async () => {} } = {})
         issuer_profile_id: restored.value.issuer_profile_id ?? null,
         currency: restored.value.currency,
         issued_at: persistedIssuedAt,
+        document_number: persistedDocumentNumber,
         preview: clone(restored.value.preview),
         generation_quote: clone(restored.value.generation_quote),
         generation_cost: restored.value.generation_cost,

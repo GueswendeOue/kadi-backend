@@ -49,7 +49,7 @@ const ACTION_FIELDS = Object.freeze({
   ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   REMOVE_CONTENT: Object.freeze(["item_id"]),
-  SAVE_OPTIONS: Object.freeze(["tax_rate_basis_points", "discount_amount", "notes", "payment_terms", "validity_days", "payment_method", "reference"]),
+  SAVE_OPTIONS: Object.freeze(["tax_rate_percent", "tax_rate_basis_points", "discount_amount", "notes", "payment_terms", "validity_days", "payment_method", "reference"]),
   VERIFY: Object.freeze([]),
   EDIT_CLIENT: Object.freeze([]),
   EDIT_CONTENT: Object.freeze([]),
@@ -164,6 +164,85 @@ function normalizeContentNumbers(action, data) {
   return ok(normalized);
 }
 
+// Transition window: the currently-published Meta Flow still sends the
+// legacy raw basis-points field (tax_rate_basis_points); a newly-published
+// Flow sends the safer human percentage field (tax_rate_percent, e.g. "18"
+// for 18%, or "18,5"/"18.5" for a decimal rate). Both are accepted so
+// neither publish order (backend-first or Flow-first) breaks SAVE_OPTIONS —
+// see docs/KADI_ENGINEERING_MEMORY.md fiche P. Never an FCFA tax amount
+// (that stays server-computed downstream from the authoritative
+// subtotal/total). Both normalize to the single canonical persisted
+// representation, tax_rate_basis_points — nothing downstream of this
+// validation needs to change, and only one representation is ever
+// persisted.
+function normalizePercentText(raw) {
+  if (typeof raw === "number" && Number.isFinite(raw)) return ok(String(raw));
+  if (typeof raw !== "string") return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  const trimmed = raw.trim();
+  if (!trimmed) return ok("");
+  if (/\s/.test(trimmed)) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  const commaCount = (trimmed.match(/,/g) || []).length;
+  const dotCount = (trimmed.match(/\./g) || []).length;
+  if (commaCount === 0) return ok(trimmed);
+  // exactly one comma and no dot: French decimal entry, normalize to a dot
+  if (commaCount === 1 && dotCount === 0) return ok(trimmed.replace(",", "."));
+  return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID"); // mixed or multiple separators
+}
+
+function parseTaxPercentToBasisPoints(raw) {
+  const normalizedText = normalizePercentText(raw);
+  if (!normalizedText.ok) return normalizedText;
+  const text = normalizedText.value;
+  if (!text) return ok(null);
+  // at most 2 decimal places — matches basis-point granularity (1 bp = 0.01%)
+  if (!/^\d{1,3}(\.\d{1,2})?$/.test(text)) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  const percent = Number(text);
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  return ok(Math.round(percent * 100));
+}
+
+function parseLegacyBasisPoints(raw) {
+  if (raw === "" || raw == null) return ok(null);
+  let num;
+  if (Number.isSafeInteger(raw)) {
+    num = raw;
+  } else if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    num = Number(raw.trim());
+    if (!Number.isSafeInteger(num)) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  } else {
+    return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  }
+  if (num <= 0 || num > 10000) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  return ok(num);
+}
+
+function normalizeTaxRateFields(action, data) {
+  if (action !== "SAVE_OPTIONS") return ok(data);
+  const hasPercent = Object.hasOwn(data, "tax_rate_percent");
+  const hasBps = Object.hasOwn(data, "tax_rate_basis_points");
+  if (!hasPercent && !hasBps) return ok(data);
+  const normalized = { ...data };
+  delete normalized.tax_rate_percent;
+  delete normalized.tax_rate_basis_points;
+
+  const percentResult = hasPercent ? parseTaxPercentToBasisPoints(data.tax_rate_percent) : ok(null);
+  if (!percentResult.ok) return percentResult;
+  const legacyResult = hasBps ? parseLegacyBasisPoints(data.tax_rate_basis_points) : ok(null);
+  if (!legacyResult.ok) return legacyResult;
+
+  const percentBps = percentResult.value;
+  const legacyBps = legacyResult.value;
+
+  if (percentBps == null && legacyBps == null) return ok(normalized); // both absent/blank: no tax
+  if (percentBps != null && legacyBps != null) {
+    if (percentBps !== legacyBps) return fail("KADI_V1_FLOW_REPLY_TAX_RATE_CONFLICT");
+    normalized.tax_rate_basis_points = percentBps;
+    return ok(normalized);
+  }
+  normalized.tax_rate_basis_points = percentBps != null ? percentBps : legacyBps;
+  return ok(normalized);
+}
+
 function fail(error) {
   return { ok: false, error };
 }
@@ -257,7 +336,9 @@ function validateActionPayload(flowKey, action, data) {
   if (!receiptNormalized.ok) return receiptNormalized;
   const dischargeNormalized = normalizeDischargeNumbers(action, receiptNormalized.value);
   if (!dischargeNormalized.ok) return dischargeNormalized;
-  const unitResolved = resolveUnitCustom(action, dischargeNormalized.value);
+  const taxRateNormalized = normalizeTaxRateFields(action, dischargeNormalized.value);
+  if (!taxRateNormalized.ok) return taxRateNormalized;
+  const unitResolved = resolveUnitCustom(action, taxRateNormalized.value);
   if (!unitResolved.ok) return unitResolved;
   return ok(Object.freeze(structuredClone(unitResolved.value)));
 }

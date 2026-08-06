@@ -65,6 +65,11 @@ function listProjection(bundle) {
   return {
     document_id: document.document_id,
     document_type: document.document_type,
+    // invoice_kind never changes document_type — see kadiV1PreviewService.js/
+    // kadiV1TemporaryRenderService.js for the same distinction applied to
+    // the rendered PDF title; without this, a proforma was indistinguishable
+    // from a final invoice in the history list.
+    invoice_kind: document.document_type === "FACTURE" ? (snapshot.options?.invoice_kind ?? null) : null,
     document_number: document.document_number || null,
     status: document.status,
     counterparty: counterparty(snapshot),

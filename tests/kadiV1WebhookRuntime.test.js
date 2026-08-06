@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   RECOVERABLE_TEXT,
+  GENERATION_RETRY_TEXT,
   createKadiV1WebhookRuntime,
   idempotencyFor,
   mapMetaMessageToConversationInput,
@@ -103,6 +104,27 @@ test("malformed recognized nfm_reply is absorbed and produces one recoverable re
   assert.equal(result.handled, true);
   assert.equal(result.results[0].accepted, false);
   assert.equal(calls.some(([name]) => name === "flow_reply"), false);
+  const errors = calls.filter(([name]) => name === "present_error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][1].canonicalText, RECOVERABLE_TEXT);
+});
+
+test("a render/private-storage generation failure shows the retry-safe message, never the generic one", async () => {
+  for (const reason of ["FINAL_RENDER_FAILED", "FINAL_PDF_INVALID", "FINAL_PDF_CORRUPT", "FINAL_PDF_PAGE_COUNT_MISMATCH", "FINAL_STORAGE_FAILED", "FINAL_STORAGE_NOT_PRIVATE"]) {
+    const { runtime, calls } = harness({ flowReplyResult: { ok: false, error: reason } });
+    const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: "quote:1" } });
+    await runtime.handleIncomingValue({ messages: [message] });
+    const errors = calls.filter(([name]) => name === "present_error");
+    assert.equal(errors.length, 1, reason);
+    assert.equal(errors[0][1].canonicalText, GENERATION_RETRY_TEXT, reason);
+    assert.notEqual(errors[0][1].canonicalText, RECOVERABLE_TEXT, reason);
+  }
+});
+
+test("an unrelated recoverable failure keeps the generic message, not the generation-retry one", async () => {
+  const { runtime, calls } = harness({ flowReplyResult: { ok: false, error: "KADI_V1_SESSION_UNEXPECTED_FLOW" } });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "DOCUMENT_CONTENT", action: "ADD_CONTENT", data: { description: "Ciment", quantity: 2, unit_price: 6500 } });
+  await runtime.handleIncomingValue({ messages: [message] });
   const errors = calls.filter(([name]) => name === "present_error");
   assert.equal(errors.length, 1);
   assert.equal(errors[0][1].canonicalText, RECOVERABLE_TEXT);

@@ -9,7 +9,9 @@ const { PDFDocument } = require("pdf-lib");
 const { DOCUMENT_EVENTS, createDocumentDomain } = require("../kadiV1DocumentDomain");
 const { createInMemoryV1DocumentRepository } = require("../kadiV1DocumentRepository");
 const { createInMemoryV1PreviewRepository } = require("../kadiV1PreviewRepository");
-const { createPreviewService } = require("../kadiV1PreviewService");
+const { buildPreviewData, createPreviewService } = require("../kadiV1PreviewService");
+const { previewToDocData } = require("../kadiV1TemporaryRenderService");
+const { resolveRendererKey } = require("../pdf/kadiPdfCommon");
 const {
   createExistingPdfTemporaryRenderer,
   createInMemoryPrivateTemporaryStorage,
@@ -183,6 +185,57 @@ test("builds faithful structured previews for FACTURE, DEVIS, RECU and DECHARGE"
     if (type === "RECU") assert.equal(result.value.payer, "Moussa Test");
     if (type === "DECHARGE") assert.equal(result.value.content.description, "Clés du magasin");
   }
+});
+
+test("a PROFORMA invoice renders as FACTURE PRO FORMA while a FINAL invoice renders as FACTURE, same document_type", () => {
+  const base = {
+    document_type: "FACTURE", version: 1, issuer_profile_id: "issuer:1", currency: "XOF",
+    client: { name: "Client fictif" },
+    items: [{ item_id: "item:1", description: "Prestation", quantity_millis: 1000, unit: "unité", unit_price: 25000, line_total: 25000 }],
+    taxes: null, discount: null, subtotal: 25000, total: 25000, notes: null,
+    issued_at: "2026-08-06T10:00:00.000Z", document_number: "FA-20260806100000-0001",
+    missing_fields: [], uncertainties: [],
+  };
+  const proforma = buildPreviewData({ ...base, options: { invoice_kind: "PROFORMA" } });
+  const final = buildPreviewData({ ...base, options: { invoice_kind: "FINAL" } });
+  assert.equal(proforma.invoice_kind, "PROFORMA");
+  assert.equal(final.invoice_kind, "FINAL");
+
+  const proformaDocData = previewToDocData({ structured_preview: proforma });
+  const finalDocData = previewToDocData({ structured_preview: final });
+  assert.equal(proformaDocData.type, "FACTURE PRO FORMA");
+  assert.equal(finalDocData.type, "FACTURE");
+  assert.equal(resolveRendererKey(proformaDocData), "facture_proforma");
+  assert.equal(resolveRendererKey(finalDocData), "facture");
+
+  // document_type itself never changes — only the rendered title/renderer choice does
+  assert.equal(proforma.document_type, "FACTURE");
+  assert.equal(final.document_type, "FACTURE");
+});
+
+test("DEVIS never renders as pro forma, invoice_kind does not apply to it", () => {
+  const devis = buildPreviewData({
+    document_type: "DEVIS", version: 1, issuer_profile_id: "issuer:1", currency: "XOF",
+    client: { name: "Client fictif" },
+    items: [{ item_id: "item:1", description: "Prestation", quantity_millis: 1000, unit: "unité", unit_price: 25000, line_total: 25000 }],
+    taxes: null, discount: null, subtotal: 25000, total: 25000, notes: null,
+    issued_at: null, document_number: null, missing_fields: [], uncertainties: [], options: {},
+  });
+  assert.equal(devis.invoice_kind, null);
+  assert.equal(previewToDocData({ structured_preview: devis }).type, "DEVIS");
+});
+
+test("delivered PDF filename distinguishes a proforma from a final invoice — a reachable surface that previously always lost invoice_kind", () => {
+  const { deliveryFilenameBase } = require("../kadiV1ProductionInfrastructure");
+  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: { invoice_kind: "PROFORMA" } }), "facture_proforma");
+  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: { invoice_kind: "FINAL" } }), "facture");
+  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: null }), "facture");
+  assert.equal(deliveryFilenameBase({ document_type: "FACTURE" }), "facture");
+  assert.equal(deliveryFilenameBase({ document_type: "DEVIS", options: { invoice_kind: "PROFORMA" } }), "devis", "invoice_kind never applies outside FACTURE");
+  assert.equal(deliveryFilenameBase({ document_type: "RECU" }), "recu");
+  assert.equal(deliveryFilenameBase({ document_type: "DECHARGE" }), "decharge");
+  assert.equal(deliveryFilenameBase(null), "document");
+  assert.equal(deliveryFilenameBase(undefined), "document");
 });
 
 test("refuses incomplete documents and persists a version-bound PREVIEW_READY transition", async () => {

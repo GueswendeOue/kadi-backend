@@ -519,6 +519,30 @@ test("FINISH_CONTENT opens DOCUMENT_OPTIONS directly and never reopens DOCUMENT_
   assert.notEqual(parameters.flow_id, FLOW_IDS.DOCUMENT_CONTENT);
 });
 
+test("FINISH_CONTENT opening DOCUMENT_OPTIONS carries a real items summary, not the generic placeholder", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER,
+    messageId: "wamid:finish-content-summary",
+    result: {
+      handled: true,
+      action: "FINISH_CONTENT",
+      duplicate: false,
+      result: {
+        document_id: "document:1",
+        version: 4,
+        document_type: "FACTURE",
+        status: "COLLECTING",
+        items: [{ item_id: "item:1", description: "Ciment", quantity: 2, unit_price: 5000 }],
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.current_summary;
+  assert.notEqual(summary, "Aucune option particulière.");
+  assert.ok(summary.includes("Ciment"), summary);
+});
+
 test("a successful ADD_CONTENT reopens the DOCUMENT_CONTENT decision screen", async () => {
   const { presenter, calls } = harness();
   await presenter.presentFlowReply({

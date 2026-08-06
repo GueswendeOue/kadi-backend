@@ -68,6 +68,7 @@ function buildPreviewData(document) {
     actions: ["Modifier", "Préparer le PDF", "Enregistrer pour plus tard"],
   };
   if (["FACTURE", "DEVIS"].includes(document.document_type)) {
+    common.invoice_kind = document.options?.invoice_kind ?? null;
     common.client = document.client ? structuredClone(document.client) : null;
     common.items = document.items.map((item) => ({
       item_id: item.item_id,

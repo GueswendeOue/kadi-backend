@@ -191,6 +191,34 @@ test("FACTURE preserves tax and discount sources across later content correction
   assert.equal(document.total, 224200);
 });
 
+test("18% tax on a 500 000 FCFA subtotal computes exactly 90 000, total 590 000 — the canonical mission example", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "FACTURE", "tax-example");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "tax-example-issuer", { issuerProfileId: "issuer:1" }))).value;
+  document = (await f.pipeline.setClientOrPayer(command(document, "setClientOrPayer", "tax-example-client", {
+    party: { name: "Client fictif" },
+  }))).value;
+  document = (await f.pipeline.addContent(command(document, "addContent", "tax-example-item", {
+    content: { description: "Prestation", quantity: 1, unit_price: 500000 },
+  }))).value;
+  assert.equal(document.subtotal, 500000);
+  document = (await f.pipeline.setOptions(command(document, "setOptions", "tax-example-options", {
+    options: { tax_rate_basis_points: 1800 },
+  }))).value;
+  assert.equal(document.taxes, 90000);
+  assert.equal(document.discount, 0);
+  assert.equal(document.total, 590000);
+});
+
+test("setOptions rejects a tax_rate_basis_points above 10000 (over 100%), zero mutation", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f);
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "over-100", {
+    options: { tax_rate_basis_points: 10001 },
+  }));
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_OPTIONS_AMOUNT_INVALID" });
+});
+
 test("FACTURE exposes missing data then moves through review, verification and correction", async () => {
   const f = fixture();
   let document = await fillLineDocument(f);
