@@ -831,13 +831,15 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## P. PDF final présenté comme brouillon, proforma non distinguée, libellé reçu générique, taxe saisie en points de base
 
-* **Statut :** correctifs écrits et testés localement sur la branche
+* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_REQUIRED_BEFORE_MERGE`**
+  — correctifs écrits, testés localement, committés
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussés sur la branche
   `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
-  `8718e6461151ccf075527bc4afac957530a8e0a3`) — **non committés, non
-  poussés, non déployés, aucune migration appliquée en distant.** Ne pas
-  présenter ces correctifs comme actifs en production tant qu'un déploiement
-  et une validation CANARY fraîche n'ont pas eu lieu (voir
-  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
+  `8718e6461151ccf075527bc4afac957530a8e0a3`) — **PR #12 ouverte en
+  DRAFT, non fusionnée, non déployée, aucune migration appliquée en
+  distant.** Ne pas présenter ces correctifs comme actifs en production
+  tant qu'un déploiement et une validation CANARY fraîche n'ont pas eu
+  lieu (voir [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
 * **Période :** mission « KADI V1 PDF FINAL STATE, PROFORMA AND TAX FLOW —
   DIAGNOSE AND FIX », diagnostic CANARY remonté par le fondateur (5
   symptômes : PDF final affichant « BROUILLON »/date vide/pas de numéro ;
@@ -972,8 +974,11 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   libellé ou de contenu trouvée pour ces deux types. Aucune option de taxe
   n'est exposée ni acceptée pour RECU/DECHARGE (non concerné par
   `normalizeOptions`'s branche FACTURE/DEVIS).
-* **Commit ou migration :** aucun — travail non committé au moment de la
-  rédaction de cette fiche (voir statut ci-dessus).
+* **Commit ou migration :** committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
+  non fusionnée) — migration non appliquée en distant (voir statut
+  ci-dessus).
 * **Preuve de validation :** `tests/kadiV1DocumentDomain.test.js` (identité
   de finalisation, porte fermée, préfixes par type, idempotence),
   `tests/kadiV1GenerationLifecycle.test.js` (le renderer reçoit l'identité
@@ -1008,8 +1013,10 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 Une revue adversariale indépendante en lecture seule a examiné le diff
 complet de cette branche avant tout commit et a confirmé plusieurs défauts
 réels, requérant une correction avant que cette branche puisse être
-proposée à la fusion. Tous corrigés ci-dessous, toujours **non committés,
-non poussés, non déployés**.
+proposée à la fusion. Tous corrigés ci-dessous ; la branche est désormais
+committée (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussée et
+proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
+(DRAFT), toujours **non fusionnée, non déployée**.
 
 * **HIGH confirmé — incompatibilité totale avec le Flow Meta actuellement
   publié :** le correctif initial remplaçait entièrement
@@ -1076,9 +1083,11 @@ non poussés, non déployés**.
 
 ## Q. Reprise de génération après échec du rendu/stockage privé, avant capture
 
-* **Statut :** correctif écrit et testé localement sur la même branche
-  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` — **non committé, non
-  poussé, non déployé.**
+* **Statut :** correctif écrit, testé localement, committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la même
+  branche `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`, proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT)
+  — **non fusionné, non déployé.**
 * **Symptôme confirmé :** un document dont le rendu final échoue (erreur du
   renderer ou du stockage privé) était laissé en `RECOVERABLE_FAILURE`,
   crédit relâché, identité (`issued_at`/`document_number`) déjà réservée —
@@ -1143,7 +1152,10 @@ non poussés, non déployés**.
   promu — un document encore en échec récupérable n'est donc jamais
   présenté comme généré avec succès dans l'historique, même s'il porte déjà
   un `document_number`/`issued_at` réels.
-* **Commit ou migration :** aucun — travail non committé.
+* **Commit ou migration :** committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
+  non fusionnée).
 * **Preuve de validation :** `tests/kadiV1GenerationLifecycle.test.js` —
   neuf nouveaux tests couvrant le scénario complet en 19 étapes (échec du
   rendu → identité réservée → reprise → même identité réutilisée →
@@ -1245,5 +1257,7 @@ non poussés, non déployés**.
   inchangé, échec non lié bloqué, propriétaire différent bloqué),
   `tests/kadiV1WebhookRuntime.test.js` (message utilisateur spécifique vs
   générique). Suite complète : voir section TESTS du rapport de mission.
-* **Toujours non committé, non poussé, non déployé, aucun système distant
+* **Committé (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussé, proposé
+  via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
+  (DRAFT, non fusionnée) ; toujours non déployé, aucun système distant
   modifié.**

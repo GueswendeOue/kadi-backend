@@ -133,13 +133,18 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 
 ### PDF final state, titre proforma, libellé reçu, taxe en pourcentage
 
-* **Statut : `IMPLEMENTED_NOT_DEPLOYED`, à un stade antérieur à celui
-  habituellement désigné par cette étiquette** — code écrit et testé
-  localement sur la branche `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`
-  (base `main` à `8718e6461151ccf075527bc4afac957530a8e0a3`), mais **non
-  committé, non poussé, aucune PR ouverte**, en plus de n'avoir aucune
-  migration Supabase appliquée en distant ni aucune publication Meta
-  effectuée. Ne pas présenter comme actif en production. Voir fiche P de
+* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_REQUIRED_BEFORE_MERGE`**
+  — code implémenté, committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la branche
+  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
+  `8718e6461151ccf075527bc4afac957530a8e0a3`), **PR #12 ouverte en
+  DRAFT** contre `main`, **non fusionnée**. Aucune migration Supabase
+  appliquée en distant, aucun Flow `DOCUMENT_OPTIONS` republié, aucun
+  déploiement effectué, Render non modifié. **La migration doit être
+  appliquée et vérifiée en distant avant la fusion de cette PR**, car
+  `main` peut auto-déployer sur Render — voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md). Ne pas
+  présenter comme actif en production. Voir fiche P de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet des causes confirmées et des correctifs.
 * Corrige : PDF final affichant « BROUILLON »/date vide/pas de numéro
@@ -192,10 +197,12 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   document n'a pas pu être généré. Vous pouvez réessayer sans perdre de
   crédit. » (aucun terme technique exposé). Voir fiche Q de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
-  détail complet — correctif écrit et testé localement (y compris à travers
+  détail complet — correctif écrit, testé localement (y compris à travers
   la composition de production réelle, `kadiV1ProductionBootstrap.js`),
-  **non déployé, non committé**. Aucune correction de production ne peut
-  être revendiquée avant déploiement et validation CANARY fraîche.
+  committé (`59f365e31737cf4f1b475ab0172322cdccac6932`) et proposé via la
+  PR #12 (DRAFT, non fusionnée), **non déployé**. Aucune correction de
+  production ne peut être revendiquée avant déploiement et validation
+  CANARY fraîche.
 
 ## Blocages connus
 
