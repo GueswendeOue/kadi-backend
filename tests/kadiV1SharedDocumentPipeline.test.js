@@ -42,6 +42,7 @@ function command(document, operation, suffix = "1", extra = {}) {
     updateContent: "update_content",
     removeContent: "remove_content",
     setOptions: "set_options",
+    changeDocumentType: "change_document_type",
     applyBrainExtraction: "brain_extraction",
     markReadyForReview: "mark_ready",
     verifyDocument: "verify",
@@ -433,6 +434,89 @@ test("setInvoiceKind is idempotent and preserves the rest of the options bag", a
   const replay = await f.pipeline.setInvoiceKind(setKind);
   assert.equal(replay.ok, true, replay.error);
   assert.equal(replay.duplicate, true);
+});
+
+test("changeDocumentType converts an active FACTURE draft to DEVIS, preserving client and items, without a new draft", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "FACTURE");
+  assert.equal(document.document_type, "FACTURE");
+  const result = await f.pipeline.changeDocumentType(command(document, "changeDocumentType", "1", { targetDocumentType: "DEVIS" }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.document_type, "DEVIS");
+  assert.equal(result.value.document_id, document.document_id, "same draft, not a new one");
+  assert.deepEqual(result.value.client, document.client);
+  assert.equal(result.value.items.length, 1);
+  assert.equal(result.value.items[0].description, "Ordinateur");
+  assert.equal(result.value.items[0].unit_price, 150000);
+  assert.equal(result.value.subtotal, document.subtotal);
+  assert.equal(result.value.total, document.total);
+  assert.equal(result.value.version, document.version + 1);
+  const reloaded = await f.repository.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.value.document_type, "DEVIS");
+});
+
+test("changeDocumentType converts DEVIS back to FACTURE", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "DEVIS");
+  const result = await f.pipeline.changeDocumentType(command(document, "changeDocumentType", "1", { targetDocumentType: "FACTURE" }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.document_type, "FACTURE");
+});
+
+test("changeDocumentType is a pure type flip: no debit, no generation, no document number, no issued_at, no final-state transition", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "FACTURE");
+  const result = await f.pipeline.changeDocumentType(command(document, "changeDocumentType", "1", { targetDocumentType: "DEVIS" }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.status, "COLLECTING");
+  assert.equal(result.value.issued_at, null);
+  assert.equal(result.value.document_number, null);
+  assert.equal(result.value.generation_quote, null);
+  assert.equal(result.value.generated_file, null);
+});
+
+test("changeDocumentType recalculates missing_fields for the new type via the backend policy, not the provider", async () => {
+  const f = fixture({ quoteValidityRequired: true });
+  const document = await fillLineDocument(f, "FACTURE");
+  assert.deepEqual(document.missing_fields, []);
+  const result = await f.pipeline.changeDocumentType(command(document, "changeDocumentType", "1", { targetDocumentType: "DEVIS" }));
+  assert.equal(result.ok, true, result.error);
+  assert.ok(result.value.missing_fields.includes("validity"), "DEVIS policy requires validity when quoteValidityRequired is true");
+});
+
+test("a duplicate webhook replays the same changeDocumentType idempotency key without changing the type twice", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "FACTURE");
+  const changeCommand = command(document, "changeDocumentType", "once", { targetDocumentType: "DEVIS" });
+  const first = await f.pipeline.changeDocumentType(changeCommand);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.value.document_type, "DEVIS");
+  const replay = await f.pipeline.changeDocumentType(changeCommand);
+  assert.equal(replay.ok, true, replay.error);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.value.document_type, "DEVIS");
+  assert.equal(replay.value.version, first.value.version, "no second version was created by the replay");
+});
+
+test("changeDocumentType rejects RECU and unsupported targets, zero mutation", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "RECU", "recu-1");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "1", { issuerProfileId: "issuer:1" }))).value;
+  const fromReceipt = await f.pipeline.changeDocumentType(command(document, "changeDocumentType", "1", { targetDocumentType: "FACTURE" }));
+  assert.deepEqual(fromReceipt, { ok: false, error: "DOCUMENT_TYPE_CONVERSION_UNSUPPORTED" });
+  const invoice = await fillLineDocument(f, "FACTURE");
+  const toReceipt = await f.pipeline.changeDocumentType(command(invoice, "changeDocumentType", "2", { targetDocumentType: "RECU" }));
+  assert.deepEqual(toReceipt, { ok: false, error: "DOCUMENT_TYPE_CONVERSION_TARGET_INVALID" });
+  const reloaded = await f.repository.getDocumentById({ documentId: invoice.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.value.version, invoice.version, "a rejected conversion must not create a new version");
+});
+
+test("changeDocumentType rejects a stale expectedVersion", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "FACTURE");
+  const stale = { ...command(document, "changeDocumentType", "1", { targetDocumentType: "DEVIS" }), expectedVersion: document.version + 5 };
+  const result = await f.pipeline.changeDocumentType(stale);
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_VERSION_CONFLICT" });
 });
 
 test("shared pipeline has no Meta, PDF, wallet, payment or provider SDK dependency", () => {

@@ -30,6 +30,7 @@ const OPERATION_PREFIXES = Object.freeze({
   updateContent: "update_content:",
   removeContent: "remove_content:",
   setOptions: "set_options:",
+  changeDocumentType: "change_document_type:",
   markReadyForReview: "mark_ready:",
   verifyDocument: "verify:",
   reopenForCorrection: "reopen:",
@@ -337,6 +338,30 @@ function createSharedDocumentPipeline({
     return persistModifiedLoaded(loaded.value, command, "OPTIONS_SET", patch, ["options", "taxes", "discount", "notes", "payment_terms", "validity"]);
   }
 
+  // Backend-controlled FACTURE<->DEVIS conversion (§ mission "safe FACTURE ↔
+  // DEVIS conversion"): never overwrites document_type from provider output
+  // — targetDocumentType is a caller-supplied command field, validated and
+  // applied by kadiV1DocumentDomain.js's own changeDocumentType, the single
+  // place that knows which pairs are data-compatible. This function only
+  // adds the same replay/version/idempotency envelope every other mutation
+  // here already has; no separate document_type validation is duplicated.
+  async function changeDocumentType(command) {
+    const loaded = await loadMutation(command, "changeDocumentType");
+    if (!loaded.ok || loaded.duplicate) return loaded;
+    const changed = domain.changeDocumentType(loaded.value, command.targetDocumentType);
+    if (!changed.ok) return changed;
+    const contextual = refreshContext(changed.value);
+    if (!contextual.ok) return contextual;
+    return storage.saveNewVersion({
+      document: contextual.value,
+      ownerWaId: command.ownerWaId,
+      expectedVersion: command.expectedVersion,
+      fromState: loaded.value.status,
+      eventType: "DOCUMENT_TYPE_CHANGED",
+      idempotencyKey: command.idempotencyKey,
+    });
+  }
+
   function brainPatch(document, result, idempotencyKey) {
     const confirmed = Object.fromEntries(
       Object.entries(result.extracted_fields).filter(([, candidate]) => candidate.status === "CONFIRMED")
@@ -505,6 +530,7 @@ function createSharedDocumentPipeline({
     applyBrainExtraction,
     buildReviewModel,
     cancelDocument,
+    changeDocumentType,
     createDraft,
     getMissingFields,
     markReadyForReview,

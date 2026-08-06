@@ -182,6 +182,69 @@ test("active bootstrap builds the four real production ports with zero boot I/O"
   assert.equal(bootstrap.readiness.boot_external_calls, 0);
 });
 
+test("conversational multimodal V1 is disabled by default and reports safe readiness diagnostics without leaking identifiers", () => {
+  const calls = { external: 0, bucket: null };
+  const env = activeEnv({ KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: CANARY });
+  const config = createKadiV1RuntimeConfig(env);
+  const bootstrap = createKadiV1ProductionBootstrap({
+    env,
+    config,
+    supabase: createFakeSupabase(calls),
+    whatsappApi: fakeWhatsApp(calls),
+    providerAdapters: fakeProviders(calls),
+    logger: { log() {}, warn() {} },
+  });
+  assert.equal(bootstrap.readiness.ready, true);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.enabled, false);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.wired_into_orchestrator, false);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.canary_owner_count, 0, "l'allowlist n'est même pas lue quand le flag est faux");
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.gemini_audio_enabled, false);
+  assert.equal(JSON.stringify(bootstrap.readiness).includes(CANARY), false);
+});
+
+test("conversational multimodal V1 activé expose un état sûr et câble l'intégration, sans exiger Gemini Audio", () => {
+  const calls = { external: 0, bucket: null };
+  const env = activeEnv({
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED: "true",
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: CANARY,
+  });
+  const config = createKadiV1RuntimeConfig(env);
+  const bootstrap = createKadiV1ProductionBootstrap({
+    env,
+    config,
+    supabase: createFakeSupabase(calls),
+    whatsappApi: fakeWhatsApp(calls),
+    providerAdapters: fakeProviders(calls),
+    logger: { log() {}, warn() {} },
+  });
+  assert.equal(bootstrap.readiness.ready, true, "Gemini Audio n'étant pas requis, le démarrage reste READY");
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.enabled, true);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.wired_into_orchestrator, true);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.canary_owner_count, 1);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.gemini_audio_enabled, false);
+  assert.equal(JSON.stringify(bootstrap.readiness).includes(CANARY), false, "aucun identifiant WhatsApp complet dans les diagnostics");
+});
+
+test("un allowlist conversationnel malformé n'empêche pas le démarrage du webhook, seule la fonctionnalité reste inerte", () => {
+  const calls = { external: 0, bucket: null };
+  const env = activeEnv({
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED: "true",
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: "not-a-valid-owner-list",
+  });
+  const config = createKadiV1RuntimeConfig(env);
+  const bootstrap = createKadiV1ProductionBootstrap({
+    env,
+    config,
+    supabase: createFakeSupabase(calls),
+    whatsappApi: fakeWhatsApp(calls),
+    providerAdapters: fakeProviders(calls),
+    logger: { log() {}, warn() {} },
+  });
+  assert.equal(bootstrap.readiness.ready, true, "une allowlist malformée ne doit pas faire échouer tout le webhook V1");
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.canary_allowlist_valid, false);
+  assert.equal(bootstrap.readiness.conversational_multimodal_v1.canary_owner_count, 0);
+});
+
 test("active bootstrap fails closed when the private bucket is not explicitly confirmed", () => {
   const calls = { external: 0, bucket: null };
   const env = activeEnv({ KADI_V1_PRIVATE_BUCKET_CONFIRMED: "false" });

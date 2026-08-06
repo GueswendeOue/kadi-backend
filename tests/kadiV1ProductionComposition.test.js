@@ -294,6 +294,7 @@ test("production composition can derive the orchestrator without boot I/O", () =
         updateContent: noop,
         removeContent: noop,
         setOptions: noop,
+        changeDocumentType: noop,
         markReadyForReview: noop,
         verifyDocument: noop,
         reopenForCorrection: noop,

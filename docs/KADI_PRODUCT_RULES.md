@@ -7,7 +7,21 @@ bug, pas une variante acceptable. Statuts :
 
 ## Facture
 
-* `document_type = FACTURE` en toute circonstance.
+* `document_type = FACTURE` en toute circonstance dans le parcours Flow Meta
+  historique (formulaires WhatsApp structurés) — `document_type` y reste
+  immuable pour un brouillon donné.
+* **Exception scopée, non déployée :** sur la branche
+  `feat/kadi-conversational-orchestrator-integration-v1` (voir
+  [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
+  §5), un utilisateur éligible au parcours conversationnel peut demander de
+  convertir un brouillon actif entre `FACTURE` et `DEVIS` uniquement
+  (`kadiV1DocumentDomain.js`'s `changeDocumentType`, via le port dédié
+  `documents.changeDocumentType(...)`) — préserve client, articles,
+  quantités et prix ; aucun débit, génération, numéro de document,
+  `issued_at` ni transition vers un état final ; RECU et DECHARGE restent
+  strictement exclus, sans capacité de conversion, faute de forme de
+  données compatible. Cette exception n'existe nulle part dans le parcours
+  Flow Meta historique et n'est ni fusionnée ni active en production.
 * `invoice_kind = FINAL | PROFORMA` distingue la facture définitive de la
   facture proforma. **Statut : `IMPLEMENTED_NOT_DEPLOYED`** (voir
   [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md)).

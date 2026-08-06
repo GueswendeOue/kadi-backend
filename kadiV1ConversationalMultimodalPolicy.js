@@ -25,6 +25,12 @@ const DEFAULT_MIN_CONFIDENCE = 0.6;
 
 const REMOVE_KEYWORDS = /\b(enleve|enlever|supprime|supprimer|retire|retirer)\b/;
 const ADD_KEYWORDS = /\b(ajoute|ajouter|rajoute|rajouter)\b/;
+// Captures the phrase after the remove verb (and an optional article) as the
+// search target for item lookup — e.g. "enleve la livraison" -> "livraison".
+// Operates on the already-normalized (accent-stripped, lowercased) text so
+// the same normalization is trivially reused when matching against item
+// descriptions later (kadiV1ConversationalMultimodalItemLookup.js).
+const REMOVE_HINT_PATTERN = /\b(?:enleve|enlever|supprime|supprimer|retire|retirer)\b\s*(?:le|la|les|l)?\s*(.+)/;
 
 // detectNaturalIntent's own vocabulary (MENU/BALANCE/HISTORY_SEARCH/
 // PREPARE_DOCUMENT/HELP/CANCEL/CONTINUE) mapped onto this mission's
@@ -158,7 +164,37 @@ function detectOperation({ rawText, brainResult, activeDocument }) {
   return null;
 }
 
-function buildCorrections({ brainResult, activeDocument }) {
+function extractRemovalHint(rawText) {
+  const normalized = normalizeForMatch(rawText);
+  const match = REMOVE_HINT_PATTERN.exec(normalized);
+  const hint = match?.[1]?.trim().replace(/[.!?]+$/, "");
+  return hint ? hint.slice(0, 300) : null;
+}
+
+// For REMOVE_ITEM, requested_corrections is load-bearing: it is the ONLY
+// carrier for the removal hint text, read back by
+// kadiV1ConversationalMultimodalRuntimeAdapter.js's removalHintFromEnvelope.
+//
+// For CORRECT_FIELD/ADD_ITEM, requested_corrections is a required part of
+// the validated envelope shape (kadiV1ConversationalMultimodalContracts.js's
+// RESULT_KEYS) but is NOT currently read back by anything — the actual
+// mutation is driven entirely by `extracted_entities`
+// (kadiV1ConversationalMultimodalBrainAdapter.js copies extracted_entities
+// field-by-field into Brain's extracted_fields; it never reads
+// requested_corrections). This is intentional, not a bug: the entries here
+// are a rendering-friendly summary DERIVED from extracted_fields
+// (computed below by diffing against activeDocument), not an independent
+// source of truth, so nothing is lost by not re-reading it. Left in place
+// (not removed) because the envelope schema requires the key regardless of
+// operation, and because a future user-facing "changing X from A to B"
+// confirmation message is a natural consumer of exactly this shape — this
+// module should not have to reconstruct field-level diffs a second time
+// when that mission arrives.
+function buildCorrections({ brainResult, activeDocument, rawText, operation }) {
+  if (operation === "REMOVE_ITEM") {
+    const hint = extractRemovalHint(rawText);
+    return hint ? [{ field: "items", new_value_hint: hint, source_reference: "text:0" }] : [];
+  }
   const collected = activeDocument || {};
   const corrections = [];
   for (const [field, candidate] of Object.entries(brainResult.extracted_fields || {})) {
@@ -186,7 +222,9 @@ const BRAIN_INTENT_MAP = Object.freeze({
 function fromBrainResult({ brainResult, rawText, language, activeDocument }) {
   const intent = BRAIN_INTENT_MAP[brainResult.intent] || "UNKNOWN";
   const operation = intent === "UPDATE_DOCUMENT" ? detectOperation({ rawText, brainResult, activeDocument }) : null;
-  const requestedCorrections = operation === "CORRECT_FIELD" ? buildCorrections({ brainResult, activeDocument }) : [];
+  const requestedCorrections = ["CORRECT_FIELD", "REMOVE_ITEM"].includes(operation)
+    ? buildCorrections({ brainResult, activeDocument, rawText, operation })
+    : [];
   const ambiguousFields = brainResult.uncertainties.map((entry) => entry.field);
   const needsConfirmation = ambiguousFields.length > 0 || brainResult.confidence < DEFAULT_MIN_CONFIDENCE;
   return baseResult({
@@ -205,11 +243,15 @@ function fromBrainResult({ brainResult, rawText, language, activeDocument }) {
   });
 }
 
-// interpret(): the single entry point a future orchestrator integration
-// would call. `brain` must expose `.understand(request)` — pass the same
-// instance already constructed in kadiV1ProductionBootstrap.js; this
-// function never constructs its own provider or makes a network call.
-async function interpretConversationalInput({
+// interpret(): the single entry point the orchestrator integration calls.
+// `brain` must expose `.understand(request)` — pass the same instance
+// already constructed in kadiV1ProductionBootstrap.js; this function never
+// constructs its own provider or makes a network call. Resolves the FLOW /
+// deterministic / brain-backed branches exactly once per message.
+// `brainResult` is the untouched object brain.understand() returned (already
+// validated by kadiV1BrainContracts.validateBrainResult inside the real Brain
+// implementation) — non-null only when the brain-backed path was taken.
+async function resolveInterpretation({
   requestId,
   source,
   text = null,
@@ -225,7 +267,6 @@ async function interpretConversationalInput({
   const rawText = source === "TEXT" ? text : source === "AUDIO" ? transcription : "";
   const language = detectLanguage(rawText);
 
-  let envelope;
   if (source === "FLOW") {
     if (!flowReply) throw new TypeError("KADI_CONVERSATIONAL_MULTIMODAL_FLOW_REPLY_REQUIRED");
     // A Flow reply's data is already validated by the existing, separate
@@ -238,42 +279,54 @@ async function interpretConversationalInput({
     // orchestrator-integration mission (see architecture doc §5). Emitting
     // an unverified "CORRECT_FIELD" here would be exactly the kind of
     // silently-invented certainty this contract exists to prevent.
-    envelope = baseResult({
+    const envelope = baseResult({
       intent: "UPDATE_DOCUMENT",
       operation: null,
       language,
       needs_confirmation: false,
       provider_metadata: classifierMetadata("DETERMINISTIC", { model: null }),
     });
-  } else {
-    envelope = ["TEXT", "AUDIO"].includes(source) ? classifyDeterministicIntent(rawText, language) : null;
-    if (!envelope) {
-      const brainModality = source === "TEXT" ? "TEXT" : source === "AUDIO" ? "TRANSCRIPTION" : source;
-      const documentTypeHint = activeDocument?.document_type
-        || (["TEXT", "AUDIO"].includes(source) ? detectDocumentTypeHint(rawText) : null);
-      const brainRequest = {
-        request_id: requestId,
-        modality: brainModality,
-        conversation_context: { has_active_document: Boolean(activeDocument) },
-        document_type_hint: documentTypeHint,
-        collected_data: activeDocument ? JSON.parse(JSON.stringify(activeDocument)) : {},
-      };
-      if (brainModality === "TEXT") brainRequest.text = text;
-      else if (brainModality === "TRANSCRIPTION") brainRequest.transcription = transcription;
-      else brainRequest.media = media;
-
-      const brainResult = await brain.understand(brainRequest);
-      envelope = fromBrainResult({ brainResult, rawText, language, activeDocument });
-    }
+    return { envelope, brainResult: null };
   }
 
-  // Phase 2 requirement: "the normalized contract must be validated before
-  // it is allowed to affect a document draft." This is the single exit
-  // point for every path above (FLOW / deterministic / brain-backed), so
-  // nothing can return without passing through it — including from a
-  // future, non-conforming `brain` implementation that skips its own
-  // validateBrainResult call. Fails closed and also normalizes (e.g.
-  // document_type casing) rather than silently trusting the derived shape.
+  const deterministic = ["TEXT", "AUDIO"].includes(source) ? classifyDeterministicIntent(rawText, language) : null;
+  if (deterministic) return { envelope: deterministic, brainResult: null };
+
+  const brainModality = source === "TEXT" ? "TEXT" : source === "AUDIO" ? "TRANSCRIPTION" : source;
+  const documentTypeHint = activeDocument?.document_type
+    || (["TEXT", "AUDIO"].includes(source) ? detectDocumentTypeHint(rawText) : null);
+  const brainRequest = {
+    request_id: requestId,
+    modality: brainModality,
+    conversation_context: { has_active_document: Boolean(activeDocument) },
+    document_type_hint: documentTypeHint,
+    collected_data: activeDocument ? JSON.parse(JSON.stringify(activeDocument)) : {},
+  };
+  if (brainModality === "TEXT") brainRequest.text = text;
+  else if (brainModality === "TRANSCRIPTION") brainRequest.transcription = transcription;
+  else brainRequest.media = media;
+
+  const brainResult = await brain.understand(brainRequest);
+  const envelope = fromBrainResult({ brainResult, rawText, language, activeDocument });
+  return { envelope, brainResult };
+}
+
+// Phase 2 requirement: "the normalized contract must be validated before it
+// is allowed to affect a document draft." This is the single exit point for
+// every path (FLOW / deterministic / brain-backed), so nothing can return
+// without passing through it — including from a future, non-conforming
+// `brain` implementation that skips its own validateBrainResult call. Fails
+// closed and also normalizes (e.g. document_type casing) rather than
+// silently trusting the derived shape.
+// The orchestrator integration (kadiV1ConversationalMultimodalRuntimeAdapter.js)
+// feeds this envelope into kadiV1ConversationalMultimodalBrainAdapter.js's
+// conversationalResultToBrainResult(...) — a single, explicit, closed
+// mapping into the exact shape kadiV1BrainContracts.validateBrainResult (and
+// therefore documents.apply(...)) requires. This function never returns
+// anything Brain-shaped itself; see that adapter for why a second,
+// independent mapping does not exist.
+async function interpretConversationalInput(input) {
+  const { envelope } = await resolveInterpretation(input);
   const checked = validateConversationalResult(envelope);
   if (!checked.ok) throw new TypeError(checked.error);
   return checked.value;

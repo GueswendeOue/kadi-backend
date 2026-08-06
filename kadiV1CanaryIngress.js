@@ -73,10 +73,38 @@ function isKadiV1OwnerAllowed(rollout, ownerWaId) {
   return Array.isArray(rollout.canaryWaIds) && rollout.canaryWaIds.includes(owner);
 }
 
+// Independent allowlist for KADI_CONVERSATIONAL_MULTIMODAL_V1. Deliberately
+// separate from KADI_V1_CANARY_WA_IDS/ROLLOUT_MODES above: a user in the
+// general Kadi V1 CANARY list is not automatically eligible for the
+// conversational-multimodal integration — eligibility requires explicit
+// membership in KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS on top of
+// the existing KADI V1 CANARY gate (checked separately by the caller).
+// Reuses normalizeOwnerWaId/parseCanaryOwnerList rather than a second
+// parser. Default (unset/empty) is zero eligible owners — not an error,
+// since an empty conversational allowlist is the expected default state,
+// unlike an empty general KADI_V1_CANARY_WA_IDS in CANARY mode.
+function createKadiV1ConversationalMultimodalCanaryConfig(env = process.env) {
+  const owners = parseCanaryOwnerList(env?.KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS);
+  return Object.freeze({
+    valid: owners.ok,
+    error: owners.error,
+    ownerCount: owners.owners.length,
+    waIds: owners.owners,
+  });
+}
+
+function isKadiV1ConversationalMultimodalOwnerAllowed(conversationalConfig, ownerWaId) {
+  const owner = normalizeOwnerWaId(ownerWaId);
+  if (!owner || !conversationalConfig || conversationalConfig.valid !== true) return false;
+  return Array.isArray(conversationalConfig.waIds) && conversationalConfig.waIds.includes(owner);
+}
+
 module.exports = {
   MAX_CANARY_OWNERS,
   ROLLOUT_MODES,
+  createKadiV1ConversationalMultimodalCanaryConfig,
   createKadiV1RolloutConfig,
+  isKadiV1ConversationalMultimodalOwnerAllowed,
   isKadiV1OwnerAllowed,
   normalizeOwnerWaId,
   parseCanaryOwnerList,

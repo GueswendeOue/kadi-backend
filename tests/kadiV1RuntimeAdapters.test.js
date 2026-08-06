@@ -111,6 +111,28 @@ test("startAddContent is forbidden for DECHARGE", async () => {
   assert.deepEqual(opened, { ok: false, error: "KADI_V1_DISCHARGE_CONTENT_FLOW_REQUIRED" });
 });
 
+test("changeDocumentType converts a FACTURE draft to DEVIS through the document runtime adapter", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:type-1" });
+  const changed = await runtime.changeDocumentType({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "FACTURE", targetDocumentType: "DEVIS", idempotencyKey: "flow_command:change-type:1",
+  });
+  assert.equal(changed.ok, true, changed.error);
+  assert.equal(changed.value.document_type, "DEVIS");
+  assert.equal(changed.value.document_id, started.value.document_id);
+});
+
+test("changeDocumentType is forbidden for DECHARGE at the adapter level", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "DECHARGE", idempotencyKey: "flow_command:start:type-2" });
+  const changed = await runtime.changeDocumentType({
+    ownerWaId: OWNER, documentId: started.value.document_id, expectedVersion: started.value.version,
+    documentType: "DECHARGE", targetDocumentType: "FACTURE", idempotencyKey: "flow_command:change-type:2",
+  });
+  assert.deepEqual(changed, { ok: false, error: "KADI_V1_DISCHARGE_TYPE_CONVERSION_UNSUPPORTED" });
+});
+
 test("brain extraction advances a complete FACTURE to READY_FOR_REVIEW", async () => {
   const { runtime } = documentRuntime();
   const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:2" });
@@ -127,6 +149,25 @@ test("brain extraction advances a complete FACTURE to READY_FOR_REVIEW", async (
   assert.equal(applied.value.status, "READY_FOR_REVIEW");
   assert.equal(applied.value.items.length, 1);
   assert.equal(applied.value.total, 13000);
+});
+
+test("apply() reports duplicate:true on a replayed idempotencyKey, duplicate:false on the first call, even when advanceIfComplete runs", async () => {
+  const { runtime } = documentRuntime();
+  const started = await runtime.start({ ownerWaId: OWNER, documentType: "FACTURE", idempotencyKey: "flow_command:start:dup-1" });
+  const applyCommand = {
+    ownerWaId: OWNER,
+    document: started.value,
+    idempotencyKey: "conversation:apply:dup-1",
+    brainResult: brainResult("FACTURE", { client: confirmed({ name: "Awa Test" }) }),
+  };
+  const first = await runtime.apply(applyCommand);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.duplicate, false, "a fresh application must not be reported as a duplicate");
+
+  const replay = await runtime.apply(applyCommand);
+  assert.equal(replay.ok, true, replay.error);
+  assert.equal(replay.duplicate, true, "replaying the exact same idempotencyKey must be reported as a duplicate");
+  assert.equal(replay.value.version, first.value.version, "a replay must not create a new version");
 });
 
 test("manual shared flow keeps collecting until options completion then advances", async () => {
