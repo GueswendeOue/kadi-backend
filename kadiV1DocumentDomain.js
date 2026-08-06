@@ -8,6 +8,15 @@ const {
 
 const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 const COMMON_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
+// FACTURE and DEVIS share an identical stored shape (client/items/options/
+// discount/tax/notes — see normalizeCommonContent) and an identical
+// normalizeContent policy (kadiV1SharedDocumentPolicies.js's linePolicy/
+// quotePolicy both use normalizeLineInput) — that data compatibility is what
+// makes converting between exactly these two types safe without inventing a
+// migration/data-mapping policy. RECU and DECHARGE have an incompatible
+// shape (receipt/discharge instead of client+items) and are deliberately
+// excluded.
+const TYPE_CONVERTIBLE_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS"]);
 const DISCHARGE_SUBJECT_TYPES = Object.freeze(["MONEY", "GOODS", "DOCUMENT", "OTHER"]);
 const RECEIPT_FORMATS = Object.freeze(["A4", "TICKET_80"]);
 const DOCUMENT_PURPOSES = Object.freeze({
@@ -529,6 +538,58 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
     }));
   }
 
+  // Deliberately NOT implemented by extending modifyDocument's general
+  // patch surface: modifyDocument hardcodes `document_type:
+  // document.document_type` (line ~482) and COMMON_PATCH_FIELDS/
+  // DISCHARGE_PATCH_FIELDS never include "document_type" — opening that up
+  // to every existing modifyDocument caller (setClientOrPayer, addContent,
+  // applyBrainExtraction, ...) would widen the risk surface for a change
+  // only one, explicit, narrowly-scoped operation needs. This function
+  // reuses the SAME editable-state gate as modifyDocument
+  // (DOCUMENT_EVENTS.MODIFY -> EDITABLE_STATES, resetting to COLLECTING —
+  // a type change invalidates any already-computed preview/cost exactly
+  // like any other content correction does) without touching that shared
+  // surface.
+  function changeDocumentType(document, targetType) {
+    if (!isPlainRecord(document) || !DOCUMENT_TYPES.includes(document.document_type)) {
+      return fail("DOCUMENT_INVALID");
+    }
+    if (!TYPE_CONVERTIBLE_DOCUMENT_TYPES.includes(document.document_type)) {
+      return fail("DOCUMENT_TYPE_CONVERSION_UNSUPPORTED");
+    }
+    if (!TYPE_CONVERTIBLE_DOCUMENT_TYPES.includes(targetType)) {
+      return fail("DOCUMENT_TYPE_CONVERSION_TARGET_INVALID");
+    }
+    if (document.document_type === targetType) return fail("DOCUMENT_TYPE_CONVERSION_NOOP");
+    const transition = resolveTransition(document.status, DOCUMENT_EVENTS.MODIFY, document.recoverable_failure);
+    if (!transition.ok) return transition;
+    const merged = { ...deepCopy(document), document_type: targetType };
+    const normalized = normalizeCommonContent(merged);
+    if (!normalized.ok) return normalized;
+    const timestamp = now();
+    if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) return fail("DOCUMENT_CLOCK_INVALID");
+    const nextVersion = document.version + 1;
+    return ok(deepFreeze({
+      ...deepCopy(document),
+      ...normalized.value,
+      document_type: targetType,
+      document_purpose: DOCUMENT_PURPOSES[targetType],
+      status: transition.value,
+      version: nextVersion,
+      preview: null,
+      generation_quote: null,
+      generation_cost: null,
+      recoverable_failure: null,
+      events: [...deepCopy(document.events), {
+        type: DOCUMENT_EVENTS.MODIFY,
+        from_state: document.status,
+        to_state: transition.value,
+        version: nextVersion,
+        occurred_at: new Date(timestamp).toISOString(),
+      }],
+    }));
+  }
+
   function transitionDocument(document, event, payload = {}) {
     if (!isPlainRecord(document) || !DOCUMENT_TYPES.includes(document.document_type)) return fail("DOCUMENT_INVALID");
     if (event === DOCUMENT_EVENTS.MODIFY) return fail("DOCUMENT_USE_MODIFY_COMMAND");
@@ -595,6 +656,7 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
   }
 
   return Object.freeze({
+    changeDocumentType,
     createDocument,
     modifyDocument,
     restoreDocument: restoreDocumentSnapshot,
@@ -605,6 +667,7 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
 
 module.exports = {
   COMMON_DOCUMENT_TYPES,
+  TYPE_CONVERTIBLE_DOCUMENT_TYPES,
   DISCHARGE_SUBJECT_TYPES,
   RECEIPT_FORMATS,
   DOCUMENT_EVENTS,

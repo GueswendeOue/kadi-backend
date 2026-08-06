@@ -36,7 +36,7 @@ function documentIdentity(command) {
 function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline, documentRepository, issuerResolver } = {}) {
   const shared = assertMethods(sharedPipeline, [
     "createDraft", "applyBrainExtraction", "setInvoiceKind", "setReceiptFormat", "setClientOrPayer", "addContent", "updateContent",
-    "removeContent", "setOptions", "markReadyForReview", "verifyDocument", "reopenForCorrection", "cancelDocument",
+    "removeContent", "setOptions", "changeDocumentType", "markReadyForReview", "verifyDocument", "reopenForCorrection", "cancelDocument",
   ], "KADI_V1_SHARED_PIPELINE");
   const discharge = assertMethods(dischargePipeline, [
     "createDischargeDraft", "applyBrainExtraction", "setIssuerOrGiver", "setRecipient", "setTransferredContent",
@@ -50,7 +50,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     const prefixes = {
       createDraft: "create_draft:", applyBrainExtraction: "brain_extraction:", setInvoiceKind: "set_invoice_kind:", setReceiptFormat: "set_receipt_format:", setClientOrPayer: "set_party:",
       addContent: "add_content:", updateContent: "update_content:", removeContent: "remove_content:",
-      setOptions: "set_options:", markReadyForReview: "mark_ready:", verifyDocument: "verify:",
+      setOptions: "set_options:", changeDocumentType: "change_document_type:", markReadyForReview: "mark_ready:", verifyDocument: "verify:",
       reopenForCorrection: "reopen:", cancelDocument: "cancel:",
     };
     return runtimeKey(prefixes[operation], source, scope);
@@ -103,7 +103,17 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     };
     const applied = type === "DECHARGE" ? await discharge.applyBrainExtraction(command) : await shared.applyBrainExtraction(command);
     if (!applied.ok) return applied;
-    return advanceIfComplete(applied.value, ownerWaId, idempotencyKey);
+    const advanced = await advanceIfComplete(applied.value, ownerWaId, idempotencyKey);
+    if (!advanced.ok) return advanced;
+    // advanceIfComplete only ever receives applied.value (the document
+    // itself), so its own `ok(document)` return path would otherwise
+    // silently drop applied.duplicate — the one signal that distinguishes a
+    // fresh brain-extraction application from a replayed one. Preserved
+    // here so callers (e.g. kadiV1ConversationOrchestrator.js's
+    // conversational_draft_applied gating) can tell the difference without
+    // re-deriving it from version numbers, which is not reliable across a
+    // replay (see kadiV1SharedDocumentPipeline.js's replayFor).
+    return ok(advanced.value, { duplicate: applied.duplicate === true });
   }
   async function setInvoiceKind(command) {
     const checked = documentIdentity(command);
@@ -205,6 +215,15 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
       itemId: command.itemId, idempotencyKey: sharedKey("removeContent", command.idempotencyKey),
     });
   }
+  async function changeDocumentType(command) {
+    const checked = documentIdentity(command);
+    if (!checked.ok) return checked;
+    if (command.documentType === "DECHARGE") return fail("KADI_V1_DISCHARGE_TYPE_CONVERSION_UNSUPPORTED");
+    return shared.changeDocumentType({
+      ownerWaId: command.ownerWaId, documentId: command.documentId, expectedVersion: command.expectedVersion,
+      targetDocumentType: command.targetDocumentType, idempotencyKey: sharedKey("changeDocumentType", command.idempotencyKey),
+    });
+  }
   async function setOptions(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
@@ -298,7 +317,7 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 
-  return Object.freeze({ start, apply, setInvoiceKind, setReceiptDetails, setClient, startAddContent, addContent, updateContent, removeContent, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
+  return Object.freeze({ start, apply, setInvoiceKind, setReceiptDetails, setClient, startAddContent, addContent, updateContent, removeContent, changeDocumentType, finishContent, setOptions, verify, beginEdit, saveForLater, saveDischargeDetails, cancel });
 }
 
 function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderService, generationQuoteService } = {}) {

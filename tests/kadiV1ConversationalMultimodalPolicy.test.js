@@ -450,3 +450,11 @@ test("MENU côté orchestrateur ne correspond à aucun intent de cette mission e
   assert.equal(detectNaturalIntent(text).intent, "MENU");
   assert.equal(classifyDeterministicIntent(text, "fr"), null);
 });
+
+// interpretForDraftApplication was removed: the orchestrator integration now
+// goes through interpretConversationalInput's envelope +
+// kadiV1ConversationalMultimodalBrainAdapter.js's
+// conversationalResultToBrainResult (see
+// tests/kadiV1ConversationalMultimodalBrainAdapter.test.js and
+// tests/kadiV1ConversationalMultimodalRuntimeAdapter.test.js), not a second
+// return shape from this module.

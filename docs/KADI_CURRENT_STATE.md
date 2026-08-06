@@ -192,13 +192,43 @@ pour le détail complet.
   Render) — ne pas déduire qu'il a été déployé, ni qu'il ne l'a pas été.
 * **Aucun impact utilisateur, déployé ou non** : les deux flags restent
   `false` par défaut (`KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`,
-  `KADI_GEMINI_AUDIO_V1_ENABLED`), et **le code n'est câblé nulle part** —
-  ni dans `kadiV1ConversationOrchestrator.js`, ni dans
+  `KADI_GEMINI_AUDIO_V1_ENABLED`), et sur `main`, **le code de la
+  fondation n'est câblé nulle part** — ni dans
+  `kadiV1ConversationOrchestrator.js`, ni dans
   `kadiV1ProductionBootstrap.js`. Même si Render a déployé ce commit,
-  aucun trafic, CANARY ou autre, ne peut l'atteindre : l'absence de
-  câblage bloque toute activation indépendamment de l'état des flags.
-* Fichiers : `kadiV1ConversationalMultimodalContracts.js`,
+  aucun trafic, CANARY ou autre, ne peut l'atteindre.
+* Fichiers de la fondation (sur `main`) :
+  `kadiV1ConversationalMultimodalContracts.js`,
   `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`.
+* **Intégration orchestrateur/bootstrap : implémentée, testée, revue de
+  façon adversariale (corrections appliquées), mais sur une branche séparée
+  non fusionnée**, `feat/kadi-conversational-orchestrator-integration-v1`
+  (nouveaux fichiers `kadiV1ConversationalMultimodalRuntimeAdapter.js`,
+  `kadiV1ConversationalMultimodalBrainAdapter.js`,
+  `kadiV1ConversationalMultimodalItemLookup.js`,
+  `kadiV1ConversationalMultimodalObservability.js`, plus des ajouts
+  additifs à `kadiV1ConversationOrchestrator.js` (branches `RECHARGE`,
+  `REMOVE_ITEM`, `CHANGE_DOCUMENT_TYPE`, un court-circuit déterministe
+  `PREPARE_DOCUMENT` désormais conditionnel à un nouveau paramètre optionnel
+  `conversationalEligibilityGate`, et un nouveau paramètre optionnel
+  `conversationalObservabilityEmit` — seul et unique endroit qui émet
+  `conversational_draft_applied`, et seulement après succès backend
+  confirmé), `kadiV1ProductionOrchestratorComposition.js`,
+  `kadiV1ProductionBootstrap.js`, `kadiV1CanaryIngress.js`. Trois fichiers
+  déjà utilisés par le parcours Flow Meta CANARY reçoivent une nouvelle
+  méthode additive `changeDocumentType` (`kadiV1DocumentDomain.js`,
+  `kadiV1SharedDocumentPipeline.js`, `kadiV1RuntimeAdapters.js`) ; ce
+  dernier reçoit aussi une correction minimale et additive d'une fonction
+  déjà existante, `apply(...)`, pour qu'elle ne perde plus son indicateur
+  `duplicate` en aval de `advanceIfComplete(...)` (aucun autre appelant de
+  `apply(...)` n'est affecté, puisque ce champ était simplement absent du
+  résultat auparavant). Cette branche n'existe pas sur `main` ; elle
+  introduit une allowlist indépendante
+  `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` (jamais héritée de
+  `KADI_V1_CANARY_WA_IDS`) qui reste vide/non configurée partout, et un
+  logger d'observabilité privacy-safe optionnel — voir
+  [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md) §5/§5bis
+  pour le détail complet du câblage et des garanties de non-régression.
 * Gemini Audio reste expérimental et désactivé — aucun appel Gemini
   d'aucune sorte n'est câblé pour l'audio en production.
 * La release CANARY actuelle (voir section « Rollout » en tête de ce

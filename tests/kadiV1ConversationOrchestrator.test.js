@@ -47,6 +47,8 @@ function makeHarness(overrides = {}) {
       start: async (command) => { calls.push(["start", command]); return result(overrides.startedDocument || { document_id: "document:1", document_type: command.documentType, status: "COLLECTING", version: 1, missing_fields: [], uncertainties: [] }); },
       apply: async (command) => { calls.push(["apply", command]); return result(overrides.appliedDocument || command.document); },
       cancel: async (command) => { calls.push(["cancel", command]); return result({ status: "CANCELLED" }); },
+      removeContent: async (command) => { calls.push(["removeContent", command]); return result(overrides.removedContentDocument || { document_id: command.documentId, document_type: command.documentType, status: "COLLECTING", version: (command.expectedVersion || 1) + 1, missing_fields: [], uncertainties: [] }); },
+      changeDocumentType: async (command) => { calls.push(["changeDocumentType", command]); return result(overrides.changedTypeDocument || { document_id: command.documentId, document_type: command.targetDocumentType, status: "COLLECTING", version: (command.expectedVersion || 1) + 1, missing_fields: [], uncertainties: [] }); },
     },
     historyRuntime: {
       search: async (command) => { calls.push(["history", command]); return result(overrides.history || { documents: [] }); },
@@ -127,6 +129,30 @@ test("history results remain owner-scoped and open logical selection", async () 
   assert.equal(searchCall.ownerWaId, "22670000000");
 });
 
+test("an interpretation runtime reporting RECHARGE opens the existing recharge flow, without mutating any document", async () => {
+  const { orchestrator, calls } = makeHarness({
+    interpretation: { intent: "RECHARGE", document_type: null, brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Je veux recharger mon compte." }));
+  assert.equal(response.business_action, "RECHARGE_REQUESTED");
+  assert.equal(response.flow_request.flow_key, "RECHARGE");
+  assert.equal(calls.some(([name]) => name === "apply"), false, "RECHARGE ne doit jamais déclencher une mutation de document");
+  assert.equal(calls.some(([name]) => name === "start"), false);
+});
+
+test("RECHARGE via l'interprétation est indisponible quand la fonctionnalité recharge est désactivée", async () => {
+  const { orchestrator } = makeHarness({
+    config: {
+      enabled: true,
+      features: { brain: true, vision: true, transcription: true, voice: true, private_storage: false, generation: false, recharge: false, history: true, webhook: false },
+    },
+    interpretation: { intent: "RECHARGE", document_type: null, brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Je veux recharger mon compte." }));
+  assert.notEqual(response.business_action, "RECHARGE_REQUESTED");
+  assert.equal(response.flow_request, null);
+});
+
 test("one uncertainty produces one targeted question", async () => {
   const { orchestrator } = makeHarness({
     context: {
@@ -192,7 +218,7 @@ test("recoverable provider failure preserves the user's information", async () =
     userContextService: { getContext: async () => result({ profile: { onboarding_status: "COMPLETED" }, active_document: { document_id: "doc:1", document_type: "FACTURE", status: "COLLECTING", version: 1 } }) },
     onboardingRuntime: { start: async () => result({ welcome_credits_granted: true }) },
     interpretationRuntime: { interpret: async () => ({ ok: false, error: "PROVIDER_DOWN" }) },
-    documentRuntime: { start: async () => result({}), apply: async () => result({}), cancel: async () => result({}) },
+    documentRuntime: { start: async () => result({}), apply: async () => result({}), cancel: async () => result({}), removeContent: async () => result({}), changeDocumentType: async () => result({}) },
     historyRuntime: { search: async () => result({ documents: [] }) },
     walletRuntime: { getBalance: async () => result({ credits: 0 }) },
   });
@@ -200,6 +226,58 @@ test("recoverable provider failure preserves the user's information", async () =
   assert.equal(response.business_action, "INTERPRETATION_RECOVERABLE_FAILURE");
   assert.match(response.canonical_text, /informations sont conservées/i);
   assert.equal(orchestrator != null, true);
+});
+
+test("REMOVE_ITEM appelle documents.removeContent avec le item_id résolu, jamais documents.apply", async () => {
+  const activeDocument = { document_id: "doc:1", document_type: "FACTURE", status: "COLLECTING", version: 3 };
+  const { orchestrator, calls } = makeHarness({
+    context: { profile: { onboarding_status: "COMPLETED" }, active_document: activeDocument },
+    interpretation: { intent: "REMOVE_ITEM", document_type: "FACTURE", remove_item_id: "item-9", brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Enlève la livraison." }));
+  const removeCall = calls.find(([name]) => name === "removeContent");
+  assert.ok(removeCall, "documents.removeContent doit être appelé");
+  assert.equal(removeCall[1].itemId, "item-9");
+  assert.equal(removeCall[1].documentId, "doc:1");
+  assert.equal(removeCall[1].expectedVersion, 3);
+  assert.equal(calls.some(([name]) => name === "apply"), false, "REMOVE_ITEM ne doit jamais passer par documents.apply");
+  assert.equal(response.business_action, "DOCUMENT_ITEM_REMOVED");
+});
+
+test("REMOVE_ITEM sans document actif ouvre le menu sans appeler removeContent", async () => {
+  const { orchestrator, calls } = makeHarness({
+    context: { profile: { onboarding_status: "COMPLETED" }, active_document: null },
+    interpretation: { intent: "REMOVE_ITEM", document_type: "FACTURE", remove_item_id: "item-9", brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Enlève la livraison." }));
+  assert.equal(calls.some(([name]) => name === "removeContent"), false);
+  assert.equal(response.business_action, "SHOW_MENU");
+});
+
+test("CHANGE_DOCUMENT_TYPE appelle documents.changeDocumentType avec la cible exacte, jamais documents.apply, jamais documents.start", async () => {
+  const activeDocument = { document_id: "doc:1", document_type: "FACTURE", status: "COLLECTING", version: 3 };
+  const { orchestrator, calls } = makeHarness({
+    context: { profile: { onboarding_status: "COMPLETED" }, active_document: activeDocument },
+    interpretation: { intent: "CHANGE_DOCUMENT_TYPE", document_type: "DEVIS", target_document_type: "DEVIS", brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Change le type de ce document." }));
+  const changeCall = calls.find(([name]) => name === "changeDocumentType");
+  assert.ok(changeCall, "documents.changeDocumentType doit être appelé");
+  assert.equal(changeCall[1].targetDocumentType, "DEVIS");
+  assert.equal(changeCall[1].documentId, "doc:1");
+  assert.equal(changeCall[1].expectedVersion, 3);
+  assert.equal(calls.some(([name]) => name === "apply"), false, "CHANGE_DOCUMENT_TYPE ne doit jamais passer par documents.apply");
+  assert.equal(calls.some(([name]) => name === "start"), false, "CHANGE_DOCUMENT_TYPE ne doit jamais créer un nouveau brouillon");
+});
+
+test("CHANGE_DOCUMENT_TYPE sans document actif ouvre le menu sans appeler changeDocumentType", async () => {
+  const { orchestrator, calls } = makeHarness({
+    context: { profile: { onboarding_status: "COMPLETED" }, active_document: null },
+    interpretation: { intent: "CHANGE_DOCUMENT_TYPE", document_type: "DEVIS", target_document_type: "DEVIS", brain_result: null },
+  });
+  const response = await orchestrator.handle(input({ text: "Change le type de ce document." }));
+  assert.equal(calls.some(([name]) => name === "changeDocumentType"), false);
+  assert.equal(response.business_action, "SHOW_MENU");
 });
 
 test("canonical text rejects technical boundaries", () => {

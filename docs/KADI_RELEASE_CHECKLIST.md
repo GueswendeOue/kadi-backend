@@ -82,6 +82,31 @@ précédente a réussi.
       au cas où — voir
       [`runbooks/ROLLBACK_PRODUCTION.md`](runbooks/ROLLBACK_PRODUCTION.md).
 
+## Fonctionnalités à allowlist CANARY indépendante (ex. KADI_CONVERSATIONAL_MULTIMODAL_V1)
+
+À suivre en plus des sections ci-dessus pour toute fonctionnalité qui, comme
+`KADI_CONVERSATIONAL_MULTIMODAL_V1`, introduit sa **propre** allowlist
+distincte de `KADI_V1_CANARY_WA_IDS` (voir
+[`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)) :
+
+- [ ] **Câblage revu séparément** : la mission d'intégration dans
+      l'orchestrateur/le bootstrap a été revue indépendamment de la mission
+      qui a créé la fondation, avant toute fusion.
+- [ ] **Allowlist dédiée vide par défaut** : la variable Render
+      correspondante (ex. `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS`)
+      n'hérite jamais implicitement de `KADI_V1_CANARY_WA_IDS` — vérifié par
+      test avant toute configuration Render.
+- [ ] **Sous-capacités expérimentales restent désactivées** (ex. Gemini
+      Audio / `KADI_GEMINI_AUDIO_V1_ENABLED`) tant qu'aucune mission
+      distincte ne les active explicitement.
+- [ ] **Aucune deuxième implémentation de mutation** : toute application à
+      un document réutilise le port existant (`documents.apply(...)` ou
+      équivalent) avec la forme de donnée exacte qu'il attend — jamais une
+      resynthèse depuis un contrat différent (voir fiche L de
+      [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
+- [ ] **Comportement inchangé prouvé par test** pour tout propriétaire hors
+      de la nouvelle allowlist, avant toute configuration Render de celle-ci.
+
 ## Après la livraison
 
 - [ ] **`KADI_CURRENT_STATE.md`** mis à jour avec le nouveau statut réel

@@ -6,7 +6,9 @@ const assert = require("node:assert/strict");
 const {
   MAX_CANARY_OWNERS,
   ROLLOUT_MODES,
+  createKadiV1ConversationalMultimodalCanaryConfig,
   createKadiV1RolloutConfig,
+  isKadiV1ConversationalMultimodalOwnerAllowed,
   isKadiV1OwnerAllowed,
   parseCanaryOwnerList,
 } = require("../kadiV1CanaryIngress");
@@ -78,4 +80,45 @@ test("runtime configuration carries the rollout decision without logging values"
   assert.equal(config.rollout.valid, true);
   assert.equal(config.rollout.canaryOwnerCount, 1);
   assert.deepEqual(config.rollout.canaryWaIds, ["22670000000"]);
+});
+
+// --- KADI_CONVERSATIONAL_MULTIMODAL_V1's independent allowlist ---
+
+test("l'allowlist conversationnelle est vide par défaut, pas une erreur", () => {
+  const config = createKadiV1ConversationalMultimodalCanaryConfig({});
+  assert.equal(config.valid, true);
+  assert.equal(config.ownerCount, 0);
+  assert.deepEqual(config.waIds, []);
+});
+
+test("l'allowlist conversationnelle n'hérite jamais implicitement de KADI_V1_CANARY_WA_IDS", () => {
+  const config = createKadiV1ConversationalMultimodalCanaryConfig({
+    KADI_V1_CANARY_WA_IDS: "22670000000",
+  });
+  assert.equal(config.ownerCount, 0, "seule KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS doit compter");
+});
+
+test("un numéro malformé dans l'allowlist conversationnelle échoue fermé", () => {
+  const config = createKadiV1ConversationalMultimodalCanaryConfig({
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: "not-a-number",
+  });
+  assert.equal(config.valid, false);
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, "22670000000"), false);
+});
+
+test("un propriétaire explicitement listé est autorisé, tout autre non", () => {
+  const config = createKadiV1ConversationalMultimodalCanaryConfig({
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: "22670000000, 22671111111",
+  });
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, "22670000000"), true);
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, "22679999999"), false);
+});
+
+test("un identifiant invalide ou vide n'est jamais autorisé", () => {
+  const config = createKadiV1ConversationalMultimodalCanaryConfig({
+    KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS: "22670000000",
+  });
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, ""), false);
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, null), false);
+  assert.equal(isKadiV1ConversationalMultimodalOwnerAllowed(config, "abc"), false);
 });

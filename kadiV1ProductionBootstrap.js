@@ -1,6 +1,7 @@
 "use strict";
 
 const { createKadiV1RuntimeConfig, parseBoolean } = require("./kadiV1RuntimeConfig");
+const { createKadiV1ConversationalMultimodalCanaryConfig } = require("./kadiV1CanaryIngress");
 const {
   createKadiV1ProductionComposition,
   inspectPorts,
@@ -548,6 +549,35 @@ function createKadiV1ProductionBootstrap({
       walletRuntime,
     });
 
+    // Only computed when the flag is on: reading a stray
+    // KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS while the feature is
+    // disabled must have zero effect, matching every other KADI_V1_* flag.
+    // A malformed or empty allowlist never fails startup — it just means
+    // nobody is eligible (see kadiV1ConversationalMultimodalRuntimeAdapter.js:
+    // isKadiV1ConversationalMultimodalOwnerAllowed already treats
+    // `valid !== true` as "deny"), which is the correct fail-closed behavior
+    // for a narrow, currently-unused feature. Crashing the entire V1 webhook
+    // — and every unrelated CANARY user with it — over this feature's own
+    // misconfiguration would be disproportionate; the resulting state is
+    // still surfaced below in readiness diagnostics.
+    const conversationalMultimodalCanaryConfig = config.features.conversationalMultimodalV1
+      ? createKadiV1ConversationalMultimodalCanaryConfig(env)
+      : null;
+
+    // Bridges the already-injected structured `logger` into the closed
+    // (event, safeDetails) shape kadiV1ConversationalMultimodalObservability.js
+    // expects — this module never constructs its own logging destination.
+    // Only wired when the feature itself is active, mirroring
+    // conversationalMultimodalCanaryConfig above; the emitter already
+    // guarantees `safeDetails` contains nothing beyond its closed allowlist,
+    // so this is safe to route to the same operational log as everything
+    // else. No dashboard or persistence is added here — a future
+    // KADI_ADMIN_AI_OBSERVABILITY_V1 mission is expected to consume these
+    // events.
+    const conversationalObservabilityLogger = config.features.conversationalMultimodalV1
+      ? (event, safeDetails) => logger?.log?.(event, safeDetails)
+      : null;
+
     const orchestratorComposition = createKadiV1ProductionOrchestratorComposition({
       config,
       supabase,
@@ -562,6 +592,8 @@ function createKadiV1ProductionBootstrap({
       historyService,
       balanceReader,
       providerAvailability: async () => false,
+      conversationalMultimodalCanaryConfig,
+      conversationalObservabilityLogger,
     });
     const flowReplyComposition = createKadiV1ProductionFlowReplyComposition({
       supabase,
@@ -636,6 +668,15 @@ function createKadiV1ProductionBootstrap({
         generation: true,
         recharge: true,
         history: true,
+        // Safe presence/state only — never the allowlist itself, never a
+        // WhatsApp identifier. ownerCount is a count, not an identifier.
+        conversational_multimodal_v1: Object.freeze({
+          enabled: config.features.conversationalMultimodalV1 === true,
+          canary_allowlist_valid: conversationalMultimodalCanaryConfig?.valid ?? null,
+          canary_owner_count: conversationalMultimodalCanaryConfig?.ownerCount ?? 0,
+          gemini_audio_enabled: config.features.geminiAudioV1 === true,
+          wired_into_orchestrator: conversationalMultimodalCanaryConfig != null,
+        }),
         boot_external_calls: 0,
       }),
     });

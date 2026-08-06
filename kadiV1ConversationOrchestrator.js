@@ -180,16 +180,47 @@ function createKadiV1ConversationOrchestrator({
   historyRuntime,
   walletRuntime,
   voicePolicy = null,
+  // Optional, synchronous, local-only (no network/provider call) — the SAME
+  // allowlist gate kadiV1ConversationalMultimodalRuntimeAdapter.js already
+  // uses internally (kadiV1ProductionOrchestratorComposition.js wires the
+  // identical function to both). Defaults to "nobody is eligible", which
+  // keeps every orchestrator instance that doesn't explicitly wire this
+  // (i.e. every deployment before this mission, and every test that
+  // doesn't pass it) byte-for-byte identical to before: the deterministic
+  // PREPARE_DOCUMENT short-circuit below always fires, exactly as it always
+  // has. See §"PREPARE_DOCUMENT contradiction" audit for why this exists.
+  conversationalEligibilityGate = null,
+  // Optional, injected, already-constructed (event, safeDetails) => void
+  // callback — kadiV1ProductionOrchestratorComposition.js builds it via
+  // kadiV1ConversationalMultimodalObservability.js's
+  // createConversationalObservabilityEmitter(...), the SAME factory the
+  // conversational runtime adapter uses, so this orchestrator never
+  // constructs any telemetry itself. This is the ONLY place
+  // "conversational_draft_applied" is ever emitted — see the REMOVE_ITEM /
+  // CHANGE_DOCUMENT_TYPE / PREPARE_DOCUMENT branches below, each gated on
+  // the corresponding backend port actually returning ok:true with
+  // duplicate !== true.
+  conversationalObservabilityEmit = null,
 } = {}) {
   if (!config || typeof config.enabled !== "boolean" || !config.features) throw new TypeError("KADI_V1_RUNTIME_CONFIG_REQUIRED");
   if (typeof legacyHandler !== "function") throw new TypeError("KADI_V1_LEGACY_HANDLER_REQUIRED");
   const users = assertPort(userContextService, ["getContext"], "KADI_V1_USER_CONTEXT_SERVICE");
   const onboarding = assertPort(onboardingRuntime, ["start"], "KADI_V1_ONBOARDING_RUNTIME");
   const interpretation = assertPort(interpretationRuntime, ["interpret"], "KADI_V1_INTERPRETATION_RUNTIME");
-  const documents = assertPort(documentRuntime, ["start", "apply", "cancel"], "KADI_V1_DOCUMENT_RUNTIME");
+  const documents = assertPort(documentRuntime, ["start", "apply", "cancel", "removeContent", "changeDocumentType"], "KADI_V1_DOCUMENT_RUNTIME");
   const history = assertPort(historyRuntime, ["search"], "KADI_V1_HISTORY_RUNTIME");
   const wallet = assertPort(walletRuntime, ["getBalance"], "KADI_V1_WALLET_RUNTIME");
   if (voicePolicy != null) assertPort(voicePolicy, ["evaluate"], "KADI_V1_VOICE_POLICY");
+
+  // Never lets a telemetry failure affect the response returned to the
+  // user — the injected emitter is already safe by construction
+  // (kadiV1ConversationalMultimodalObservability.js wraps its own sink in
+  // try/catch), but this local wrapper stays defensive even if a test or a
+  // future caller injects something else.
+  function emitDraftApplied(observabilityFields) {
+    if (typeof conversationalObservabilityEmit !== "function" || !observabilityFields) return;
+    try { conversationalObservabilityEmit("conversational_draft_applied", observabilityFields); } catch { /* observability is non-authoritative */ }
+  }
 
   async function optionalVoice({ profile, canonicalText, inputType, step }) {
     if (!config.features.voice || !voicePolicy) return null;
@@ -201,6 +232,32 @@ function createKadiV1ConversationOrchestrator({
     }), "KADI_V1_VOICE_POLICY_FAILED");
     if (!evaluated.ok || evaluated.value?.mode !== "TEXT_AND_VOICE") return null;
     return { mode: "TEXT_AND_VOICE", reason: evaluated.value.reason || "POLICY" };
+  }
+
+  // The exact historical PREPARE_DOCUMENT behavior: start a blank draft of
+  // `documentType` and report it, with no interpretation involved. Shared by
+  // (1) the deterministic short-circuit for owners who are not eligible for
+  // (or for whom conversational interpretation is unavailable/failed on)
+  // the conversational-multimodal path, and (2) the exact-once fallback
+  // used when an eligible owner's conversational interpretation itself
+  // fails (timeout/refusal/malformed output/validation/mapping failure) —
+  // see the FAILURE_AFTER_ELIGIBILITY branch below. Both call sites pass
+  // the SAME `idempotencyKey` the historical branch always used, so a
+  // duplicate webhook still starts at most one draft.
+  async function startBlankDocument({ documentType, idempotencyKey, ownerWaId, profile, inputType }) {
+    const started = asResult(await documents.start({
+      ownerWaId,
+      documentType,
+      idempotencyKey,
+    }), "KADI_V1_DOCUMENT_START_FAILED");
+    if (!started.ok) return started;
+    const canonicalText = COPY.DOCUMENT_STARTED[documentType];
+    return buildResponse({
+      canonicalText,
+      action: "DOCUMENT_STARTED",
+      nextState: started.value?.status || "COLLECTING",
+      voiceRequest: await optionalVoice({ profile, canonicalText, inputType, step: "DOCUMENT_STARTED" }),
+    });
   }
 
   async function respondFromDocument({ document, profile, inputType, action, events = [] }) {
@@ -320,19 +377,39 @@ function createKadiV1ConversationOrchestrator({
       if (!cancelled.ok) return cancelled;
       return buildResponse({ canonicalText: COPY.CANCELLED, action: "DOCUMENT_CANCELLED", nextState: cancelled.value?.status || "CANCELLED" });
     }
-    if (direct.intent === "PREPARE_DOCUMENT") {
-      const started = asResult(await documents.start({
-        ownerWaId: input.ownerWaId,
+    // Conversational eligibility is a cheap, synchronous, local allowlist
+    // check (no provider call) — safe to evaluate here, before deciding
+    // whether the deterministic PREPARE_DOCUMENT short-circuit below should
+    // fire. Also requires config.features.brain: if brain is disabled, the
+    // interpretation call a few lines down would immediately return
+    // BRAIN_DISABLED without ever starting a document, so skipping the
+    // historical short-circuit in that combination would silently drop the
+    // request instead of preserving old behavior — never do that.
+    const conversationalEligible = typeof conversationalEligibilityGate === "function"
+      && config.features.brain === true
+      && conversationalEligibilityGate(input.ownerWaId) === true;
+
+    // For an ineligible owner (the default for every existing deployment,
+    // and for every test that does not pass conversationalEligibilityGate),
+    // this fires exactly as it always has: zero conversational/provider
+    // call, one blank draft, unchanged historical behavior.
+    //
+    // For an eligible owner, this is intentionally SKIPPED: falling through
+    // lets the conversational interpretation below run once and capture
+    // same-message data ("Fais une facture pour Moussa avec trois tables à
+    // 45 000." must retain Moussa/items/quantity/price, not discard them —
+    // see kadiV1ConversationalMultimodalPolicy.js's own comment on why
+    // CREATE_DOCUMENT is deliberately never short-circuited at that layer).
+    // No document_type hint needs to be threaded through manually: the
+    // policy layer re-derives the identical hint via the same
+    // detectNaturalIntent/detectDocumentTypeHint functions.
+    if (direct.intent === "PREPARE_DOCUMENT" && !conversationalEligible) {
+      return startBlankDocument({
         documentType: direct.document_type,
         idempotencyKey: input.idempotencyKey,
-      }), "KADI_V1_DOCUMENT_START_FAILED");
-      if (!started.ok) return started;
-      const canonicalText = COPY.DOCUMENT_STARTED[direct.document_type];
-      return buildResponse({
-        canonicalText,
-        action: "DOCUMENT_STARTED",
-        nextState: started.value?.status || "COLLECTING",
-        voiceRequest: await optionalVoice({ profile, canonicalText, inputType: input.inputType, step: "DOCUMENT_STARTED" }),
+        ownerWaId: input.ownerWaId,
+        profile,
+        inputType: input.inputType,
       });
     }
 
@@ -358,7 +435,98 @@ function createKadiV1ConversationOrchestrator({
       correlationId: input.correlationId,
     }), "KADI_V1_INTERPRETATION_FAILED");
     if (!interpreted.ok) {
+      // Exact fallback for an eligible owner whose deterministic-looking
+      // "create a document" request (direct.intent === "PREPARE_DOCUMENT",
+      // computed above, before interpretation was ever attempted) hit a
+      // conversational failure: provider timeout/refusal, malformed
+      // provider output, envelope validation failure, or a Brain-mapping
+      // failure that itself threw (all surface here as interpreted.ok ===
+      // false — see kadiV1ConversationalMultimodalRuntimeAdapter.js's own
+      // outer catch). Zero conversational mutation (no apply attempted, no
+      // brain_result exists to apply), at most one blank draft (the exact
+      // historical path, same idempotencyKey — a duplicate webhook replays
+      // into the same idempotent documents.start call, not a second one),
+      // no second provider call (interpretation.interpret is not retried).
+      // For any other failure (activeDocument present, or direct.intent was
+      // never PREPARE_DOCUMENT), the historical recoverable-failure message
+      // is the correct, unchanged response — nothing is silently dropped
+      // that wasn't already going to be a "please retry".
+      if (direct.intent === "PREPARE_DOCUMENT" && conversationalEligible) {
+        return startBlankDocument({
+          documentType: direct.document_type,
+          idempotencyKey: input.idempotencyKey,
+          ownerWaId: input.ownerWaId,
+          profile,
+          inputType: input.inputType,
+        });
+      }
       return buildResponse({ canonicalText: COPY.SAVED_RETRY, action: "INTERPRETATION_RECOVERABLE_FAILURE" });
+    }
+
+    // "RECHARGE" is only ever produced by an interpretation runtime that
+    // opts into it (e.g. the conversational-multimodal integration for
+    // eligible owners) — the plain brain interpretation adapter's intentMap
+    // never emits it, so this branch is unreachable dead code for every
+    // owner not using that integration, preserving existing behavior
+    // exactly. It never touches a document, only opens the existing
+    // RECHARGE Flow, mirroring the HISTORY_SEARCH branch above.
+    if (interpreted.value?.intent === "RECHARGE") {
+      if (!config.features.recharge) {
+        return buildResponse({ canonicalText: COPY.SAVED_RETRY, action: "RECHARGE_UNAVAILABLE" });
+      }
+      return buildResponse({
+        canonicalText: "Voici les options pour recharger votre solde.",
+        action: "RECHARGE_REQUESTED",
+        flowKey: "RECHARGE",
+      });
+    }
+
+    // "REMOVE_ITEM" is only ever produced by an interpretation runtime that
+    // resolved the item unambiguously against the active document itself
+    // (kadiV1ConversationalMultimodalRuntimeAdapter.js's own item lookup) —
+    // the plain adapter never emits it. This calls the existing, unmodified
+    // documents.removeContent(...) port (kadiV1RuntimeAdapters.js ->
+    // kadiV1SharedDocumentPipeline.js), the same one already used elsewhere;
+    // no new mutation logic is added here.
+    if (interpreted.value?.intent === "REMOVE_ITEM" && typeof interpreted.value.remove_item_id === "string") {
+      if (!activeDocument) {
+        return buildResponse({ canonicalText: COPY.MENU, action: "SHOW_MENU", flowKey: "MENU" });
+      }
+      const removed = asResult(await documents.removeContent({
+        ownerWaId: input.ownerWaId,
+        documentId: activeDocument.document_id,
+        expectedVersion: activeDocument.version,
+        documentType: activeDocument.document_type,
+        itemId: interpreted.value.remove_item_id,
+        idempotencyKey: input.idempotencyKey,
+      }), "KADI_V1_DOCUMENT_REMOVE_CONTENT_FAILED");
+      if (!removed.ok) return removed;
+      if (removed.duplicate !== true) emitDraftApplied(interpreted.value.observabilityFields);
+      return respondFromDocument({ document: removed.value, profile, inputType: input.inputType, action: "DOCUMENT_ITEM_REMOVED" });
+    }
+
+    // "CHANGE_DOCUMENT_TYPE" is only ever produced for the one
+    // data-compatible pair, FACTURE<->DEVIS (see
+    // kadiV1ConversationalMultimodalRuntimeAdapter.js's CONVERTIBLE_DOCUMENT_TYPES
+    // gate) — the plain adapter never emits it. This calls the existing,
+    // dedicated documents.changeDocumentType(...) port
+    // (kadiV1RuntimeAdapters.js -> kadiV1SharedDocumentPipeline.js ->
+    // kadiV1DocumentDomain.js), never overwrites document_type inline.
+    if (interpreted.value?.intent === "CHANGE_DOCUMENT_TYPE" && typeof interpreted.value.target_document_type === "string") {
+      if (!activeDocument) {
+        return buildResponse({ canonicalText: COPY.MENU, action: "SHOW_MENU", flowKey: "MENU" });
+      }
+      const changed = asResult(await documents.changeDocumentType({
+        ownerWaId: input.ownerWaId,
+        documentId: activeDocument.document_id,
+        expectedVersion: activeDocument.version,
+        documentType: activeDocument.document_type,
+        targetDocumentType: interpreted.value.target_document_type,
+        idempotencyKey: input.idempotencyKey,
+      }), "KADI_V1_DOCUMENT_CHANGE_TYPE_FAILED");
+      if (!changed.ok) return changed;
+      if (changed.duplicate !== true) emitDraftApplied(interpreted.value.observabilityFields);
+      return respondFromDocument({ document: changed.value, profile, inputType: input.inputType, action: "DOCUMENT_TYPE_CHANGED" });
     }
 
     if (interpreted.value?.intent === "PREPARE_DOCUMENT" && DOCUMENT_TYPES.includes(interpreted.value.document_type)) {
@@ -382,6 +550,7 @@ function createKadiV1ConversationOrchestrator({
         idempotencyKey: `${input.idempotencyKey}:apply`,
       }), "KADI_V1_DOCUMENT_APPLY_FAILED");
       if (!applied.ok) return applied;
+      if (applied.duplicate !== true) emitDraftApplied(interpreted.value.observabilityFields);
       return respondFromDocument({ document: applied.value, profile, inputType: input.inputType, action: "DOCUMENT_DATA_APPLIED" });
     }
 
@@ -398,6 +567,7 @@ function createKadiV1ConversationOrchestrator({
       idempotencyKey: input.idempotencyKey,
     }), "KADI_V1_DOCUMENT_APPLY_FAILED");
     if (!applied.ok) return applied;
+    if (applied.duplicate !== true) emitDraftApplied(interpreted.value.observabilityFields);
     return respondFromDocument({ document: applied.value, profile, inputType: input.inputType, action: "DOCUMENT_DATA_APPLIED" });
   }
 

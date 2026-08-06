@@ -222,6 +222,82 @@ test("rejects forbidden shortcuts and modifications of terminal documents", () =
   assert.equal(domain.transitionDocument(document, DOCUMENT_EVENTS.CONTINUE_COLLECTING).error, "DOCUMENT_TRANSITION_FORBIDDEN");
 });
 
+test("changeDocumentType converts FACTURE to DEVIS while preserving client, items, quantities and prices", () => {
+  const domain = fixture();
+  const invoice = must(domain.createDocument(commonInput("FACTURE", {
+    client: { name: "Moussa" },
+    items: [item({ description: "Table", quantity_millis: 3000, unit_price: 45000 })],
+    discount_amount: 0,
+  })));
+  const quote = must(domain.changeDocumentType(invoice, "DEVIS"));
+  assert.equal(quote.document_type, "DEVIS");
+  assert.equal(quote.document_purpose, "COMMERCIAL_PROPOSAL");
+  assert.deepEqual(quote.client, { name: "Moussa" });
+  assert.equal(quote.items.length, 1);
+  assert.equal(quote.items[0].description, "Table");
+  assert.equal(quote.items[0].quantity_millis, 3000);
+  assert.equal(quote.items[0].unit_price, 45000);
+  assert.equal(quote.subtotal, invoice.subtotal);
+  assert.equal(quote.total, invoice.total);
+  assert.equal(quote.version, invoice.version + 1);
+  assert.equal(quote.document_id, invoice.document_id);
+  assert.equal(quote.status, "COLLECTING");
+});
+
+test("changeDocumentType converts DEVIS back to FACTURE", () => {
+  const domain = fixture();
+  const quote = must(domain.createDocument(commonInput("DEVIS")));
+  const invoice = must(domain.changeDocumentType(quote, "FACTURE"));
+  assert.equal(invoice.document_type, "FACTURE");
+  assert.equal(invoice.document_purpose, "PAYMENT_DUE");
+  assert.equal(invoice.items.length, 1);
+});
+
+test("changeDocumentType resets an already-reviewed document back to COLLECTING and invalidates preview/cost, like any other correction", () => {
+  const domain = fixture();
+  let document = must(domain.createDocument(commonInput("FACTURE")));
+  document = advanceToPreview(domain, document);
+  assert.equal(document.status, "PREVIEW_READY");
+  assert.notEqual(document.preview, null);
+  const changed = must(domain.changeDocumentType(document, "DEVIS"));
+  assert.equal(changed.status, "COLLECTING");
+  assert.equal(changed.preview, null);
+  assert.equal(changed.generation_quote, null);
+  assert.equal(changed.document_type, "DEVIS");
+});
+
+test("changeDocumentType rejects RECU and DECHARGE in either direction, zero mutation", () => {
+  const domain = fixture();
+  const receipt = must(domain.createDocument({
+    document_id: "doc-recu", document_type: "RECU", issuer_profile_id: "issuer-1", currency: "XOF",
+    receipt: { payer: "Awa", beneficiary: "Moussa", reason: "Acompte", amount: 5000 },
+  }));
+  assert.equal(domain.changeDocumentType(receipt, "FACTURE").error, "DOCUMENT_TYPE_CONVERSION_UNSUPPORTED");
+  const invoice = must(domain.createDocument(commonInput("FACTURE")));
+  assert.equal(domain.changeDocumentType(invoice, "RECU").error, "DOCUMENT_TYPE_CONVERSION_TARGET_INVALID");
+  const discharge = must(domain.createDocument({
+    document_id: "doc-decharge", document_type: "DECHARGE", issuer_profile_id: "issuer-1", currency: "XOF",
+    discharge: { giver: "Awa", receiver: "Moussa", subject: { type: "GOODS", description: "Outils" }, reason: "Prêt" },
+  }));
+  assert.equal(domain.changeDocumentType(discharge, "FACTURE").error, "DOCUMENT_TYPE_CONVERSION_UNSUPPORTED");
+  assert.equal(domain.changeDocumentType(invoice, "DECHARGE").error, "DOCUMENT_TYPE_CONVERSION_TARGET_INVALID");
+});
+
+test("changeDocumentType rejects converting to the same type, zero mutation", () => {
+  const domain = fixture();
+  const invoice = must(domain.createDocument(commonInput("FACTURE")));
+  const result = domain.changeDocumentType(invoice, "FACTURE");
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DOCUMENT_TYPE_CONVERSION_NOOP");
+});
+
+test("changeDocumentType is forbidden once a document is DELIVERED or CANCELLED, exactly like any other correction", () => {
+  const domain = fixture();
+  let document = must(domain.createDocument(commonInput()));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.CANCEL));
+  assert.equal(domain.changeDocumentType(document, "DEVIS").error, "DOCUMENT_MODIFICATION_FORBIDDEN");
+});
+
 test("creates FACTURE and DEVIS as line-based documents with distinct type semantics", () => {
   const domain = fixture();
   const invoice = must(domain.createDocument(commonInput("FACTURE")));
