@@ -64,6 +64,27 @@ test("listRecentDocuments is owner-scoped and ordered stably", async () => {
   assert.deepEqual(result.value.documents.map((row) => row.document_id), ["doc_new", "doc_old"]);
 });
 
+test("history list distinguishes a proforma from a final invoice, never for other document types", async () => {
+  const proformaBundle = bundle({ id: "doc_proforma", type: "FACTURE" });
+  proformaBundle.current_snapshot = { ...proformaBundle.current_snapshot, options: { invoice_kind: "PROFORMA" } };
+  const finalBundle = bundle({ id: "doc_final", type: "FACTURE" });
+  finalBundle.current_snapshot = { ...finalBundle.current_snapshot, options: { invoice_kind: "FINAL" } };
+  const devisBundle = bundle({ id: "doc_devis", type: "FACTURE" });
+  const { service } = setup([proformaBundle, finalBundle, devisBundle]);
+  const result = await service.listRecentDocuments({ ownerWaId: OWNER });
+  assert.equal(result.ok, true);
+  const byId = Object.fromEntries(result.value.documents.map((row) => [row.document_id, row]));
+  assert.equal(byId.doc_proforma.invoice_kind, "PROFORMA");
+  assert.equal(byId.doc_final.invoice_kind, "FINAL");
+  assert.equal(byId.doc_devis.invoice_kind, null);
+  assert.equal(byId.doc_proforma.document_type, "FACTURE", "document_type itself never changes for a proforma");
+
+  const recuBundle = bundle({ id: "doc_recu", type: "RECU" });
+  const { service: recuService } = setup([recuBundle]);
+  const recuResult = await recuService.listRecentDocuments({ ownerWaId: OWNER });
+  assert.equal(recuResult.value.documents[0].invoice_kind, null, "invoice_kind never applies outside FACTURE");
+});
+
 test("stable cursor paginates without duplicates", async () => {
   const { service } = setup([
     bundle({ id: "doc_c", updated: "2026-08-02T10:00:00.000Z" }),

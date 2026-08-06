@@ -135,6 +135,7 @@ function createSupabaseV1DocumentRepository(client) {
     const restored = restoreDocumentSnapshot({
       ...document,
       issued_at: result.issued_at ?? document.issued_at,
+      document_number: result.document_number ?? document.document_number,
     });
     return restored.ok ? ok(restored.value, { duplicate: result.duplicate === true }) : restored;
   }

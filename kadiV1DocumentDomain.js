@@ -28,6 +28,21 @@ const DOCUMENT_PURPOSES = Object.freeze({
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+const DOCUMENT_NUMBER_PREFIXES = Object.freeze({
+  FACTURE: "FA", DEVIS: "DV", RECU: "RC", DECHARGE: "DC",
+});
+
+// Server-generated, deterministic from (document_type, document_id,
+// issued_at) — no external sequence/counter table exists yet, so this
+// avoids requiring a new migration while still being effectively unique:
+// issued_at carries second-level precision and document_id is already
+// globally unique per document.
+function generateDocumentNumber(documentType, documentId, issuedAtIso) {
+  const prefix = DOCUMENT_NUMBER_PREFIXES[documentType] || "DOC";
+  const compact = issuedAtIso.replace(/[^0-9]/g, "").slice(0, 14);
+  const idTail = String(documentId).replace(/[^A-Za-z0-9]/g, "").slice(-8).toUpperCase().padStart(8, "0");
+  return `${prefix}-${compact}-${idTail}`;
+}
 const SERVER_MANAGED_FIELDS = new Set([
   "status",
   "version",
@@ -629,7 +644,38 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
     if (event === DOCUMENT_EVENTS.RESUME) changes.recoverable_failure = null;
     const timestamp = now();
     if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) return fail("DOCUMENT_CLOCK_INVALID");
+    if (event === DOCUMENT_EVENTS.START_GENERATION) {
+      // issued_at/document_number are assigned here, not at MARK_GENERATED,
+      // so that the renderer producing the delivered PDF (which runs between
+      // these two events) can be fed the real finalized identity instead of
+      // a stale pre-finalization placeholder. issued_at always comes from
+      // this injected server clock, never from caller/payload input.
+      //
+      // This branch is itself idempotent: a document can reach
+      // START_GENERATION more than once (a renderer failure sends it to
+      // RECOVERABLE_FAILURE, RESUME brings it back here for a retry) and
+      // must reuse the exact same identity every time, never mint a new
+      // one — the "assign once" guarantee is enforced here, in the domain,
+      // not only by the repository/SQL layers that also happen to enforce
+      // it downstream.
+      const hasIssuedAt = typeof document.issued_at === "string" && document.issued_at !== "";
+      const hasDocumentNumber = typeof document.document_number === "string" && document.document_number !== "";
+      if (hasIssuedAt !== hasDocumentNumber) {
+        return fail("DOCUMENT_FINALIZATION_IDENTITY_CORRUPT");
+      }
+      if (!hasIssuedAt) {
+        changes.issued_at = new Date(timestamp).toISOString();
+        changes.document_number = generateDocumentNumber(document.document_type, document.document_id, changes.issued_at);
+      }
+    }
     if (event === DOCUMENT_EVENTS.MARK_GENERATED) {
+      // Fail closed: a document reaching GENERATED without a real
+      // server-assigned issued_at/document_number must never be marked as
+      // generated, delivered or billed as final (mission §4 gate).
+      if (typeof document.issued_at !== "string" || !document.issued_at ||
+          typeof document.document_number !== "string" || !document.document_number) {
+        return fail("DOCUMENT_FINALIZATION_IDENTITY_MISSING");
+      }
       const file = ownValues(payloadValues.generated_file);
       if (!file || !validIdentifier(file.final_file_id) || file.document_id !== document.document_id ||
           file.document_version !== document.version || file.immutable !== true ||
@@ -638,7 +684,6 @@ function createDocumentDomain({ clock = () => new Date().toISOString() } = {}) {
         return fail("DOCUMENT_GENERATED_FILE_INVALID");
       }
       changes.generated_file = deepFreeze(deepCopy(file));
-      changes.issued_at = new Date(timestamp).toISOString();
     }
     if (event === DOCUMENT_EVENTS.CANCEL) changes.cancelled_at = new Date(timestamp).toISOString();
     return ok(deepFreeze({
@@ -675,6 +720,7 @@ module.exports = {
   DOCUMENT_STATES,
   DOCUMENT_TYPES,
   calculateCommonTotals,
+  generateDocumentNumber,
   createDocumentDomain,
   restoreDocumentSnapshot,
   validateForReview,

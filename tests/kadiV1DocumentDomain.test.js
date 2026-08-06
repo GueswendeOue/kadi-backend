@@ -9,6 +9,7 @@ const {
   DOCUMENT_STATES,
   DOCUMENT_TYPES,
   createDocumentDomain,
+  generateDocumentNumber,
 } = require("../kadiV1DocumentDomain");
 
 const TIMES = [
@@ -362,7 +363,7 @@ test("models DECHARGE with giver, receiver and typed subject instead of client/i
   assert.equal(must(domain.transitionDocument(discharge, DOCUMENT_EVENTS.MARK_READY_FOR_REVIEW)).status, "READY_FOR_REVIEW");
 });
 
-test("issued_at comes only from the injected server clock when generation succeeds", () => {
+test("issued_at and document_number come only from the injected server clock, assigned at START_GENERATION so the renderer never sees a stale placeholder", () => {
   const domain = fixture();
   assert.equal(domain.createDocument({ ...commonInput(), issued_at: "2000-01-01T00:00:00.000Z" }).error, "DOCUMENT_SERVER_FIELD_FORBIDDEN");
   let document = advanceToPreview(domain, must(domain.createDocument(commonInput())));
@@ -370,12 +371,134 @@ test("issued_at comes only from the injected server clock when generation succee
     generation_quote: { quote_id: "quote-1", document_version: 1, page_count: 1, credit_cost: 1 },
   }));
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
+  assert.equal(document.issued_at, null);
+  assert.equal(document.document_number, null);
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.START_GENERATION));
+  assert.equal(document.issued_at, "2026-08-02T10:00:06.123Z");
+  assert.match(document.document_number, /^FA-20260802100006-[A-Z0-9]{8}$/);
   document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_GENERATED, {
     issued_at: "2000-01-01T00:00:00.000Z",
+    document_number: "IGNORED-BY-CALLER",
     generated_file: generatedFile(document),
   }));
-  assert.equal(document.issued_at, "2026-08-02T10:00:07.123Z");
+  assert.equal(document.issued_at, "2026-08-02T10:00:06.123Z");
+  assert.match(document.document_number, /^FA-20260802100006-[A-Z0-9]{8}$/);
+});
+
+test("START_GENERATION is itself idempotent: a document that already carries identity reuses it unchanged, mints nothing new", () => {
+  const domain = fixture();
+  let document = advanceToPreview(domain, must(domain.createDocument(commonInput())));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.CALCULATE_COST, {
+    generation_quote: { quote_id: "quote-1", document_version: 1, page_count: 1, credit_cost: 1 },
+  }));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.START_GENERATION));
+  const firstIssuedAt = document.issued_at;
+  const firstDocumentNumber = document.document_number;
+  assert.equal(typeof firstIssuedAt, "string");
+  assert.equal(typeof firstDocumentNumber, "string");
+
+  // START_GENERATION is only reachable from AWAITING_GENERATION_CONFIRMATION
+  // in the state machine — construct a document already carrying identity
+  // but back in that state (whatever future orchestration gets it there,
+  // e.g. a fresh PREPARE_PDF/quote cycle after a recorded failure) and
+  // prove a second call reuses the identity rather than reassigning it.
+  const backForRetry = { ...document, status: "AWAITING_GENERATION_CONFIRMATION" };
+  const retried = must(domain.transitionDocument(backForRetry, DOCUMENT_EVENTS.START_GENERATION));
+
+  assert.equal(retried.issued_at, firstIssuedAt, "retry must reuse the exact same issued_at, not mint a new one");
+  assert.equal(retried.document_number, firstDocumentNumber, "retry must reuse the exact same document_number, not mint a new one");
+});
+
+test("START_GENERATION fails closed on a partial/corrupt finalization identity (only one of issued_at/document_number set)", () => {
+  const domain = fixture();
+  let document = advanceToPreview(domain, must(domain.createDocument(commonInput())));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.CALCULATE_COST, {
+    generation_quote: { quote_id: "quote-1", document_version: 1, page_count: 1, credit_cost: 1 },
+  }));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
+  const withOnlyIssuedAt = { ...document, issued_at: "2026-08-02T10:00:00.000Z", document_number: null };
+  assert.deepEqual(
+    domain.transitionDocument(withOnlyIssuedAt, DOCUMENT_EVENTS.START_GENERATION),
+    { ok: false, error: "DOCUMENT_FINALIZATION_IDENTITY_CORRUPT" }
+  );
+  const withOnlyNumber = { ...document, issued_at: null, document_number: "FA-20260802100000-AAAAAAAA" };
+  assert.deepEqual(
+    domain.transitionDocument(withOnlyNumber, DOCUMENT_EVENTS.START_GENERATION),
+    { ok: false, error: "DOCUMENT_FINALIZATION_IDENTITY_CORRUPT" }
+  );
+});
+
+test("document_number carries a type-specific prefix (FA/DV/RC/DC) for every document type, same finalization path", () => {
+  const domain = fixture();
+  const builders = {
+    FACTURE: () => commonInput("FACTURE"),
+    DEVIS: () => commonInput("DEVIS"),
+    RECU: () => commonInput("RECU", {
+      client: undefined, items: undefined, discount_amount: undefined, tax_rate_basis_points: undefined,
+      options: { receipt_format: "A4" },
+      receipt: { payer: "Payeur", beneficiary: "Bénéficiaire", amount: 25000, reason: "Paiement" },
+    }),
+    DECHARGE: () => ({
+      document_id: "doc-discharge-number", document_type: "DECHARGE", issuer_profile_id: "issuer-1", currency: "XOF",
+      discharge: { giver: "Remettant", receiver: "Receveur", subject: { type: "MONEY", description: "Somme", amount: 30000 }, reason: "Remise" },
+    }),
+  };
+  const prefixes = { FACTURE: "FA", DEVIS: "DV", RECU: "RC", DECHARGE: "DC" };
+  for (const type of ["FACTURE", "DEVIS", "RECU", "DECHARGE"]) {
+    let document = advanceToPreview(domain, must(domain.createDocument(builders[type]())));
+    document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.CALCULATE_COST, {
+      generation_quote: { quote_id: `quote-${type}`, document_version: document.version, page_count: 1, credit_cost: 1 },
+    }));
+    document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
+    document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.START_GENERATION));
+    assert.match(document.document_number, new RegExp(`^${prefixes[type]}-\\d{14}-[A-Z0-9]{8}$`), `${type}: ${document.document_number}`);
+    assert.equal(typeof document.issued_at, "string");
+  }
+});
+
+test("generateDocumentNumber always produces exactly an 8-character uppercase alphanumeric id suffix, even for a short or already-sanitized id", () => {
+  for (const documentId of [
+    "document:aa11bb22cc33dd44",
+    "ab",
+    "a",
+    "document:1",
+    "ABCDEFGH",
+    "abcdefgh",
+    "a-b_c:d1",
+  ]) {
+    const number = generateDocumentNumber("FACTURE", documentId, "2026-08-06T10:00:06.123Z");
+    const suffix = number.split("-")[2];
+    assert.equal(suffix.length, 8, `${documentId} -> ${number}`);
+    assert.match(suffix, /^[A-Z0-9]{8}$/, `${documentId} -> ${number}`);
+  }
+});
+
+test("generateDocumentNumber falls back to the DOC prefix for an unrecognized document type", () => {
+  const number = generateDocumentNumber("UNKNOWN_TYPE", "document:abcdef1234567890", "2026-08-06T10:00:06.123Z");
+  assert.match(number, /^DOC-20260806100006-[A-Z0-9]{8}$/);
+});
+
+test("generateDocumentNumber uses UTC and keeps only digits from issued_at, ignoring milliseconds", () => {
+  const number = generateDocumentNumber("RECU", "document:abcdef1234567890", "2026-08-06T23:59:59.999Z");
+  assert.match(number, /^RC-20260806235959-[A-Z0-9]{8}$/);
+});
+
+test("MARK_GENERATED fails closed when issued_at/document_number are missing", () => {
+  const domain = fixture();
+  let document = advanceToPreview(domain, must(domain.createDocument(commonInput())));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.CALCULATE_COST, {
+    generation_quote: { quote_id: "quote-1", document_version: 1, page_count: 1, credit_cost: 1 },
+  }));
+  document = must(domain.transitionDocument(document, DOCUMENT_EVENTS.REQUEST_GENERATION_CONFIRMATION));
+  // Simulate a document that reached GENERATION_IN_PROGRESS without ever
+  // going through this domain's own START_GENERATION assignment (should be
+  // impossible in practice, but the gate must hold regardless).
+  document = { ...document, status: "GENERATION_IN_PROGRESS" };
+  assert.deepEqual(
+    domain.transitionDocument(document, DOCUMENT_EVENTS.MARK_GENERATED, { generated_file: generatedFile(document) }),
+    { ok: false, error: "DOCUMENT_FINALIZATION_IDENTITY_MISSING" }
+  );
 });
 
 test("contains no stamp field or stamp command in creation and modification", () => {

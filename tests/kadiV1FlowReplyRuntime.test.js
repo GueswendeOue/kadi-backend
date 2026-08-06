@@ -6,6 +6,7 @@ const {
   createKadiV1FlowReplyRuntime,
   validateActionPayload,
   validateReplyEnvelope,
+  FLOW_ACTIONS,
 } = require("../kadiV1FlowReplyRuntime");
 const {
   createConversationSessionService,
@@ -210,4 +211,132 @@ test("oversized and excessively deep payloads fail closed", () => {
   const deep = { query: { a: { b: { c: { d: { e: { f: "x" } } } } } } };
   const tooDeep = validateActionPayload("HISTORY_SEARCH", "SEARCH", deep);
   assert.equal(tooDeep.error, "KADI_V1_FLOW_REPLY_PAYLOAD_TOO_DEEP");
+});
+
+// --- SAVE_OPTIONS tax rate: dual-field transition window (percent + legacy basis points) ---
+
+test("old published Flow payload (tax_rate_basis_points only) is still accepted and persists unchanged", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_basis_points: 1800 });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1800);
+  assert.equal(Object.hasOwn(result.value, "tax_rate_percent"), false);
+});
+
+test("new Flow payload (tax_rate_percent only) converts to basis points for the shared pipeline", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "18" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1800);
+  assert.equal(Object.hasOwn(result.value, "tax_rate_percent"), false);
+});
+
+test("SAVE_OPTIONS accepts a decimal percent down to basis-point granularity", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "18.25" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1825);
+});
+
+test("both fields present and agreeing on the same rate is accepted, single persisted value", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", {
+    tax_rate_percent: "18", tax_rate_basis_points: 1800,
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1800);
+  assert.equal(Object.hasOwn(result.value, "tax_rate_percent"), false);
+});
+
+test("both fields present but disagreeing on the rate fails closed with a specific conflict error, never silently prefers one", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", {
+    tax_rate_percent: "18", tax_rate_basis_points: 1900,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "KADI_V1_FLOW_REPLY_TAX_RATE_CONFLICT");
+});
+
+test("SAVE_OPTIONS with no tax field, or both blank, means no tax at all — not zero-as-a-value", () => {
+  const omitted = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { discount_amount: 1000 });
+  assert.equal(omitted.ok, true, omitted.error);
+  assert.equal(Object.hasOwn(omitted.value, "tax_rate_basis_points"), false);
+  const blankPercent = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "" });
+  assert.equal(blankPercent.ok, true, blankPercent.error);
+  assert.equal(Object.hasOwn(blankPercent.value, "tax_rate_basis_points"), false);
+  const whitespacePercent = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "   " });
+  assert.equal(whitespacePercent.ok, true, whitespacePercent.error);
+  assert.equal(Object.hasOwn(whitespacePercent.value, "tax_rate_basis_points"), false);
+  const bothBlank = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", {
+    tax_rate_percent: "", tax_rate_basis_points: "",
+  });
+  assert.equal(bothBlank.ok, true, bothBlank.error);
+  assert.equal(Object.hasOwn(bothBlank.value, "tax_rate_basis_points"), false);
+});
+
+test("SAVE_OPTIONS rejects zero, negative, over-100 and malformed-decimal percents", () => {
+  // a whitespace-only value is treated as blank ("no tax"), not malformed —
+  // covered separately above, alongside "" and an omitted field.
+  for (const invalid of ["0", "-5", "101", "100.001", "18.505", "abc", "18%", "1e2"]) {
+    const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: invalid });
+    assert.equal(result.ok, false, `expected ${JSON.stringify(invalid)} to be rejected`);
+    assert.equal(result.error, "KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  }
+});
+
+test("SAVE_OPTIONS accepts French comma decimals, normalized to a dot", () => {
+  for (const [input, expectedBps] of [["18", 1800], ["18.5", 1850], ["18,5", 1850], ["18.25", 1825], ["18,25", 1825]]) {
+    const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: input });
+    assert.equal(result.ok, true, `${input}: ${result.error}`);
+    assert.equal(result.value.tax_rate_basis_points, expectedBps, input);
+  }
+});
+
+test("SAVE_OPTIONS rejects mixed/multiple separators, exponents and internal spaces in the percent", () => {
+  for (const invalid of ["1,8.5", "18.5,", "18..5", "18,,5", "18, 5", "1 8", "1e2", "18,5,5"]) {
+    const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: invalid });
+    assert.equal(result.ok, false, `expected ${JSON.stringify(invalid)} to be rejected`);
+    assert.equal(result.error, "KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  }
+});
+
+test("SAVE_OPTIONS accepts exactly 100 as the upper bound for the percent field", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "100" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 10000);
+});
+
+test("legacy tax_rate_basis_points rejects zero, negative, malformed and over-10000 (over 100%) values", () => {
+  for (const invalid of [0, -1, 10001, "abc", "18.5", "1800%", "  "]) {
+    const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_basis_points: invalid });
+    assert.equal(result.ok, false, `expected ${JSON.stringify(invalid)} to be rejected`);
+    assert.equal(result.error, "KADI_V1_FLOW_REPLY_TAX_RATE_INVALID");
+  }
+});
+
+test("legacy tax_rate_basis_points accepts exactly 10000 as the upper bound", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_basis_points: 10000 });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 10000);
+});
+
+test("SAVE_OPTIONS never accepts a tax_amount, subtotal or total field from the Flow", () => {
+  const amount = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "18", tax_amount: 90000 });
+  assert.equal(amount.ok, false);
+  assert.equal(amount.error, "KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN");
+  const subtotal = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_basis_points: 1800, subtotal: 500000 });
+  assert.equal(subtotal.ok, false);
+  assert.equal(subtotal.error, "KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN");
+});
+
+test("SAVE_OPTIONS still rejects any field outside the known allowlist", () => {
+  const result = validateActionPayload("DOCUMENT_OPTIONS", "SAVE_OPTIONS", { tax_rate_percent: "18", tax_currency: "XOF" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
+});
+
+test("RECU and DECHARGE Flow keys never accept a tax field — SAVE_OPTIONS is not in their action list", () => {
+  assert.equal(FLOW_ACTIONS.RECEIPT_DETAILS.includes("SAVE_OPTIONS"), false);
+  assert.equal(FLOW_ACTIONS.DISCHARGE_DETAILS.includes("SAVE_OPTIONS"), false);
+  const onReceipt = validateActionPayload("RECEIPT_DETAILS", "SAVE_OPTIONS", { tax_rate_percent: "18" });
+  assert.equal(onReceipt.ok, false);
+  assert.equal(onReceipt.error, "KADI_V1_FLOW_REPLY_ACTION_FORBIDDEN");
+  const onDischarge = validateActionPayload("DISCHARGE_DETAILS", "SAVE_OPTIONS", { tax_rate_percent: "18" });
+  assert.equal(onDischarge.ok, false);
+  assert.equal(onDischarge.error, "KADI_V1_FLOW_REPLY_ACTION_FORBIDDEN");
 });

@@ -352,12 +352,16 @@ function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderServ
 }
 
 function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {}) {
-  const lifecycle = assertMethods(generationLifecycleService, ["confirmGeneration"], "KADI_V1_GENERATION_LIFECYCLE_SERVICE");
+  const lifecycle = assertMethods(generationLifecycleService, ["confirmOrRetryGeneration"], "KADI_V1_GENERATION_LIFECYCLE_SERVICE");
   async function confirm(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
     if (!/^[A-Za-z0-9:_.-]{1,200}$/.test(command.quoteId || "")) return fail("KADI_V1_GENERATION_QUOTE_INVALID");
-    return lifecycle.confirmGeneration({
+    // confirmOrRetryGeneration transparently routes to the normal
+    // confirmation path or, when the document is in the exact eligible
+    // pre-capture recovery state, to the render-retry path — same action,
+    // same idempotencyKey derivation, no new Meta Flow or command name.
+    return lifecycle.confirmOrRetryGeneration({
       ownerWaId: command.ownerWaId, documentId: command.documentId, documentVersion: command.expectedVersion,
       quoteId: command.quoteId, idempotencyKey: runtimeKey("generation_confirm:", command.idempotencyKey),
     });

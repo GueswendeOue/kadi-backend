@@ -175,6 +175,7 @@ function normalizeOptions(documentType, value) {
   for (const field of ["discount_amount", "tax_rate_basis_points"]) {
     if (Object.hasOwn(value, field)) {
       if (!Number.isSafeInteger(value[field]) || value[field] < 0) return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
+      if (field === "tax_rate_basis_points" && value[field] > 10000) return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
       result[field] = value[field];
     }
   }

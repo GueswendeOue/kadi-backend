@@ -686,6 +686,19 @@ function createKadiV1RechargeRuntime({
   return Object.freeze({ selectPack, checkPayment, cancel });
 }
 
+// invoice_kind only distinguishes a FACTURE from its proforma variant —
+// document_type itself never changes (see kadiV1PreviewService.js/
+// kadiV1TemporaryRenderService.js for the same distinction applied to the
+// rendered PDF title). Without this, a proforma and a final invoice were
+// delivered under the exact same "facture.pdf" filename.
+function deliveryFilenameBase(documentRow) {
+  const documentType = String(documentRow?.document_type || "document").toLowerCase();
+  if (documentRow?.document_type === "FACTURE" && documentRow?.options?.invoice_kind === "PROFORMA") {
+    return "facture_proforma";
+  }
+  return documentType;
+}
+
 function createKadiV1WhatsAppDeliveryProvider({
   client,
   storage,
@@ -712,10 +725,11 @@ function createKadiV1WhatsAppDeliveryProvider({
       }
       const document = await supabase
         .from("kadi_v1_documents")
-        .select("owner_wa_id,document_type")
+        .select("owner_wa_id,document_type,options")
         .eq("document_id", finalFile.document_id)
         .maybeSingle();
       const ownerWaId = document?.data?.owner_wa_id;
+      const deliveryFilename = `${deliveryFilenameBase(document?.data)}.pdf`;
       const expectedDestination = OWNER_PATTERN.test(ownerWaId || "")
         ? `owner:${digest(ownerWaId).slice(0, 12)}`
         : null;
@@ -731,14 +745,14 @@ function createKadiV1WhatsAppDeliveryProvider({
       const uploaded = await whatsappApi.uploadMediaBuffer({
         buffer: bytes.value,
         mimeType: "application/pdf",
-        filename: `${String(document.data.document_type || "document").toLowerCase()}.pdf`,
+        filename: deliveryFilename,
       });
       const mediaId = uploaded?.id || uploaded?.media_id;
       if (!mediaId) return fail("DELIVERY_MEDIA_UPLOAD_FAILED");
       const sent = await whatsappApi.sendDocument({
         to: ownerWaId,
         mediaId,
-        filename: `${String(document.data.document_type || "document").toLowerCase()}.pdf`,
+        filename: deliveryFilename,
         caption: "Votre document Kadi est prêt.",
       });
       const reference = sent?.messages?.[0]?.id || sent?.id || deliveryAttemptId;
@@ -758,6 +772,7 @@ module.exports = {
   createKadiV1IssuerResolver,
   createKadiV1RechargeRuntime,
   createKadiV1WhatsAppDeliveryProvider,
+  deliveryFilenameBase,
   createManualOrangeMoneyPaymentProvider,
   createSupabasePrivateArtifactStorage,
   parseStorageRef,

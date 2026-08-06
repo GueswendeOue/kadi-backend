@@ -54,7 +54,7 @@ async function buildRecuA4Pdf({
   });
 
   drawPartyBox(pdf, ctx, {
-    label: "Client",
+    label: "Payeur",
     client: docData.client || "—",
     clientPhone: docData.clientPhone || null,
     subject: docData.subject || null,

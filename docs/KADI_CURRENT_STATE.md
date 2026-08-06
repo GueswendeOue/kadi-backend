@@ -131,6 +131,90 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
 * **Statut : `PLANNED`** — les correctifs additionnels de décharge non
   couverts par la mission ci-dessus restent à traiter séparément.
 
+### PDF final state, titre proforma, libellé reçu, taxe en pourcentage
+
+* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_APPLIED_AWAITING_FINAL_REVIEW`**
+  — code implémenté, committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la branche
+  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
+  `8718e6461151ccf075527bc4afac957530a8e0a3`), **PR #12 ouverte en
+  DRAFT** contre `main`, **non fusionnée**. Migration Supabase
+  `20260806010000_add_kadi_v1_finalization_identity` **appliquée et
+  vérifiée en distant** sur le projet `cmhargmwkyskbobmkrcj` le
+  2026-08-06 (une seule fois, historique distant par ailleurs cohérent,
+  fonctions et permissions déployées vérifiées en lecture seule contre la
+  source de la migration, aucune ligne de donnée applicative modifiée).
+  Aucun Flow `DOCUMENT_OPTIONS` republié, aucun déploiement Render
+  effectué, Render non modifié, aucun test WhatsApp de production
+  réalisé. **Le préalable requis avant la fusion de cette PR — la
+  migration appliquée et vérifiée en distant, car `main` peut
+  auto-déployer sur Render — est désormais satisfait** ; voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour la suite
+  de la séquence (revue finale, fusion, déploiement, publication Meta,
+  CANARY). Ne pas présenter comme actif en production tant que ces
+  étapes restantes n'ont pas eu lieu. Voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet des causes confirmées et des correctifs.
+* Corrige : PDF final affichant « BROUILLON »/date vide/pas de numéro
+  (FACTURE, DEVIS, RECU, DECHARGE — même chemin de finalisation partagé) ;
+  FACTURE proforma affichée comme « FACTURE » simple ; reçu affichant
+  « CLIENT » au lieu de « Payeur » ; saisie de taxe en points de base bruts
+  au lieu d'un pourcentage.
+* **Statut de la navigation options/taxe : `UNRESOLVED_PRODUCTION_DIAGNOSIS_REQUIRED`,
+  sans lien avec la reprise de génération ci-dessous.** Le blocage
+  générique rapporté après « Terminer les articles » n'a révélé aucun bug
+  dans le code de routage (entièrement tracé et déjà testé) — seule une
+  lacune cosmétique réelle a été trouvée et corrigée (résumé d'options
+  manquant). La cause du blocage rapporté reste à confirmer par les logs
+  Render en conditions réelles ; aucune correction de code n'est proposée
+  pour ce point tant que la cause n'est pas confirmée.
+* Migration Supabase appliquée et vérifiée en distant :
+  `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
+  (projet `cmhargmwkyskbobmkrcj`, appliquée le 2026-08-06).
+* Le Flow Meta `DOCUMENT_OPTIONS` publié n'a **pas** besoin d'être republié
+  avant le déploiement backend : le backend accepte désormais son ancien
+  champ (`tax_rate_basis_points`) en fenêtre de compatibilité — voir fiche
+  P de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Une
+  nouvelle publication (champ `tax_rate_percent`) reste nécessaire pour que
+  la saisie en pourcentage soit visible par un utilisateur réel, mais
+  n'est plus un préalable bloquant au déploiement du backend.
+* **Ordre de déploiement obligatoire — voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour la
+  procédure complète.** La migration ci-dessus a été appliquée en
+  distant le 2026-08-06, **avant** toute fusion et donc avant tout
+  déploiement du backend — l'ordre requis est respecté. Sans cette
+  application préalable, la RPC `kadi_v1_persist_transition`
+  précédemment en place aurait rejeté explicitement tout `issued_at` non
+  nul envoyé hors de l'état `GENERATED` (`KADI_V1_SERVER_FIELD_FORBIDDEN`)
+  et **la génération finale de tout document, pour tout utilisateur,
+  aurait échoué intégralement** si le backend avait été déployé sans la
+  migration ; ce risque est désormais écarté par l'application confirmée.
+* Un document dont le rendu échoue après l'assignation d'identité
+  (`START_GENERATION` déjà passé) conserve un `issued_at`/`document_number`
+  « réservés » sans jamais avoir produit d'artefact livré — ce n'est ni un
+  débit, ni une entrée d'historique final ; une reprise réutilise cette
+  même identité, jamais une nouvelle.
+* Reprise après un échec au stade du rendu/stockage privé (avant capture
+  des crédits) désormais implémentée **et accessible par l'utilisateur réel
+  via l'action de confirmation existante** :
+  `kadiV1GenerationLifecycleService.js`'s `retryFailedGeneration`, atteint
+  par le nouveau `confirmOrRetryGeneration` que
+  `createKadiV1GenerationRuntimeAdapter` appelle désormais à la place de
+  `confirmGeneration` — c'est-à-dire la **même** action Flow
+  `CONFIRM_GENERATION`, le **même** écran `GENERATION_CONFIRMATION`, sans
+  aucune nouvelle action ni nouveau Flow Meta. Même identité réutilisée, un
+  seul débit, une seule livraison, rejeu et tentatives concurrentes sans
+  effet. Message utilisateur en cas d'échec récupérable à ce stade : « Le
+  document n'a pas pu être généré. Vous pouvez réessayer sans perdre de
+  crédit. » (aucun terme technique exposé). Voir fiche Q de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet — correctif écrit, testé localement (y compris à travers
+  la composition de production réelle, `kadiV1ProductionBootstrap.js`),
+  committé (`59f365e31737cf4f1b475ab0172322cdccac6932`) et proposé via la
+  PR #12 (DRAFT, non fusionnée), **non déployé**. Aucune correction de
+  production ne peut être revendiquée avant déploiement et validation
+  CANARY fraîche.
+
 ## Blocages connus
 
 * **Meta 141006** — les conversations initiées par l'entreprise (proactives)

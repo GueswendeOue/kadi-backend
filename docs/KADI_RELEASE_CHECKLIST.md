@@ -54,6 +54,82 @@ précédente a réussi.
 - [ ] **Vérification SQL en lecture seule** après application, pour
       confirmer la contrainte/l'objet attendu sans modifier de données.
 
+## Ordre obligatoire — `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (identité de finalisation)
+
+Cette branche introduit une dépendance d'ordonnancement stricte entre la
+migration Supabase et le déploiement backend, confirmée par revue
+adversariale indépendante (voir fiche P de
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)). Suivre
+exactement cet ordre, dans ce sens, à ne pas paralléliser :
+
+**Précision critique :** `kadi-backend` sur Render **auto-déploie `main`**
+(voir [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md)) — le
+déploiement n'est donc pas une étape manuelle séparée exécutée après coup,
+il se produit **au moment de la fusion** de la PR backend dans `main`. Par
+conséquent, l'étape 1 ci-dessous (migration appliquée et vérifiée en
+distant) doit être terminée **avant la fusion de la PR backend**, pas
+seulement « avant un déploiement ultérieur » — fusionner sans avoir
+d'abord appliqué la migration revient, dans les faits, à déployer sans
+elle.
+
+1. **Revoir et approuver le code** (revue normale de la PR backend) — ne
+   pas fusionner à cette étape.
+2. **[FAIT — 2026-08-06]** ~~Appliquer~~
+   `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
+   en distant (autorisation explicite requise, voir
+   [`runbooks/APPLY_SUPABASE_MIGRATION.md`](runbooks/APPLY_SUPABASE_MIGRATION.md))
+   et ~~vérifier~~ sa présence en distant (lecture seule de la définition
+   de `kadi_v1_persist_transition` / `kadi_v1_generate_document_number`).
+   **Appliquée et vérifiée en distant** sur le projet `cmhargmwkyskbobmkrcj`,
+   présente exactement une fois dans `supabase migration list`, corps des
+   deux fonctions et permissions vérifiés en lecture seule contre la
+   source de la migration. Voir fiche P de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+3. **Alors seulement, fusionner** la PR backend dans `main` — puisque la
+   fusion déclenche l'auto-déploiement Render, cette étape ne peut avoir
+   lieu qu'après confirmation de l'étape 2 (**désormais satisfaite**),
+   jamais avant ni en parallèle. **Non exécutée par cette mission — la
+   fusion reste une action distincte, non autorisée ici.**
+4. **Vérifier** le démarrage du service et qu'un document de test peut
+   atteindre `GENERATION_IN_PROGRESS` sans erreur `KADI_V1_SERVER_FIELD_FORBIDDEN`
+   ni `DOCUMENT_FINALIZATION_IDENTITY_MISSING`/`DOCUMENT_FINALIZATION_IDENTITY_CORRUPT`.
+5. **Publier** la nouvelle version du Flow Meta `DOCUMENT_OPTIONS` (champ
+   `tax_rate_percent`) — autorisation explicite requise, non effectuée par
+   la mission qui a écrit ce correctif.
+6. **Configurer** un nouvel identifiant/variable d'environnement Render
+   uniquement si la publication en a effectivement créé un nouveau (pas
+   nécessairement le cas pour une simple mise à jour de champ sur un Flow
+   existant).
+7. **Démarrer une session WhatsApp fraîche** pour la validation — jamais la
+   reprise d'une session ouverte avant l'étape 3 ou 5 (voir fiche F de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
+8. **Exécuter la matrice CANARY** : FACTURE FINAL, FACTURE PROFORMA, DEVIS,
+   RECU A4, RECU TICKET_80, DECHARGE (MONEY/GOODS/DOCUMENT/OTHER) — vérifier
+   pour chacun : titre correct, numéro et date réels (jamais BROUILLON),
+   options/taxe atteignables, calcul 18 % correct.
+9. **Seulement ensuite** envisager un rollout plus large.
+
+**Conséquences documentées si l'ordre n'est pas respecté :**
+
+* PR backend fusionnée (donc déployée, auto-déploiement Render) **avant**
+  l'étape 2 : la RPC `kadi_v1_persist_transition` actuellement en place
+  rejette tout `issued_at` non nul hors de l'état `GENERATED` — **panne
+  totale de la génération finale**, tous types de documents, tous
+  utilisateurs, jusqu'à application de la migration.
+* Ancien backend avec un Flow déjà republié (étape 5 avant étape 3) :
+  sans risque grâce à la fenêtre de compatibilité double-champ — le champ
+  `tax_rate_percent` du nouveau Flow serait néanmoins rejeté par l'ancien
+  backend s'il n'accepte pas encore ce nom de champ ; respecter l'ordre
+  ci-dessus évite la question.
+* Session WhatsApp restée ouverte pendant la bascule : reste acceptée
+  pendant la fenêtre de compatibilité (les deux noms de champ de taxe sont
+  acceptés), mais doit néanmoins être revalidée par une session fraîche
+  avant de conclure à une correction réelle.
+* Migration non appliquée du tout : voir premier point — même conséquence,
+  permanente tant que la migration n'est pas appliquée. **Ce cas ne
+  s'applique plus à `20260806010000_add_kadi_v1_finalization_identity.sql`,
+  appliquée et vérifiée en distant le 2026-08-06.**
+
 ## Déploiement Render
 
 - [ ] **Commit Render attendu** : vérifier que le commit qui sera déployé

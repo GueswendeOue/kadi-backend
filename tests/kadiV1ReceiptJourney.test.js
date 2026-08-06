@@ -477,6 +477,17 @@ test("TICKET_80 selects the compact renderer through the real router chain, neve
   assert.equal(resolveRenderer(docData), buildRecuCompactPdf);
 });
 
+test("A4 and TICKET_80 receipts label the payer field 'Payeur', never the generic 'Client'", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const a4Source = fs.readFileSync(path.join(__dirname, "..", "pdf", "kadiPdfRecuA4.js"), "utf8");
+  const compactSource = fs.readFileSync(path.join(__dirname, "..", "pdf", "kadiPdfRecuCompact.js"), "utf8");
+  assert.match(a4Source, /label:\s*"Payeur"/);
+  assert.doesNotMatch(a4Source, /label:\s*"Client"/);
+  assert.match(compactSource, /"PAYEUR"/);
+  assert.doesNotMatch(compactSource, /"CLIENT"/);
+});
+
 test("resolveReceiptFormat fails closed on a missing or invalid persisted format, never defaulting to A4", () => {
   for (const invalid of [null, undefined, "", "compact", "ticket", "a4", "unknown"]) {
     assert.throws(() => resolveReceiptFormat(invalid), /RECEIPT_FORMAT_INVALID/);

@@ -46,6 +46,7 @@ function passiveCommandRuntimeDependencies(generationRuntime) {
 async function createRecoveryHarness({
   balance = 20,
   failPromotionOnce = false,
+  failRenderOnce = false,
   deliveryResults = [ok({ reference: "delivery:release:ok" })],
 } = {}) {
   const clock = () => NOW;
@@ -129,11 +130,16 @@ async function createRecoveryHarness({
   });
 
   let promotionShouldFail = failPromotionOnce;
+  let renderShouldFail = failRenderOnce;
   let deliveryIndex = 0;
   const finalGeneration = {
     async generatePrivate({ generationAttemptId, expectedPageCount }) {
       const attempt = await generationRepository.getGenerationAttempt({ generationAttemptId });
       if (!attempt.ok) return attempt;
+      if (renderShouldFail) {
+        renderShouldFail = false;
+        return fail("FINAL_RENDER_FAILED");
+      }
       return generationRepository.updateGenerationAttempt({
         generationAttemptId,
         expectedStatus: "STARTED",
@@ -245,11 +251,11 @@ async function createRecoveryHarness({
   });
   const replies = createKadiV1FlowReplyRuntime({ sessionService: sessions, commandRuntime });
 
-  async function openConfirmationSession(key = "default") {
+  async function openConfirmationSession(key = "default", ownerWaId = OWNER) {
     const current = await documents.getDocumentById({ documentId: DOCUMENT_ID, ownerWaId: OWNER });
     assert.equal(current.ok, true);
     const opened = await sessions.open({
-      ownerWaId: OWNER,
+      ownerWaId,
       document: current.value,
       expectedFlowKey: "GENERATION_CONFIRMATION",
       idempotencyKey: `release:confirmation-session:${key}`,
@@ -258,9 +264,9 @@ async function createRecoveryHarness({
     return opened.value;
   }
 
-  async function confirmThroughFlow({ session, replyKey = "release:confirm:reply" }) {
+  async function confirmThroughFlow({ session, replyKey = "release:confirm:reply", ownerWaId = OWNER }) {
     return replies.handle({
-      ownerWaId: OWNER,
+      ownerWaId,
       sessionId: session.session_id,
       flowKey: "GENERATION_CONFIRMATION",
       action: "CONFIRM_GENERATION",
@@ -390,6 +396,127 @@ test("release recovery: correcting after preview invalidates the old version bef
   assert.deepEqual(result, { ok: false, error: "GENERATION_CONFIRMATION_STATE_INVALID" });
   const state = harness.generationRepository.inspect();
   assert.equal(state.reservations.length, 0);
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+});
+
+// --- Render-failure recovery reachable through the real production entrypoint ---
+//
+// These tests drive the exact same webhook/Flow action a real user's
+// WhatsApp confirmation uses (createKadiV1FlowCommandRuntime's
+// CONFIRM_GENERATION dispatch → createKadiV1GenerationRuntimeAdapter's
+// confirm() → kadiV1GenerationLifecycleService's confirmOrRetryGeneration),
+// never retryFailedGeneration directly — proving the recovery path is truly
+// user-reachable, not merely unit-callable.
+
+test("release recovery: a render failure is recoverable by pressing the same confirmation action again — same identity, one capture/artifact/delivery, replay inert", async () => {
+  const harness = await createRecoveryHarness({ failRenderOnce: true });
+
+  // 1-4: real confirmation reaches the generation service; START_GENERATION
+  // assigns identity; renderer fails before capture.
+  const firstSession = await harness.openConfirmationSession("render-failure-1");
+  const failed = await harness.confirmThroughFlow({ session: firstSession, replyKey: "release:confirm:render-failure-1" });
+  assert.deepEqual(failed, { ok: false, error: "FINAL_RENDER_FAILED" });
+
+  // 5-6: reservation released, document RECOVERABLE_FAILURE, no artifact,
+  // capture or delivery.
+  let state = harness.generationRepository.inspect();
+  assert.equal(state.reservations[0].status, "RELEASED");
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+  assert.equal(state.deliveries.length, 0);
+  const beforeRetry = await harness.documents.getDocumentById({ documentId: DOCUMENT_ID, ownerWaId: OWNER });
+  assert.equal(beforeRetry.value.status, "RECOVERABLE_FAILURE");
+  assert.equal(beforeRetry.value.recoverable_failure?.resume_state, "GENERATION_IN_PROGRESS");
+  const reservedIssuedAt = beforeRetry.value.issued_at;
+  const reservedDocumentNumber = beforeRetry.value.document_number;
+  assert.equal(typeof reservedIssuedAt, "string");
+  assert.match(reservedDocumentNumber, /^FA-\d{14}-[A-Z0-9]{8}$/);
+
+  // 7-9: user invokes the exact same real confirmation action again (a
+  // fresh WhatsApp interaction — new Flow session, new idempotency key,
+  // same CONFIRM_GENERATION action, same quote); the production dispatcher
+  // detects the eligible recovery state and reaches retryFailedGeneration
+  // — never called directly by this test.
+  const retrySession = await harness.openConfirmationSession("render-failure-2");
+  const retried = await harness.confirmThroughFlow({ session: retrySession, replyKey: "release:confirm:render-failure-2" });
+  assert.equal(retried.ok, true, retried.error);
+
+  // 10-11: exact same identity reused.
+  assert.equal(retried.value.result.document.issued_at, reservedIssuedAt);
+  assert.equal(retried.value.result.document.document_number, reservedDocumentNumber);
+
+  // 12-16: renderer succeeds this time; exactly one capture, one final
+  // artifact, one delivery; document GENERATED/DELIVERED.
+  state = harness.generationRepository.inspect();
+  assert.equal(state.ledger.length, 1);
+  assert.equal(state.finalFiles.length, 1);
+  assert.equal(state.deliveries.length, 1);
+  assert.equal(retried.value.result.document.status, "DELIVERED");
+
+  // 17: replaying the same confirmation action (same session, same reply
+  // key — a duplicate webhook delivery) is inert: no additional render,
+  // reservation, capture, artifact or delivery beyond what the legitimate
+  // failure-then-retry sequence already produced (one released reservation
+  // from the failed attempt, one captured reservation from the successful
+  // retry — two reservations total is correct and expected here).
+  const beforeReplayReservationCount = harness.generationRepository.inspect().reservations.length;
+  assert.equal(beforeReplayReservationCount, 2);
+  const replayed = await harness.confirmThroughFlow({ session: retrySession, replyKey: "release:confirm:render-failure-2" });
+  assert.equal(replayed.ok, true, replayed.error);
+  const afterReplay = harness.generationRepository.inspect();
+  assert.equal(afterReplay.reservations.length, beforeReplayReservationCount, "no new reservation from the replay");
+  assert.equal(afterReplay.ledger.length, 1);
+  assert.equal(afterReplay.finalFiles.length, 1);
+  assert.equal(afterReplay.deliveries.length, 1);
+});
+
+test("release recovery: normal confirmation on a document with no recovery history still calls the normal path (dispatcher regression guard)", async () => {
+  const harness = await createRecoveryHarness();
+  const session = await harness.openConfirmationSession("normal-path");
+  const result = await harness.confirmThroughFlow({ session, replyKey: "release:confirm:normal-path" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.result.document.status, "DELIVERED");
+});
+
+test("release recovery: a RECOVERABLE_FAILURE recorded at an unrelated stage can never enter the render-retry path through the real entrypoint", async () => {
+  const harness = await createRecoveryHarness();
+  // Simulate a document that failed for an unrelated reason (e.g. while
+  // still COLLECTING) long before ever reaching generation — no
+  // generation_attempt exists for this quote at all in that case, but even
+  // if a stale/unrelated attempt row existed, the resume_state guard must
+  // still refuse it.
+  const current = await harness.documents.getDocumentById({ documentId: DOCUMENT_ID, ownerWaId: OWNER });
+  const corrupted = {
+    ...current.value,
+    status: "RECOVERABLE_FAILURE",
+    recoverable_failure: { code: "UNRELATED_FAILURE", from_state: "COLLECTING", resume_state: "COLLECTING" },
+  };
+  await harness.documents.persistTransition({
+    document: corrupted, ownerWaId: OWNER, expectedVersion: current.value.version, fromState: current.value.status,
+    eventType: "TEST_UNRELATED_FAILURE", idempotencyKey: "release:unrelated-failure",
+  });
+  const session = await harness.openConfirmationSession("unrelated-failure");
+  const result = await harness.confirmThroughFlow({ session, replyKey: "release:confirm:unrelated-failure" });
+  assert.equal(result.ok, false);
+  assert.notEqual(result.error, undefined);
+  const state = harness.generationRepository.inspect();
+  assert.equal(state.reservations.length, 0);
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.finalFiles.length, 0);
+});
+
+test("release recovery: a different owner cannot confirm or retry generation for someone else's document", async () => {
+  const harness = await createRecoveryHarness({ failRenderOnce: true });
+  const session = await harness.openConfirmationSession("owner-check");
+  const failed = await harness.confirmThroughFlow({ session, replyKey: "release:confirm:owner-check" });
+  assert.equal(failed.ok, false);
+  const OTHER_OWNER = "22679999999";
+  const other = await harness.lifecycle.confirmOrRetryGeneration({
+    ownerWaId: OTHER_OWNER, documentId: DOCUMENT_ID, documentVersion: 1, quoteId: QUOTE_ID, idempotencyKey: "release:confirm:owner-mismatch",
+  });
+  assert.equal(other.ok, false);
+  const state = harness.generationRepository.inspect();
   assert.equal(state.ledger.length, 0);
   assert.equal(state.finalFiles.length, 0);
 });

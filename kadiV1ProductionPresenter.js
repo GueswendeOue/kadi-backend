@@ -636,6 +636,10 @@ function suggestedDataForFlow(flowKey, source, extra = {}) {
     }
   }
 
+  if (flowKey === "DOCUMENT_OPTIONS") {
+    output.current_summary = buildItemsSummary(document);
+  }
+
   if (flowKey === "DOCUMENT_PREVIEW") {
     output.preview_summary = buildPreviewSummary(document, extra.issuerProfile || null);
   }

@@ -828,3 +828,453 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   `tests/kadiV1ConversationalDraftAppliedObservability.test.js`, en
   particulier les tests 1 à 3 (échec → zéro événement) et le test 7 (rejeu →
   un seul événement au total).
+
+## P. PDF final présenté comme brouillon, proforma non distinguée, libellé reçu générique, taxe saisie en points de base
+
+* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_APPLIED_AWAITING_FINAL_REVIEW`**
+  — correctifs écrits, testés localement, committés
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussés sur la branche
+  `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
+  `8718e6461151ccf075527bc4afac957530a8e0a3`) — **PR #12 ouverte en
+  DRAFT, non fusionnée, non déployée. Migration Supabase
+  `20260806010000_add_kadi_v1_finalization_identity` appliquée et
+  vérifiée en distant sur le projet `cmhargmwkyskbobmkrcj` le
+  2026-08-06 (une seule fois, fonctions et permissions déployées
+  vérifiées en lecture seule contre la source de la migration, aucune
+  ligne de donnée applicative modifiée).** Ne pas présenter ces
+  correctifs comme actifs en production tant qu'un déploiement et une
+  validation CANARY fraîche n'ont pas eu lieu (voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
+* **Période :** mission « KADI V1 PDF FINAL STATE, PROFORMA AND TAX FLOW —
+  DIAGNOSE AND FIX », diagnostic CANARY remonté par le fondateur (5
+  symptômes : PDF final affichant « BROUILLON »/date vide/pas de numéro ;
+  FACTURE proforma affichée comme « FACTURE » simple ; reçu compact
+  affichant « REÇU #BROUILLON »/« CLIENT » au lieu de « Payeur » ; blocage
+  générique après « Terminer les articles » ; taxe saisie en points de base
+  bruts au lieu d'un pourcentage).
+* **Symptôme 1 confirmé — BROUILLON/date vide/pas de numéro sur un PDF livré
+  comme final :** `kadiV1GenerationLifecycleService.js`'s `runConfirmation`
+  passait au renderer (`finalGenerationService.generatePrivate`) le
+  `preview` chargé depuis `kadi_v1_document_previews`, construit une seule
+  fois par `kadiV1PreviewService.js`'s `buildPreviewData(document)` au
+  moment `VERIFIED` — donc *avant* toute finalisation, quand
+  `issued_at`/`document_number` valent encore `null` par construction. Le
+  PDF livré à l'utilisateur était donc rendu à partir de cet aperçu figé,
+  jamais régénéré avec l'identité réelle.
+* **Cause racine confirmée, plus profonde :** `issued_at` n'était assigné
+  que dans la transition `MARK_GENERATED` (`kadiV1DocumentDomain.js`), qui
+  se produit *après* le rendu du PDF livré (`generatePrivate` →
+  `markCaptured` → `promoteFinal` → **puis** `MARK_GENERATED`) — un
+  problème d'ordonnancement structurel, pas un simple oubli d'affichage.
+  `document_number` n'existait nulle part dans le code : colonne présente
+  en base (`kadi_v1_documents.document_number`), jamais assignée par aucune
+  fonction JS ni RPC SQL (`kadi_v1_persist_transition`,
+  `kadi_v1_persist_generated_transition`) — confirmé par recherche
+  exhaustive avant correction.
+* **Correctif retenu :** `issued_at`/`document_number` sont désormais
+  assignés dès la transition `START_GENERATION` (état
+  `GENERATION_IN_PROGRESS`), donc *avant* le rendu du PDF livré, jamais à
+  `MARK_GENERATED` — `kadiV1DocumentDomain.js`'s `transitionDocument`
+  déplacé + nouveau générateur pur `generateDocumentNumber(documentType,
+  documentId, issuedAtIso)` (déterministe : préfixe par type + horodatage
+  compact + segment de `document_id`, aucun compteur/séquence externe donc
+  aucune migration de schéma requise côté colonnes). `MARK_GENERATED`
+  refuse désormais explicitement (`DOCUMENT_FINALIZATION_IDENTITY_MISSING`)
+  toute tentative de finalisation sans ces deux champs déjà présents — c'est
+  la porte de secours fermée exigée par la mission. `issued_at` reste
+  produit exclusivement par l'horloge serveur injectée (jamais par
+  l'appelant) — invariant inchangé, seulement déplacé une transition plus
+  tôt ; `tests/kadiV1DocumentDomain.test.js`'s test dédié le prouve
+  explicitement (une valeur `issued_at` fournie dans le payload est
+  toujours ignorée). `kadiV1GenerationLifecycleService.js`'s
+  `runConfirmation` construit désormais un clone du preview stocké avec
+  `issued_at`/`document_number`/`invoice_kind` réels avant d'appeler le
+  renderer — le renderer reçoit toujours la version finalisée, jamais
+  l'aperçu figé.
+* **Migration Supabase requise, écrite, appliquée et vérifiée en
+  distant :**
+  `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
+  (copie identique `migrations/20260806_add_kadi_v1_finalization_identity.sql`)
+  — remplace `kadi_v1_persist_transition` (`create or replace function`,
+  aucune migration déjà appliquée modifiée) pour assigner
+  `issued_at`/`document_number` dès `GENERATION_IN_PROGRESS` au lieu de
+  `GENERATED`, via `clock_timestamp()` et un nouveau
+  `kadi_v1_generate_document_number(...)` SQL déterministe — cette
+  migration était **génuinement requise** : la RPC précédemment en place
+  refusait explicitement (`KADI_V1_SERVER_FIELD_FORBIDDEN`) toute valeur
+  `issued_at` non nulle envoyée par l'appelant pour un état autre que
+  `GENERATED`, ce qui aurait bloqué le correctif JS seul. **Appliquée en
+  distant le 2026-08-06 sur le projet `cmhargmwkyskbobmkrcj`** (mission
+  dédiée, autorisation explicite), présente exactement une fois dans
+  l'historique `supabase migration list`, historique distant par
+  ailleurs inchangé. Corps déployé des deux fonctions et permissions
+  (`service_role` uniquement) vérifiés en lecture seule (`supabase db
+  dump -s public`) contre la source de la migration — correspondance
+  exacte. Voir le runbook
+  [`APPLY_SUPABASE_MIGRATION.md`](runbooks/APPLY_SUPABASE_MIGRATION.md)
+  pour la procédure suivie.
+* **Symptôme 2 confirmé — FACTURE proforma affichée comme « FACTURE »
+  simple :** `invoice_kind` n'était jamais propagé au-delà du document lui-
+  même : absent de `buildPreviewData`'s `structured_preview`, donc absent
+  de `previewToDocData`'s `docData.type`, donc `pdf/kadiPdfCommon.js`'s
+  `resolveRendererKey` (qui ne sélectionne `facture_proforma` que si
+  `docData.type` contient littéralement « PRO FORMA ») ne pouvait jamais le
+  sélectionner — le renderer proforma (`pdf/kadiPdfFactureProforma.js`,
+  déjà correct et déjà titré « FACTURE PRO FORMA ») était simplement
+  inatteignable. `document_type` reste `FACTURE` dans tous les cas — seul
+  le choix de renderer et le titre changent selon `invoice_kind`, conforme
+  à la règle produit verrouillée.
+* **Correctif retenu :** `buildPreviewData` expose désormais
+  `invoice_kind` pour FACTURE/DEVIS ; `previewToDocData` calcule
+  `type: "FACTURE PRO FORMA"` uniquement quand `document_type === "FACTURE"
+  && invoice_kind === "PROFORMA"`, sinon `document_type` inchangé (DEVIS
+  n'est jamais concerné, `invoice_kind` n'existe pas pour ce type).
+* **Symptôme 3 confirmé — reçu affichant « CLIENT » au lieu du payeur :**
+  `pdf/kadiPdfRecuA4.js` et `pdf/kadiPdfRecuCompact.js` codaient en dur le
+  libellé générique « Client »/« CLIENT » alors que la source de donnée
+  (`docData.client`, alimentée par `data.payer`) était déjà correcte —
+  seul le libellé affiché était faux. Le même bug de BROUILLON/date vide
+  (symptôme 1) affecte le reçu de façon identique, même chemin partagé,
+  aucune particularité RECU.
+* **Correctif retenu :** libellé remplacé par « Payeur »/« PAYEUR » dans
+  les deux formats.
+* **Symptôme 4 (blocage générique après « Terminer les articles ») —
+  diagnostic effectué, aucun bug de code trouvé dans le chemin
+  FINISH_CONTENT → DOCUMENT_OPTIONS :** l'intégralité du chemin (validation
+  de l'action, dispatch de commande, `finishContent` du domaine,
+  `validateReply`/`consumeReply` de session, `nextFlowForReply`,
+  `openAndSendFlow`) a été tracée pas à pas et est déjà entièrement testée
+  et correcte. Un seul défaut réel trouvé et corrigé au passage :
+  `suggestedDataForFlow` n'avait aucun cas pour `DOCUMENT_OPTIONS`, donc
+  `current_summary` affichait toujours le texte d'exemple générique du
+  Flow (« Aucune option particulière. ») au lieu d'un résumé réel des
+  articles — corrigé en réutilisant `buildItemsSummary`. Le seul point de
+  rejet fermé plausible restant, prouvé par lecture de code, est
+  `openAndSendFlow`'s vérification du format de `config.flowIds.DOCUMENT_OPTIONS`
+  (`KADI_V1_PRESENTER_FLOW_ID_MISSING`), qui remonte exactement comme le
+  message générique observé — mais rien ne prouve, sans accès aux logs de
+  production, que c'est la cause réelle en CANARY. **Ne pas conclure que la
+  cause est confirmée** ; seule une vérification en conditions réelles
+  (logs Render après déploiement) peut trancher entre une mauvaise
+  configuration Render (`KADI_V1_FLOW_DOCUMENT_OPTIONS_ID`) et une autre
+  cause encore non identifiée.
+* **Symptôme 5 confirmé — taxe saisie en points de base bruts :**
+  `flows/v1_draft/kadi_document_options_v1.json` demandait littéralement à
+  l'utilisateur de taper « 1800 pour 18 % » — un utilisateur pouvait
+  raisonnablement taper « 18 » en pensant exprimer 18 %, produisant en
+  réalité une taxe de 0,18 %. Le calcul métier lui-même
+  (`kadiV1DocumentDomain.js`'s `calculateCommonTotals`, `document.taxes`
+  depuis `tax_rate_basis_points`) était déjà correct — seule l'unité
+  demandée à l'utilisateur était fausse.
+* **Correctif retenu :** le champ Flow local (non publié) devient
+  `tax_rate_percent` (libellé « Taxe (%) », exemple « 18 pour 18 % »).
+  `kadiV1FlowReplyRuntime.js`'s `normalizeTaxRateFields` accepte **les deux
+  champs en fenêtre de transition** — voir la sous-section « Correctifs de
+  revue » ci-dessous pour le détail exact, ajouté après la revue
+  adversariale indépendante qui a identifié l'absence initiale de cette
+  compatibilité comme un défaut bloquant.
+* **Étape de publication future requise, non exécutée par cette mission :**
+  le nouveau champ `tax_rate_percent` n'existe que dans le JSON canonique
+  local (`flows/v1_draft/kadi_document_options_v1.json`) — le Flow Meta
+  publié conserve l'ancien champ `tax_rate_basis_points`, ce qui reste
+  accepté par le backend (voir ci-dessous) tant qu'une nouvelle version
+  n'est pas explicitement publiée (mission non autorisée à le faire).
+* **DEVIS et DECHARGE (MONEY/GOODS/DOCUMENT/OTHER) :** confirmés affectés
+  par le même bug de BROUILLON/date/numéro que la FACTURE (chemin de
+  finalisation entièrement partagé, aucune branche spécifique au type) —
+  corrigés par le même correctif du symptôme 1. Aucune autre anomalie de
+  libellé ou de contenu trouvée pour ces deux types. Aucune option de taxe
+  n'est exposée ni acceptée pour RECU/DECHARGE (non concerné par
+  `normalizeOptions`'s branche FACTURE/DEVIS).
+* **Commit ou migration :** committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
+  non fusionnée) — migration appliquée et vérifiée en distant (voir
+  statut ci-dessus).
+* **Preuve de validation :** `tests/kadiV1DocumentDomain.test.js` (identité
+  de finalisation, porte fermée, préfixes par type, idempotence),
+  `tests/kadiV1GenerationLifecycle.test.js` (le renderer reçoit l'identité
+  finalisée réelle, pas l'aperçu figé ; reprise après échec réutilise
+  exactement la même identité), `tests/kadiV1PreviewGeneration.test.js`
+  (titres FACTURE/FACTURE PRO FORMA/DEVIS), `tests/kadiV1ReceiptJourney.test.js`
+  (libellé Payeur), `tests/kadiV1FlowReplyRuntime.test.js` et
+  `tests/kadiV1SharedDocumentPipeline.test.js` (conversion et bornes de
+  taxe, exemple canonique 500 000 × 18 % = 90 000, total 590 000),
+  `tests/kadiV1FinalizationIdentityMigration.test.js` (forme de la
+  migration, y compris la parité du suffixe à 8 caractères). Suite
+  complète : 1137/1137 avant la revue, revérifiée après les correctifs de
+  revue ci-dessous.
+* **Prévention :** quand un champ serveur (`issued_at`, `document_number`,
+  toute identité de finalisation) est assigné à une transition d'état,
+  vérifier explicitement à quel moment du pipeline le *rendu livré à
+  l'utilisateur* est produit par rapport à cette transition — un rendu
+  produit avant l'assignation restera figé sur l'ancienne valeur pour
+  toujours, aucun correctif d'affichage ne peut compenser un ordonnancement
+  incorrect. Quand un champ numérique est exposé à l'utilisateur dans un
+  Flow, vérifier que l'unité demandée correspond à l'unité que l'utilisateur
+  pense manipuler (pourcentage perçu vs représentation interne en points de
+  base) plutôt que d'exposer directement la représentation de stockage.
+* **Test de non-régression :** `tests/kadiV1GenerationLifecycle.test.js`'s
+  « the renderer receives the finalized issued_at/document_number, never
+  the stale pre-finalization placeholder » et
+  `tests/kadiV1DocumentDomain.test.js`'s « MARK_GENERATED fails closed when
+  issued_at/document_number are missing ».
+
+### Correctifs de revue (revue adversariale indépendante, verdict initial `REVIEW_CHANGES_REQUIRED`)
+
+Une revue adversariale indépendante en lecture seule a examiné le diff
+complet de cette branche avant tout commit et a confirmé plusieurs défauts
+réels, requérant une correction avant que cette branche puisse être
+proposée à la fusion. Tous corrigés ci-dessous ; la branche est désormais
+committée (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussée et
+proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
+(DRAFT), toujours **non fusionnée, non déployée**.
+
+* **HIGH confirmé — incompatibilité totale avec le Flow Meta actuellement
+  publié :** le correctif initial remplaçait entièrement
+  `tax_rate_basis_points` par `tax_rate_percent` dans
+  `ACTION_FIELDS.SAVE_OPTIONS`, ce qui aurait rejeté 100 % des soumissions
+  `SAVE_OPTIONS` (FACTURE et DEVIS) dès le déploiement du backend, quel que
+  soit l'ordre de publication avec le nouveau Flow Meta. **Corrigé :**
+  `kadiV1FlowReplyRuntime.js`'s `normalizeTaxRateFields` accepte désormais
+  les deux champs en fenêtre de transition — `tax_rate_percent` seul,
+  `tax_rate_basis_points` seul (validé comme entier de points de base,
+  > 0 et ≤ 10000, comportement legacy identique à avant cette mission), les
+  deux présents et d'accord (accepté, une seule valeur persistée), les deux
+  présents et en désaccord (rejet fermé explicite
+  `KADI_V1_FLOW_REPLY_TAX_RATE_CONFLICT`, jamais de préférence silencieuse),
+  les deux absents ou vides (aucune taxe). Un seul champ persisté au final :
+  `tax_rate_basis_points`.
+* **HIGH confirmé (au moment de la revue) — panne totale de la génération
+  finale si le backend était déployé avant la migration :** la RPC
+  `kadi_v1_persist_transition` alors appliquée en distant rejetait
+  explicitement (`KADI_V1_SERVER_FIELD_FORBIDDEN`) tout `issued_at` non nul
+  envoyé pour un état autre que `GENERATED` — donc déployer ce backend (qui
+  envoie désormais un `issued_at` réel dès `GENERATION_IN_PROGRESS`) avant
+  d'appliquer `20260806010000_add_kadi_v1_finalization_identity.sql` aurait
+  cassé la génération finale pour tous les types de documents, tous les
+  utilisateurs. **Aucun correctif de code ne pouvait éliminer cette
+  contrainte d'ordre** — voir l'ordre de déploiement obligatoire documenté
+  dans [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) et
+  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md). **Ce risque est
+  désormais écarté : la migration a été appliquée et vérifiée en distant
+  le 2026-08-06, avant toute fusion ou déploiement de ce backend.**
+* **MEDIUM confirmé — troncature du suffixe SQL à 4 caractères au lieu de
+  8 :** `lpad(string, length, fill)` en PostgreSQL **tronque** `string`
+  quand il est déjà plus long que `length` — `lpad(right(id, 8), 4, '0')`
+  tronquait donc silencieusement les 8 caractères extraits par `right(...)`
+  à seulement 4, réduisant l'entropie du suffixe de ~32 à ~16 bits côté
+  Supabase, en désaccord avec la version JavaScript. **Corrigé :** cible de
+  `lpad` changée de `4` à `8` dans les deux copies de migration (toujours
+  byte-identiques) ; `generateDocumentNumber` (JS) aligné de la même façon
+  (`padStart(8, "0")` au lieu de `padStart(4, "0")`) pour que les deux
+  implémentations produisent toujours exactement 8 caractères, jamais
+  moins. Test resserré : tolérance `{4,8}` remplacée par `{8}` partout, et
+  un test dédié détecte spécifiquement la régression `lpad(..., 4, ...)`.
+* **MEDIUM confirmé — l'invariant « assigné une seule fois » ne vivait que
+  dans la couche dépôt/SQL, pas dans le domaine :** la branche
+  `START_GENERATION` de `transitionDocument` recalculait un `issued_at`/
+  `document_number` neuf à chaque appel, sans condition — seule la couche
+  dépôt (JS in-memory et RPC SQL) empêchait, en aval, qu'un second appel
+  n'écrase la valeur déjà persistée. **Corrigé :** `START_GENERATION`
+  vérifie désormais explicitement l'état existant du document lui-même :
+  identité déjà présente (les deux champs) → réutilisée inchangée, sans
+  recalcul ; identité absente (les deux champs) → générée ; identité
+  partielle (un seul des deux champs, état incohérent) → échec fermé
+  explicite `DOCUMENT_FINALIZATION_IDENTITY_CORRUPT`. L'invariant vit
+  désormais dans le domaine lui-même, pas seulement dans les couches en
+  aval qui le respectaient déjà par ailleurs.
+* **Défaut d'architecture découvert pendant l'écriture du test requis par
+  la revue, désormais corrigé — voir fiche Q ci-dessous :** en tentant
+  d'écrire le test « échec du rendu → nouvelle tentative → même identité »
+  exactement comme demandé par la revue, il est apparu que la machine
+  d'état ne permettait alors aucune reprise pour un échec survenant
+  strictement au niveau du rendu/stockage privé (avant capture). Ce défaut
+  préexistait à cette mission (présent avant `8718e646...` déjà) ; fiche Q
+  documente le correctif complet.
+* **Ordre de déploiement obligatoire, documenté ; étape 1 (migration
+  appliquée et vérifiée en distant) désormais exécutée par une mission
+  dédiée le 2026-08-06 :** voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour les étapes
+  restantes (revue finale, fusion, déploiement, publication Meta, CANARY).
+
+## Q. Reprise de génération après échec du rendu/stockage privé, avant capture
+
+* **Statut :** correctif écrit, testé localement, committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussé sur la même
+  branche `fix/kadi-v1-pdf-final-state-and-tax-rate-r0`, proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT)
+  — **non fusionné, non déployé.**
+* **Symptôme confirmé :** un document dont le rendu final échoue (erreur du
+  renderer ou du stockage privé) était laissé en `RECOVERABLE_FAILURE`,
+  crédit relâché, identité (`issued_at`/`document_number`) déjà réservée —
+  mais **sans aucun chemin de reprise fonctionnel**. `RESUME` ramène
+  correctement le document à `GENERATION_IN_PROGRESS` (son `resume_state`
+  au moment de l'échec), mais cet état n'autorise ensuite que
+  `MARK_GENERATED`, `RECORD_RECOVERABLE_FAILURE` ou `CANCEL` — aucune
+  transition ne permet de relancer un rendu. `resumeGeneration` existant ne
+  gérait que les échecs survenant *après* un rendu déjà validé (tentative
+  `CAPTURED`/`PROMOTED`), renvoyant `GENERATION_RECONFIRMATION_REQUIRED`
+  pour une tentative dont le statut restait `RECOVERABLE_FAILURE` (valeur
+  que `releaseAndFail` assigne explicitement à la ligne d'attempt — pas
+  `STARTED` comme on pourrait le supposer en lisant seulement
+  `generatePrivate`).
+* **Cause racine confirmée :** absence de tout chemin de service reliant
+  l'état document `RECOVERABLE_FAILURE` (résumable) à une nouvelle tentative
+  de rendu — un simple oubli fonctionnel plutôt qu'une contrainte de
+  conception délibérée.
+* **Correctif retenu :** nouvelle fonction
+  `kadiV1GenerationLifecycleService.js`'s `retryFailedGeneration({quoteId,
+  ownerWaId, documentVersion, idempotencyKey})`, sérialisée par la même
+  file `serializeConfirmation(quoteId, ...)` que `confirmGeneration`
+  (protection de concurrence identique). Aucun nouvel événement de domaine
+  ajouté — réutilise `DOCUMENT_EVENTS.RESUME`, déjà narrowly-scoped et déjà
+  utilisé par `resumeGeneration` pour un but équivalent (« reprendre depuis
+  un échec enregistré ») ; un nouvel événement dédié aurait dupliqué
+  exactement la même transition de domaine sans différence sémantique.
+  Réutilise aussi la même ligne `kadi_v1_generation_attempts` (même
+  `generation_attempt_id`) plutôt que d'en créer une nouvelle — un index
+  unique existe sur `quote_id`, une seconde ligne pour le même devis serait
+  de toute façon rejetée ; seuls `reservation_id`/`started_at`/`status` sont
+  mis à jour dessus via `updateGenerationAttempt`, sans toucher à son
+  identité. `issued_at`/`document_number` ne sont jamais régénérés : `RESUME`
+  ne les touche pas et `START_GENERATION` n'est jamais rappelé — la
+  réutilisation est structurelle (prouvée par test), pas seulement
+  affirmée.
+* **Conditions d'éligibilité, toutes vérifiées avant toute mutation :**
+  propriétaire correspondant ; tentative de génération existante avec
+  statut exactement `RECOVERABLE_FAILURE` (pas `STARTED`,
+  `PDF_VALIDATED`, `CAPTURED`, `PROMOTED` ni `CANCELLED`) ; document dans
+  l'état exact `RECOVERABLE_FAILURE` ; `issued_at`/`document_number`
+  complets tous les deux (jamais un seul des deux — `GENERATION_RETRY_NOT_ELIGIBLE`
+  sinon) ; `documentVersion` fourni correspondant exactement à la version
+  persistée (`DOCUMENT_VERSION_CONFLICT` sinon) ; devis `ACTIVE` et lié au
+  même document ; aperçu retrouvable.
+* **Sécurité crédit/artefact/livraison :** nouvelle réservation créée
+  uniquement via `walletReservationService.reserveCredits` existant (même
+  politique que la confirmation initiale) ; un seul rendu, une seule
+  capture, une seule promotion, une seule livraison — le pipeline exact de
+  `completeAfterCapture`/`deliverFinal` déjà testé est réutilisé tel quel,
+  aucune nouvelle logique de capture/promotion/livraison écrite. Un rejeu
+  du même idempotencyKey après succès, ou une tentative concurrente,
+  échouent tous deux proprement (`GENERATION_RETRY_NOT_ELIGIBLE`) sans
+  second débit, second rendu, deuxième artefact ni deuxième livraison — la
+  tentative n'est plus `RECOVERABLE_FAILURE` dès la première reprise
+  réussie ou en cours.
+* **Sémantique de l'identité réservée (historique) :** confirmée déjà
+  correcte, aucun changement nécessaire — `kadiV1HistoryService.js`'s
+  `listProjection` expose `status` sans transformation (`RECOVERABLE_FAILURE`
+  reste visible tel quel, jamais confondu avec `GENERATED`/`DELIVERED`) et
+  `has_final_file` reste `false` tant qu'aucun fichier final n'est
+  promu — un document encore en échec récupérable n'est donc jamais
+  présenté comme généré avec succès dans l'historique, même s'il porte déjà
+  un `document_number`/`issued_at` réels.
+* **Commit ou migration :** committé
+  (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
+  [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
+  non fusionnée).
+* **Preuve de validation :** `tests/kadiV1GenerationLifecycle.test.js` —
+  neuf nouveaux tests couvrant le scénario complet en 19 étapes (échec du
+  rendu → identité réservée → reprise → même identité réutilisée →
+  exactement une capture/promotion/livraison → rejeu sans effet), les
+  reprises concurrentes, l'identité partielle, l'état non éligible, la
+  reprise après capture déjà effectuée, la reprise après succès complet, et
+  la version périmée. Suite complète : voir section TESTS du rapport de
+  mission.
+* **Prévention :** avant de conclure qu'un chemin de reprise « fonctionne
+  déjà » en lisant seulement la fonction qui échoue (ici `generatePrivate`),
+  vérifier explicitement ce que fait l'appelant en cas d'échec — ici
+  `releaseAndFail` change le statut de la tentative vers
+  `RECOVERABLE_FAILURE`, une transition non visible depuis `generatePrivate`
+  seul. Toujours tracer le chemin complet d'erreur jusqu'à son dernier
+  effet de bord avant de concevoir un correctif qui en dépend.
+* **Test de non-régression :** `tests/kadiV1GenerationLifecycle.test.js`'s
+  « renderer failure then retryFailedGeneration: same identity reused,
+  exactly one capture/promotion/delivery, replay of the successful retry is
+  a no-op ».
+
+### Correctifs de revue finale (revue adversariale indépendante finale, verdict initial `FINAL_REVIEW_CHANGES_REQUIRED`)
+
+* **HIGH confirmé — `retryFailedGeneration` fusionné mais inatteignable :**
+  aucun appelant réel (webhook, presenter, dispatch de commande) n'invoquait
+  la fonction, seulement les tests. **Corrigé :** nouvelle fonction
+  `confirmOrRetryGeneration(command)` dans
+  `kadiV1GenerationLifecycleService.js` — décide entre le chemin normal et
+  la reprise de rendu à partir du seul état persisté (aucune mutation dans
+  la décision elle-même), puis délègue à exactement l'une des deux
+  fonctions existantes, sans dupliquer leur logique.
+  `kadiV1RuntimeAdapters.js`'s `createKadiV1GenerationRuntimeAdapter`
+  appelle désormais `confirmOrRetryGeneration` au lieu de
+  `confirmGeneration` — c'est-à-dire que **la même action `CONFIRM_GENERATION`,
+  déjà dispatchée par `kadiV1FlowCommandRuntime.js` vers ce même adaptateur,
+  déclenche maintenant la reprise transparente**, sans nouveau nom
+  d'action, sans nouveau Flow Meta, sans nouvelle variable Render. Preuve
+  bout-en-bout à travers la composition réelle (jamais un appel direct à
+  `retryFailedGeneration`) : `tests/kadiV1ReleaseRecoveryE2E.test.js`, un
+  fichier préexistant qui construit `kadiV1FlowCommandRuntime` +
+  `kadiV1FlowReplyRuntime` + `kadiV1GenerationRuntimeAdapter` exactement
+  comme `kadiV1ProductionBootstrap.js` le fait.
+* **Bug confirmé et corrigé pendant l'écriture de cette preuve bout-en-bout :**
+  `runRetryFailedGeneration`'s réattachement de la ligne d'attempt existante
+  (`updateGenerationAttempt`) ne mettait à jour que
+  `status`/`reservation_id`/`started_at`, jamais `confirmation_key` — un
+  rejeu ultérieur de cette reprise (webhook dupliqué, ou une nouvelle
+  confirmation normale une fois le document `DELIVERED`) retombait alors
+  sur `confirmGeneration`'s détection de doublon, qui comparait
+  l'`idempotencyKey` du rejeu à l'ancien `confirmation_key` — resté celui
+  de la *première* confirmation échouée — et rejetait à tort avec
+  `GENERATION_CONFIRMATION_CONFLICT` au lieu de reconnaître un doublon
+  bénin. **Corrigé :** `confirmation_key` est désormais mis à jour vers
+  l'`idempotencyKey` de la reprise dans le même appel
+  `updateGenerationAttempt`.
+* **MEDIUM confirmé — `resumeGeneration` mutait avant de vérifier son
+  éligibilité :** appelait `persistEvent(RESUME, ...)` (persisté
+  immédiatement) avant même de savoir si `attempt.status` était un état
+  qu'elle savait continuer — une tentative `RECOVERABLE_FAILURE` (celle que
+  `retryFailedGeneration` gère) était donc absorbée : le document passait à
+  `GENERATION_IN_PROGRESS`, `recoverable_failure` était effacé, puis la
+  fonction échouait quand même (`GENERATION_RECONFIRMATION_REQUIRED`) —
+  laissant le document bloqué sans route de retour vers aucun des deux
+  chemins de reprise. **Corrigé :** l'éligibilité (statut d'attempt
+  `CAPTURED`/`PROMOTED`, ou `PDF_VALIDATED` avec réservation réellement
+  `CAPTURED`) est désormais entièrement décidée avant tout appel à
+  `RESUME` ; tout le reste échoue proprement, sans aucune mutation.
+  L'appel manuel redondant à `markCaptured` a aussi été retiré :
+  `completeAfterCapture` l'appelle déjà lui-même, de façon idempotente.
+* **MEDIUM confirmé — `document.status`/`attempt.status` seuls ne
+  suffisaient pas à prouver l'éligibilité de reprise :** un
+  `RECOVERABLE_FAILURE` enregistré à une étape sans rapport (ex. pendant
+  `COLLECTING`) aurait pu, en théorie, atteindre le chemin de reprise du
+  rendu si une ligne d'attempt correspondante existait. **Corrigé :**
+  `retryFailedGeneration` exige désormais explicitement
+  `document.recoverable_failure?.resume_state === "GENERATION_IN_PROGRESS"`,
+  en plus de `document.status`/`attempt.status`.
+* **Message utilisateur :** `kadiV1WebhookRuntime.js`'s `recover(...)`
+  choisit désormais un texte spécifique — « Le document n'a pas pu être
+  généré. Vous pouvez réessayer sans perdre de crédit. » — pour la liste
+  fermée des codes d'échec provenant exactement de
+  `kadiV1FinalGenerationService.js`'s `generatePrivate`
+  (`FINAL_RENDER_FAILED`, `FINAL_PDF_INVALID`, `FINAL_PDF_CORRUPT`,
+  `FINAL_PDF_PAGE_COUNT_MISMATCH`, `FINAL_STORAGE_FAILED`,
+  `FINAL_STORAGE_NOT_PRIVATE`) ; tout autre échec récupérable conserve le
+  texte générique existant inchangé. Aucun terme technique exposé
+  (`renderer`, `repository`, `generation attempt`, `issued_at`,
+  `document_number`). Succès de reprise : message de succès existant
+  inchangé, aucune nouvelle logique de présentation.
+* **Statut de la navigation options/taxe, sans lien avec cette fiche :**
+  `UNRESOLVED_PRODUCTION_DIAGNOSIS_REQUIRED` — voir
+  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md). N'a reçu aucune
+  correction de code dans cette mission ni dans aucune des précédentes ;
+  seule une lacune cosmétique adjacente (résumé d'options manquant) a été
+  corrigée, jamais présentée comme la cause du blocage rapporté.
+* **Preuve de validation (revue finale) :**
+  `tests/kadiV1GenerationLifecycle.test.js` (ordre de mutation de
+  `resumeGeneration`, garde `resume_state`), `tests/kadiV1ReleaseRecoveryE2E.test.js`
+  (reprise atteinte par l'action de confirmation réelle, chemin normal
+  inchangé, échec non lié bloqué, propriétaire différent bloqué),
+  `tests/kadiV1WebhookRuntime.test.js` (message utilisateur spécifique vs
+  générique). Suite complète : voir section TESTS du rapport de mission.
+* **Committé (`59f365e31737cf4f1b475ab0172322cdccac6932`), poussé, proposé
+  via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
+  (DRAFT, non fusionnée) ; toujours non déployé, aucun système distant
+  modifié.**
