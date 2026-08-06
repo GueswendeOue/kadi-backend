@@ -74,14 +74,22 @@ elle.
 
 1. **Revoir et approuver le code** (revue normale de la PR backend) — ne
    pas fusionner à cette étape.
-2. **Appliquer** `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
+2. **[FAIT — 2026-08-06]** ~~Appliquer~~
+   `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
    en distant (autorisation explicite requise, voir
    [`runbooks/APPLY_SUPABASE_MIGRATION.md`](runbooks/APPLY_SUPABASE_MIGRATION.md))
-   et **vérifier** sa présence en distant (lecture seule de la définition
+   et ~~vérifier~~ sa présence en distant (lecture seule de la définition
    de `kadi_v1_persist_transition` / `kadi_v1_generate_document_number`).
+   **Appliquée et vérifiée en distant** sur le projet `cmhargmwkyskbobmkrcj`,
+   présente exactement une fois dans `supabase migration list`, corps des
+   deux fonctions et permissions vérifiés en lecture seule contre la
+   source de la migration. Voir fiche P de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
 3. **Alors seulement, fusionner** la PR backend dans `main` — puisque la
    fusion déclenche l'auto-déploiement Render, cette étape ne peut avoir
-   lieu qu'après confirmation de l'étape 2, jamais avant ni en parallèle.
+   lieu qu'après confirmation de l'étape 2 (**désormais satisfaite**),
+   jamais avant ni en parallèle. **Non exécutée par cette mission — la
+   fusion reste une action distincte, non autorisée ici.**
 4. **Vérifier** le démarrage du service et qu'un document de test peut
    atteindre `GENERATION_IN_PROGRESS` sans erreur `KADI_V1_SERVER_FIELD_FORBIDDEN`
    ni `DOCUMENT_FINALIZATION_IDENTITY_MISSING`/`DOCUMENT_FINALIZATION_IDENTITY_CORRUPT`.
@@ -118,7 +126,9 @@ elle.
   acceptés), mais doit néanmoins être revalidée par une session fraîche
   avant de conclure à une correction réelle.
 * Migration non appliquée du tout : voir premier point — même conséquence,
-  permanente tant que la migration n'est pas appliquée.
+  permanente tant que la migration n'est pas appliquée. **Ce cas ne
+  s'applique plus à `20260806010000_add_kadi_v1_finalization_identity.sql`,
+  appliquée et vérifiée en distant le 2026-08-06.**
 
 ## Déploiement Render
 

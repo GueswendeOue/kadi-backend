@@ -831,15 +831,20 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## P. PDF final présenté comme brouillon, proforma non distinguée, libellé reçu générique, taxe saisie en points de base
 
-* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_REQUIRED_BEFORE_MERGE`**
+* **Statut : `IMPLEMENTED_REVIEWED_DRAFT_PR_OPEN_MIGRATION_APPLIED_AWAITING_FINAL_REVIEW`**
   — correctifs écrits, testés localement, committés
   (`59f365e31737cf4f1b475ab0172322cdccac6932`) et poussés sur la branche
   `fix/kadi-v1-pdf-final-state-and-tax-rate-r0` (base `main` à
   `8718e6461151ccf075527bc4afac957530a8e0a3`) — **PR #12 ouverte en
-  DRAFT, non fusionnée, non déployée, aucune migration appliquée en
-  distant.** Ne pas présenter ces correctifs comme actifs en production
-  tant qu'un déploiement et une validation CANARY fraîche n'ont pas eu
-  lieu (voir [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
+  DRAFT, non fusionnée, non déployée. Migration Supabase
+  `20260806010000_add_kadi_v1_finalization_identity` appliquée et
+  vérifiée en distant sur le projet `cmhargmwkyskbobmkrcj` le
+  2026-08-06 (une seule fois, fonctions et permissions déployées
+  vérifiées en lecture seule contre la source de la migration, aucune
+  ligne de donnée applicative modifiée).** Ne pas présenter ces
+  correctifs comme actifs en production tant qu'un déploiement et une
+  validation CANARY fraîche n'ont pas eu lieu (voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
 * **Période :** mission « KADI V1 PDF FINAL STATE, PROFORMA AND TAX FLOW —
   DIAGNOSE AND FIX », diagnostic CANARY remonté par le fondateur (5
   symptômes : PDF final affichant « BROUILLON »/date vide/pas de numéro ;
@@ -886,7 +891,8 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   `issued_at`/`document_number`/`invoice_kind` réels avant d'appeler le
   renderer — le renderer reçoit toujours la version finalisée, jamais
   l'aperçu figé.
-* **Migration Supabase requise et écrite, non appliquée en distant :**
+* **Migration Supabase requise, écrite, appliquée et vérifiée en
+  distant :**
   `supabase/migrations/20260806010000_add_kadi_v1_finalization_identity.sql`
   (copie identique `migrations/20260806_add_kadi_v1_finalization_identity.sql`)
   — remplace `kadi_v1_persist_transition` (`create or replace function`,
@@ -894,13 +900,19 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   `issued_at`/`document_number` dès `GENERATION_IN_PROGRESS` au lieu de
   `GENERATED`, via `clock_timestamp()` et un nouveau
   `kadi_v1_generate_document_number(...)` SQL déterministe — cette
-  migration est **génuinement requise** : la RPC existante refusait
-  explicitement (`KADI_V1_SERVER_FIELD_FORBIDDEN`) toute valeur
+  migration était **génuinement requise** : la RPC précédemment en place
+  refusait explicitement (`KADI_V1_SERVER_FIELD_FORBIDDEN`) toute valeur
   `issued_at` non nulle envoyée par l'appelant pour un état autre que
-  `GENERATED`, ce qui aurait bloqué le correctif JS seul. Voir le runbook
+  `GENERATED`, ce qui aurait bloqué le correctif JS seul. **Appliquée en
+  distant le 2026-08-06 sur le projet `cmhargmwkyskbobmkrcj`** (mission
+  dédiée, autorisation explicite), présente exactement une fois dans
+  l'historique `supabase migration list`, historique distant par
+  ailleurs inchangé. Corps déployé des deux fonctions et permissions
+  (`service_role` uniquement) vérifiés en lecture seule (`supabase db
+  dump -s public`) contre la source de la migration — correspondance
+  exacte. Voir le runbook
   [`APPLY_SUPABASE_MIGRATION.md`](runbooks/APPLY_SUPABASE_MIGRATION.md)
-  avant toute application distante future — non autorisée par cette
-  mission.
+  pour la procédure suivie.
 * **Symptôme 2 confirmé — FACTURE proforma affichée comme « FACTURE »
   simple :** `invoice_kind` n'était jamais propagé au-delà du document lui-
   même : absent de `buildPreviewData`'s `structured_preview`, donc absent
@@ -977,8 +989,8 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 * **Commit ou migration :** committé
   (`59f365e31737cf4f1b475ab0172322cdccac6932`), proposé via
   [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12) (DRAFT,
-  non fusionnée) — migration non appliquée en distant (voir statut
-  ci-dessus).
+  non fusionnée) — migration appliquée et vérifiée en distant (voir
+  statut ci-dessus).
 * **Preuve de validation :** `tests/kadiV1DocumentDomain.test.js` (identité
   de finalisation, porte fermée, préfixes par type, idempotence),
   `tests/kadiV1GenerationLifecycle.test.js` (le renderer reçoit l'identité
@@ -1033,18 +1045,20 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
   `KADI_V1_FLOW_REPLY_TAX_RATE_CONFLICT`, jamais de préférence silencieuse),
   les deux absents ou vides (aucune taxe). Un seul champ persisté au final :
   `tax_rate_basis_points`.
-* **HIGH confirmé — panne totale de la génération finale si le backend est
-  déployé avant la migration :** la RPC `kadi_v1_persist_transition`
-  actuellement appliquée en distant rejette explicitement
-  (`KADI_V1_SERVER_FIELD_FORBIDDEN`) tout `issued_at` non nul envoyé pour un
-  état autre que `GENERATED` — donc déployer ce backend (qui envoie
-  désormais un `issued_at` réel dès `GENERATION_IN_PROGRESS`) avant
-  d'appliquer `20260806010000_add_kadi_v1_finalization_identity.sql` casse
-  la génération finale pour tous les types de documents, tous les
-  utilisateurs. **Aucun correctif de code ne peut éliminer cette
+* **HIGH confirmé (au moment de la revue) — panne totale de la génération
+  finale si le backend était déployé avant la migration :** la RPC
+  `kadi_v1_persist_transition` alors appliquée en distant rejetait
+  explicitement (`KADI_V1_SERVER_FIELD_FORBIDDEN`) tout `issued_at` non nul
+  envoyé pour un état autre que `GENERATED` — donc déployer ce backend (qui
+  envoie désormais un `issued_at` réel dès `GENERATION_IN_PROGRESS`) avant
+  d'appliquer `20260806010000_add_kadi_v1_finalization_identity.sql` aurait
+  cassé la génération finale pour tous les types de documents, tous les
+  utilisateurs. **Aucun correctif de code ne pouvait éliminer cette
   contrainte d'ordre** — voir l'ordre de déploiement obligatoire documenté
   dans [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) et
-  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md).
+  [`KADI_CURRENT_STATE.md`](KADI_CURRENT_STATE.md). **Ce risque est
+  désormais écarté : la migration a été appliquée et vérifiée en distant
+  le 2026-08-06, avant toute fusion ou déploiement de ce backend.**
 * **MEDIUM confirmé — troncature du suffixe SQL à 4 caractères au lieu de
   8 :** `lpad(string, length, fill)` en PostgreSQL **tronque** `string`
   quand il est déjà plus long que `length` — `lpad(right(id, 8), 4, '0')`
@@ -1078,8 +1092,11 @@ proposée via [PR #12](https://github.com/GueswendeOue/kadi-backend/pull/12)
   strictement au niveau du rendu/stockage privé (avant capture). Ce défaut
   préexistait à cette mission (présent avant `8718e646...` déjà) ; fiche Q
   documente le correctif complet.
-* **Ordre de déploiement obligatoire, documenté mais non exécuté par cette
-  mission :** voir [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md).
+* **Ordre de déploiement obligatoire, documenté ; étape 1 (migration
+  appliquée et vérifiée en distant) désormais exécutée par une mission
+  dédiée le 2026-08-06 :** voir
+  [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md) pour les étapes
+  restantes (revue finale, fusion, déploiement, publication Meta, CANARY).
 
 ## Q. Reprise de génération après échec du rendu/stockage privé, avant capture
 
