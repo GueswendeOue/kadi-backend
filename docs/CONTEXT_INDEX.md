@@ -43,7 +43,7 @@ Statuts utilisés dans tous les documents de ce dossier :
 
 | Document | Contenu | Quand le lire |
 |---|---|---|
-| [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md) | Fondation de compréhension conversationnelle multimodale, fusionnée dans `main` (PR #8), **et** son intégration dans l'orchestrateur/le bootstrap, implémentée sur une branche séparée non fusionnée (`feat/kadi-conversational-orchestrator-integration-v1`) — voir le document pour le statut exact de chaque partie ; tous les flags à `false` par défaut dans les deux cas | Avant toute mission touchant à cette fondation, à son intégration, ou à la compréhension multimodale en général |
+| [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md) | Fondation de compréhension conversationnelle multimodale (PR #8) **et** son intégration dans l'orchestrateur/le bootstrap (PR #10) — les deux désormais fusionnées dans `main` ; déploiement Render non vérifié ; tous les flags à `false` par défaut et allowlist CANARY conversationnelle non configurée, donc aucune activation | Avant toute mission touchant à cette fondation, à son intégration, ou à la compréhension multimodale en général |
 | [`KADI_CONVERSATION_POLICY.md`](KADI_CONVERSATION_POLICY.md) | Politique de conversation Kadi formalisée pour cette fondation, consolidée depuis `AGENTS.md` §14 | Avec le document ci-dessus, avant toute mission composant des réponses utilisateur pour cette fondation |
 
 Ce code est présent sur `main`, mais **n'affecte aucun comportement

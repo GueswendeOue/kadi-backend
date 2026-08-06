@@ -177,32 +177,39 @@ ne doit jamais servir à valider ces correctifs.
   (`receipt_format = A4 | TICKET_80`, voir
   [`KADI_PRODUCT_RULES.md`](KADI_PRODUCT_RULES.md)).
 
-## FUSIONNÉ, DÉSACTIVÉ, NON CÂBLÉ — `KADI_CONVERSATIONAL_MULTIMODAL_V1`
+## FUSIONNÉ, CÂBLÉ, DÉSACTIVÉ — `KADI_CONVERSATIONAL_MULTIMODAL_V1`
 
 **Ceci n'est pas un comportement utilisateur actif.** Section séparée à
 dessein — voir
 [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
 pour le détail complet.
 
-* **Statut : `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED`.** Le
-  code a été fusionné dans `main` via
-  [PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8), commit de
-  merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`. Le déploiement Render de
-  ce commit n'est pas vérifiable depuis cet environnement (aucun accès
-  Render) — ne pas déduire qu'il a été déployé, ni qu'il ne l'a pas été.
+* **Statut : `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED`.** Les
+  deux livraisons (fondation et intégration orchestrateur/bootstrap) sont
+  désormais fusionnées dans `main` :
+  [PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8) (commit de
+  merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`) et
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10) (commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`, après revue
+  adversariale indépendante et corrections). Le déploiement Render de ces
+  commits n'est pas vérifiable depuis cet environnement (aucun accès
+  Render) — ne pas déduire qu'ils ont été déployés, ni qu'ils ne l'ont pas
+  été.
 * **Aucun impact utilisateur, déployé ou non** : les deux flags restent
   `false` par défaut (`KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`,
-  `KADI_GEMINI_AUDIO_V1_ENABLED`), et sur `main`, **le code de la
-  fondation n'est câblé nulle part** — ni dans
-  `kadiV1ConversationOrchestrator.js`, ni dans
-  `kadiV1ProductionBootstrap.js`. Même si Render a déployé ce commit,
-  aucun trafic, CANARY ou autre, ne peut l'atteindre.
+  `KADI_GEMINI_AUDIO_V1_ENABLED`), et
+  `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` n'est configuré nulle
+  part sur Render. Le code **est** désormais câblé dans
+  `kadiV1ConversationOrchestrator.js` et `kadiV1ProductionBootstrap.js`,
+  mais chaque point d'entrée conversationnel reste conditionné à ce flag et
+  à cette allowlist, tous deux inertes par défaut — même si Render a
+  déployé ces commits, aucun trafic, CANARY ou autre, ne peut activer ce
+  chemin sans une configuration Render explicite et distincte.
 * Fichiers de la fondation (sur `main`) :
   `kadiV1ConversationalMultimodalContracts.js`,
   `kadiV1ConversationalMultimodalPolicy.js`, `kadiV1GeminiAudioProvider.js`.
 * **Intégration orchestrateur/bootstrap : implémentée, testée, revue de
-  façon adversariale (corrections appliquées), mais sur une branche séparée
-  non fusionnée**, `feat/kadi-conversational-orchestrator-integration-v1`
+  façon adversariale (corrections appliquées), fusionnée dans `main`**
   (nouveaux fichiers `kadiV1ConversationalMultimodalRuntimeAdapter.js`,
   `kadiV1ConversationalMultimodalBrainAdapter.js`,
   `kadiV1ConversationalMultimodalItemLookup.js`,
@@ -222,8 +229,7 @@ pour le détail complet.
   déjà existante, `apply(...)`, pour qu'elle ne perde plus son indicateur
   `duplicate` en aval de `advanceIfComplete(...)` (aucun autre appelant de
   `apply(...)` n'est affecté, puisque ce champ était simplement absent du
-  résultat auparavant). Cette branche n'existe pas sur `main` ; elle
-  introduit une allowlist indépendante
+  résultat auparavant). L'intégration introduit une allowlist indépendante
   `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` (jamais héritée de
   `KADI_V1_CANARY_WA_IDS`) qui reste vide/non configurée partout, et un
   logger d'observabilité privacy-safe optionnel — voir
@@ -238,6 +244,8 @@ pour le détail complet.
   cette dernière est un fait de production existant plus ancien (désactivé
   par défaut), que `KADI_CONVERSATIONAL_MULTIMODAL_V1` réutilise sans le
   remplacer.
-* **Prochaine étape (hors périmètre de ce commit) :** câblage explicite
-  dans l'orchestrateur et le bootstrap de production, dans une mission
-  dédiée et revue séparément, avant toute activation CANARY.
+* **Prochaine étape (hors périmètre de ce commit) :** activation d'un
+  premier propriétaire de test via une mission CANARY explicite et
+  distincte (configuration Render de `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`
+  et de `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS`), revue et
+  autorisée séparément — non réalisée à ce jour.

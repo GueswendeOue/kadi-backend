@@ -1,24 +1,30 @@
 # KADI_CONVERSATIONAL_MULTIMODAL_V1 — Fondation et intégration orchestrateur
 
-Ce document couvre deux livraisons distinctes, à des états différents :
+Ce document couvre deux livraisons, **toutes deux désormais fusionnées dans
+`main`** :
 
-* **Fondation** (contrats, politique, adaptateur Gemini Audio) — **statut :
-  `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED`**, fusionnée dans
-  `main` via [PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8)
-  (commit de merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`). Le
-  déploiement Render de ce commit n'est pas vérifiable depuis cet
-  environnement — ne pas en déduire qu'il a ou n'a pas été déployé.
-* **Intégration orchestrateur/bootstrap** (§5) — **statut :
-  `IMPLEMENTED_NOT_MERGED`**, sur la branche
-  `feat/kadi-conversational-orchestrator-integration-v1`, qui n'existe pas
-  sur `main`.
+* **Fondation** (contrats, politique, adaptateur Gemini Audio) — fusionnée
+  via [PR #8](https://github.com/GueswendeOue/kadi-backend/pull/8) (commit
+  de merge `c3030c909fdb526c5341622afe5a8b5389f0a77d`).
+* **Intégration orchestrateur/bootstrap** (§5) — fusionnée via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10) (commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`), après revue
+  adversariale indépendante et correction des constats retenus (voir
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) fiches L à O).
 
-**Dans les deux cas, aucun comportement utilisateur n'est affecté
-aujourd'hui** : `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED` et
-`KADI_GEMINI_AUDIO_V1_ENABLED` restent `false` par défaut,
+**Statut : `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED`.** Le code
+des deux livraisons est présent sur `main`. Le déploiement Render de ces
+commits n'est pas vérifiable depuis cet environnement — ne pas en déduire
+qu'il a ou n'a pas été déployé ; un déploiement automatique éventuel de ce
+commit par Render **ne constitue pas une activation** (voir ci-dessous).
+
+**Aucun comportement utilisateur n'est affecté aujourd'hui, ni par la
+fusion ni par un déploiement éventuel** : `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`
+et `KADI_GEMINI_AUDIO_V1_ENABLED` restent `false` par défaut, et
 `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` n'est configuré nulle
-part, et la branche d'intégration elle-même n'est pas fusionnée. Ce n'est
-pas un comportement actif en production.
+part sur Render. Ce n'est pas un comportement actif en production.
+L'activation d'un premier propriétaire réel nécessite une **mission CANARY
+explicite et distincte**, qui n'a pas eu lieu.
 
 Ce document décrit la fondation de compréhension conversationnelle multimodale
 construite dans cette mission. Il complète, sans le remplacer,
@@ -167,9 +173,10 @@ Câblé et testé dans cette fondation :
   l'audio, désactivée par défaut, réutilise
   `normalizeStructuredExtraction` de `kadiV1GeminiVisionProvider.js`.
 
-**Câblé dans l'orchestrateur et le bootstrap de production, sur une branche
-de fonctionnalité (`feat/kadi-conversational-orchestrator-integration-v1`),
-non fusionnée, non déployée, non activée** :
+**Câblé dans l'orchestrateur et le bootstrap de production — fusionné dans
+`main` via [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10)
+(commit de merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`), déploiement
+Render non vérifié, non activé** :
 
 * `kadiV1ConversationalMultimodalRuntimeAdapter.js` (nouveau) implémente
   exactement le même port `interpret(command)` que l'adaptateur existant
@@ -189,8 +196,8 @@ non fusionnée, non déployée, non activée** :
   général n'accorde jamais automatiquement l'éligibilité conversationnelle ;
 * pour tout propriétaire non éligible, toute entrée `FLOW_REPLY`, ou
   simplement quand `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED` est faux
-  (le cas par défaut, y compris sur cette branche tant qu'elle n'est pas
-  activée), l'adaptateur délègue **exactement** à l'adaptateur existant —
+  (le cas par défaut, y compris sur `main` tant que le flag n'est pas
+  activé), l'adaptateur délègue **exactement** à l'adaptateur existant —
   comportement inchangé, prouvé par des tests de composition dédiés ;
 * pour un propriétaire éligible, `CREATE_DOCUMENT`/`UPDATE_DOCUMENT`
   produisent `{intent, document_type, brain_result}` via une **chaîne
@@ -344,11 +351,15 @@ non fusionnée, non déployée, non activée** :
   (`kadiV1FlowReplyRuntime.js`), jamais réinterprétée par un résultat IA
   (§13 AGENTS.md).
 
-**Toujours non activé pour de vrais utilisateurs** : `main` ne contient
-aucun de ces changements (voir §0 et la section Statut en tête de ce
-document) ; sur cette branche même, `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED`
-reste `false` par défaut et `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS`
-n'est configuré nulle part.
+**Toujours non activé pour de vrais utilisateurs** : le code est désormais
+présent sur `main` (voir le statut en tête de ce document), mais
+`KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED` et `KADI_GEMINI_AUDIO_V1_ENABLED`
+restent `false` par défaut et `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS`
+n'est configuré nulle part sur Render — présence sur `main` n'équivaut pas à
+activation. Aucun comportement utilisateur actuel n'est changé, y compris si
+Render déploie ce commit automatiquement. Faire passer un premier
+propriétaire réel par ce chemin exige une mission CANARY explicite et
+distincte, non encore réalisée.
 
 ## 5bis. Observabilité conversationnelle (privacy-safe, non branchée à un tableau de bord)
 
@@ -438,7 +449,7 @@ créée par cette mission.
 
 ### Compatibilité admin-stats (documentation uniquement)
 
-Aucun tableau de bord n'est construit sur cette branche. Une mission future
+Aucun tableau de bord n'est construit par cette intégration. Une mission future
 `KADI_ADMIN_AI_OBSERVABILITY_V1` est prévue pour consommer ces 5 événements
 (agrégation, lecture seule) sans jamais lire le contenu d'un message —
 seuls les champs listés ci-dessus existent dans le flux d'événements ; le
@@ -468,12 +479,15 @@ jargon interne et l'unicité de la question posée.
 ## 8. Plan de déploiement
 
 1. ~~revue de la fondation~~ — **fait**, PR #8 fusionnée ;
-2. ~~câblage explicite dans `kadiV1ConversationOrchestrator.js`~~ — **fait**
-   sur `feat/kadi-conversational-orchestrator-integration-v1`, via
-   composition (§5), pas encore fusionné dans `main` ;
-3. revue indépendante de cette branche d'intégration (mission dédiée) ;
-4. fusion de la branche d'intégration dans `main`, toujours avec
-   `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED=false` ;
+2. ~~câblage explicite dans `kadiV1ConversationOrchestrator.js`~~ — **fait**,
+   via composition (§5) ;
+3. ~~revue indépendante de la branche d'intégration~~ — **fait**, revue
+   adversariale complète (constats et corrections documentés dans
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) fiches L à O),
+   puis revue finale de la PR avant fusion ;
+4. ~~fusion de la branche d'intégration dans `main`~~ — **fait**, PR #10
+   fusionnée (commit de merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`),
+   toujours avec `KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED=false` ;
 5. activation en local/test uniquement
    (`KADI_CONVERSATIONAL_MULTIMODAL_V1_ENABLED=true` en environnement de
    développement, `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` limité
@@ -488,8 +502,9 @@ jargon interne et l'unicité de la question posée.
    autorisation explicite et en suivant
    [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md).
 
-Aucune des étapes 3 à 7 n'a été exécutée par la mission qui a produit cette
-version du document.
+Aucune des étapes 5 à 7 n'a été exécutée par la mission qui a produit cette
+version du document — elles nécessitent chacune une mission CANARY
+explicite et distincte.
 
 ## 9. Plan de mesure (conception uniquement, aucune collecte démarrée)
 
@@ -514,13 +529,13 @@ Aucune collecte de donnée de production n'est démarrée par cette mission.
 
 **Fondation (sur `main`, commit `c3030c909fdb526c5341622afe5a8b5389f0a77d`) :**
 aucune action de rollback en production n'est nécessaire tant qu'aucun flag
-n'est activé et que la branche d'intégration n'est pas fusionnée — ce code
-n'a, par construction, aucun chemin d'exécution atteignable par un
-utilisateur réel. Un `git revert` du commit de merge suffirait si
-nécessaire, sans coordination Render ni Supabase.
+n'est activé — ce code n'a, par construction, aucun chemin d'exécution
+atteignable par un utilisateur réel. Un `git revert` du commit de merge
+suffirait si nécessaire, sans coordination Render ni Supabase.
 
-**Intégration (branche `feat/kadi-conversational-orchestrator-integration-v1`,
-pas encore fusionnée) :** modifie `kadiV1ConversationOrchestrator.js` (trois
+**Intégration (sur `main`, commit de merge
+`c23ea3bfa58ddc95baff799e617da581279d8c1f`, PR #10) :** modifie
+`kadiV1ConversationOrchestrator.js` (trois
 branches additives, `RECHARGE`/`REMOVE_ITEM`/`CHANGE_DOCUMENT_TYPE`, toutes
 inatteignables sans l'adaptateur conversationnel ; `assertPort` exige
 désormais `removeContent` et `changeDocumentType` sur `documentRuntime`,
@@ -549,18 +564,17 @@ résultat complet). C'est la seule fonction déjà existante modifiée dans ces
 trois fichiers ; le changement est un ajout pur de champ (`duplicate` sur
 la valeur de retour), sans changement de signature ni de comportement pour
 aucun appelant qui ne lit pas ce champ. Ajoute enfin quatre
-fichiers source entièrement nouveaux, inertes tant que la branche n'est pas
-fusionnée et activée : `kadiV1ConversationalMultimodalBrainAdapter.js`,
+fichiers source entièrement nouveaux, inertes tant que le flag et
+l'allowlist ne sont pas configurés : `kadiV1ConversationalMultimodalBrainAdapter.js`,
 `kadiV1ConversationalMultimodalRuntimeAdapter.js`,
 `kadiV1ConversationalMultimodalItemLookup.js`,
 `kadiV1ConversationalMultimodalObservability.js`. Tant que
 `KADI_CONVERSATIONAL_MULTIMODAL_V1_CANARY_WA_IDS` n'est configuré sur
 Render pour personne, ces changements restent sans effet observable même
-une fois fusionnés et déployés — le rollback le plus simple est de ne
-jamais configurer cette variable. Si un rollback complet devenait
-nécessaire après fusion, un `git revert` du commit de merge de cette
-branche suffit également, pour la même raison (rien n'est activé ni
-migré).
+une fois déployés — le rollback le plus simple est de ne jamais configurer
+cette variable. Si un rollback complet devenait nécessaire, un `git revert`
+du commit de merge `c23ea3bfa58ddc95baff799e617da581279d8c1f` suffit
+également, pour la même raison (rien n'est activé ni migré).
 
 ## 11. Rappels produit non négociables
 
@@ -570,18 +584,20 @@ migré).
   structurée avec incertitudes, jamais un texte brut non qualifié ;
 * aucun modèle multimodal ne peut autoriser une opération financière — voir
   §2 et §6 ;
-* la release CANARY actuelle est indépendante de cette branche : `main` ne
-  contient aucun de ces changements (voir §0/statut en tête de document).
-  Sur la branche d'intégration elle-même, plusieurs fichiers qui servent
-  réellement le trafic de production sont modifiés
+* la release CANARY actuelle reste indépendante de cette intégration, même
+  après la fusion : le code est maintenant présent sur `main` (voir
+  §0/statut en tête de document) et plusieurs fichiers qui servent
+  réellement le trafic de production ont été modifiés
   (`kadiV1ConversationOrchestrator.js`, `kadiV1ProductionBootstrap.js`,
   `kadiV1ProductionOrchestratorComposition.js`, `kadiV1DocumentDomain.js`,
   `kadiV1SharedDocumentPipeline.js`, `kadiV1RuntimeAdapters.js`,
   `kadiV1RuntimeConfig.js`, `kadiV1CanaryIngress.js`) — mais chaque
-  changement y est strictement additif (nouvelle branche conditionnelle,
+  changement y reste strictement additif (nouvelle branche conditionnelle,
   nouvelle fonction, nouvelle méthode, nouveau paramètre optionnel par
   défaut inerte, ou nouvelle entrée `FEATURE_ENV_KEYS`), jamais une
   modification du comportement d'une fonction ou d'un flag existant ;
-  confirmé par la suite de tests existante restée entièrement au vert
-  (1092/1092 à la date de cette mise à jour) sans qu'aucun de ces tests
-  n'ait dû changer son assertion sur un comportement préexistant.
+  confirmé par la suite de tests restée entièrement au vert (1115/1115 à la
+  date de la fusion) sans qu'aucun test n'ait dû changer son assertion sur
+  un comportement préexistant. Aucun flag n'étant activé et aucune
+  allowlist configurée, la présence de ce code sur `main` — déployé ou non
+  — ne change le comportement observé par aucun utilisateur réel.
