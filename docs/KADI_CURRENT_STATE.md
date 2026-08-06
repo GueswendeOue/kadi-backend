@@ -234,6 +234,68 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   avant l'exécution d'une matrice CANARY fraîche (étape 9 de
   [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md)).
 
+### Retenue de livraison WhatsApp après une génération réussie, et noms de fichiers finaux uniques
+
+* **Statut : `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — branche
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0`, code implémenté et
+  testé localement, **non encore fusionnée ni déployée**. Ne pas présenter
+  comme une correction active en production tant qu'un déploiement et un
+  vrai passage de reprise de livraison n'ont pas été validés en conditions
+  réelles.
+* **Contexte confirmé — première génération CANARY par le fondateur
+  (2026-08-06) :** la navigation `DOCUMENT_OPTIONS` fonctionne intégralement
+  (`NAVIGATION_CONFIRMED_WORKING`, confirmé par les logs de production —
+  voir fiche P de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) ; le document a
+  atteint `GENERATED` avec une identité complète et **un seul crédit
+  capturé** ; **l'envoi WhatsApp du PDF a ensuite échoué**
+  (`DELIVERY_DESTINATION_MISMATCH`, très probablement une erreur transitoire
+  de la vérification de destination, pas une incohérence de données
+  persistante — revérification indépendante concluante). Une fonction de
+  reprise de livraison (`retryDelivery`) existait déjà dans
+  `kadiV1GenerationLifecycleService.js`, mais **n'était atteignable par
+  aucune action réelle** — ni bouton, ni Flow, ni commande — laissant le
+  document payé et le PDF prêt sans aucun moyen pour l'utilisateur de le
+  recevoir.
+* **Correctif :** `retryDelivery` réécrit avec une éligibilité entièrement
+  vérifiée côté serveur (propriétaire, état `RECOVERABLE_FAILURE` avec
+  `resume_state=GENERATED`, identité complète, réservation capturée, tentative
+  `PROMOTED`, fichier final correspondant à la version active), exposé par un
+  **bouton WhatsApp interactif simple** (« Réenvoyer le PDF », aucun nouveau
+  Flow Meta) déclenché depuis le même message d'échec de livraison. Protégé
+  au-delà de la file en mémoire par une réclamation atomique en base
+  (`PENDING`/`RECOVERABLE_FAILURE` → `IN_PROGRESS` avant tout appel du
+  fournisseur) empêchant un double envoi en cas de requêtes concurrentes.
+* **Distinction ajoutée dans le fournisseur de livraison :**
+  `DELIVERY_DESTINATION_LOOKUP_FAILED` (la vérification elle-même a échoué
+  ou n'a rien trouvé) est désormais séparé de `DELIVERY_DESTINATION_MISMATCH`
+  (la vérification a réussi et les valeurs diffèrent réellement) — l'ambiguïté
+  exacte qui a compliqué le diagnostic de l'incident CANARY ci-dessus.
+* **Noms de fichiers finaux uniques :** les noms génériques
+  (`facture.pdf`, `recu.pdf`, écrasés à chaque nouveau document du même
+  propriétaire) sont remplacés, pour tout document généré après ce
+  correctif, par un nom déterministe basé sur la référence officielle
+  (`facture_<document_number>.pdf`, `facture-proforma_<document_number>.pdf`,
+  `devis_<document_number>.pdf`, `recu_<document_number>.pdf`,
+  `decharge_<document_number>.pdf`), calculé de façon identique et
+  recalculée (jamais stockée redondante) partout où il est utilisé — envoi
+  WhatsApp, reprise de livraison, projection historique/téléchargement.
+  **Les documents déjà livrés avant ce correctif ne sont pas renommés.**
+* **Preuve de validation :** `tests/kadiV1FinalFilename.test.js`,
+  `tests/kadiV1DeliveryProvider.test.js`,
+  `tests/kadiV1DeliveryRetryEligibility.test.js` (éligibilité complète,
+  concurrence, chemin de production réel via le vrai runtime webhook),
+  `tests/kadiV1DeliveryRetryRuntime.test.js`, plus les suites existantes
+  mises à jour (`kadiV1GenerationLifecycle`, `kadiV1ReleaseRecoveryE2E`,
+  `kadiV1WebhookRuntime`, `kadiV1ProductionPresenter`,
+  `kadiV1ProductionComposition`, `kadiV1ProductionBootstrap`,
+  `kadiV1RuntimeAdapters`, `kadiV1HistorySearch`). Suite complète : 1219/1219.
+* **Non inclus dans cette correction, planifié séparément :**
+  `GUIDED_ENTRY_BUTTON_NOT_IMPLEMENTED` — envoyer « Créer une facture »
+  ouvre une demande de texte libre, sans bouton de parcours guidé ; ceci
+  appartient à une future mission hybride guidé/conversationnel proposant
+  les deux entrées.
+
 ## Blocages connus
 
 * **Meta 141006** — les conversations initiées par l'entreprise (proactives)

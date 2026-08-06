@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { canonicalFinalFilename } = require("./kadiV1FinalFilename");
 
 const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
@@ -686,19 +687,6 @@ function createKadiV1RechargeRuntime({
   return Object.freeze({ selectPack, checkPayment, cancel });
 }
 
-// invoice_kind only distinguishes a FACTURE from its proforma variant —
-// document_type itself never changes (see kadiV1PreviewService.js/
-// kadiV1TemporaryRenderService.js for the same distinction applied to the
-// rendered PDF title). Without this, a proforma and a final invoice were
-// delivered under the exact same "facture.pdf" filename.
-function deliveryFilenameBase(documentRow) {
-  const documentType = String(documentRow?.document_type || "document").toLowerCase();
-  if (documentRow?.document_type === "FACTURE" && documentRow?.options?.invoice_kind === "PROFORMA") {
-    return "facture_proforma";
-  }
-  return documentType;
-}
-
 function createKadiV1WhatsAppDeliveryProvider({
   client,
   storage,
@@ -725,21 +713,28 @@ function createKadiV1WhatsAppDeliveryProvider({
       }
       const document = await supabase
         .from("kadi_v1_documents")
-        .select("owner_wa_id,document_type,options")
+        .select("owner_wa_id,document_type,options,document_number")
         .eq("document_id", finalFile.document_id)
         .maybeSingle();
+      // A failed or empty lookup means the destination could not be
+      // verified at all — it must never be reported as a confirmed
+      // mismatch (a real production incident traced this exact ambiguity:
+      // a transient lookup failure and a genuine mismatch shared one error
+      // code, making the two indistinguishable after the fact). Both still
+      // fail closed; only the recorded reason differs.
+      if (document?.error) return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
       const ownerWaId = document?.data?.owner_wa_id;
-      const deliveryFilename = `${deliveryFilenameBase(document?.data)}.pdf`;
       const expectedDestination = OWNER_PATTERN.test(ownerWaId || "")
         ? `owner:${digest(ownerWaId).slice(0, 12)}`
         : null;
-      if (
-        document?.error ||
-        !expectedDestination ||
-        expectedDestination !== destinationRef
-      ) {
-        return fail("DELIVERY_DESTINATION_MISMATCH");
-      }
+      if (!expectedDestination) return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
+      if (expectedDestination !== destinationRef) return fail("DELIVERY_DESTINATION_MISMATCH");
+      const deliveryFilename = canonicalFinalFilename({
+        document_type: document.data.document_type,
+        invoice_kind: document.data.options?.invoice_kind ?? null,
+        document_number: document.data.document_number,
+      });
+      if (!deliveryFilename) return fail("DELIVERY_FILENAME_UNRESOLVED");
       const bytes = await storage.readFinal(finalFile.storage_ref);
       if (!bytes.ok) return bytes;
       const uploaded = await whatsappApi.uploadMediaBuffer({
@@ -772,7 +767,6 @@ module.exports = {
   createKadiV1IssuerResolver,
   createKadiV1RechargeRuntime,
   createKadiV1WhatsAppDeliveryProvider,
-  deliveryFilenameBase,
   createManualOrangeMoneyPaymentProvider,
   createSupabasePrivateArtifactStorage,
   parseStorageRef,

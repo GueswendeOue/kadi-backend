@@ -2,13 +2,17 @@
 
 const RESERVATION_STATUSES = Object.freeze(["RESERVED", "CAPTURED", "RELEASED", "EXPIRED"]);
 const ATTEMPT_STATUSES = Object.freeze(["STARTED", "PDF_VALIDATED", "CAPTURED", "PROMOTED", "RECOVERABLE_FAILURE", "CANCELLED"]);
-const DELIVERY_STATUSES = Object.freeze(["PENDING", "DELIVERED", "RECOVERABLE_FAILURE"]);
+// IN_PROGRESS is the atomic "claim" state a delivery attempt occupies for
+// the strictly bounded window between winning the claim and the provider
+// call returning — see kadiV1DeliveryService.js's execute(). No caller ever
+// sets it directly except that claim step.
+const DELIVERY_STATUSES = Object.freeze(["PENDING", "IN_PROGRESS", "DELIVERED", "RECOVERABLE_FAILURE"]);
 
 const METHODS = Object.freeze([
   "reserveCredits", "captureReservation", "releaseReservation", "getReservation",
   "createGenerationAttempt", "getGenerationAttempt", "updateGenerationAttempt",
   "promoteFinalFile", "getFinalFile", "findByQuoteId",
-  "createDeliveryAttempt", "getDeliveryAttempt", "updateDeliveryAttempt",
+  "createDeliveryAttempt", "getDeliveryAttempt", "updateDeliveryAttempt", "findDeliveryAttemptByFinalFileId",
 ]);
 
 const ok = (value, extra = {}) => ({ ok: true, value, ...extra });
@@ -190,20 +194,26 @@ function createInMemoryGenerationLifecycleRepository({ balances = {}, failpoint 
     return value ? ok(clone(value)) : fail("DELIVERY_ATTEMPT_NOT_FOUND");
   }
 
-  async function updateDeliveryAttempt({ deliveryAttemptId, changes }) {
+  async function updateDeliveryAttempt({ deliveryAttemptId, expectedStatus, changes }) {
     return serial(async () => {
       const value = deliveries.get(deliveryAttemptId);
       if (!value) return fail("DELIVERY_ATTEMPT_NOT_FOUND");
+      if (expectedStatus != null && value.status !== expectedStatus) return fail("DELIVERY_ATTEMPT_CONCURRENCY_CONFLICT");
       if (!DELIVERY_STATUSES.includes(changes?.status)) return fail("DELIVERY_STATUS_INVALID");
       Object.assign(value, clone(changes), { revision: value.revision + 1 });
       return ok(clone(value));
     });
   }
 
+  async function findDeliveryAttemptByFinalFileId({ finalFileId }) {
+    const value = [...deliveries.values()].find((entry) => entry.final_file_id === finalFileId);
+    return ok(value ? clone(value) : null);
+  }
+
   return Object.freeze(assertGenerationLifecycleRepository({
     reserveCredits, captureReservation, releaseReservation, getReservation,
     createGenerationAttempt, getGenerationAttempt, updateGenerationAttempt, promoteFinalFile, getFinalFile, findByQuoteId,
-    createDeliveryAttempt, getDeliveryAttempt, updateDeliveryAttempt,
+    createDeliveryAttempt, getDeliveryAttempt, updateDeliveryAttempt, findDeliveryAttemptByFinalFileId,
     inspect: () => clone({ balances: Object.fromEntries(wallets), reservations: [...reservations.values()], attempts: [...attempts.values()], finalFiles: [...finalFiles.values()], deliveries: [...deliveries.values()], ledger }),
   }));
 }

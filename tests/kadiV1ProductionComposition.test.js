@@ -64,6 +64,11 @@ function completeComponents(calls) {
       presentRecoverableError: async () => {
         calls.presentRecoverableError += 1;
       },
+      presentDeliveryFailureWithRetry: async () => {},
+      presentDeliveryRetryOutcome: async () => {},
+    },
+    deliveryRetryRuntime: {
+      handle: async () => ({ ok: true, value: { document: { status: "DELIVERED" } } }),
     },
   };
 }
@@ -107,7 +112,7 @@ test("requested canary is blocked without complete production ports but the proc
   assert.equal(composition.readiness.state, "BLOCKED");
   assert.deepEqual(
     composition.readiness.missing_ports,
-    ["orchestrator", "flowReplyRuntime", "mediaResolver", "presenter"]
+    ["orchestrator", "flowReplyRuntime", "mediaResolver", "presenter", "deliveryRetryRuntime"]
   );
   assert.equal(warnings.length, 1);
 
@@ -214,6 +219,7 @@ test("production capability inspection fails closed without the real boot compos
     "flowReplyRuntime",
     "mediaResolver",
     "presenter",
+    "deliveryRetryRuntime",
   ]);
 });
 
@@ -228,6 +234,7 @@ test("production capability inspection accepts only a real READY readiness repor
         flowReplyRuntime: true,
         mediaResolver: true,
         presenter: true,
+        deliveryRetryRuntime: true,
       },
       missing_ports: [],
       missing_capabilities: [],
@@ -265,6 +272,11 @@ test("production composition can derive the orchestrator without boot I/O", () =
         async presentConversation() {},
         async presentFlowReply() {},
         async presentRecoverableError() {},
+        async presentDeliveryFailureWithRetry() {},
+        async presentDeliveryRetryOutcome() {},
+      },
+      deliveryRetryRuntime: {
+        async handle() { return { ok: true, value: {} }; },
       },
     },
     dependencies: {

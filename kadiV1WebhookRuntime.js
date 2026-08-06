@@ -21,6 +21,15 @@ const GENERATION_RETRY_REASONS = new Set([
   "FINAL_RENDER_FAILED", "FINAL_PDF_INVALID", "FINAL_PDF_CORRUPT",
   "FINAL_PDF_PAGE_COUNT_MISMATCH", "FINAL_STORAGE_FAILED", "FINAL_STORAGE_NOT_PRIVATE",
 ]);
+// A post-capture delivery failure — the PDF was already rendered, paid for
+// and promoted; only sending it failed. This must never share the generic
+// GENERATION_RETRY_TEXT (which promises "no credit lost" for a render
+// failure that never captured one) nor the plain RECOVERABLE_TEXT (which
+// offers no way forward at all) — it gets its own presentation with a real,
+// reachable retry button. See kadiV1GenerationLifecycleService.js's
+// deliverFinal/retryDelivery and docs/KADI_ENGINEERING_MEMORY.md fiche P/Q.
+const DELIVERY_RECOVERABLE_REASON = "DELIVERY_RECOVERABLE_FAILURE";
+const RETRY_DELIVERY_BUTTON_PATTERN = /^RETRY_DELIVERY:([A-Za-z0-9:_-]{1,200})$/;
 const FLOW_REPLY_KEYS = new Set(["session_id", "flow_key", "action", "data", "flow_token"]);
 // Presentation failures may throw for many reasons (Supabase/Postgres
 // errors included); only a closed-set internal code — never raw driver
@@ -157,6 +166,15 @@ function createKadiV1WebhookRuntime({
   flowReplyRuntime = null,
   mediaResolver = null,
   presenter = null,
+  // Optional and deliberately decoupled from `orchestrator`
+  // (kadiV1ConversationOrchestrator.js, the conversational-multimodal
+  // dispatch surface) and from `flowReplyRuntime` (which requires an open
+  // Flow session a plain interactive button never has). A plain WhatsApp
+  // reply-button press is intercepted before either — see handleMessage
+  // below. Left unconfigured, a delivery-retry button press fails closed
+  // (logged, absorbed) rather than crashing or falling through to the
+  // wrong handler.
+  deliveryRetryRuntime = null,
   logger = console,
 } = {}) {
   if (!config || typeof config.enabled !== "boolean" || !config.features) throw new TypeError("KADI_V1_RUNTIME_CONFIG_REQUIRED");
@@ -168,6 +186,7 @@ function createKadiV1WebhookRuntime({
   const replies = assertPort(flowReplyRuntime, ["handle"], "KADI_V1_FLOW_REPLY_RUNTIME");
   const media = assertPort(mediaResolver, ["resolveAudio", "resolveImage", "resolvePdf"], "KADI_V1_MEDIA_RESOLVER");
   const output = assertPort(presenter, ["presentConversation", "presentFlowReply", "presentRecoverableError"], "KADI_V1_WEBHOOK_PRESENTER");
+  const deliveryRetry = deliveryRetryRuntime == null ? null : assertPort(deliveryRetryRuntime, ["handle"], "KADI_V1_DELIVERY_RETRY_RUNTIME");
 
   function log(event, message, reason = null) {
     try {
@@ -180,13 +199,50 @@ function createKadiV1WebhookRuntime({
     } catch { /* logging is non-authoritative */ }
   }
 
-  async function recover(ownerWaId, message, reason) {
+  async function recover(ownerWaId, message, reason, documentId = null) {
     log("recoverable_failure", message, reason);
+    if (
+      reason === DELIVERY_RECOVERABLE_REASON &&
+      ID_PATTERN.test(documentId || "") &&
+      typeof output.presentDeliveryFailureWithRetry === "function"
+    ) {
+      try {
+        await output.presentDeliveryFailureWithRetry({ ownerWaId, messageId: message?.id || null, documentId });
+        return { handled: true, accepted: false, reason };
+      } catch { /* fall through to the generic presentation below */ }
+    }
     const canonicalText = GENERATION_RETRY_REASONS.has(reason) ? GENERATION_RETRY_TEXT : RECOVERABLE_TEXT;
     try {
       await output.presentRecoverableError({ ownerWaId, messageId: message?.id || null, canonicalText, reason });
     } catch { /* one failed presentation must not expose the message to legacy routing */ }
     return { handled: true, accepted: false, reason };
+  }
+
+  function retryButtonId(message) {
+    const id = message?.interactive?.button_reply?.id;
+    return typeof id === "string" ? id : null;
+  }
+
+  async function handleDeliveryRetryButton(ownerWaId, message, documentId) {
+    log("delivery_retry_button_pressed", message, null);
+    if (!deliveryRetry) return { handled: true, accepted: false, reason: "KADI_V1_DELIVERY_RETRY_RUNTIME_UNAVAILABLE" };
+    let result;
+    try {
+      result = await deliveryRetry.handle({ ownerWaId, documentId, idempotencyKey: idempotencyFor("delivery_retry", message) });
+    } catch {
+      result = { ok: false, error: "KADI_V1_DELIVERY_RETRY_RUNTIME_FAILED" };
+    }
+    const outcome = result?.ok
+      ? "SUCCEEDED"
+      : result?.error === DELIVERY_RECOVERABLE_REASON
+        ? "FAILED_PERSISTENT"
+        : "REJECTED";
+    if (typeof output.presentDeliveryRetryOutcome === "function") {
+      try {
+        await output.presentDeliveryRetryOutcome({ ownerWaId, messageId: message?.id || null, outcome, reasonCode: result?.ok ? null : (result?.error || null) });
+      } catch { /* one failed presentation must not expose the message to legacy routing */ }
+    }
+    return { handled: true, accepted: result?.ok === true, reason: result?.ok ? null : (result?.error || "KADI_V1_DELIVERY_RETRY_FAILED") };
   }
 
   async function handleMessage(value, message) {
@@ -207,13 +263,24 @@ function createKadiV1WebhookRuntime({
       return { handled: false, reason: "KADI_V1_OWNER_NOT_IN_ROLLOUT" };
     }
 
+    // Checked before both isNfmReply and the general MENU_ACTION mapping
+    // below — a plain reply-button press has no Flow session (nfm_reply
+    // requires one) and must never be fuzzy-matched by the conversational
+    // orchestrator's natural-language intent detection. Any button id not
+    // matching this exact closed pattern falls through unchanged to
+    // existing handling (e.g. the ordinary MENU_ACTION path).
+    if (message?.type === "interactive" && !isNfmReply(message)) {
+      const match = RETRY_DELIVERY_BUTTON_PATTERN.exec(retryButtonId(message) || "");
+      if (match) return handleDeliveryRetryButton(ownerWaId, message, match[1]);
+    }
+
     if (isNfmReply(message)) {
       const parsed = parseNfmReply(message, ownerWaId);
       if (!parsed.ok) return recover(ownerWaId, message, parsed.error);
       let result;
       try { result = await replies.handle(parsed.value); }
       catch { return recover(ownerWaId, message, "KADI_V1_FLOW_REPLY_RUNTIME_FAILED"); }
-      if (!result?.ok) return recover(ownerWaId, message, result?.error || "KADI_V1_FLOW_REPLY_FAILED");
+      if (!result?.ok) return recover(ownerWaId, message, result?.error || "KADI_V1_FLOW_REPLY_FAILED", result?.documentId || null);
       try {
         await output.presentFlowReply({ ownerWaId, messageId: message?.id || null, result: result.value });
       } catch (presentationError) {

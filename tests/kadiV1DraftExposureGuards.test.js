@@ -31,6 +31,7 @@ function harness() {
       async sendTypingIndicator(messageId) { calls.push(["typing", messageId]); },
       async sendText(to, text) { calls.push(["text", { to, text }]); },
       async sendFlow(payload) { calls.push(["flow", payload]); },
+      async sendButtons(to, body, buttons) { calls.push(["buttons", { to, body, buttons }]); },
     },
     sessionService: {
       async open(command) {
@@ -44,8 +45,13 @@ function harness() {
 
 test("the presenter's WhatsApp port contract has no document/media send capability", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "kadiV1ProductionPresenter.js"), "utf8");
-  // Only sendText/sendFlow are required; nothing named sendDocument/sendMedia/sendPdf exists.
-  assert.doesNotMatch(source, /sendDocument|sendMedia|sendPdf|messaging\.send(?!Text|Flow|TypingIndicator)/);
+  // Only sendText/sendFlow/sendButtons are required; nothing named
+  // sendDocument/sendMedia/sendPdf exists — the delivered PDF itself is
+  // still sent exclusively by kadiV1ProductionInfrastructure.js's delivery
+  // provider, never by the presenter. sendButtons is the plain
+  // interactive-reply-button primitive used only for the delivery-retry
+  // offer/outcome messages — it never carries a document.
+  assert.doesNotMatch(source, /sendDocument|sendMedia|sendPdf|messaging\.send(?!Text|Flow|TypingIndicator|Buttons)/);
 });
 
 test("PREPARE_PDF: even a maliciously enriched result never leaks storage_ref, a media id, a PDF url or a debit flag to the outward Flow", async () => {

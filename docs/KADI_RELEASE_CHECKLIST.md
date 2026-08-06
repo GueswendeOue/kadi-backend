@@ -175,6 +175,26 @@ complète et la confirmation que la fenêtre est refermée depuis
   s'applique plus à `20260806010000_add_kadi_v1_finalization_identity.sql`,
   appliquée et vérifiée en distant le 2026-08-06.**
 
+## Ordre — `fix/kadi-v1-delivery-retry-and-final-filenames-r0` (reprise de livraison et noms de fichiers finaux)
+
+Aucune migration Supabase requise pour cette branche (aucun nouveau champ de
+base de données — voir fiche R de
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) — l'ordre habituel
+migration-avant-fusion ne s'applique pas ici.
+
+1. **[FAIT]** Code écrit, revu, testé localement (1219/1219).
+2. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+3. **[EN ATTENTE]** Fusion dans `main`.
+4. **[EN ATTENTE]** Déploiement manuel explicite sur Render (ce service
+   n'auto-déploie pas — voir
+   [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md)) et vérification
+   du commit `live` exact.
+5. **[EN ATTENTE]** Vérification du démarrage et de l'absence d'erreur.
+6. **[EN ATTENTE]** Une vraie reprise de livraison (bouton « Réenvoyer le
+   PDF ») observée en conditions réelles avant de considérer ce correctif
+   comme validé — **ne pas se contenter des tests locaux pour affirmer
+   que le document CANARY resté sans livraison a été récupéré.**
+
 ## Déploiement Render
 
 - [ ] **Commit Render attendu** : vérifier que le commit qui sera déployé

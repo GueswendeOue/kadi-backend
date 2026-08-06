@@ -102,7 +102,11 @@ function createGenerationLifecycleService({
     if (!delivered.ok) {
       emit("delivery_failed", { reason_code: "DELIVERY_FAILED" });
       const failed = await recordFailure(document, ownerWaId, "DELIVERY_FAILED", `${key}:delivery-failure`);
-      return failed.ok ? fail("DELIVERY_RECOVERABLE_FAILURE") : failed;
+      // documentId travels with the failure so the presentation layer can
+      // offer a real, reachable retry action for exactly this document —
+      // never trusted back from the client, only ever read forward from
+      // here to the presenter.
+      return failed.ok ? { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE", documentId: document.document_id } : failed;
     }
     emit("delivery_succeeded");
     const marked = await persistEvent(document, DOCUMENT_EVENTS.MARK_DELIVERED, { delivery_attempt_id: created.value.delivery_attempt_id }, `${key}:delivered`, "DOCUMENT_DELIVERED", ownerWaId);
@@ -373,19 +377,97 @@ function createGenerationLifecycleService({
     return persistEvent(document.value, DOCUMENT_EVENTS.CANCEL, {}, `${idempotencyKey}:cancel`, "GENERATION_CANCELLED", ownerWaId);
   }
 
-  async function retryDelivery({ quoteId, ownerWaId, deliveryAttemptId, idempotencyKey }) {
-    const found = await store.findByQuoteId({ quoteId });
-    if (!found.ok || !found.value || found.value.owner_wa_id !== ownerWaId) return fail("GENERATION_ATTEMPT_NOT_FOUND");
-    let document = await documents.getDocumentById({ documentId: found.value.document_id, ownerWaId });
-    if (!document.ok) return document;
-    if (document.value.status === "RECOVERABLE_FAILURE") {
-      document = await persistEvent(document.value, DOCUMENT_EVENTS.RESUME, {}, `${idempotencyKey}:resume-delivery`, "DELIVERY_RESUMED", ownerWaId);
-      if (!document.ok) return document;
+  // Every value this function acts on is resolved fresh from persisted
+  // state — the caller supplies only documentId/ownerWaId/idempotencyKey
+  // (ownerWaId always from the authenticated webhook sender, never from a
+  // button payload). No quoteId, deliveryAttemptId, finalFileId,
+  // destination or credit amount is ever accepted from the caller; all are
+  // looked up here. See docs/KADI_ENGINEERING_MEMORY.md fiche P/Q for the
+  // confirmed incident (captured credit + promoted PDF + no reachable
+  // retry) this closes.
+  async function runRetryDelivery({ documentId, ownerWaId, idempotencyKey }) {
+    emit("delivery_retry_requested");
+    function rejected(code) {
+      emit("delivery_retry_rejected", { reason_code: code });
+      return fail(code);
     }
-    const delivered = await deliveryService.retryDelivery({ deliveryAttemptId });
-    if (!delivered.ok) return delivered;
-    const marked = await persistEvent(document.value, DOCUMENT_EVENTS.MARK_DELIVERED, { delivery_attempt_id: deliveryAttemptId }, `${idempotencyKey}:delivered`, "DOCUMENT_DELIVERED", ownerWaId);
-    return marked.ok ? ok({ document: marked.value, delivery: delivered.value }) : marked;
+    const document = await documents.getDocumentById({ documentId, ownerWaId });
+    if (!document.ok) return rejected(document.error || "DELIVERY_RETRY_NOT_ELIGIBLE");
+    const doc = document.value;
+    if (typeof doc.issued_at !== "string" || !doc.issued_at || typeof doc.document_number !== "string" || !doc.document_number) {
+      return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    }
+    const quoteId = doc.generation_quote?.quote_id;
+    if (!valid(quoteId)) return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    const found = await store.findByQuoteId({ quoteId });
+    if (!found.ok || !found.value || found.value.owner_wa_id !== ownerWaId || found.value.document_id !== documentId) {
+      return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    }
+    const attempt = found.value;
+    if (attempt.status !== "PROMOTED") return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    const reservation = await store.getReservation({ reservationId: attempt.reservation_id });
+    if (!reservation.ok || reservation.value.status !== "CAPTURED") return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    const finalFile = await store.getFinalFile({ finalFileId: attempt.final_file_id });
+    if (!finalFile.ok || finalFile.value.document_id !== documentId || finalFile.value.document_version !== doc.version) {
+      return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    }
+    const deliveryFound = await store.findDeliveryAttemptByFinalFileId({ finalFileId: finalFile.value.final_file_id });
+    if (!deliveryFound.ok || !deliveryFound.value) return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+
+    // Already-delivered is checked independently of the document's current
+    // status: a replayed webhook can arrive after MARK_DELIVERED already
+    // persisted (document.status === "DELIVERED"), and this must still be
+    // a safe, inert, idempotent success — not an eligibility rejection.
+    if (deliveryFound.value.status === "DELIVERED") {
+      if (doc.status === "RECOVERABLE_FAILURE") {
+        // Defensive reconciliation: the provider succeeded on a prior
+        // attempt but MARK_DELIVERED itself never completed. Never calls
+        // the provider again — only persists the state a successful
+        // delivery already implies.
+        const resumed = await persistEvent(doc, DOCUMENT_EVENTS.RESUME, {}, `${idempotencyKey}:resume-delivery`, "DELIVERY_RESUMED", ownerWaId);
+        if (!resumed.ok) return resumed;
+        const marked = await persistEvent(resumed.value, DOCUMENT_EVENTS.MARK_DELIVERED, { delivery_attempt_id: deliveryFound.value.delivery_attempt_id }, `${idempotencyKey}:delivered`, "DOCUMENT_DELIVERED", ownerWaId);
+        if (marked.ok) emit("delivery_retry_succeeded", { duplicate: true });
+        return marked.ok ? ok({ document: marked.value, delivery: deliveryFound.value }, { duplicate: true }) : marked;
+      }
+      emit("delivery_retry_succeeded", { duplicate: true });
+      return ok({ document: doc, delivery: deliveryFound.value }, { duplicate: true });
+    }
+
+    // Not yet delivered — a genuine retry additionally requires the
+    // document to corroborate an in-progress delivery failure recorded at
+    // exactly this stage. Checked here, after resolving the generation
+    // attempt/reservation/final-file chain above, so a document that never
+    // reached this stage (wrong status, unrelated failure, or any
+    // structural mismatch already caught above) is rejected the same way
+    // regardless of which check happens to catch it first.
+    if (
+      doc.status !== "RECOVERABLE_FAILURE" ||
+      doc.recoverable_failure?.code !== "DELIVERY_FAILED" ||
+      doc.recoverable_failure?.resume_state !== "GENERATED"
+    ) {
+      return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+    }
+    if (deliveryFound.value.status !== "RECOVERABLE_FAILURE") return rejected("DELIVERY_RETRY_NOT_ELIGIBLE");
+
+    emit("delivery_retry_started");
+    const resumed = await persistEvent(doc, DOCUMENT_EVENTS.RESUME, {}, `${idempotencyKey}:resume-delivery`, "DELIVERY_RESUMED", ownerWaId);
+    if (!resumed.ok) return resumed;
+    const delivered = await deliveryService.retryDelivery({ deliveryAttemptId: deliveryFound.value.delivery_attempt_id });
+    if (!delivered.ok) {
+      emit("delivery_retry_failed", { reason_code: delivered.error });
+      const failed = await recordFailure(resumed.value, ownerWaId, "DELIVERY_FAILED", `${idempotencyKey}:delivery-retry-failure`);
+      return failed.ok ? { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE", documentId } : failed;
+    }
+    const marked = await persistEvent(resumed.value, DOCUMENT_EVENTS.MARK_DELIVERED, { delivery_attempt_id: deliveryFound.value.delivery_attempt_id }, `${idempotencyKey}:delivered`, "DOCUMENT_DELIVERED", ownerWaId);
+    if (!marked.ok) return marked;
+    emit("delivery_retry_succeeded", { duplicate: false });
+    return ok({ document: marked.value, delivery: delivered.value });
+  }
+
+  async function retryDelivery(command) {
+    if (!valid(command?.documentId) || !valid(command?.ownerWaId)) return fail("DELIVERY_RETRY_INVALID");
+    return serializeConfirmation(`delivery:${command.documentId}`, () => runRetryDelivery(command));
   }
 
   async function getGenerationStatus({ quoteId, ownerWaId }) {

@@ -31,7 +31,25 @@ function createDeliveryService({ repository, provider, clock = () => new Date().
     });
   }
 
+  // Claims the attempt (PENDING/RECOVERABLE_FAILURE -> IN_PROGRESS) via a
+  // conditional, expected-status-checked update *before* ever calling the
+  // provider. This is the one property an in-memory queue alone cannot
+  // give: two concurrent calls both reading the same RECOVERABLE_FAILURE
+  // row would, without this claim, both pass straight through to
+  // deliverDocument() — a real double-send risk. Only the caller whose
+  // conditional update actually lands may proceed; the loser learns this
+  // from the update's own result, never from a second provider call.
+  async function claim(attempt) {
+    return store.updateDeliveryAttempt({
+      deliveryAttemptId: attempt.delivery_attempt_id,
+      expectedStatus: attempt.status,
+      changes: { status: "IN_PROGRESS", attempt_count: attempt.attempt_count },
+    });
+  }
+
   async function execute(attempt) {
+    const claimed = await claim(attempt);
+    if (!claimed.ok) return fail("DELIVERY_ALREADY_IN_PROGRESS");
     const file = await store.getFinalFile({ finalFileId: attempt.final_file_id });
     if (!file.ok) return file;
     let result;
@@ -43,16 +61,23 @@ function createDeliveryService({ repository, provider, clock = () => new Date().
     const now = new Date(clock()).toISOString();
     if (!result.ok) {
       const code = typeof result.error === "string" && /^[A-Z0-9_:-]{1,100}$/.test(result.error) ? result.error : "DELIVERY_PROVIDER_FAILED";
-      const updated = await store.updateDeliveryAttempt({ deliveryAttemptId: attempt.delivery_attempt_id, changes: { status: "RECOVERABLE_FAILURE", attempt_count: attempt.attempt_count + 1, last_error_code: code, last_attempt_at: now } });
+      const updated = await store.updateDeliveryAttempt({
+        deliveryAttemptId: attempt.delivery_attempt_id, expectedStatus: "IN_PROGRESS",
+        changes: { status: "RECOVERABLE_FAILURE", attempt_count: claimed.value.attempt_count + 1, last_error_code: code, last_attempt_at: now },
+      });
       return updated.ok ? fail("DELIVERY_RECOVERABLE_FAILURE") : updated;
     }
-    return store.updateDeliveryAttempt({ deliveryAttemptId: attempt.delivery_attempt_id, changes: { status: "DELIVERED", attempt_count: attempt.attempt_count + 1, last_error_code: null, delivered_at: now, provider_reference: result.value?.reference || null } });
+    return store.updateDeliveryAttempt({
+      deliveryAttemptId: attempt.delivery_attempt_id, expectedStatus: "IN_PROGRESS",
+      changes: { status: "DELIVERED", attempt_count: claimed.value.attempt_count + 1, last_error_code: null, delivered_at: now, provider_reference: result.value?.reference || null },
+    });
   }
 
   async function deliver({ deliveryAttemptId }) {
     const attempt = await store.getDeliveryAttempt({ deliveryAttemptId });
     if (!attempt.ok) return attempt;
     if (attempt.value.status === "DELIVERED") return ok(attempt.value, { duplicate: true });
+    if (attempt.value.status === "IN_PROGRESS") return fail("DELIVERY_ALREADY_IN_PROGRESS");
     return execute(attempt.value);
   }
 
@@ -60,6 +85,7 @@ function createDeliveryService({ repository, provider, clock = () => new Date().
     const attempt = await store.getDeliveryAttempt({ deliveryAttemptId });
     if (!attempt.ok) return attempt;
     if (attempt.value.status === "DELIVERED") return ok(attempt.value, { duplicate: true });
+    if (attempt.value.status === "IN_PROGRESS") return fail("DELIVERY_ALREADY_IN_PROGRESS");
     if (attempt.value.status !== "RECOVERABLE_FAILURE") return fail("DELIVERY_NOT_RETRYABLE");
     return execute(attempt.value);
   }

@@ -177,9 +177,26 @@ test("version list is ordered and binds FINAL to the final file version", async 
 test("final-file reference is opaque and requires future temporary access", async () => {
   const { service } = setup([bundle({ id: "doc_file", final: true })]);
   const result = await service.getFinalFileReference({ ownerWaId: OWNER, documentId: "doc_file" });
-  assert.deepEqual(Object.keys(result.value).sort(), ["access", "document_id", "document_version", "final_file_id", "mime_type", "page_count"]);
+  assert.deepEqual(Object.keys(result.value).sort(), ["access", "document_id", "document_version", "filename", "final_file_id", "mime_type", "page_count"].sort());
   assert.equal(result.value.access, "TEMPORARY_ACCESS_REQUIRED");
   assert.equal((await createDeferredPrivateFileAccess().createTemporaryAccess()).error, "FINAL_FILE_ACCESS_NOT_CONFIGURED");
+});
+
+test("final-file reference exposes the same canonical filename used for WhatsApp delivery", async () => {
+  const source = bundle({ id: "doc_named", final: true });
+  source.document.document_number = "FA-20260806190633-A0EAC605";
+  const { service } = setup([source]);
+  const result = await service.getFinalFileReference({ ownerWaId: OWNER, documentId: "doc_named" });
+  assert.equal(result.value.filename, "facture_FA-20260806190633-A0EAC605.pdf");
+});
+
+test("final-file reference filename distinguishes a proforma", async () => {
+  const source = bundle({ id: "doc_proforma", final: true });
+  source.document.document_number = "FA-20260806190633-A0EAC605";
+  source.current_snapshot.options = { invoice_kind: "PROFORMA" };
+  const { service } = setup([source]);
+  const result = await service.getFinalFileReference({ ownerWaId: OWNER, documentId: "doc_proforma" });
+  assert.equal(result.value.filename, "facture-proforma_FA-20260806190633-A0EAC605.pdf");
 });
 
 test("duplicate creates a clean version-1 draft and preserves source", async () => {

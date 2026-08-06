@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const { DOCUMENT_EVENTS, DOCUMENT_STATES } = require("./kadiV1DocumentStateMachine");
 const { DOCUMENT_TYPES, createDocumentDomain } = require("./kadiV1DocumentDomain");
 const { assertV1HistoryRepository } = require("./kadiV1HistoryRepository");
+const { canonicalFinalFilename } = require("./kadiV1FinalFilename");
 
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9:_.-]{1,180}$/;
@@ -172,7 +173,7 @@ function createV1HistoryService({ historyRepository, documentRepository, clock =
       events: history.value,
       preview: bundle.preview?.status === "ACTIVE" ? clone(bundle.preview) : null,
       generation_quote: bundle.generation_quote?.status === "ACTIVE" ? clone(bundle.generation_quote) : null,
-      final_file: bundle.classification !== "LEGACY_UNKNOWN" && bundle.final_file ? safeFinalFile(bundle.final_file) : null,
+      final_file: bundle.classification !== "LEGACY_UNKNOWN" && bundle.final_file ? safeFinalFile(bundle.final_file, bundle.document, bundle.current_snapshot) : null,
       delivery: bundle.delivery ? { status: bundle.delivery.status, attempt_count: bundle.delivery.attempt_count ?? 0 } : null,
       recharge_resume: bundle.recharge_resume ? { status: bundle.recharge_resume.resume_status } : null,
     });
@@ -190,13 +191,23 @@ function createV1HistoryService({ historyRepository, documentRepository, clock =
     })));
   }
 
-  function safeFinalFile(file) {
+  // The canonical filename is always recomputed here from the same three
+  // fields (document_type/invoice_kind/document_number) that
+  // kadiV1ProductionInfrastructure.js's WhatsApp delivery provider uses —
+  // never stored redundantly on the final-file row itself, so the two can
+  // never drift apart.
+  function safeFinalFile(file, document, snapshot) {
     return {
       final_file_id: file.final_file_id,
       document_id: file.document_id,
       document_version: file.document_version,
       page_count: file.page_count,
       mime_type: file.mime_type,
+      filename: canonicalFinalFilename({
+        document_type: document?.document_type,
+        invoice_kind: document?.document_type === "FACTURE" ? (snapshot?.options?.invoice_kind ?? null) : null,
+        document_number: document?.document_number ?? null,
+      }),
       access: "TEMPORARY_ACCESS_REQUIRED",
     };
   }
@@ -211,7 +222,7 @@ function createV1HistoryService({ historyRepository, documentRepository, clock =
     const found = await ownedBundle(ownerWaId, documentId);
     if (!found.ok) return found;
     return found.value.classification !== "LEGACY_UNKNOWN" && found.value.final_file
-      ? ok(safeFinalFile(found.value.final_file))
+      ? ok(safeFinalFile(found.value.final_file, found.value.document, found.value.current_snapshot))
       : fail("FINAL_FILE_NOT_FOUND");
   }
 

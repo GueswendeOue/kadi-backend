@@ -67,11 +67,23 @@ function harness(overrides = {}) {
       presentConversation: async (input) => calls.push(["present_conversation", input]),
       presentFlowReply: async (input) => calls.push(["present_flow_reply", input]),
       presentRecoverableError: async (input) => calls.push(["present_error", input]),
+      presentDeliveryFailureWithRetry: async (input) => calls.push(["present_delivery_failure", input]),
+      presentDeliveryRetryOutcome: async (input) => calls.push(["present_delivery_outcome", input]),
+    },
+    deliveryRetryRuntime: overrides.deliveryRetryRuntime || {
+      handle: async (input) => {
+        calls.push(["delivery_retry", input]);
+        return overrides.deliveryRetryResult || { ok: true, value: { outcome: "SUCCEEDED" } };
+      },
     },
     logger: { log: (label, record) => calls.push(["log", { label, record }]) },
     ...overrides.runtime,
   });
   return { runtime, calls };
+}
+
+function buttonMessage(id, title, overrides = {}) {
+  return { id: "wamid.button.1", from: "22670000000", type: "interactive", interactive: { type: "button", button_reply: { id, title } }, ...overrides };
 }
 
 test("disabled webhook runtime requires no operational ports and preserves legacy routing", async () => {
@@ -119,6 +131,79 @@ test("a render/private-storage generation failure shows the retry-safe message, 
     assert.equal(errors[0][1].canonicalText, GENERATION_RETRY_TEXT, reason);
     assert.notEqual(errors[0][1].canonicalText, RECOVERABLE_TEXT, reason);
   }
+});
+
+test("a post-capture delivery failure offers the reachable retry button, never the generic message", async () => {
+  const { runtime, calls } = harness({
+    flowReplyResult: { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE", documentId: "document:8a2445480a88eb66f64301faa0eac605" },
+  });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: "quote:1" } });
+  await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(calls.some(([name]) => name === "present_error"), false, "must not fall back to the generic recoverable-error presentation");
+  const offered = calls.find(([name]) => name === "present_delivery_failure");
+  assert.ok(offered);
+  assert.equal(offered[1].documentId, "document:8a2445480a88eb66f64301faa0eac605");
+});
+
+test("a delivery failure without a documentId falls back safely to the generic message, never crashes", async () => {
+  const { runtime, calls } = harness({ flowReplyResult: { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE" } });
+  const message = nfmMessage({ session_id: "kadi_session:1", flow_key: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: "quote:1" } });
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(calls.some(([name]) => name === "present_delivery_failure"), false);
+  assert.equal(calls.some(([name]) => name === "present_error"), true);
+});
+
+test("pressing the reachable Réenvoyer le PDF button dispatches to delivery retry — never to the conversational orchestrator or the Flow-reply runtime", async () => {
+  const { runtime, calls } = harness();
+  const message = buttonMessage("RETRY_DELIVERY:document:8a2445480a88eb66f64301faa0eac605", "Réenvoyer le PDF");
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(calls.some(([name]) => name === "conversation"), false, "must never reach the conversational orchestrator");
+  assert.equal(calls.some(([name]) => name === "flow_reply"), false, "must never reach the Flow-reply runtime (no Flow session exists for a plain button)");
+  const dispatched = calls.find(([name]) => name === "delivery_retry");
+  assert.ok(dispatched);
+  assert.equal(dispatched[1].ownerWaId, "22670000000");
+  assert.equal(dispatched[1].documentId, "document:8a2445480a88eb66f64301faa0eac605");
+  const outcome = calls.find(([name]) => name === "present_delivery_outcome");
+  assert.equal(outcome[1].outcome, "SUCCEEDED");
+});
+
+test("a persistently-failing retry presents the persistent-failure message, not the success one", async () => {
+  const { runtime, calls } = harness({ deliveryRetryResult: { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE" } });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Réenvoyer le PDF");
+  await runtime.handleIncomingValue({ messages: [message] });
+  const outcome = calls.find(([name]) => name === "present_delivery_outcome");
+  assert.equal(outcome[1].outcome, "FAILED_PERSISTENT");
+});
+
+test("an ineligible retry (wrong owner, wrong state, replay after success, …) presents a safe rejected outcome — the technical code only ever reaches the presenter's reasonCode field for privacy-safe logging, never the presented text", async () => {
+  const { runtime, calls } = harness({ deliveryRetryResult: { ok: false, error: "DELIVERY_RETRY_NOT_ELIGIBLE" } });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Réenvoyer le PDF");
+  await runtime.handleIncomingValue({ messages: [message] });
+  const outcome = calls.find(([name]) => name === "present_delivery_outcome");
+  assert.equal(outcome[1].outcome, "REJECTED");
+  // kadiV1ProductionPresenter.test.js's own dedicated test proves the real
+  // presenter never interpolates reasonCode into outgoing text — this
+  // level only needs to prove the *outcome* dispatched is the safe,
+  // closed-set "REJECTED" value, not the raw internal error string.
+  assert.notEqual(outcome[1].outcome, "DELIVERY_RETRY_NOT_ELIGIBLE");
+});
+
+test("a malformed or unrecognized button id falls through to ordinary menu-action handling, never a false-positive delivery retry", async () => {
+  const { runtime, calls } = harness();
+  const message = buttonMessage("SOME_OTHER_ACTION", "Autre chose");
+  await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(calls.some(([name]) => name === "delivery_retry"), false);
+  assert.equal(calls.some(([name]) => name === "conversation"), true);
+});
+
+test("if no delivery-retry runtime is configured, the button press fails closed without crashing", async () => {
+  const { runtime, calls } = harness({ deliveryRetryRuntime: null });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Réenvoyer le PDF");
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(calls.some(([name]) => name === "conversation"), false);
 });
 
 test("an unrelated recoverable failure keeps the generic message, not the generation-retry one", async () => {
@@ -303,6 +388,20 @@ test("recognized V1 Flow reply from a non-canary owner is absorbed before legacy
   assert.deepEqual(result.results[0], { handled: true, accepted: false, reason: "KADI_V1_CANARY_OWNER_NOT_ALLOWED" });
   assert.equal(calls.some(([name]) => name === "flow_reply"), false);
   assert.equal(calls.some(([name]) => name === "present_error"), false);
+});
+
+test("a non-canary owner pressing Réenvoyer le PDF is blocked by the same rollout gate, never reaching delivery retry", async () => {
+  const { runtime, calls } = harness({
+    runtime: {
+      config: enabledConfig({
+        rollout: { mode: "CANARY", valid: true, canaryOwnerCount: 1, canaryWaIds: ["22670000000"] },
+      }),
+    },
+  });
+  const message = buttonMessage("RETRY_DELIVERY:document:1", "Réenvoyer le PDF", { from: "22671111111" });
+  const result = await runtime.handleIncomingValue({ messages: [message] });
+  assert.deepEqual(result.results[0], { handled: false, reason: "KADI_V1_OWNER_NOT_IN_ROLLOUT" });
+  assert.equal(calls.some(([name]) => name === "delivery_retry"), false);
 });
 
 test("rollout OFF and invalid rollout require no operational ports", async () => {

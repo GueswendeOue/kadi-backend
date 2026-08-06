@@ -52,6 +52,9 @@ function harness(overrides = {}) {
       async sendFlow(payload) {
         calls.push(["flow", payload]);
       },
+      async sendButtons(to, body, buttons) {
+        calls.push(["buttons", { to, body, buttons }]);
+      },
     },
     sessionService: {
       async open(command) {
@@ -726,6 +729,39 @@ test("recoverable error sends only canonical user text and never exposes the rea
   assert.doesNotMatch(serialized, /PRIVATE_PROVIDER_FAILURE/);
 });
 
+test("delivery-failure-with-retry offers exactly one button and the exact required French copy, with no technical term exposed", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryFailureWithRetry({
+    ownerWaId: OWNER,
+    messageId: "wamid:delivery-failed",
+    documentId: "document:8a2445480a88eb66f64301faa0eac605",
+  });
+  const buttonsCall = calls.find(([name]) => name === "buttons");
+  assert.ok(buttonsCall, "must send an interactive buttons message");
+  const [, { to, body, buttons }] = buttonsCall;
+  assert.equal(to, OWNER);
+  assert.equal(body, "Votre PDF est prêt, mais son envoi n’a pas abouti.\nAppuyez sur « Réenvoyer le PDF ».\nAucun crédit supplémentaire ne sera débité.");
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].title, "Réenvoyer le PDF");
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  const serialized = JSON.stringify(calls);
+  for (const forbidden of ["DELIVERY_RECOVERABLE_FAILURE", "destination", "flow_token", "document_id", "RECOVERABLE_FAILURE"]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden), `must never expose "${forbidden}" verbatim as a technical field name`);
+  }
+});
+
+test("delivery retry outcome messages match exactly what the mission specifies, per outcome", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:1", outcome: "SUCCEEDED" });
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:2", outcome: "FAILED_PERSISTENT" });
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:3", outcome: "REJECTED" });
+  const texts = calls.filter(([name]) => name === "text").map(([, value]) => value.text);
+  assert.equal(texts[0], "Votre document a bien été renvoyé.");
+  assert.equal(texts[1], "Le PDF est toujours disponible.\nL’envoi n’a pas abouti et aucun crédit supplémentaire n’a été débité.\nVous pourrez réessayer.");
+  assert.match(texts[2], /Réessayez/);
+  assert.doesNotMatch(texts[2], /DELIVERY_RETRY_NOT_ELIGIBLE|documentId|GENERATION_ATTEMPT/);
+});
+
 test("voice failure is non-blocking after the mandatory text", async () => {
   const { presenter, calls } = harness({
     voiceResponseEngine: {
@@ -785,6 +821,9 @@ test("production presenter construction performs no Supabase or WhatsApp I/O", (
         externalCalls += 1;
       },
       async sendFlow() {
+        externalCalls += 1;
+      },
+      async sendButtons() {
         externalCalls += 1;
       },
     },

@@ -335,16 +335,17 @@ test("release recovery: a delivery outage resumes with the same immutable PDF an
   });
   const session = await harness.openConfirmationSession("delivery-failure");
   const failed = await harness.confirmThroughFlow({ session, replyKey: "release:confirm:delivery-failure" });
-  assert.deepEqual(failed, { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE" });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error, "DELIVERY_RECOVERABLE_FAILURE");
+  assert.equal(failed.documentId, DOCUMENT_ID);
   let state = harness.generationRepository.inspect();
   assert.equal(state.ledger.length, 1);
   assert.equal(state.finalFiles.length, 1);
   assert.equal(state.deliveries[0].attempt_count, 1);
 
   const retried = await harness.lifecycle.retryDelivery({
-    quoteId: QUOTE_ID,
+    documentId: DOCUMENT_ID,
     ownerWaId: OWNER,
-    deliveryAttemptId: state.deliveries[0].delivery_attempt_id,
     idempotencyKey: "release:delivery:retry",
   });
   assert.equal(retried.ok, true, retried.error);

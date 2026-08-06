@@ -667,12 +667,16 @@ function createKadiV1ProductionPresenter({
   }
   const messaging = assertMethod(
     assertMethod(
-      whatsappApi,
-      "sendText",
-      "KADI_V1_PRESENTER_SEND_TEXT_REQUIRED"
+      assertMethod(
+        whatsappApi,
+        "sendText",
+        "KADI_V1_PRESENTER_SEND_TEXT_REQUIRED"
+      ),
+      "sendFlow",
+      "KADI_V1_PRESENTER_SEND_FLOW_REQUIRED"
     ),
-    "sendFlow",
-    "KADI_V1_PRESENTER_SEND_FLOW_REQUIRED"
+    "sendButtons",
+    "KADI_V1_PRESENTER_SEND_BUTTONS_REQUIRED"
   );
   if (!FLOW_MODES.has(flowMode)) {
     throw new TypeError("KADI_V1_PRESENTER_FLOW_MODE_INVALID");
@@ -977,6 +981,57 @@ function createKadiV1ProductionPresenter({
     });
   }
 
+  // The one WhatsApp-visible entry point into the delivery-retry feature —
+  // offered only after a real, confirmed post-capture delivery failure
+  // (kadiV1WebhookRuntime.js's recover() dispatches here specifically for
+  // reason === "DELIVERY_RECOVERABLE_FAILURE"). The button id carries only
+  // the opaque documentId — already routinely exposed elsewhere (Flow
+  // prefill payloads) — never a quote, delivery-attempt, destination or
+  // credit value. No technical term is exposed in the body text.
+  async function presentDeliveryFailureWithRetry({
+    ownerWaId,
+    messageId = null,
+    documentId,
+  } = {}) {
+    if (!OWNER_PATTERN.test(ownerWaId || "") || !ID_PATTERN.test(documentId || "")) {
+      throw new TypeError("KADI_V1_PRESENTER_DELIVERY_FAILURE_INVALID");
+    }
+    await maybeTyping(messageId);
+    await messaging.sendButtons(
+      ownerWaId,
+      "Votre PDF est prêt, mais son envoi n’a pas abouti.\nAppuyez sur « Réenvoyer le PDF ».\nAucun crédit supplémentaire ne sera débité.",
+      [{ id: `RETRY_DELIVERY:${documentId}`, title: "Réenvoyer le PDF" }]
+    );
+    safeLog(logger, "delivery_retry_offered", {});
+    return Object.freeze({ buttons_sent: true });
+  }
+
+  const DELIVERY_RETRY_OUTCOME_TEXT = Object.freeze({
+    SUCCEEDED: "Votre document a bien été renvoyé.",
+    FAILED_PERSISTENT: "Le PDF est toujours disponible.\nL’envoi n’a pas abouti et aucun crédit supplémentaire n’a été débité.\nVous pourrez réessayer.",
+    REJECTED: "Je n’ai pas pu terminer cette étape. Réessayez dans un instant.",
+  });
+
+  // Every branch sends a fixed, pre-validated canonical string — reasonCode
+  // (an internal eligibility code such as DELIVERY_RETRY_NOT_ELIGIBLE) is
+  // accepted only for privacy-safe logging, never interpolated into the
+  // outgoing text.
+  async function presentDeliveryRetryOutcome({
+    ownerWaId,
+    messageId = null,
+    outcome,
+    reasonCode = null,
+  } = {}) {
+    const text = DELIVERY_RETRY_OUTCOME_TEXT[outcome];
+    if (!OWNER_PATTERN.test(ownerWaId || "") || !text) {
+      throw new TypeError("KADI_V1_PRESENTER_DELIVERY_RETRY_OUTCOME_INVALID");
+    }
+    await maybeTyping(messageId);
+    await messaging.sendText(ownerWaId, text);
+    safeLog(logger, "delivery_retry_outcome_presented", { outcome, reasonCode });
+    return Object.freeze({ text_sent: true });
+  }
+
   async function presentRecoverableError({
     ownerWaId,
     messageId = null,
@@ -1002,6 +1057,8 @@ function createKadiV1ProductionPresenter({
     presentConversation,
     presentFlowReply,
     presentRecoverableError,
+    presentDeliveryFailureWithRetry,
+    presentDeliveryRetryOutcome,
     readiness: Object.freeze({
       ready: true,
       text_required: true,

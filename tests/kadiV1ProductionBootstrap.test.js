@@ -102,6 +102,7 @@ function fakeWhatsApp(calls) {
     async sendDocument() { calls.external += 1; throw new Error("BOOT_META_FORBIDDEN"); },
     async sendFlow() { calls.external += 1; throw new Error("BOOT_META_FORBIDDEN"); },
     async sendText() { calls.external += 1; throw new Error("BOOT_META_FORBIDDEN"); },
+    async sendButtons() { calls.external += 1; throw new Error("BOOT_META_FORBIDDEN"); },
     async sendTypingIndicator() { calls.external += 1; throw new Error("BOOT_META_FORBIDDEN"); },
   };
 }
@@ -389,6 +390,7 @@ test("the real bootstrap intercepts an authorized canary before legacy", async (
       assert.equal(payload.interactive.action.parameters.flow_action_payload.screen, "MENU");
       return { messages: [{ id: "wamid:flow" }] };
     },
+    async sendButtons() { throw new Error("NOT_USED"); },
     async sendTypingIndicator() {},
   };
   const providerAdapters = {

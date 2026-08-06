@@ -330,6 +330,7 @@ test("START transition opens MENU after the saved profile", async () => {
       sendFlow: async (payload) => {
         flows.push(payload);
       },
+      sendButtons: async () => {},
     },
     sessionService: {
       open: async () => ({

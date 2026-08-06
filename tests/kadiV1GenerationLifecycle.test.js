@@ -540,11 +540,18 @@ test("cancellation before capture releases credits and creates no final PDF", as
 
 test("delivery failure is recoverable and retry reuses final PDF without another capture", async () => {
   const f = await fixture({ deliveryResults: [{ ok: false, error: "CHANNEL_TEMPORARY" }, { ok: true, value: { reference: "retry-ok" } }] });
-  assert.deepEqual(await f.service.confirmGeneration(command), { ok: false, error: "DELIVERY_RECOVERABLE_FAILURE" });
+  const confirmed = await f.service.confirmGeneration(command);
+  assert.equal(confirmed.ok, false);
+  assert.equal(confirmed.error, "DELIVERY_RECOVERABLE_FAILURE");
+  assert.equal(confirmed.documentId, command.documentId, "the failure result must carry the documentId so a real retry action can be offered");
   let state = f.repository.inspect();
   assert.equal(state.ledger.length, 1);
   assert.equal(state.finalFiles.length, 1);
-  const retried = await f.service.retryDelivery({ quoteId: command.quoteId, ownerWaId: OWNER, deliveryAttemptId: state.deliveries[0].delivery_attempt_id, idempotencyKey: "delivery:retry" });
+  const beforeRetry = await f.documents.getDocumentById({ documentId: command.documentId, ownerWaId: OWNER });
+  assert.equal(beforeRetry.value.status, "RECOVERABLE_FAILURE");
+  assert.equal(beforeRetry.value.recoverable_failure.code, "DELIVERY_FAILED");
+  assert.equal(beforeRetry.value.recoverable_failure.resume_state, "GENERATED");
+  const retried = await f.service.retryDelivery({ documentId: command.documentId, ownerWaId: OWNER, idempotencyKey: "delivery:retry" });
   assert.equal(retried.ok, true, retried.error);
   assert.equal(retried.value.document.status, "DELIVERED");
   state = f.repository.inspect();
@@ -552,7 +559,7 @@ test("delivery failure is recoverable and retry reuses final PDF without another
   assert.equal(state.finalFiles.length, 1);
   assert.equal(state.deliveries[0].attempt_count, 2);
   assert.equal(state.reservations.length, 1);
-  assert.equal(f.calls.render, 1);
+  assert.equal(f.calls.render, 1, "retry must never re-render the PDF");
 });
 
 test("capture is unique and cannot occur after release", async () => {
