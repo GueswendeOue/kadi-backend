@@ -340,10 +340,13 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## K. Fondation `KADI_CONVERSATIONAL_MULTIMODAL_V1` déjà largement présente avant sa mission de création
 
-* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_INTEGRATED` —
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED` —
   fondation fusionnée dans `main` via PR #8 (commit de merge
-  `c3030c909fdb526c5341622afe5a8b5389f0a77d`), toujours désactivée par
-  défaut et non câblée dans l'orchestrateur ni le bootstrap de production.
+  `c3030c909fdb526c5341622afe5a8b5389f0a77d`), et depuis câblée dans
+  l'orchestrateur et le bootstrap de production via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10) (commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`) ; toujours désactivée
+  par défaut (flags et allowlist CANARY conversationnelle non configurés).
 * **Période :** mission de création de la fondation, puis mission de revue
   du même travail, puis fusion.
 * **Symptôme :** une mission demandant de « créer la fondation isolée » de
@@ -433,8 +436,12 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## L. Intégration orchestrateur : l'enveloppe conversationnelle n'est pas consommable telle quelle par `documents.apply(...)`
 
-* **Statut :** `IMPLEMENTED_NOT_MERGED` (branche
-  `feat/kadi-conversational-orchestrator-integration-v1`).
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED` (fusionné
+  dans `main` via [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10),
+  commit de merge `c23ea3bfa58ddc95baff799e617da581279d8c1f` ; flags et
+  allowlist restent inactifs — voir
+  [`KADI_CONVERSATIONAL_MULTIMODAL_V1.md`](KADI_CONVERSATIONAL_MULTIMODAL_V1.md)
+  pour le détail exact de l'activation requise).
 * **Période :** mission d'intégration de `KADI_CONVERSATIONAL_MULTIMODAL_V1`
   dans `kadiV1ConversationOrchestrator.js` et `kadiV1ProductionBootstrap.js`.
 * **Symptôme potentiel évité :** faire passer l'enveloppe conversationnelle
@@ -501,8 +508,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   l'adaptateur. La seule modification fonctionnelle de l'orchestrateur est
   une branche additive pour l'intent `RECHARGE`, que l'adaptateur d'origine
   ne peut jamais produire (donc inatteignable sans l'intégration active).
-* **Commit ou migration :** sans objet (branche non fusionnée à la date de
-  rédaction).
+* **Commit ou migration :** fusionné dans `main` via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10), commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`.
 * **Preuve de validation :**
   `tests/kadiV1ConversationalMultimodalBrainAdapter.test.js`,
   `tests/kadiV1ConversationalMultimodalRuntimeAdapter.test.js`,
@@ -528,8 +536,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## M. Complétion de l'intégration orchestrateur : REMOVE_ITEM, CHANGE_DOCUMENT_TYPE, repli PREPARE_DOCUMENT, observabilité
 
-* **Statut :** `IMPLEMENTED_NOT_MERGED` (même branche que la fiche L,
-  `feat/kadi-conversational-orchestrator-integration-v1`).
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED` (même
+  fusion que la fiche L, PR #10, commit de merge
+  `c23ea3bfa58ddc95baff799e617da581279d8c1f`).
 * **Période :** mission de complétion, après la fiche L, avant relecture
   indépendante de la branche.
 * **REMOVE_ITEM — décision et cause :** `conversationalResultToBrainResult`
@@ -592,8 +601,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   fermées, buckets de latence grossiers), jamais de texte/numéro complet.
   Voir `docs/KADI_CONVERSATIONAL_MULTIMODAL_V1.md` §5bis pour le détail
   complet des garanties et de la politique de rejeu de webhook.
-* **Commit ou migration :** sans objet (branche non fusionnée à la date de
-  rédaction).
+* **Commit ou migration :** fusionné dans `main` via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10), commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`.
 * **Preuve de validation :**
   `tests/kadiV1ConversationalMultimodalItemLookup.test.js`,
   `tests/kadiV1ConversationalMultimodalObservability.test.js`, tests ajoutés
@@ -635,8 +645,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## N. Contradiction PREPARE_DOCUMENT : le court-circuit déterministe de l'orchestrateur ignorait l'éligibilité conversationnelle
 
-* **Statut :** `IMPLEMENTED_NOT_MERGED` (même branche que les fiches L et M,
-  `feat/kadi-conversational-orchestrator-integration-v1`).
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED` (même
+  fusion que les fiches L et M, PR #10, commit de merge
+  `c23ea3bfa58ddc95baff799e617da581279d8c1f`).
 * **Période :** mission de complétion, immédiatement après la fiche M,
   suite à un audit explicitement demandé de l'ordonnancement
   `detectNaturalIntent` / `PREPARE_DOCUMENT` / éligibilité conversationnelle
@@ -701,8 +712,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   post-échec (propriétaire éligible mais interprétation en échec) — un
   seul chemin de code, jamais deux implémentations divergentes du même
   comportement historique.
-* **Commit ou migration :** sans objet (branche non fusionnée à la date de
-  rédaction).
+* **Commit ou migration :** fusionné dans `main` via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10), commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`.
 * **Preuve de validation :** `tests/kadiV1PrepareDocumentConversationalPath.test.js`
   (nouveau fichier dédié, 7 tests bout-en-bout avec adaptateur
   conversationnel réel, orchestrateur réel, pipeline document réel,
@@ -732,8 +744,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
 
 ## O. Revue adversariale indépendante confirmée : télémétrie de succès émise avant confirmation backend
 
-* **Statut :** `IMPLEMENTED_NOT_MERGED` (même branche que les fiches L/M/N,
-  `feat/kadi-conversational-orchestrator-integration-v1`).
+* **Statut :** `MERGED_DEPLOYMENT_UNVERIFIED_DISABLED_NOT_ACTIVATED` (même
+  fusion que les fiches L/M/N, PR #10, commit de merge
+  `c23ea3bfa58ddc95baff799e617da581279d8c1f`).
 * **Période :** revue adversariale indépendante en lecture seule (mission
   dédiée), suivie d'une mission de correction.
 * **Symptôme confirmé :** `kadiV1ConversationalMultimodalRuntimeAdapter.js`
@@ -790,8 +803,9 @@ production), `BLOCKED` (non résolu, dépend d'un tiers).
   qui aurait pu faire correspondre un mot replié court à l'intérieur d'un
   mot plus long sans rapport, ex. « plats » → « plat » à l'intérieur de
   « plateau »).
-* **Commit ou migration :** sans objet (branche non fusionnée à la date de
-  rédaction).
+* **Commit ou migration :** fusionné dans `main` via
+  [PR #10](https://github.com/GueswendeOue/kadi-backend/pull/10), commit de
+  merge `c23ea3bfa58ddc95baff799e617da581279d8c1f`.
 * **Preuve de validation :**
   `tests/kadiV1ConversationalDraftAppliedObservability.test.js` (nouveau, 8
   tests : 3 échecs → zéro événement, 3 succès → un événement chacun, 1 rejeu
