@@ -679,6 +679,14 @@ function createKadiV1ProductionBootstrap({
       flowMode: String(env.KADI_V1_FLOW_MODE || "published").toLowerCase(),
       logger,
       issuerProfileReader: issuerResolver,
+      // T5/RECHARGE_PRESENTER_001: the exact same instances already
+      // constructed above for the FlowCommandRuntime/RechargeService path
+      // (balanceReader also feeds walletRuntime; packCatalog also feeds
+      // rechargeService) — never a second balance calculation or a second
+      // pack list, so the RECHARGE Flow always agrees with the rest of the
+      // runtime.
+      balanceReader,
+      packCatalog,
     });
 
     const components = Object.freeze({

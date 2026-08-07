@@ -14,7 +14,7 @@ const {
 } = require("./kadiV1DraftFlowCatalog");
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
 const { buildPreviewData } = require("./kadiV1PreviewService");
-const { formatAvailableBalanceText } = require("./kadiV1BalancePresentation");
+const { formatAvailableBalanceText, formatRechargeBalanceSummary } = require("./kadiV1BalancePresentation");
 
 const MAX_SUMMARY_ITEMS = 10;
 
@@ -473,6 +473,21 @@ const DISCHARGE_REVIEW_ACTIONS = Object.freeze([
   { id: "CANCEL", title: "Annuler" },
 ]);
 
+// T5/RECHARGE_PRESENTER_001: RECHARGE/CANCEL is a real terminal
+// cancellation of the targeted recharge session (kadiV1RechargeService.js's
+// cancelRechargeSession — CANCELLED is a genuine terminal status in
+// RECHARGE_STATUSES, no non-terminal "saved for later" state exists in the
+// domain), so the Flow's real JSON example label "Revenir plus tard" is
+// misleading. Always explicitly supplied here (never left to the Flow
+// JSON's own __example__ — see safeFlowData()) so this corrected label
+// actually reaches the user.
+const RECHARGE_ACTIONS = Object.freeze([
+  Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
+  Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
+  Object.freeze({ id: "CANCEL", title: "Annuler cette recharge" }),
+]);
+const RECHARGE_BALANCE_UNAVAILABLE_TEXT = "Solde indisponible pour le moment.";
+
 function buildReviewActions(document) {
   if (document?.document_type === "RECU") return RECEIPT_REVIEW_ACTIONS;
   if (document?.document_type === "DECHARGE") return DISCHARGE_REVIEW_ACTIONS;
@@ -725,10 +740,24 @@ function quoteFromResult(value) {
   return ID_PATTERN.test(candidate || "") ? candidate : null;
 }
 
-function canonicalReplyText(action, value) {
+function canonicalReplyText(action, value, flowKey = null) {
   const document = extractDocument(value);
   if (document?.status === "DELIVERED") {
     return "Votre document est prêt et a été envoyé.";
+  }
+
+  // T5/RECHARGE_PRESENTER_001: RECHARGE/CANCEL performs a real terminal
+  // cancellation (see RECHARGE_ACTIONS above), so it must never read as
+  // the generic "L’opération est annulée." shown for every other CANCEL
+  // flow. flowKey is the trusted, session-verified screen the reply was
+  // actually submitted from (kadiV1FlowReplyRuntime.js's handle() —
+  // consumeReply() already rejected any mismatch before this point),
+  // never a client-supplied value — so this can never be spoofed by a
+  // payload claiming to be from RECHARGE. Every other CANCEL flow
+  // (DOCUMENT_REVIEW, DOCUMENT_PREVIEW, GENERATION_CONFIRMATION) is
+  // completely unaffected — this checks flowKey, not just action.
+  if (action === "CANCEL" && flowKey === "RECHARGE") {
+    return "La recharge est annulée. Vous pourrez en démarrer une nouvelle plus tard.";
   }
 
   if (action === "SELECT_PACK" && value?.payment_instructions) {
@@ -842,6 +871,21 @@ function suggestedDataForFlow(flowKey, source, extra = {}) {
   const quoteId = quoteFromResult(source);
   if (quoteId) output.quote_id = quoteId;
 
+  // T5/RECHARGE_PRESENTER_001: extra.recharge is pre-fetched
+  // asynchronously by the caller (this function itself stays synchronous,
+  // matching extra.issuerProfile's existing pattern) via
+  // buildRechargePresentationData() — the real available balance and the
+  // real active pack catalog, never the Flow JSON's __example__ values.
+  // Always explicitly supplied whenever RECHARGE is opened; if the
+  // dependency were ever missing, extra.recharge itself already carries
+  // the safe "Solde indisponible" / empty-pack-list fallback, never a
+  // fabricated zero or fake packs.
+  if (flowKey === "RECHARGE" && extra.recharge) {
+    output.balance_summary = extra.recharge.balance_summary;
+    output.pack_options = extra.recharge.pack_options;
+    output.recharge_actions = extra.recharge.recharge_actions;
+  }
+
   // Populates the same history_options dropdown the Flow's own JSON
   // contract already declares (kadi_history_search_v1.json) — the search
   // screen and the results screen are the same single Meta screen (Meta
@@ -944,6 +988,19 @@ function createKadiV1ProductionPresenter({
   voiceResponseEngine = null,
   voiceDelivery = null,
   issuerProfileReader = null,
+  // T5/RECHARGE_PRESENTER_001: the presenter is a presentation layer only
+  // — it never queries Supabase for wallet rows, never recreates the
+  // available-balance calculation, and never redefines pack values. It
+  // reads the exact same, already-authoritative capabilities the rest of
+  // the runtime already uses: balanceReader.getBalance() (the T6
+  // BalanceReader — same one wired into walletRuntime, so the RECHARGE
+  // Flow and the normal BALANCE response can never disagree) and
+  // packCatalog.listActivePacks() (the SAME createRechargePackCatalog
+  // instance already used by RechargeService, never a second pack list).
+  // Both optional and narrow, matching this constructor's existing
+  // issuerProfileReader convention.
+  balanceReader = null,
+  packCatalog = null,
   logger = console,
   rootDir = __dirname,
 } = {}) {
@@ -1001,6 +1058,12 @@ function createKadiV1ProductionPresenter({
   ) {
     throw new TypeError("KADI_V1_PRESENTER_ISSUER_PROFILE_READER_INVALID");
   }
+  if (balanceReader != null && typeof balanceReader.getBalance !== "function") {
+    throw new TypeError("KADI_V1_PRESENTER_BALANCE_READER_INVALID");
+  }
+  if (packCatalog != null && typeof packCatalog.listActivePacks !== "function") {
+    throw new TypeError("KADI_V1_PRESENTER_PACK_CATALOG_INVALID");
+  }
 
   const registry = loadFlowRegistry(rootDir);
 
@@ -1014,6 +1077,70 @@ function createKadiV1ProductionPresenter({
     } catch {
       return null;
     }
+  }
+
+  // T5/RECHARGE_PRESENTER_001: computed fresh every time RECHARGE is
+  // opened (never cached) so the balance and pack list are always the
+  // authoritative, current server state. Balance failure never becomes a
+  // fabricated zero — zero is a real financial value and a lookup failure
+  // must never be indistinguishable from it; a non-numeric safe phrase is
+  // shown instead. Zero active packs never falls back to the Flow JSON's
+  // __example__ packs — an empty list is shown honestly, never invented
+  // data presented as live.
+  async function resolveRechargeBalanceSummary(ownerWaId) {
+    if (!balanceReader) return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    let result;
+    try {
+      result = await balanceReader.getBalance({ ownerWaId });
+    } catch {
+      return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    }
+    const total = result?.value?.total_credits;
+    const reserved = result?.value?.reserved_credits;
+    const available = result?.value?.available_credits;
+    if (
+      result?.ok !== true ||
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(reserved) || reserved < 0 ||
+      !Number.isSafeInteger(available) || available < 0 ||
+      total - reserved !== available
+    ) {
+      return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    }
+    return formatRechargeBalanceSummary({ availableCredits: available, reservedCredits: reserved });
+  }
+
+  function resolveRechargePackOptions() {
+    if (!packCatalog) return [];
+    let activePacks;
+    try {
+      activePacks = packCatalog.listActivePacks();
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(activePacks)) return [];
+    return activePacks
+      .filter((pack) =>
+        pack &&
+        typeof pack.pack_id === "string" && pack.pack_id &&
+        Number.isSafeInteger(pack.amount) && pack.amount > 0 &&
+        Number.isSafeInteger(pack.credits) && pack.credits > 0)
+      .map((pack) => ({
+        id: pack.pack_id,
+        title: `${pack.amount.toLocaleString("fr-FR")} FCFA — ${pack.credits} crédit${pack.credits === 1 ? "" : "s"}`,
+      }));
+  }
+
+  async function buildRechargePresentationData(ownerWaId) {
+    const [balance_summary, pack_options] = await Promise.all([
+      resolveRechargeBalanceSummary(ownerWaId),
+      Promise.resolve(resolveRechargePackOptions()),
+    ]);
+    return Object.freeze({
+      balance_summary,
+      pack_options: Object.freeze(pack_options),
+      recharge_actions: RECHARGE_ACTIONS,
+    });
   }
 
   async function maybeTyping(messageId) {
@@ -1164,6 +1291,15 @@ function createKadiV1ProductionPresenter({
         response.flow_request.prefill,
         response.next_state
       );
+      // T5/RECHARGE_PRESENTER_001: the conversational RECHARGE-opening
+      // path (kadiV1ConversationOrchestrator.js's "RECHARGE" intent
+      // branch) never builds its own prefill — the same authoritative
+      // balance_summary/pack_options/recharge_actions used by the
+      // Flow/menu path are supplied here too, spread last so they can
+      // never be shadowed by an unrelated prefill field of the same name.
+      const rechargeData = flowKey === "RECHARGE"
+        ? await buildRechargePresentationData(ownerWaId)
+        : null;
       const suggestedData = {
         ...(isPlainObject(response.flow_request.prefill)
           ? response.flow_request.prefill
@@ -1174,6 +1310,7 @@ function createKadiV1ProductionPresenter({
               document_label: documentLabel(document.document_type),
             }
           : {}),
+        ...(rechargeData || {}),
       };
       flow = await openAndSendFlow({
         ownerWaId,
@@ -1249,7 +1386,8 @@ function createKadiV1ProductionPresenter({
 
     const canonicalText = canonicalReplyText(
       result.action,
-      result.result
+      result.result,
+      typeof result.flow_key === "string" ? result.flow_key : null
     );
     await maybeTyping(messageId);
     await messaging.sendText(ownerWaId, canonicalText);
@@ -1265,6 +1403,9 @@ function createKadiV1ProductionPresenter({
       const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
         ? await resolveIssuerProfileForPreview(document)
         : null;
+      const recharge = flowKey === "RECHARGE"
+        ? await buildRechargePresentationData(ownerWaId)
+        : null;
       flow = await openAndSendFlow({
         ownerWaId,
         messageId,
@@ -1273,7 +1414,7 @@ function createKadiV1ProductionPresenter({
         suggestedData: suggestedDataForFlow(
           flowKey,
           result.result,
-          { issuerProfile }
+          { issuerProfile, recharge }
         ),
       });
     }

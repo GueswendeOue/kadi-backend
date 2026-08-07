@@ -27,4 +27,29 @@ function formatAvailableBalanceText({ availableCredits, reservedCredits = 0 } = 
   return `${availableLine}\n${reservedLine}`;
 }
 
-module.exports = { formatAvailableBalanceText };
+// T5/RECHARGE_PRESENTER_001: a distinct, shorter label for the RECHARGE
+// Flow's own balance_summary field (a single-line Flow TextBody, not a
+// standalone conversational sentence) — deliberately different wording
+// from formatAvailableBalanceText's "Vous avez N crédits disponibles.",
+// but always derived from the exact same available_credits/
+// reserved_credits the caller already validated against the same T6
+// canonical authority, so the RECHARGE Flow and the normal BALANCE
+// response can never disagree about the underlying number, even though
+// their phrasing differs by design.
+function formatRechargeBalanceSummary({ availableCredits, reservedCredits = 0 } = {}) {
+  if (!Number.isSafeInteger(availableCredits) || availableCredits < 0) {
+    throw new TypeError("KADI_V1_BALANCE_PRESENTATION_AVAILABLE_INVALID");
+  }
+  if (!Number.isSafeInteger(reservedCredits) || reservedCredits < 0) {
+    throw new TypeError("KADI_V1_BALANCE_PRESENTATION_RESERVED_INVALID");
+  }
+  const availableIsSingular = availableCredits <= 1;
+  const line = `Solde disponible : ${availableCredits} crédit${availableIsSingular ? "" : "s"}.`;
+  if (reservedCredits <= 0) return line;
+  const reservedNote = reservedCredits === 1
+    ? "1 crédit est temporairement réservé."
+    : `${reservedCredits} crédits sont temporairement réservés.`;
+  return `${line}\n${reservedNote}`;
+}
+
+module.exports = { formatAvailableBalanceText, formatRechargeBalanceSummary };
