@@ -5,7 +5,7 @@ const RECHARGE_STATUSES = Object.freeze([
 ]);
 const METHODS = Object.freeze([
   "createRechargeSession", "getRechargeSession", "findSessionByIdempotencyKey", "updateRechargeSession",
-  "recordPaymentEvent", "getPaymentEvent", "confirmPaymentAndCredit", "getBalance",
+  "recordPaymentEvent", "getPaymentEvent", "confirmPaymentAndCredit", "getBalance", "getAvailableBalance",
   "createResumeLink", "getResumeLink", "updateResumeLink",
 ]);
 const ID_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
@@ -21,7 +21,17 @@ function assertRechargeRepository(repository) {
   return repository;
 }
 
-function createInMemoryRechargeRepository({ balances = {}, failpoint = async () => {} } = {}) {
+// T6/BALANCE-001: reservedAmountProvider is an optional injected function
+// ({ownerWaId}) => number, mirroring the exact live semantics
+// kadi_v1_reserve_generation_credits already uses (sum of amounts where
+// status = 'RESERVED') — never a second, independent meaning of
+// "reserved". Defaults to a constant 0, so every pre-existing fixture
+// that constructs this repository without wallet-reservation data
+// continues to behave exactly as before. A caller that needs a real
+// reserved amount (e.g. a production-composition E2E test wiring this
+// repository together with kadiV1GenerationLifecycleRepository.js's
+// in-memory store) supplies it explicitly.
+function createInMemoryRechargeRepository({ balances = {}, failpoint = async () => {}, reservedAmountProvider = async () => 0 } = {}) {
   const wallets = new Map(Object.entries(balances));
   const sessions = new Map();
   const events = new Map();
@@ -138,6 +148,27 @@ function createInMemoryRechargeRepository({ balances = {}, failpoint = async () 
     return ok(wallets.get(ownerWaId) ?? 0);
   }
 
+  // T6/BALANCE-001: additive method, never replacing getBalance() above —
+  // kadiV1RechargeService.js's resumePendingGeneration still reads the raw
+  // number from getBalance() and must not be affected. total_credits is
+  // the exact same raw wallet balance getBalance() returns;
+  // reserved_credits/available_credits are derived from
+  // reservedAmountProvider. Fails closed (never clamps or fabricates) on
+  // any impossible financial state, matching the real SQL RPC's
+  // fail-closed contract.
+  async function getAvailableBalance({ ownerWaId }) {
+    const total = wallets.get(ownerWaId) ?? 0;
+    const reserved = await reservedAmountProvider({ ownerWaId });
+    if (
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(reserved) || reserved < 0 ||
+      reserved > total
+    ) {
+      return fail("KADI_V1_BALANCE_INVALID");
+    }
+    return ok({ total_credits: total, reserved_credits: reserved, available_credits: total - reserved });
+  }
+
   async function createResumeLink({ link }) {
     return serial(async () => {
       if (resumeLinks.has(link.recharge_session_id)) return ok(clone(resumeLinks.get(link.recharge_session_id)), { duplicate: true });
@@ -163,7 +194,7 @@ function createInMemoryRechargeRepository({ balances = {}, failpoint = async () 
 
   return Object.freeze(assertRechargeRepository({
     createRechargeSession, getRechargeSession, findSessionByIdempotencyKey, updateRechargeSession,
-    recordPaymentEvent, getPaymentEvent, confirmPaymentAndCredit, getBalance,
+    recordPaymentEvent, getPaymentEvent, confirmPaymentAndCredit, getBalance, getAvailableBalance,
     createResumeLink, getResumeLink, updateResumeLink,
     inspect: () => clone({ balances: Object.fromEntries(wallets), sessions: [...sessions.values()], events: [...events.values()].map((entry) => entry.event), resumeLinks: [...resumeLinks.values()], ledger }),
   }));
