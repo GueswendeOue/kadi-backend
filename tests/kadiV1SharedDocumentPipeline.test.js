@@ -253,6 +253,118 @@ test("DEVIS reuses line calculations and applies configurable validity without r
   assert.equal(Object.hasOwn(document, "payment_confirmed"), false);
 });
 
+// OPTIONS-001: kadi_document_options_v1.json / kadi_edit_options_v1.json's
+// real single Footer always submits discount_amount/notes/payment_terms/
+// validity_days/payment_method/reference together (Meta submits every
+// declared form field on every submission), alongside either
+// tax_rate_percent or tax_rate_basis_points. Before this fix, every real
+// FACTURE/DEVIS SAVE_OPTIONS submission failed outright with
+// DOCUMENT_OPTIONS_FIELD_UNKNOWN — no FACTURE or DEVIS document could ever
+// reach DOCUMENT_REVIEW via the real Flow.
+
+test("OPTIONS-001: the real full FACTURE Flow shape (every field, most left blank) is accepted, never DOCUMENT_OPTIONS_FIELD_UNKNOWN", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "real-shape", {
+    options: { discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "", tax_rate_basis_points: 1800 },
+  }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1800);
+});
+
+test("OPTIONS-001: DEVIS validity_days submitted as the real flat field genuinely persists and is retrievable afterward", async () => {
+  const f = fixture({ quoteValidityRequired: true });
+  let document = await fillLineDocument(f, "DEVIS");
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "flat-validity", {
+    options: { discount_amount: "", notes: "", payment_terms: "", validity_days: 30, payment_method: "", reference: "" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  document = result.value;
+  assert.equal(document.options.validity_days, 30, "must persist at the same canonical location as the nested form (document.options.validity_days)");
+  const missing = await f.pipeline.getMissingFields({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.deepEqual(missing.value, [], "validity_days must genuinely satisfy the DEVIS validity requirement, not just be silently accepted");
+  const reloaded = await f.repository.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.value.options.validity_days, 30, "retrievable on a fresh read, not merely present on the in-memory return value");
+});
+
+test("OPTIONS-001: a flat validity_days conflicting with an already-nested value fails closed, never silently picks one", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f, "DEVIS");
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "validity-conflict", {
+    options: { options: { validity_days: 45 }, validity_days: 30 },
+  }));
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_VALIDITY_CONFLICT" });
+});
+
+test("OPTIONS-001: blank optional fields (discount_amount, validity_days) never corrupt persisted state — treated as 'not provided', never zero", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const before = { discount: document.discount, taxes: document.taxes, total: document.total };
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "all-blank", {
+    options: { discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  document = result.value;
+  assert.equal(document.discount, before.discount, "blank discount_amount must not zero out or otherwise change the existing discount");
+  assert.equal(document.taxes, before.taxes);
+  assert.equal(document.total, before.total);
+  assert.equal(Object.hasOwn(document, "validity_days"), false, "a blank validity_days must never be persisted as a top-level field");
+});
+
+test("OPTIONS-001: discount_amount submitted as a numeric string (an alternate real Meta serialization) is accepted like a genuine number", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "string-discount", {
+    options: { discount_amount: "5000" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.discount, 5000);
+});
+
+test("OPTIONS-001: payment_method/reference are accepted (never DOCUMENT_OPTIONS_FIELD_UNKNOWN) but never persisted for FACTURE/DEVIS — no invoice-level meaning exists for them", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "payment-fields-dropped", {
+    options: { payment_method: "ESPECES", reference: "REF-123", notes: "Merci" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  document = result.value;
+  assert.equal(document.notes, "Merci");
+  assert.equal(Object.hasOwn(document, "payment_method"), false, "payment_method has no FACTURE-level home and must never be persisted there");
+  assert.equal(Object.hasOwn(document, "reference"), false, "reference has no FACTURE-level home and must never be persisted there");
+});
+
+test("OPTIONS-001: an arbitrary unrelated field is still rejected — the fix does not weaken the allowlist generally", async () => {
+  const f = fixture();
+  const document = await fillLineDocument(f);
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "unrelated-field", {
+    options: { discount_amount: 0, not_a_real_option: "x" },
+  }));
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_OPTIONS_FIELD_UNKNOWN" });
+});
+
+test("OPTIONS-001: RECU's own, separate PAYMENT_OPTION_FIELDS allowlist is unaffected — still rejects discount_amount/validity_days", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "RECU");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "issuer-unaffected", { issuerProfileId: "issuer:receipt" }))).value;
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "recu-rejects-discount", {
+    options: { discount_amount: 100 },
+  }));
+  assert.deepEqual(result, { ok: false, error: "DOCUMENT_OPTIONS_FIELD_UNKNOWN" });
+});
+
+test("OPTIONS-001: a real Flow submission with every optional field left blank succeeds as a harmless no-op, never DOCUMENT_OPTIONS_EMPTY", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const before = { version: document.version, discount: document.discount, taxes: document.taxes };
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "harmless-no-op", {
+    options: { discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.discount, before.discount);
+  assert.equal(result.value.taxes, before.taxes);
+});
+
 test("RECU keeps payer, beneficiary and payment facts without artificial items", async () => {
   const f = fixture();
   let document = await createDraft(f, "RECU");
