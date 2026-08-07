@@ -3713,3 +3713,183 @@ utiliser systématiquement `FLOW_ACTION_FIELD_OVERRIDES` (jamais élargir
 l'entrée globale) — et vérifier explicitement, comme ici, que le champ
 incident ajouté ne devient jamais une autorité de ciblage pour l'entité
 affectée par l'action.
+
+### AA.1 — GENERATION_CONFIRMATION-001, suite : une session obsolète pouvait annuler un document ayant changé de phase métier (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-generation-confirmation-cancel-t4`, PR #20, toujours non
+  fusionnée, non déployée. Le correctif R0 (override de champ `quote_id`,
+  fiche AA) reste correct et inchangé.
+* **Origine :** revue adversariale indépendante de la PR #20 (mission
+  « KADI V1 — T4 GENERATION_CONFIRMATION/CANCEL INDEPENDENT REVIEW FIX
+  R1 »), constat HIGH/P0, bloquant de fusion.
+
+### Constat, reproduit avant tout correctif
+
+`kadiV1FlowCommandRuntime.js` porte déjà `document.value.document_state`
+(le statut du document capturé au moment où la session Flow a été
+ouverte) dans `documentBase.documentState`, mais
+`createKadiV1DocumentRuntimeAdapter.cancel()`
+(`kadiV1RuntimeAdapters.js`) ne le lisait jamais — il ne transmettait que
+`ownerWaId`/`documentId`/`expectedVersion`/`idempotencyKey` aux pipelines
+d'annulation. Ces pipelines chargent alors le document **courant** et
+appliquent `CANCEL` depuis son état **courant**, en ne vérifiant que la
+version (`loadMutation`), jamais l'état attendu par la session Flow.
+
+Or, confirmé par inspection directe de `kadiV1DocumentDomain.js`'s
+`transitionDocument` (déjà établi en fiche AA) : les transitions d'état
+pures ne font **jamais** avancer `document.version`. La machine d'état
+(`kadiV1DocumentStateMachine.js`) autorise en outre `CANCEL` aussi bien
+depuis `RECHARGE_REQUIRED` que depuis `GENERATION_IN_PROGRESS`. Une
+session `GENERATION_CONFIRMATION` obsolète, ouverte pendant que le
+document était `AWAITING_GENERATION_CONFIRMATION`, pouvait donc encore
+annuler à tort ce même document après qu'une interaction plus récente
+l'ait fait légitimement basculer vers une autre phase métier — y compris
+pendant une génération réellement en cours.
+
+**Reproduction A (RECHARGE_REQUIRED), prouvée dans la composition de
+production, pile de génération réelle, avant correctif :** document réel
+mené jusqu'à `AWAITING_GENERATION_CONFIRMATION` → session obsolète
+`S_old` ouverte → un vrai `CONFIRM_GENERATION` frais, avec un solde
+insuffisant, fait légitimement basculer le document vers
+`RECHARGE_REQUIRED` (`document.version` inchangé, confirmé) → `S_old` /
+`CANCEL` soumis pour la première fois → **avant correctif**, accepté à
+tort, document annulé alors qu'il aurait dû rester `RECHARGE_REQUIRED`.
+
+**Reproduction B (GENERATION_IN_PROGRESS, scénario financier HIGH/P0),
+prouvée avec une barrière déterministe sur le renderer réel (jamais un
+`sleep`) insérée dans le point d'E/S injecté
+(`finalGenerationService`'s renderer) :** un vrai `CONFIRM_GENERATION`
+frais réserve les crédits, persiste `START_GENERATION`
+(`GENERATION_IN_PROGRESS`, version inchangée), puis se bloque
+exactement au point d'appel du renderer — après la persistance de
+l'état, avant la capture. Pendant que la génération est réellement en
+vol (réservation `RESERVED` confirmée), `S_old` / `CANCEL` est soumis
+pour la première fois → **avant correctif**, accepté à tort, document
+annulé mid-génération sans libérer la réservation ni nettoyer la
+tentative de génération. Même défaut confirmé, avec le même schéma de
+reproduction, sur la pipeline `DECHARGE` (`kadiV1DischargePipeline.js`).
+
+### Modèle d'autorité d'état retenu
+
+Le contexte de session — `document_id`/`document_version`/
+`document_type`/`document_state` — reste la seule source de confiance,
+jamais le payload client. Pour `GENERATION_CONFIRMATION`/`CANCEL`,
+l'état attendu authentique est exactement `AWAITING_GENERATION_CONFIRMATION` :
+une session Flow n'est jamais légitimement ouverte ailleurs (confirmé :
+`kadiV1GenerationQuoteService.js`'s `createGenerationQuote` persiste
+`CALCULATE_COST` et `REQUEST_GENERATION_CONFIRMATION` dans le même appel
+réussi — un état `COST_CALCULATED` durable et visible au présentateur
+n'existe pas sur le chemin de succès).
+
+### Exigence d'atomicité
+
+Une vérification à un niveau supérieur (`getDocumentById()` puis
+`if (status === expected)` puis `cancel()`) aurait laissé une fenêtre
+TOCTOU entre la lecture et l'écriture. La condition d'état attendu doit
+participer au **même contrat de mutation durable** que l'annulation
+elle-même — c'est-à-dire réutiliser la vérification atomique
+`row.status === fromState` que `repository.persistTransition` effectue
+déjà au moment du commit, jamais l'inventer à un niveau séparé.
+
+### Correctif
+
+Conception « la plus petite garantie durable » :
+
+1. `kadiV1FlowCommandRuntime.js` : nouvelle branche dédiée pour
+   `(CANCEL, GENERATION_CONFIRMATION)`, avant le chemin générique de
+   document (partagé par `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`CANCEL`,
+   inchangé). Vérifie d'abord que la session Flow de confiance a
+   effectivement été capturée avec `document_state ===
+   "AWAITING_GENERATION_CONFIRMATION"` (échec fermé immédiat sinon —
+   `KADI_V1_FLOW_COMMAND_GENERATION_CONFIRMATION_STATE_INVALID`), puis
+   transmet `expectedState: "AWAITING_GENERATION_CONFIRMATION"` (une
+   constante serveur, jamais dérivée du client) dans `documentBase`.
+2. `kadiV1RuntimeAdapters.js`'s `cancel()` : `command.expectedState` est
+   optionnel — validé contre `DOCUMENT_STATES` s'il est présent, puis
+   transmis tel quel aux pipelines. Chaque autre appelant de `CANCEL`
+   (`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`) ne le fournit jamais et reste
+   complètement inchangé.
+3. `kadiV1SharedDocumentPipeline.js`'s `persistStateTransition` et
+   `kadiV1DischargePipeline.js`'s `persistTransition` : quand
+   `command.expectedState` est fourni, il est comparé au `loaded.value.status`
+   déjà lu par `loadMutation()` — **aucune lecture supplémentaire,
+   aucune fenêtre TOCTOU élargie** — avant même de tenter la transition
+   (`DOCUMENT_CANCEL_STATE_MISMATCH` sinon). La vérification atomique
+   `row.status === fromState` déjà existante dans
+   `storage.persistTransition` reste le filet final contre toute course
+   réelle survenant entre cette lecture et le commit. `markReadyForReview`/
+   `verifyDocument`/`verifyDischarge` ne fournissent jamais
+   `expectedState` — inertes, complètement inchangés.
+
+### Preuve
+
+* `tests/kadiV1GenerationConfirmationCancelStateAuthorityE2E.test.js`
+  (nouveau, 12 scénarios, pile de génération réelle — service de
+  réservation de portefeuille réel, service de génération finale réel
+  avec stockage en mémoire, service de livraison réel avec fournisseur
+  synthétique, dépôt de cycle de vie de génération en mémoire réel) :
+  Reproduction A (RECHARGE_REQUIRED) et B (GENERATION_IN_PROGRESS,
+  barrière déterministe) **prouvées concrètement avant correctif** (le
+  correctif de production a été temporairement retiré via `git stash`
+  puis restauré, exactement comme pour les rounds R1/R2/R3 de
+  RECHARGE-CONTRACT-001) ; annulation courante non obsolète toujours
+  fonctionnelle ; après rejet de l'annulation obsolète pendant la
+  génération en vol, la libération de la barrière permet à la génération
+  fraîche de se terminer normalement avec exactement une réservation,
+  une capture, un fichier final et une livraison — aucun
+  `DOCUMENT_STATE_CONFLICT` causé par la tentative obsolète ; rejeu exact
+  de `CANCEL` toujours idempotent ; isolation propriétaire ; isolation
+  multi-documents ; non-pertinence de `quote_id` ; non-régression de
+  `CONFIRM_GENERATION` (cycle complet réel jusqu'à `DELIVERED`) ; même
+  scénario RECHARGE_REQUIRED reproduit et corrigé sur la pipeline
+  `DECHARGE`, annulation courante DECHARGE toujours fonctionnelle ;
+  `DOCUMENT_REVIEW`/`CANCEL` toujours fonctionnel sans jamais référencer
+  `AWAITING_GENERATION_CONFIRMATION` ; contrat `RECHARGE`/`CANCEL` (T3)
+  inchangé.
+* Régression complète R0 (contrat de champ `quote_id`) : tous les
+  scénarios existants toujours verts sans modification de leur logique.
+* Focused : 378/378 (fichiers concernés, dont T1/T2/T3 déjà fusionnés).
+  Suite complète : 1430/1430. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`expectedState` n'est jamais dérivé d'un payload client — soit une
+constante serveur (`GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE`), soit
+absent. Aucune fuite vers `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`CANCEL`
+(ces appelants ne le fournissent jamais). Comportement générique
+d'annulation non affaibli pour aucun autre Flow. Contrat T3
+(`RECHARGE`/`CANCEL`, R0–R3) confirmé inchangé par la suite complète.
+Aucune migration ni mutation Supabase, Meta, Render ou WhatsApp réelle ;
+aucune génération, capture ou livraison réelle (fournisseurs synthétiques
+en mémoire uniquement).
+
+### Suivi requis (hors périmètre de cette correction)
+
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+* T5 — prochaine mission de correction dédiée, non commencée.
+* Validation téléphone réelle requise après un déploiement éventuel.
+* Question ouverte, non traitée dans cette correction : la même classe de
+  risque (session Flow obsolète autorisant une transition d'état après
+  que le document a changé de phase, sans bump de version) pourrait
+  exister ailleurs dans le produit partout où une session Flow porte un
+  `document_state` de confiance non vérifié au moment de la mutation —
+  seul `GENERATION_CONFIRMATION`/`CANCEL` a été corrigé ici, car c'est le
+  seul Flow dont l'état d'origine précède immédiatement des opérations
+  financières réelles (réservation, capture, génération, livraison) ;
+  toute généralisation nécessiterait sa propre mission et preuve dédiées.
+
+### Prévention
+
+Un champ de contexte de session capturé au moment de l'ouverture d'un
+Flow (ici `document_state`) n'est fiable qu'au moment de cette capture —
+jamais implicitement au moment du commit. Si une opération de mutation
+d'état doit rester bornée à l'état dans lequel son Flow d'origine a été
+ouvert, cette borne doit être vérifiée explicitement, contre l'état
+**réellement lu** au moment de la mutation, et participer au même
+contrat atomique que la mutation elle-même — jamais une vérification
+séparée à un niveau supérieur, qui rouvrirait une fenêtre TOCTOU. Ne pas
+supposer qu'un identifiant de version inchangé signifie qu'aucun
+changement métier significatif n'a eu lieu : certaines transitions
+(les transitions d'état pures, ici) ne font délibérément pas avancer la
+version.

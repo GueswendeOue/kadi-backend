@@ -577,14 +577,43 @@ requise. Aucune génération, livraison ou opération de crédit réelle.
    complète (1418/1418), `git diff --check` propre.
 4. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
    trouvé.
-5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-6. **[EN ATTENTE]** Fusion dans `main`.
-7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-8. **[EN ATTENTE]** Une vraie confirmation de génération et une vraie
-   annulation via le Flow `GENERATION_CONFIRMATION` réel, observées en
-   conditions réelles (validation téléphone).
-9. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
-   commencée.
+5. **[FAIT]** Revue adversariale indépendante de la PR #20 — a signalé un
+   défaut HIGH/P0, bloquant de fusion : `documentBase.documentState` était
+   déjà porté par `FlowCommandRuntime` mais jamais lu par
+   `createKadiV1DocumentRuntimeAdapter.cancel()` ; comme les transitions
+   d'état pures ne font jamais avancer `document.version`, un Flow
+   `GENERATION_CONFIRMATION` obsolète pouvait encore annuler à tort un
+   document ayant légitimement basculé vers `RECHARGE_REQUIRED` ou
+   `GENERATION_IN_PROGRESS` depuis l'ouverture de sa session (la machine
+   d'état autorise `CANCEL` depuis ces deux états). **Prouvé
+   concrètement dans la composition de production avant correctif**,
+   avec la pile réelle de génération (réservation/rendu réel/capture/
+   livraison) : course RECHARGE_REQUIRED reproduite, et course
+   GENERATION_IN_PROGRESS reproduite pendant que la génération était
+   réellement en vol (barrière déterministe sur le rendu réel, jamais un
+   `sleep`) — même défaut confirmé sur la pipeline DECHARGE. **Corrigé**
+   sur la même branche : `command.expectedState` (optionnel, réservé à
+   `GENERATION_CONFIRMATION`/`CANCEL`) participe au même contrat de
+   mutation durable que l'annulation elle-même (vérifié contre le statut
+   déjà lu par `loadMutation`, jamais une lecture séparée), avec le
+   contrôle atomique déjà existant de `storage.persistTransition`
+   (`row.status === fromState`) comme filet final contre toute course
+   réelle. Aucune fonctionnalité générique de `CANCEL` affaiblie pour les
+   autres Flows. Voir fiche AA.1 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+6. **[FAIT]** Tests ciblés (378/378 sur les fichiers concernés) puis suite
+   complète (1430/1430), `git diff --check` propre.
+7. **[FAIT]** Revue adversariale du diff complet R0 + R1 — aucun défaut
+   HIGH/MEDIUM trouvé.
+8. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #20
+   mise à jour (post-correctif R1).
+9. **[EN ATTENTE]** Fusion dans `main`.
+10. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+11. **[EN ATTENTE]** Une vraie confirmation de génération et une vraie
+    annulation via le Flow `GENERATION_CONFIRMATION` réel, observées en
+    conditions réelles (validation téléphone).
+12. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
+    commencée.
 
 ## Déploiement Render
 

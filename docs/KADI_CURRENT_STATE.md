@@ -685,6 +685,32 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   indépendante et de fusion.** Voir fiche AA de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet et la preuve.
+* **Mise à jour (2026-08-07) : GENERATION_CONFIRMATION-001 suite (autorité
+  d'état d'une session obsolète, HIGH/P0) corrigée avant fusion, même
+  branche, PR #20 toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.**
+  Une revue adversariale indépendante a signalé que
+  `documentBase.documentState` (déjà porté par `FlowCommandRuntime`)
+  n'était jamais lu par `createKadiV1DocumentRuntimeAdapter.cancel()` —
+  comme les transitions d'état pures ne font jamais avancer
+  `document.version`, une session `GENERATION_CONFIRMATION` obsolète
+  pouvait encore annuler à tort un document ayant légitimement basculé
+  vers `RECHARGE_REQUIRED` ou `GENERATION_IN_PROGRESS` depuis l'ouverture
+  de sa session. **Prouvé concrètement dans la composition de production
+  avant correctif**, avec la pile réelle de génération (réservation,
+  rendu réel, capture, livraison) — y compris pendant une génération
+  réellement en vol, via une barrière déterministe injectée dans le
+  renderer réel (jamais un `sleep`) — et sur la pipeline `DECHARGE`
+  également. **Corrigé :** un `expectedState` optionnel, réservé à
+  `GENERATION_CONFIRMATION`/`CANCEL`, participe désormais au même contrat
+  de mutation durable que l'annulation (vérifié contre le statut déjà lu,
+  jamais une lecture séparée), avec le contrôle atomique déjà existant de
+  `storage.persistTransition` comme filet final contre toute course
+  réelle — aucune fonctionnalité générique de `CANCEL` affaiblie pour les
+  autres Flows. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Tests ciblés
+  (378/378) puis suite complète (1430/1430), `git diff --check` propre.
+  Voir fiche AA.1 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 
