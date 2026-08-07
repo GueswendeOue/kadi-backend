@@ -118,28 +118,40 @@ const ACTION_FIELDS = Object.freeze({
   FINISH_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
 });
 
-// RECHARGE-CONTRACT-001: CANCEL is a single action name shared globally by
-// DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION/RECHARGE, and
-// ACTION_FIELDS.CANCEL ([]) must stay correct for all of them — those
-// other three Flows' real JSON contracts submit no data at all (or, for
-// GENERATION_CONFIRMATION, a separate combined-form defect of its own,
-// deliberately left untouched here — see docs/KADI_ENGINEERING_MEMORY.md,
-// recorded for a later T4). Only the real RECHARGE Flow's single combined
-// form also submits pack_id/payment_reference alongside CANCEL (Meta
-// submits every declared field on every submission, regardless of which
-// action was chosen). Blindly widening the global ACTION_FIELDS.CANCEL
-// entry would let every other Flow's CANCEL silently start accepting
-// recharge-only fields too — never validated as intentional, and
-// reopening exactly the failure mode this whole defect class is about.
-// This override is checked first and, when present for the given
-// (flowKey, action) pair, replaces the global ACTION_FIELDS lookup
-// entirely — every other Flow/action combination is completely
-// unaffected. kadiV1FlowCommandRuntime.js's RECHARGE/CANCEL mapping
-// already passes no data to the recharge runtime, so both fields are
-// safely ignored downstream once accepted here.
+// RECHARGE-CONTRACT-001 / GENERATION_CONFIRMATION-001 (T4): CANCEL is a
+// single action name shared globally by DOCUMENT_REVIEW/DOCUMENT_PREVIEW/
+// GENERATION_CONFIRMATION/RECHARGE, and ACTION_FIELDS.CANCEL ([]) must stay
+// correct for the two Flows with no combined-form defect of their own
+// (DOCUMENT_REVIEW, DOCUMENT_PREVIEW — their real JSON contracts submit no
+// data at all for CANCEL). Two other Flows are each single combined forms
+// whose one Footer always submits every declared field regardless of which
+// action was chosen (Meta submits every declared field on every
+// submission): the real RECHARGE Flow also submits pack_id/
+// payment_reference alongside CANCEL, and the real GENERATION_CONFIRMATION
+// Flow (kadi_generation_confirmation_v1.json) also submits quote_id
+// alongside CANCEL. Blindly widening the global ACTION_FIELDS.CANCEL entry
+// would let every other Flow's CANCEL silently start accepting these
+// incidental fields too — never validated as intentional, and reopening
+// exactly the failure mode this whole defect class is about. This override
+// is checked first and, when present for the given (flowKey, action) pair,
+// replaces the global ACTION_FIELDS lookup entirely — every other Flow/
+// action combination is completely unaffected. quote_id is never authority
+// for which document gets cancelled: kadiV1FlowCommandRuntime.js's generic
+// CANCEL mapping (used by GENERATION_CONFIRMATION, since it is not the
+// RECHARGE flow key) routes through documentRuntime.cancel(documentBase),
+// which never reads command.data at all — only the trusted server-side
+// document context carried in the conversation session (document_id/
+// document_version/document_type/document_state) ever decides which
+// document is affected. See kadiV1ProductionInfrastructure.js's
+// createKadiV1DocumentRuntimeAdapter cancel() and
+// docs/KADI_ENGINEERING_MEMORY.md for the full GENERATION_CONFIRMATION-001
+// diagnosis.
 const FLOW_ACTION_FIELD_OVERRIDES = Object.freeze({
   RECHARGE: Object.freeze({
     CANCEL: Object.freeze(["pack_id", "payment_reference"]),
+  }),
+  GENERATION_CONFIRMATION: Object.freeze({
+    CANCEL: Object.freeze(["quote_id"]),
   }),
 });
 

@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { DOCUMENT_STATES } = require("./kadiV1DocumentStateMachine");
 
 const SHARED_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
 const DOCUMENT_TYPES = Object.freeze([...SHARED_DOCUMENT_TYPES, "DECHARGE"]);
@@ -309,11 +310,36 @@ function createKadiV1DocumentRuntimeAdapter({ sharedPipeline, dischargePipeline,
     if (details.observations != null) { const result = await mutate("setOptions", { options: { observations: details.observations } }); if (!result.ok) return result; }
     return advanceIfComplete(current.value, command.ownerWaId, command.idempotencyKey);
   }
+  // GENERATION_CONFIRMATION-001 R1 (independent review, HIGH/P0): a stale
+  // GENERATION_CONFIRMATION Flow session's document_state
+  // (AWAITING_GENERATION_CONFIRMATION, captured when the session was
+  // opened) is never itself trustworthy at commit time — pure document
+  // state transitions never bump document.version (confirmed in
+  // kadiV1DocumentDomain.js's transitionDocument), so a document can
+  // genuinely, legitimately move on to RECHARGE_REQUIRED or
+  // GENERATION_IN_PROGRESS (both allow CANCEL in TRANSITIONS) while still
+  // matching the stale session's expectedVersion. command.expectedState is
+  // optional and, today, is only ever set by kadiV1FlowCommandRuntime.js
+  // for GENERATION_CONFIRMATION/CANCEL, after it has itself already
+  // verified the trusted session's document_state is exactly
+  // AWAITING_GENERATION_CONFIRMATION — never a client-supplied value. When
+  // present, it is forwarded unchanged into the pipeline's own
+  // loadMutation-scoped state check (kadiV1SharedDocumentPipeline.js /
+  // kadiV1DischargePipeline.js), which compares it against the document's
+  // real, current, just-read status before ever attempting the transition
+  // — with storage.persistTransition's existing atomic fromState check
+  // still the final backstop against a race landing between that read and
+  // the commit. Every other CANCEL caller (DOCUMENT_REVIEW, DOCUMENT_PREVIEW)
+  // never sets expectedState and is completely unaffected.
   async function cancel(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
+    if (command.expectedState != null && !DOCUMENT_STATES.includes(command.expectedState)) {
+      return fail("KADI_V1_DOCUMENT_RUNTIME_EXPECTED_STATE_INVALID");
+    }
     const type = command.documentType;
     const input = { ownerWaId: command.ownerWaId, documentId: command.documentId, expectedVersion: command.expectedVersion, idempotencyKey: keyFor(type, type === "DECHARGE" ? "cancel" : "cancelDocument", command.idempotencyKey) };
+    if (command.expectedState != null) input.expectedState = command.expectedState;
     return type === "DECHARGE" ? discharge.cancelDischarge(input) : shared.cancelDocument(input);
   }
 

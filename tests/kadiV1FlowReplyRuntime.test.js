@@ -724,18 +724,62 @@ test("RECHARGE-CONTRACT-001: the RECHARGE/CANCEL field override never leaks into
   assert.deepEqual(previewWithRechargeFields, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
 });
 
-// GENERATION_CONFIRMATION-001 (T4 candidate, NOT fixed in this mission):
-// kadi_generation_confirmation_v1.json's single Footer always submits
-// quote_id, regardless of whether the chosen action is CONFIRM_GENERATION
-// or CANCEL — but ACTION_FIELDS.CANCEL is [], so a real
-// GENERATION_CONFIRMATION/CANCEL submission fails with
-// KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN today, same defect class as
-// RECHARGE-CONTRACT-001. Recorded here only to document current, still
-// broken behavior — deliberately left unfixed, per the explicit T3 scope
-// boundary (see docs/KADI_ENGINEERING_MEMORY.md for the T4 backlog entry).
-test("GENERATION_CONFIRMATION-001 (recorded, not fixed in T3): the real GENERATION_CONFIRMATION/CANCEL submission still fails — left broken on purpose, out of T3 scope", () => {
+// GENERATION_CONFIRMATION-001 (T4, FIXED): kadi_generation_confirmation_v1.json's
+// single Footer always submits quote_id, regardless of whether the chosen
+// action is CONFIRM_GENERATION or CANCEL — the same defect class as
+// RECHARGE-CONTRACT-001, fixed the same way (a flow-aware
+// FLOW_ACTION_FIELD_OVERRIDES entry), never by widening the global CANCEL
+// allowlist.
+test("GENERATION_CONFIRMATION-001 (T4): the real GENERATION_CONFIRMATION/CANCEL combined-form submission (quote_id included) is now accepted", () => {
   const result = validateActionPayload("GENERATION_CONFIRMATION", "CANCEL", { quote_id: "quote:1" });
-  assert.deepEqual(result, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.quote_id, "quote:1");
+  const blank = validateActionPayload("GENERATION_CONFIRMATION", "CANCEL", { quote_id: "" });
+  assert.equal(blank.ok, true, blank.error);
+});
+
+test("GENERATION_CONFIRMATION-001 (T4): an unrelated field outside the real Flow contract is still rejected for GENERATION_CONFIRMATION/CANCEL", () => {
+  assert.deepEqual(
+    validateActionPayload("GENERATION_CONFIRMATION", "CANCEL", { quote_id: "quote:1", not_a_real_field: "x" }),
+    { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" },
+  );
+});
+
+// GENERATION_CONFIRMATION-001 (T4): the GENERATION_CONFIRMATION-only CANCEL
+// override must never leak into any other Flow's own CANCEL action, exactly
+// like the existing RECHARGE-only override.
+test("GENERATION_CONFIRMATION-001 (T4): the GENERATION_CONFIRMATION/CANCEL field override never leaks into unrelated Flows' own CANCEL action", () => {
+  const reviewWithQuoteId = validateActionPayload("DOCUMENT_REVIEW", "CANCEL", { quote_id: "quote:1" });
+  assert.deepEqual(reviewWithQuoteId, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  const previewWithQuoteId = validateActionPayload("DOCUMENT_PREVIEW", "CANCEL", { quote_id: "quote:1" });
+  assert.deepEqual(previewWithQuoteId, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  const rechargeWithQuoteId = validateActionPayload("RECHARGE", "CANCEL", { pack_id: "", payment_reference: "", quote_id: "quote:1" });
+  assert.deepEqual(rechargeWithQuoteId, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+// CONFIRM_GENERATION non-regression: this action already legitimately used
+// quote_id before T4 (ACTION_FIELDS.CONFIRM_GENERATION, not the new
+// override) — must remain completely unchanged.
+test("GENERATION_CONFIRMATION-001 (T4): CONFIRM_GENERATION's pre-existing quote_id acceptance is unaffected by the new CANCEL override", () => {
+  const result = validateActionPayload("GENERATION_CONFIRMATION", "CONFIRM_GENERATION", { quote_id: "quote:1" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.quote_id, "quote:1");
+});
+
+test("Flow/backend parity: submitting the real kadi_generation_confirmation_v1.json contract — exactly as Meta really submits a Flow form — is accepted for both real declared actions", () => {
+  const generationFlow = require("../flows/v1_draft/kadi_generation_confirmation_v1.json");
+  const screen = generationFlow.screens[0];
+  const footerPayload = screen.layout.children.find((child) => child.type === "Form")
+    .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+  const submittedFields = Object.keys(footerPayload.data);
+  assert.deepEqual(submittedFields, ["quote_id"], "kadi_generation_confirmation_v1.json must still declare exactly quote_id in its single combined Footer");
+  const declaredActionIds = screen.data.confirmation_actions.__example__.map((entry) => entry.id);
+  assert.deepEqual(declaredActionIds.sort(), ["CANCEL", "CONFIRM_GENERATION"].sort());
+  for (const action of declaredActionIds) {
+    const realSubmission = Object.fromEntries(submittedFields.map((field) => [field, "quote:example"]));
+    const checked = validateActionPayload(screen.id, action, realSubmission);
+    assert.equal(checked.ok, true, `GENERATION_CONFIRMATION's real full submission shape must be accepted for declared action "${action}" (got ${checked.error})`);
+  }
 });
 
 test("Flow/backend parity: submitting every field the real kadi_recharge_v1.json contract declares — exactly as Meta really submits a Flow form, blank fields included — is accepted for all three real declared actions", () => {

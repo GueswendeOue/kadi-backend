@@ -153,9 +153,18 @@ function createDischargePipeline({
     });
   }
 
+  // GENERATION_CONFIRMATION-001 R1: see the identical comment on
+  // kadiV1SharedDocumentPipeline.js's persistStateTransition — same
+  // opt-in, same reused `loaded.value.status` read, same reliance on
+  // storage.persistTransition's atomic fromState check as the final
+  // TOCTOU backstop. Only cancelDischarge's caller ever sets
+  // command.expectedState; verifyDischarge never does.
   async function persistTransition(command, event, eventType) {
     const loaded = await loadMutation(command);
     if (!loaded.ok || loaded.duplicate) return loaded;
+    if (command.expectedState != null && loaded.value.status !== command.expectedState) {
+      return fail("DOCUMENT_CANCEL_STATE_MISMATCH");
+    }
     const transitioned = domain.transitionDocument(loaded.value, event);
     if (!transitioned.ok) return transitioned;
     return storage.persistTransition({

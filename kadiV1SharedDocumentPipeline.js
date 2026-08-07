@@ -168,9 +168,28 @@ function createSharedDocumentPipeline({
     });
   }
 
+  // GENERATION_CONFIRMATION-001 R1: command.expectedState is optional and,
+  // today, only ever set by cancelDocument's caller for
+  // GENERATION_CONFIRMATION/CANCEL (see kadiV1FlowCommandRuntime.js) —
+  // markReadyForReview/verifyDocument never set it, so this check is
+  // inert (undefined !== null is false) for every other caller of this
+  // shared helper. It compares against the SAME `loaded.value.status` this
+  // function already read via loadMutation() above — no extra read, no
+  // widened TOCTOU window — and rejects a stale Flow session's CANCEL
+  // whose captured document_state no longer matches the document's real,
+  // current, persisted status (e.g. the document has since legitimately
+  // moved to RECHARGE_REQUIRED or GENERATION_IN_PROGRESS). A concurrent
+  // race that lands strictly between this check and the commit below is
+  // still independently caught by storage.persistTransition's own atomic
+  // `row.status === fromState` check at commit time — this pre-check is a
+  // fast, clear rejection for the common (non-racing) stale case, not a
+  // replacement for that atomic guarantee.
   async function persistStateTransition(command, operation, event, eventType) {
     const loaded = await loadMutation(command, operation);
     if (!loaded.ok || loaded.duplicate) return loaded;
+    if (command.expectedState != null && loaded.value.status !== command.expectedState) {
+      return fail("DOCUMENT_CANCEL_STATE_MISMATCH");
+    }
     const transitioned = domain.transitionDocument(loaded.value, event);
     if (!transitioned.ok) return transitioned;
     return storage.persistTransition({
