@@ -3893,3 +3893,184 @@ supposer qu'un identifiant de version inchangé signifie qu'aucun
 changement métier significatif n'a eu lieu : certaines transitions
 (les transitions d'état pures, ici) ne font délibérément pas avancer la
 version.
+
+## AA.2 — T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE : le même défaut d'autorité d'état de session obsolète existait pour `DOCUMENT_REVIEW`/`CANCEL` et `DOCUMENT_PREVIEW`/`CANCEL`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche isolée
+  `fix/kadi-v1-document-cancel-state-authority-t4-5`, créée depuis
+  `main@a2c2ead17e109c2de5c46905c291f5133cc817ab` (PR #20/T4 déjà
+  fusionnée), PR brouillon ouverte, non fusionnée, non déployée.
+* **Origine :** revue adversariale indépendante de la PR #20 lors de sa
+  fusion (mission « KADI V1 — T4.5 GLOBAL DOCUMENT CANCEL
+  STATE-AUTHORITY GATE »), constat HIGH/P0.
+
+### Constat, reproduit avant tout correctif
+
+Le correctif R1 de T4 (fiche AA.1) n'avait fermé cette classe de défaut
+que pour `GENERATION_CONFIRMATION`/`CANCEL`. `DOCUMENT_REVIEW`/`CANCEL`
+et `DOCUMENT_PREVIEW`/`CANCEL` routaient tous deux, sans aucune
+modification depuis T3, par la branche générique de document de
+`kadiV1FlowCommandRuntime.js`, qui ne transmet jamais `expectedState`.
+Comme les transitions d'état pures ne font jamais avancer
+`document.version` (confirmé en fiche AA), une session `DOCUMENT_REVIEW`
+ou `DOCUMENT_PREVIEW` obsolète pouvait encore annuler à tort un document
+ayant légitimement changé de phase métier depuis l'ouverture de cette
+session précise.
+
+**Preuve d'architecture, établie avant toute correction :** ouvrir une
+nouvelle session Flow ne révoque jamais les sessions `OPEN` précédentes.
+`kadiV1ConversationSession.js`'s `open()` ne fait que créer une nouvelle
+ligne ; `revoke()` existe mais n'a **aucun appelant en production**
+(seul `kadiInvoiceFlowSession.js`, le module legacy pré-V1 sans rapport,
+appelle une fonction de même nom). Plusieurs sessions `OPEN` peuvent donc
+authentiquement coexister pour le même propriétaire — une soumission
+obsolète est un scénario toujours possible en production, jamais
+seulement théorique.
+
+**États légitimes de chaque Flow, tracés depuis le routage réel de
+production (jamais devinés depuis la seule connectivité de la machine
+d'état) :** `kadiV1ProductionPresenter.js`'s `routeDocument` et
+`kadiV1ConversationOrchestrator.js`'s `routeForDocument` s'accordent
+exactement : `DOCUMENT_REVIEW` n'est routé que depuis
+`READY_FOR_REVIEW` (état unique) ; `DOCUMENT_PREVIEW` est routé depuis
+`VERIFIED` (cas normal après `VERIFY`) et depuis `PREVIEW_READY` — un
+état de repos réel et durable, confirmé par inspection de
+`kadiV1PreviewService.js`'s `persistPreview` (qui exige `VERIFIED` puis
+persiste `PREPARE_PREVIEW` → `PREVIEW_READY`) et de
+`kadiV1GenerationQuoteService.js`'s `createGenerationQuote` (qui exige
+`PREVIEW_READY` avant de calculer le devis) : si une étape ultérieure du
+même appel `prepare()` échoue (par exemple la création du devis), le
+document reste authentiquement à `PREVIEW_READY`.
+
+**Reproduction A1/A2 (`DOCUMENT_REVIEW`), prouvée dans la composition de
+production, avant correctif :** document réel mené jusqu'à
+`READY_FOR_REVIEW` → session obsolète `R_old` ouverte → un vrai `VERIFY`
+frais fait légitimement basculer le document vers `VERIFIED`
+(`document.version` inchangé, confirmé) → `R_old`/`CANCEL` soumis pour la
+première fois → **avant correctif**, accepté à tort, document annulé
+alors qu'il aurait dû rester `VERIFIED`. Variante A2 poussée plus loin
+jusqu'à `AWAITING_GENERATION_CONFIRMATION` (via un vrai `PREPARE_PDF`
+frais) : même résultat, annulation à tort confirmée.
+
+**Reproduction B1/B2/B3 (`DOCUMENT_PREVIEW`), prouvée dans la
+composition de production, pile de génération réelle, avant correctif :**
+
+* B1 : document réel mené jusqu'à `VERIFIED` → session obsolète `P_old`
+  ouverte → un vrai `PREPARE_PDF` frais fait légitimement basculer le
+  document vers `AWAITING_GENERATION_CONFIRMATION` → `P_old`/`CANCEL`
+  soumis pour la première fois → **avant correctif**, accepté à tort.
+* B2 : même scénario, poussé jusqu'à `RECHARGE_REQUIRED` via un vrai
+  `CONFIRM_GENERATION` frais à solde insuffisant → **avant correctif**,
+  `P_old`/`CANCEL` accepté à tort.
+* B3 (scénario financier HIGH/P0) : même scénario, avec une barrière
+  déterministe insérée dans le renderer réel (jamais un `sleep`) — le
+  document atteint réellement `GENERATION_IN_PROGRESS`, une réservation
+  de crédits `RESERVED` confirmée, avant que `P_old`/`CANCEL` ne soit
+  soumis pour la première fois → **avant correctif**, accepté à tort,
+  document annulé mid-génération sans libérer la réservation ni nettoyer
+  la tentative de génération.
+
+Même défaut confirmé, avec le même schéma de reproduction, sur la
+pipeline `DECHARGE` (`kadiV1DischargePipeline.js`) pour les deux Flows.
+
+### Modèle d'autorité d'état retenu
+
+Réutilisation stricte, sans aucune modification, du primitif
+`expectedState` déjà introduit et prouvé en T4 (fiche AA.1) :
+`kadiV1RuntimeAdapters.js`'s `cancel()`,
+`kadiV1SharedDocumentPipeline.js`'s `persistStateTransition`,
+`kadiV1DischargePipeline.js`'s `persistTransition` — déjà génériques,
+déjà atomiques (contrôle `row.status === fromState` de
+`storage.persistTransition` comme filet final contre toute course
+réelle), n'ont nécessité **aucune** modification. Le seul changement de
+production est dans `kadiV1FlowCommandRuntime.js` :
+
+* `DOCUMENT_REVIEW`/`CANCEL` : la session de confiance doit avoir capturé
+  exactement `document_state === "READY_FOR_REVIEW"` (échec fermé sinon,
+  `KADI_V1_FLOW_COMMAND_DOCUMENT_CANCEL_STATE_INVALID`), puis
+  `expectedState` transmis est cette valeur unique.
+* `DOCUMENT_PREVIEW`/`CANCEL` : la session de confiance doit avoir
+  capturé `document_state` égal à `"VERIFIED"` **ou** `"PREVIEW_READY"`
+  (échec fermé sinon), puis `expectedState` transmis est la valeur
+  **exacte déjà validée de la session** — jamais une constante unique
+  arbitraire, contrairement à `GENERATION_CONFIRMATION` qui n'a qu'un
+  seul état légitime. Une session capturée à `VERIFIED` ne peut donc
+  jamais réussir si le document est maintenant `PREVIEW_READY`, et
+  inversement — les deux valeurs restent strictement distinctes au
+  niveau de la vérification finale.
+
+### Preuve
+
+* `tests/kadiV1DocumentCancelStateAuthorityE2E.test.js` (nouveau, 22
+  scénarios, pile de génération réelle identique à celle de la fiche
+  AA.1) : les huit reproductions ci-dessus **prouvées concrètement avant
+  correctif** (le correctif de production a été temporairement retiré
+  via `git stash` puis restauré, comme pour AA.1 et les rounds R1/R2/R3
+  de RECHARGE-CONTRACT-001) ; annulation courante non obsolète toujours
+  fonctionnelle pour les deux Flows ; après rejet de l'annulation
+  obsolète pendant la génération en vol (B3), la libération de la
+  barrière permet à la génération fraîche de se terminer normalement
+  avec exactement une réservation, une capture, un fichier final et une
+  livraison ; rejeu exact toujours idempotent pour les deux Flows (aucun
+  court-circuit spécifique RECHARGE copié) ; isolation propriétaire et
+  isolation multi-documents pour les deux Flows ; même reproduction et
+  correctif confirmés sur `DECHARGE` ; non-régression `CONFIRM_GENERATION`
+  et `RECHARGE`/`CANCEL` (T3/T4) ; actions non-`CANCEL`
+  (`VERIFY`/`EDIT_CLIENT`/`EDIT_CONTENT`/`EDIT_OPTIONS`,
+  `PREPARE_PDF`/`SAVE_FOR_LATER`) toujours fonctionnelles et ne
+  transmettant jamais `expectedState` ; champ inconnu toujours rejeté.
+* `tests/kadiV1FlowCommandRuntime.test.js` : couverture unitaire dédiée —
+  `expectedState` transmis exactement (`READY_FOR_REVIEW` pour
+  `DOCUMENT_REVIEW` ; `VERIFIED` ou `PREVIEW_READY`, jamais une constante
+  unique, pour `DOCUMENT_PREVIEW`) ; échec fermé pour tout autre état
+  capturé, `cancelDocument` jamais appelé ; actions non-`CANCEL` ne
+  portent jamais `expectedState` dans leur payload.
+* Focused : 405/405 (fichiers concernés, dont T1/T2/T3/T4 déjà fusionnés).
+  Suite complète : 1457/1457. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`expectedState` reste toujours dérivé de la session serveur de
+confiance, jamais du payload client. Aucune fuite vers `RECHARGE`/
+`CANCEL` ou `GENERATION_CONFIRMATION`/`CANCEL` (branches indépendantes,
+vérifiées en premier). Comportement générique non affaibli pour aucune
+autre action de ces deux Flows. Contrats T3 (`RECHARGE`, R0–R3) et T4
+(`GENERATION_CONFIRMATION`, R0–R1) confirmés inchangés par la suite
+complète. Aucune migration ni mutation Supabase, Meta, Render ou
+WhatsApp réelle ; aucune génération, capture ou livraison réelle
+(fournisseurs synthétiques en mémoire uniquement).
+
+### Autres constats d'autorité d'état (classification backlog)
+
+Inspection des autres actions liées à un document et portant un
+`document_state` de confiance : aucune autre action ne mute un état de
+document de façon **terminale** et **sans validation de contenu propre**
+comme le fait `CANCEL` — `VERIFY`/`beginEdit`/`saveForLater` opèrent
+toutes sur le document dans son état courant réel (jamais un état
+« attendu » implicite issu d'un écran différent), et leurs propres
+règles métier (ex. `beginEdit` ne fait rien si le statut n'est pas
+`VERIFIED`) fournissent déjà une protection fonctionnelle équivalente.
+Aucun autre défaut de cette classe identifié dans le périmètre de cette
+mission. Ce périmètre reste volontairement limité à `CANCEL` — toute
+extension nécessiterait sa propre preuve dédiée.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* T5 — prochaine mission de correction dédiée, non commencée.
+* Validation téléphone réelle requise après un déploiement éventuel.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+### Prévention
+
+Cette mission établit la règle réutilisable pour tout futur audit
+FLOW-PARITY/STATE-AUTHORITY : pour toute action de mutation dont
+l'autorité dépend implicitement de l'écran Flow d'où elle provient,
+tracer les états authentiquement légitimes depuis le **routage réel de
+production** (jamais la seule connectivité de la machine d'état, qui
+sur-approxime toujours ce qui est réellement atteignable), puis lier
+cette autorité au même contrat de mutation atomique que la mutation
+elle-même — jamais une vérification séparée à un niveau supérieur. Un
+Flow qui n'a qu'un état légitime peut recevoir une constante serveur
+fixe ; un Flow qui en a plusieurs doit transmettre la valeur exacte déjà
+validée de la session, jamais une valeur générique qui rendrait les
+états légitimes interchangeables entre eux.

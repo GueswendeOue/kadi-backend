@@ -711,6 +711,43 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   Voir fiche AA.1 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-07) : PR #20 fusionnée dans `main`.**
+  `main@a2c2ead17e109c2de5c46905c291f5133cc817ab`.
+  **T4/GENERATION_CONFIRMATION-001 est désormais `CLOSED/MERGED`** (avec
+  T1/T2/T3 déjà fusionnés). Le déploiement Render de ce commit n'est pas
+  vérifiable depuis cet environnement — ne pas déduire qu'il a été
+  déployé, ni qu'il ne l'a pas été.
+* **Mise à jour (2026-08-07) : T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE
+  corrigée, branche isolée
+  `fix/kadi-v1-document-cancel-state-authority-t4-5` créée depuis
+  `main@a2c2ead17e109c2de5c46905c291f5133cc817ab`, PR brouillon ouverte,
+  **non fusionnée, non déployée.** Une revue adversariale indépendante de
+  la PR #20/T4 a signalé que le même défaut d'autorité d'état de session
+  obsolète fermé pour `GENERATION_CONFIRMATION`/`CANCEL` (fiche AA.1)
+  existait aussi, non corrigé, pour `DOCUMENT_REVIEW`/`CANCEL` et
+  `DOCUMENT_PREVIEW`/`CANCEL`, qui routaient tous deux par la branche
+  générique de document sans jamais transmettre `expectedState`. Preuve
+  d'architecture établie d'abord : ouvrir une nouvelle session Flow ne
+  révoque jamais les sessions `OPEN` précédentes
+  (`kadiV1ConversationSession.js`'s `revoke()` n'a aucun appelant en
+  production) — une soumission obsolète est un scénario toujours
+  possible. États légitimes tracés depuis le routage réel de production
+  (`kadiV1ProductionPresenter.js`'s `routeDocument`) :
+  `DOCUMENT_REVIEW` ⟺ `READY_FOR_REVIEW` uniquement ;
+  `DOCUMENT_PREVIEW` ⟺ `VERIFIED` ou `PREVIEW_READY` (un second état de
+  repos réel et durable, confirmé par inspection de
+  `kadiV1PreviewService.js`). **Prouvé concrètement dans la composition
+  de production avant correctif**, avec la pile réelle de génération —
+  huit reproductions distinctes, y compris une annulation obsolète
+  acceptée à tort pendant une génération réellement en vol
+  (`GENERATION_IN_PROGRESS`, barrière déterministe sur le renderer réel).
+  **Corrigé** en réutilisant sans aucune modification le primitif
+  `expectedState` déjà introduit en T4 — un seul fichier de production
+  modifié (`kadiV1FlowCommandRuntime.js`). **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Tests ciblés (405/405) puis suite complète
+  (1457/1457), `git diff --check` propre. Voir fiche AA.2 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 
