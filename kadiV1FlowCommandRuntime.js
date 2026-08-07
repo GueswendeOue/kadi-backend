@@ -4,6 +4,10 @@ const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const IDEMPOTENCY_PATTERN = /^flow_command:[A-Za-z0-9:_.-]{1,187}$/;
 const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
+// GENERATION_CONFIRMATION-001 R1: the only document state a
+// GENERATION_CONFIRMATION Flow may ever legitimately be opened for. Never
+// derived from anything client-supplied — see the CANCEL branch below.
+const GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE = "AWAITING_GENERATION_CONFIRMATION";
 const FLOW_KEYS = Object.freeze([
   "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "RECEIPT_DETAILS", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT", "ARTICLE_FORM",
   "DOCUMENT_OPTIONS", "DOCUMENT_REVIEW", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS",
@@ -123,6 +127,39 @@ function createKadiV1FlowCommandRuntime({
       // opened. See kadiV1ProductionInfrastructure.js's cancel().
       if (!Number.isFinite(Date.parse(command.sessionOpenedAt || ""))) return fail("KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID");
       return call(recharge, "cancel", { ...base, sessionOpenedAt: command.sessionOpenedAt }, "KADI_V1_RECHARGE_CANCEL_FAILED");
+    }
+    if (command.action === "CANCEL" && command.flowKey === "GENERATION_CONFIRMATION") {
+      // GENERATION_CONFIRMATION-001 (R1 independent review, HIGH/P0): a
+      // GENERATION_CONFIRMATION Flow session is only ever legitimately
+      // opened while the document is AWAITING_GENERATION_CONFIRMATION.
+      // Pure document state transitions never bump document.version (see
+      // kadiV1DocumentDomain.js's transitionDocument), so a stale session's
+      // expectedVersion can still match the document's CURRENT version even
+      // after it has genuinely moved on to RECHARGE_REQUIRED or
+      // GENERATION_IN_PROGRESS — both of which the state machine still
+      // allows CANCEL from. Failing closed here on the trusted session's
+      // OWN captured document_state (never client-supplied) catches a
+      // session that was never opened in the right state to begin with;
+      // the real protection against the document having moved on SINCE
+      // that session opened is expectedState below, verified against the
+      // document's real, current, persisted status inside the same durable
+      // mutation as the cancellation itself (see
+      // kadiV1RuntimeAdapters.js's cancel() and
+      // kadiV1SharedDocumentPipeline.js's persistStateTransition).
+      const document = validateDocumentContext(command.documentContext);
+      if (!document.ok) return document;
+      if (document.value.document_state !== GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE) {
+        return fail("KADI_V1_FLOW_COMMAND_GENERATION_CONFIRMATION_STATE_INVALID");
+      }
+      const documentBase = Object.freeze({
+        ...base,
+        documentId: document.value.document_id,
+        expectedVersion: document.value.document_version,
+        documentType: document.value.document_type,
+        documentState: document.value.document_state,
+        expectedState: GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE,
+      });
+      return call(documents, "cancel", documentBase, "KADI_V1_DOCUMENT_CANCEL_FAILED");
     }
 
     const document = validateDocumentContext(command.documentContext);
