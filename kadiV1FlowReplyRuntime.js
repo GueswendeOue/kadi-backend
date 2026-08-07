@@ -75,8 +75,24 @@ const ACTION_FIELDS = Object.freeze({
   PREPARE_PDF: Object.freeze([]),
   SAVE_FOR_LATER: Object.freeze([]),
   CONFIRM_GENERATION: Object.freeze(["quote_id"]),
-  SELECT_PACK: Object.freeze(["pack_id"]),
-  CHECK_PAYMENT: Object.freeze(["payment_reference"]),
+  // RECHARGE-CONTRACT-001: kadi_recharge_v1.json is one combined form whose
+  // single Footer always submits pack_id/payment_reference together,
+  // regardless of which action radio button (SELECT_PACK/CHECK_PAYMENT/
+  // CANCEL) was chosen (Meta submits every declared form field on every
+  // submission). payment_reference is meaningless for SELECT_PACK;
+  // pack_id is meaningless for CHECK_PAYMENT — both accepted here so
+  // neither real submission is rejected outright. Both are already
+  // correctly ignored downstream: kadiV1FlowCommandRuntime.js's
+  // SELECT_PACK mapping reads only data.pack_id, its CHECK_PAYMENT mapping
+  // reads only data.payment_reference, and its RECHARGE/CANCEL mapping
+  // passes no data at all to the recharge runtime. SELECT_PACK/
+  // CHECK_PAYMENT are declared only for RECHARGE in FLOW_ACTIONS, so
+  // widening them globally here carries no cross-Flow risk — unlike
+  // CANCEL (see FLOW_ACTION_FIELD_OVERRIDES below), which is shared with
+  // DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION and must stay
+  // untouched for those.
+  SELECT_PACK: Object.freeze(["pack_id", "payment_reference"]),
+  CHECK_PAYMENT: Object.freeze(["pack_id", "payment_reference"]),
   // HISTORY-CONTRACT-001: kadi_history_search_v1.json is one combined form
   // whose single Footer always submits query/document_type/date_from/
   // date_to/document_id together, regardless of which action radio button
@@ -100,6 +116,31 @@ const ACTION_FIELDS = Object.freeze({
   // documentBase, never data) — accepted here so neither origin's real
   // payload is rejected.
   FINISH_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
+});
+
+// RECHARGE-CONTRACT-001: CANCEL is a single action name shared globally by
+// DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION/RECHARGE, and
+// ACTION_FIELDS.CANCEL ([]) must stay correct for all of them — those
+// other three Flows' real JSON contracts submit no data at all (or, for
+// GENERATION_CONFIRMATION, a separate combined-form defect of its own,
+// deliberately left untouched here — see docs/KADI_ENGINEERING_MEMORY.md,
+// recorded for a later T4). Only the real RECHARGE Flow's single combined
+// form also submits pack_id/payment_reference alongside CANCEL (Meta
+// submits every declared field on every submission, regardless of which
+// action was chosen). Blindly widening the global ACTION_FIELDS.CANCEL
+// entry would let every other Flow's CANCEL silently start accepting
+// recharge-only fields too — never validated as intentional, and
+// reopening exactly the failure mode this whole defect class is about.
+// This override is checked first and, when present for the given
+// (flowKey, action) pair, replaces the global ACTION_FIELDS lookup
+// entirely — every other Flow/action combination is completely
+// unaffected. kadiV1FlowCommandRuntime.js's RECHARGE/CANCEL mapping
+// already passes no data to the recharge runtime, so both fields are
+// safely ignored downstream once accepted here.
+const FLOW_ACTION_FIELD_OVERRIDES = Object.freeze({
+  RECHARGE: Object.freeze({
+    CANCEL: Object.freeze(["pack_id", "payment_reference"]),
+  }),
 });
 
 const FORBIDDEN_AUTHORITY_FIELDS = new Set([
@@ -366,7 +407,7 @@ function validateActionPayload(flowKey, action, data) {
   if (encoded > MAX_PAYLOAD_BYTES) return fail("KADI_V1_FLOW_REPLY_PAYLOAD_TOO_LARGE");
   const inspected = inspectPayload(data);
   if (!inspected.ok) return inspected;
-  const allowed = new Set(ACTION_FIELDS[action] || []);
+  const allowed = new Set(FLOW_ACTION_FIELD_OVERRIDES[flowKey]?.[action] || ACTION_FIELDS[action] || []);
   if (Object.keys(data).some((key) => !allowed.has(key))) return fail("KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
   if (action === "START") {
     if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
