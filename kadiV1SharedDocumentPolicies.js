@@ -2,12 +2,25 @@
 
 const SHARED_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
 const PAYMENT_OPTION_FIELDS = new Set(["payment_method", "reference"]);
+// OPTIONS-001: the real kadi_document_options_v1.json / kadi_edit_options_v1.json
+// Flows always submit validity_days/payment_method/reference alongside
+// discount_amount/tax_rate_basis_points/notes/payment_terms (Meta submits
+// every declared form field on every submission) — every real FACTURE/DEVIS
+// SAVE_OPTIONS used to be rejected outright with DOCUMENT_OPTIONS_FIELD_UNKNOWN.
+// payment_method/reference are accepted here only for that reason: the only
+// legitimate meaning either field has anywhere in the domain model is
+// receipt-specific (document.receipt.payment_method/.reference — see
+// kadiV1PreviewService.js, normalizeReceiptContent below) — normalizeOptions
+// still never persists them for FACTURE/DEVIS.
 const COMMON_OPTION_FIELDS = new Set([
   "options",
   "discount_amount",
   "tax_rate_basis_points",
   "notes",
   "payment_terms",
+  "validity_days",
+  "payment_method",
+  "reference",
 ]);
 const CLIENT_FIELDS = new Set(["name", "phone", "address", "email", "ifu", "rccm"]);
 const VALID_RECEIPT_FORMATS = new Set(["A4", "TICKET_80"]);
@@ -155,34 +168,97 @@ function normalizeClient(value) {
   return ok({ ...cloned.value, name: name.value });
 }
 
+// Meta's "number" input-type TextInput fields (discount_amount,
+// validity_days) submit a JSON value that is blank ("") when the optional
+// field is left empty — the same convention already established and
+// handled for tax_rate_percent/tax_rate_basis_points
+// (kadiV1FlowReplyRuntime.js's normalizePercentText/parseLegacyBasisPoints).
+// Before OPTIONS-001's field-allowlist was widened, no real submission ever
+// reached this far, so a blank discount_amount had never actually been
+// exercised — it would have failed DOCUMENT_OPTIONS_AMOUNT_INVALID exactly
+// like validity_days would have. Blank means "not provided", never zero.
+function parseOptionalInteger(raw, { min = null, invalidError }) {
+  if (raw === "" || raw == null) return ok(null);
+  let num;
+  if (Number.isSafeInteger(raw)) {
+    num = raw;
+  } else if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    num = Number(raw.trim());
+  } else {
+    return fail(invalidError);
+  }
+  if (!Number.isSafeInteger(num) || (min != null && num < min)) return fail(invalidError);
+  return ok(num);
+}
+
 function normalizeOptions(documentType, value) {
   if (!isPlainRecord(value)) return fail("DOCUMENT_OPTIONS_INVALID");
   const allowed = documentType === "RECU" ? PAYMENT_OPTION_FIELDS : COMMON_OPTION_FIELDS;
   if (Object.keys(value).some((key) => !allowed.has(key))) return fail("DOCUMENT_OPTIONS_FIELD_UNKNOWN");
   if (documentType === "RECU") return ok({ receipt: { ...value } });
   const result = {};
+  let nestedOptions = null;
   if (Object.hasOwn(value, "options")) {
     const options = clonePlain(value.options);
     if (!options.ok) return fail("DOCUMENT_OPTIONS_INVALID");
-    if (Object.hasOwn(options.value, "validity_days") && (
-      !Number.isSafeInteger(options.value.validity_days) || options.value.validity_days <= 0
+    nestedOptions = options.value;
+    if (Object.hasOwn(nestedOptions, "validity_days") && (
+      !Number.isSafeInteger(nestedOptions.validity_days) || nestedOptions.validity_days <= 0
     )) return fail("DOCUMENT_VALIDITY_INVALID");
-    if (Object.hasOwn(options.value, "expires_at") && !Number.isFinite(Date.parse(options.value.expires_at))) {
+    if (Object.hasOwn(nestedOptions, "expires_at") && !Number.isFinite(Date.parse(nestedOptions.expires_at))) {
       return fail("DOCUMENT_EXPIRATION_INVALID");
     }
-    result.options = options.value;
+    result.options = nestedOptions;
   }
-  for (const field of ["discount_amount", "tax_rate_basis_points"]) {
-    if (Object.hasOwn(value, field)) {
-      if (!Number.isSafeInteger(value[field]) || value[field] < 0) return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
-      if (field === "tax_rate_basis_points" && value[field] > 10000) return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
-      result[field] = value[field];
+  // validity_days: the real Flow always submits this as a flat top-level
+  // field, never nested — the canonical persisted location, matching the
+  // already-established invoice_kind/receipt_format convention, is
+  // document.options.validity_days, so it is mapped there. If a caller
+  // somehow supplies both the flat field and the nested form with
+  // disagreeing values, fail explicitly rather than silently pick one
+  // (same principle already applied to CLIENT-001's tax_id/ifu alias).
+  if (Object.hasOwn(value, "validity_days")) {
+    const parsed = parseOptionalInteger(value.validity_days, { min: 1, invalidError: "DOCUMENT_VALIDITY_INVALID" });
+    if (!parsed.ok) return parsed;
+    if (parsed.value != null) {
+      const existing = nestedOptions?.validity_days;
+      if (existing != null && existing !== parsed.value) return fail("DOCUMENT_VALIDITY_CONFLICT");
+      result.options = { ...(result.options || {}), validity_days: parsed.value };
     }
   }
+  if (Object.hasOwn(value, "discount_amount")) {
+    const parsed = parseOptionalInteger(value.discount_amount, { min: 0, invalidError: "DOCUMENT_OPTIONS_AMOUNT_INVALID" });
+    if (!parsed.ok) return parsed;
+    if (parsed.value != null) result.discount_amount = parsed.value;
+  }
+  if (Object.hasOwn(value, "tax_rate_basis_points")) {
+    // Already normalized to a genuine, bounded integer (or omitted
+    // entirely) upstream by kadiV1FlowReplyRuntime.js's
+    // normalizeTaxRateFields — validated the same way as before.
+    if (!Number.isSafeInteger(value.tax_rate_basis_points) || value.tax_rate_basis_points < 0) {
+      return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
+    }
+    if (value.tax_rate_basis_points > 10000) return fail("DOCUMENT_OPTIONS_AMOUNT_INVALID");
+    result.tax_rate_basis_points = value.tax_rate_basis_points;
+  }
+  // payment_method/reference: accepted by the allowlist above only because
+  // the real combined options Flow always submits them — deliberately never
+  // persisted here. FACTURE/DEVIS have no invoice-level concept for either
+  // field today (the only existing meaning anywhere in the domain is
+  // receipt-specific). Silently dropped by design, not a bug — see
+  // docs/KADI_ENGINEERING_MEMORY.md.
   for (const field of ["notes", "payment_terms"]) {
     if (Object.hasOwn(value, field)) result[field] = value[field];
   }
-  return Object.keys(result).length > 0 ? ok(result) : fail("DOCUMENT_OPTIONS_EMPTY");
+  // A real Flow submission with every optional field left blank (the most
+  // common real case — a user who has nothing to change) now legitimately
+  // normalizes down to an empty patch: payment_method/reference are always
+  // dropped, and every numeric/text field above is skipped when blank. This
+  // must succeed as a harmless no-op, never an error — the adapter layer
+  // (kadiV1RuntimeAdapters.js's setOptions) already short-circuits before
+  // ever reaching this function when the raw submitted object itself has
+  // zero keys; DOCUMENT_OPTIONS_EMPTY served no caller and is removed.
+  return ok(result);
 }
 
 module.exports = {
