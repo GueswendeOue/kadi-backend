@@ -623,8 +623,8 @@ requise. Aucune génération, livraison ou opération de crédit réelle.
     brouillon ouverte, non fusionnée. Voir la section « Ordre —
     `fix/kadi-v1-document-cancel-state-authority-t4-5` » ci-dessous et
     fiche AA.2 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
-13. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
-    commencée.
+13. **[FAIT]** T5/RECHARGE_PRESENTER_001 — voir la section
+    `fix/kadi-v1-recharge-presenter-t5` plus bas.
 
 ## Ordre — `fix/kadi-v1-document-cancel-state-authority-t4-5` (T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE : même défaut d'autorité d'état de session obsolète, pour `DOCUMENT_REVIEW`/`CANCEL` et `DOCUMENT_PREVIEW`/`CANCEL`)
 
@@ -684,10 +684,10 @@ Aucune génération, livraison ou opération de crédit réelle.
    téléphone) — un scénario de course réelle sur téléphone reste
    difficilement observable, la preuve de composition reste la preuve
    principale.
-9. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
-   commencée. (T6/BALANCE-001 a été traité en parallèle, hors ordre T5 —
-   voir la section « Ordre — `fix/kadi-v1-available-balance-t6` »
-   ci-dessous.)
+9. **[FAIT]** T5/RECHARGE_PRESENTER_001 — voir la section « Ordre —
+   `fix/kadi-v1-recharge-presenter-t5` » plus bas. (T6/BALANCE-001 a été
+   traité en parallèle, hors ordre T5 — voir la section « Ordre —
+   `fix/kadi-v1-available-balance-t6` » ci-dessous.)
 
 ## Ordre — `fix/kadi-v1-available-balance-t6` (T6/BALANCE-001 : solde numérique + autorité des crédits disponibles, BILL-001 confirmé)
 
@@ -778,11 +778,63 @@ Meta/Render/WhatsApp requise.
     téléphone) après l'ordre de déploiement ci-dessus, avec si possible
     un cas où des crédits sont réellement retenus par une génération en
     cours.
-11. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
-    commencée.
+11. **[FAIT]** T5/RECHARGE_PRESENTER_001 — voir section dédiée
+    ci-dessous.
 12. **[EN ATTENTE]** Suivi backlog séparé, non corrigé dans T6 —
     `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) : voir
     fiche AA.3 pour le détail complet.
+
+## Ordre — `fix/kadi-v1-recharge-presenter-t5` (T5/RECHARGE_PRESENTER_001 : le Flow RECHARGE authoritative — solde, packs, libellé CANCEL)
+
+Aucune migration Supabase touchée par T5. Aucune mutation Meta/Render/
+WhatsApp requise. T5 hérite de l'ordre de déploiement T6 ci-dessus pour
+tout déploiement futur (le `balanceReader` de T5 dépend du même
+`BalanceReader`/`getAvailableBalance()` que T6 — la migration T6 doit
+donc être appliquée, dans l'ordre sûr décrit ci-dessus, avant tout
+déploiement Render incluant T5).
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@87b95bfa41ec40d6e0da5a7a53b25f9ecc2563f2` (PR #22/T6 fusionnée)
+   avant de créer la branche isolée.
+2. **[FAIT]** Défaut confirmé et reproduit avant correctif
+   (`git stash` du correctif puis restauration) : le Flow RECHARGE réel
+   affichait systématiquement les valeurs `__example__` du JSON (solde
+   « Solde actuel : 0 crédit. », packs PACK_1000/2000/5000 d'exemple),
+   jamais le solde disponible réel ni le catalogue de packs actif réel,
+   car `suggestedDataForFlow()` n'avait aucune branche `RECHARGE`.
+3. **[FAIT]** Corrigé : `balanceReader`/`packCatalog` optionnels et
+   étroits injectés dans le presenter — les mêmes instances déjà câblées
+   dans `walletRuntime`/`RechargeService`, jamais un second calcul
+   financier ni une seconde liste de packs. Échec fermé systématique
+   (jamais de zéro fabriqué, jamais les exemples du JSON présentés comme
+   réels).
+4. **[FAIT]** Libellé CANCEL corrigé (« Annuler cette recharge » au lieu
+   de « Revenir plus tard »), avec copie de confirmation dédiée
+   déterminée par le `flow_key` vérifié côté serveur — les autres CANCEL
+   inchangés.
+5. **[FAIT]** T3 R1/R2/R3 (intégrité d'annulation), contrat combiné
+   `pack_id`/`payment_reference`, comportement `SELECT_PACK`/
+   `CHECK_PAYMENT` existants tous confirmés inchangés par la suite
+   complète.
+6. **[FAIT]** Tests ciblés (242/242 sur les fichiers concernés) puis
+   suite complète (1520/1520), `git diff --check` propre.
+7. **[FAIT]** Revue adversariale du diff complet — aucun défaut
+   HIGH/MEDIUM trouvé.
+8. **[EN ATTENTE]** Fusion dans `main`.
+9. **[EN ATTENTE]** Déploiement Render — soumis à l'ordre de déploiement
+   T6 ci-dessus (migration Supabase T6 d'abord, vérification en lecture
+   seule, puis seulement ensuite Render) si T6 n'a pas déjà été déployée.
+10. **[EN ATTENTE]** Une vraie ouverture du Flow RECHARGE, observée en
+    conditions réelles (validation téléphone) après déploiement, incluant
+    si possible un cas à crédits réellement retenus et un cas
+    d'annulation.
+11. **[EN ATTENTE]** Nouveau constat backlog séparé, non corrigé dans T5
+    — au moment précis où `CONFIRM_GENERATION` échoue avec
+    `INSUFFICIENT_CREDITS`, l'utilisateur ne voit qu'un texte générique
+    de récupération, sans Flow RECHARGE ni invitation à recharger ; voir
+    fiche AB pour le détail complet.
+12. **[EN ATTENTE]** Suivi backlog séparé, non corrigé — voir item 12 de
+    la section T6 ci-dessus, `RECHARGE_RESUME_AVAILABLE_BALANCE_001`.
 
 ## Déploiement Render
 

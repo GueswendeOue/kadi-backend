@@ -4348,3 +4348,186 @@ forme. Quand deux chemins utilisateur différents (ici Flow/menu et
 langage naturel) doivent rapporter le même calcul financier, les faire
 dépendre du même port et du même formateur de présentation partagé,
 jamais deux implémentations indépendantes qui pourraient diverger.
+
+## AB. T5/RECHARGE_PRESENTER_001 — corrigé : le Flow RECHARGE affichait le solde/les packs `__example__` du JSON, jamais les valeurs serveur réelles
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — nouvelle branche isolée
+  `fix/kadi-v1-recharge-presenter-t5`, créée depuis
+  `main@87b95bfa41ec40d6e0da5a7a53b25f9ecc2563f2` (PR #22/T6 déjà
+  fusionnée), PR brouillon ouverte, non fusionnée, non déployée. Aucune
+  migration Supabase touchée par T5 (T6 reste non appliquée en
+  production — voir AA.3).
+* **Origine :** mission « KADI V1 — T5 RECHARGE PRESENTER / UX
+  AUTHORITY ».
+
+### Défaut A — présentation : `balance_summary`/`pack_options`/`recharge_actions` provenaient toujours du JSON du Flow, jamais du serveur
+
+`flows/v1_draft/kadi_recharge_v1.json` déclare des valeurs `__example__`
+volontairement fictives pour la validation Meta (« Solde actuel : 0
+crédit. », des packs PACK_1000/2000/5000 d'exemple, un bouton CANCEL
+libellé « Revenir plus tard »). `kadiV1ProductionPresenter.js`'s
+`suggestedDataForFlow()` n'avait aucune branche pour `RECHARGE` : ces
+trois champs n'étaient donc jamais explicitement fournis, et
+`safeFlowData()` retombait systématiquement sur `contract.defaults`
+(les `__example__` eux-mêmes) — le Flow RECHARGE affichait donc toujours
+les valeurs d'exemple du JSON, quel que soit le solde réel du
+portefeuille ou le catalogue de packs réellement actif.
+
+**Reproduction, prouvée dans la composition de production avant
+correctif** (correctif de production temporairement retiré via
+`git stash` puis restauré) : avec un solde réel de 7 crédits,
+`balance_summary` affichait « Solde actuel : 0 crédit. » au lieu de
+« Solde disponible : 7 crédits. ».
+
+### Contexte de découverte : le Flow RECHARGE ne s'ouvre jamais au moment même du blocage `INSUFFICIENT_CREDITS`
+
+En construisant la preuve E2E, un second fait a été confirmé par lecture
+directe du code (pas supposé) : quand `CONFIRM_GENERATION` échoue avec
+`INSUFFICIENT_CREDITS`, `kadiV1FlowReplyRuntime.js`'s `handle()` retourne
+`{ok:false}`, et `kadiV1WebhookRuntime.js`'s `handleMessage()` route
+alors vers `recover()` → `presentRecoverableError()` — jamais vers
+`presentFlowReply()`. `presentRecoverableError()` n'envoie qu'un texte
+générique (« Je n'ai pas pu terminer cette étape. Réessayez dans un
+instant. », `INSUFFICIENT_CREDITS` n'étant pas dans
+`GENERATION_RETRY_REASONS`) et **n'ouvre jamais aucun Flow**. Le
+document passe bien à l'état `RECHARGE_REQUIRED`, mais l'utilisateur ne
+voit le Flow RECHARGE authoritative qu'en rouvrant plus tard le document
+bloqué via `HISTORY_SEARCH`/`OPEN_DOCUMENT` (`kadiV1HistoryService.js`'s
+`getDocumentDetails()` → `presentFlowReply()`'s branche générique →
+`nextFlowForReply()` → `routeDocument()` mappe `RECHARGE_REQUIRED` vers
+`"RECHARGE"`). C'est ce chemin réel et atteignable — pas un déclenchement
+direct par `INSUFFICIENT_CREDITS` — qui constitue le « Contexte 1 » de la
+mission (« RECHARGE ouvert depuis l'état document `RECHARGE_REQUIRED` »).
+**Ce comportement (message générique sans invitation à recharger au
+moment du blocage) est préexistant, non introduit par T5, et
+délibérément laissé hors périmètre** (T5 interdisait tout changement au
+cycle de vie recharge/conversationnel) — voir « Suivi requis » ci-dessous.
+
+### Modèle d'autorité retenu
+
+* **Solde :** jamais une deuxième lecture indépendante du portefeuille.
+  Le presenter reçoit un `balanceReader` optionnel et étroit
+  (`getBalance({ownerWaId})`) — **la même instance** déjà câblée dans
+  `walletRuntime` par `kadiV1ProductionBootstrap.js` (le lecteur
+  `BalanceReader` T6/`available_credits`, jamais le solde brut). Une
+  lecture échouée ou un instantané financier impossible
+  (`total - reserved !== available`) ne retombe **jamais** sur un zéro
+  fabriqué — zéro est une vraie valeur financière — mais sur la phrase
+  sûre non numérique « Solde indisponible pour le moment. ».
+* **Packs :** jamais une deuxième liste de packs codée en dur dans le
+  presenter. Le presenter reçoit un `packCatalog` optionnel et étroit
+  (`listActivePacks()`) — **la même instance** `createRechargePackCatalog`
+  déjà utilisée par `RechargeService`. Seuls les packs `active === true`
+  apparaissent ; une entrée de catalogue malformée est ignorée
+  individuellement (échec fermé par entrée) ; zéro pack actif affiche une
+  liste vide, jamais les packs `__example__` du JSON présentés comme
+  réels.
+* Les deux dépendances suivent exactement le motif optionnel-étroit déjà
+  établi par `issuerProfileReader` dans ce même constructeur : `null` par
+  défaut, validée uniquement si non nulle, jamais interrogée
+  directement — le presenter reste une couche de présentation, jamais un
+  second calcul financier ni une seconde source de vérité produit.
+
+### Libellé CANCEL corrigé
+
+`RECHARGE`/`CANCEL` exécute une véritable annulation terminale
+(`kadi_v1_recharge_sessions.status = 'CANCELLED'` — aucun état « à
+reprendre plus tard » non terminal n'existe dans `RECHARGE_STATUSES`),
+donc le libellé d'exemple du JSON « Revenir plus tard » était trompeur.
+Corrigé en « Annuler cette recharge », toujours explicitement fourni par
+le presenter (jamais laissé au `__example__` du JSON). Le texte de
+confirmation dédié « La recharge est annulée. Vous pourrez en démarrer
+une nouvelle plus tard. » remplace le générique « L'opération est
+annulée. » **uniquement** quand `action === "CANCEL"` **et**
+`flow_key === "RECHARGE"` — `flow_key` étant la valeur de session déjà
+vérifiée côté serveur par `kadiV1FlowReplyRuntime.js` (jamais
+falsifiable par le payload client) ; toutes les autres origines de
+CANCEL (`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`,
+`GENERATION_CONFIRMATION`) gardent leur copie générique inchangée.
+
+### Continuité SELECT_PACK / CHECK_PAYMENT préservée
+
+Le comportement T3 existant (instructions Orange Money dynamiques après
+`SELECT_PACK`, distinction `credited === true/false` après
+`CHECK_PAYMENT`, prochain Flow `MENU` inchangé après crédit confirmé)
+n'a pas été touché ; seule la donnée du Flow RECHARGE rouvert après
+`SELECT_PACK`/`CHECK_PAYMENT` en attente est désormais elle aussi
+authoritative (solde et packs recalculés à chaque réouverture, jamais
+mis en cache).
+
+### Preuve
+
+* `tests/kadiV1RechargePresenterE2E.test.js` (nouveau, 22 scénarios,
+  combinant la pile recharge réelle de `kadiV1RechargeContractE2E.test.js`
+  (T3) et la pile solde/réservation réelle de
+  `kadiV1AvailableBalanceE2E.test.js` (T6), plus une pile historique
+  réelle minimale pour exercer `HISTORY_SEARCH`/`OPEN_DOCUMENT`) : défaut
+  A **prouvé concrètement avant correctif** (`git stash` puis
+  restauration) ; solde disponible réel affiché dans les 5 contextes
+  d'ouverture réels identifiés (document `RECHARGE_REQUIRED` rouvert
+  depuis l'historique, réouverture après `SELECT_PACK`, réouverture après
+  `CHECK_PAYMENT` en attente, résultat de `CANCEL`, chemin conversationnel
+  direct) ; solde retenu reflété exactement comme T6 ; solde
+  Flow/menu/langage naturel toujours en accord ; échec de lecture du
+  solde jamais un zéro fabriqué ; packs actifs uniquement, pack inactif
+  omis, zéro pack actif → liste vide jamais les exemples du JSON ;
+  grammaire singulier/pluriel correcte (« 1 crédit », pas « 1 crédits ») ;
+  libellé et copie CANCEL corrigés, sans affecter les autres Flows ; R1
+  (session obsolète), R2 (doublon exact, zéro seconde mutation) et R3
+  (résolution de cible sans repli) de T3 confirmés inchangés, y compris
+  après reconstruction complète du runtime (redémarrage simulé) ;
+  isolation propriétaire ; contrat combiné `pack_id`/`payment_reference`
+  de T3 confirmé inchangé, champ inconnu toujours rejeté ; zéro mutation
+  financière causée par la présentation RECHARGE elle-même ; aucune
+  valeur de tarification/catalogue modifiée par T5.
+* Focused (fichiers concernés incluant présentateur, T3, T6, historique,
+  bootstrap, composition) : 242/242. Suite complète : 1520/1520.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucun identifiant interne exposé côté RECHARGE (pas d'ID de session de
+recharge, de profil, de portefeuille, de réservation ou de devis) — seuls
+le numéro Orange Money configuré, le nom de compte, le montant, les
+crédits du pack et la référence de paiement, déjà autorisés par T3.
+`ownerWaId` reste la seule source de portée pour la lecture du solde et
+du catalogue. Aucune migration ni mutation Supabase, Meta, Render ou
+WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* **Nouveau constat, non corrigé dans T5 :** au moment précis où
+  `CONFIRM_GENERATION` échoue avec `INSUFFICIENT_CREDITS`, l'utilisateur
+  ne reçoit que le texte générique de récupération (« Je n'ai pas pu
+  terminer cette étape. Réessayez dans un instant. ») — sans mention de
+  crédit ni invitation à recharger, et sans que le Flow RECHARGE
+  s'ouvre — car ce chemin passe par `recover()`/`presentRecoverableError()`,
+  jamais par `presentFlowReply()`. Le Flow RECHARGE authoritative n'est
+  visible qu'en rouvrant plus tard le document depuis l'historique.
+  Impact produit potentiellement significatif (le moment le plus commun
+  où un utilisateur a besoin de recharger n'offre aujourd'hui aucune
+  invitation claire) mais délibérément hors périmètre de T5 (mission
+  bornée à la présentation du Flow RECHARGE lui-même, pas au cycle de
+  vie conversationnel de `INSUFFICIENT_CREDITS`). À traiter dans une
+  mission bornée séparée.
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant sous `resumePolicy: "REQUIRE_CONFIRMATION"`
+  (confirmé inchangé par T5), toujours non corrigé.
+* Application de la migration T6 à Supabase de production, dans l'ordre
+  sûr établi en AA.3 (migration d'abord) — toujours hors périmètre,
+  nécessite une autorisation et une mission de déploiement distinctes ;
+  T5 ne dépend pas de cette migration pour ses propres tests locaux mais
+  en hérite pour tout déploiement futur.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+### Prévention
+
+Un Flow Meta dont le JSON porte des valeurs `__example__` réalistes (au
+lieu d'un placeholder évidemment faux comme « TODO ») masque
+silencieusement l'absence d'une branche de présentation dédiée — un champ
+qui « a l'air » correct au premier coup d'œil peut rester un exemple
+figé indéfiniment si `suggestedDataForFlow()` ne le mentionne jamais
+explicitement. Toujours vérifier, pour un nouveau Flow ou un nouveau
+champ de Flow, qu'une valeur serveur explicite est bien fournie à chaque
+ouverture réelle, jamais seulement au premier coup d'œil sur le texte
+affiché.

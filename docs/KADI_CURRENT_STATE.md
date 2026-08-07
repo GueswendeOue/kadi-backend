@@ -799,6 +799,40 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   hors périmètre T6). Voir fiche AA.3 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet.
+* **Mise à jour (2026-08-07) : T5/RECHARGE_PRESENTER_001 corrigé,
+  branche isolée `fix/kadi-v1-recharge-presenter-t5` créée depuis
+  `main@87b95bfa41ec40d6e0da5a7a53b25f9ecc2563f2`, PR brouillon ouverte,
+  **non fusionnée, non déployée. Aucune migration touchée par T5.**
+  Défaut confirmé : le Flow RECHARGE réel affichait toujours les valeurs
+  `__example__` du JSON (« Solde actuel : 0 crédit. », packs
+  PACK_1000/2000/5000 d'exemple) au lieu du solde disponible réel (T6) et
+  du catalogue de packs actif réel — **prouvé concrètement avant
+  correctif** (`git stash` puis restauration : solde réel de 7 crédits
+  affichant « Solde actuel : 0 crédit. »). **Corrigé** : le presenter
+  reçoit désormais deux dépendances optionnelles étroites,
+  `balanceReader`/`packCatalog`, **les mêmes instances** déjà câblées
+  dans `walletRuntime`/`RechargeService` — jamais un second calcul
+  financier ni une seconde liste de packs. Échec fermé systématique :
+  échec de lecture du solde → « Solde indisponible pour le moment. »,
+  jamais un zéro fabriqué ; zéro pack actif → liste vide, jamais les
+  exemples du JSON présentés comme réels. Libellé CANCEL corrigé
+  (« Annuler cette recharge » au lieu de « Revenir plus tard », qui
+  décrivait à tort une annulation terminale réelle comme un simple
+  ajournement), avec une copie de confirmation dédiée à RECHARGE,
+  déterminée par le `flow_key` vérifié côté serveur — les autres CANCEL
+  (`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`, `GENERATION_CONFIRMATION`)
+  inchangés. R1/R2/R3 de T3 (intégrité d'annulation), le contrat combiné
+  `pack_id`/`payment_reference`, et le comportement `SELECT_PACK`/
+  `CHECK_PAYMENT` existants tous confirmés inchangés. **Nouveau constat
+  non corrigé** : au moment précis où `CONFIRM_GENERATION` échoue avec
+  `INSUFFICIENT_CREDITS`, l'utilisateur ne voit qu'un texte générique de
+  récupération, sans Flow RECHARGE ni invitation à recharger — celui-ci
+  n'apparaît qu'en rouvrant plus tard le document bloqué depuis
+  l'historique. Délibérément hors périmètre de T5. **Statut :
+  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (242/242) puis suite complète
+  (1520/1520), `git diff --check` propre. Voir fiche AB de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 
