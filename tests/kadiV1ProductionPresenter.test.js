@@ -6,6 +6,7 @@ const {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
   buildV1FlowMessage,
+  nextFlowForReply,
 } = require("../kadiV1ProductionPresenter");
 
 const OWNER = "22670000000";
@@ -843,6 +844,419 @@ test("opening a document with no delivery issue keeps the ordinary generic OPEN_
   assert.equal(calls.some(([name]) => name === "buttons"), false);
   const [, { text }] = calls.find(([name]) => name === "text");
   assert.equal(text, "Le document est ouvert.");
+});
+
+// Incident regression (2026-08-07T01:24-01:26Z owner CANARY): beginEdit's
+// reopenForCorrection legitimately moves the document back to
+// READY_FOR_REVIEW so it can be re-verified once the edit is saved — but
+// routeDocument() maps READY_FOR_REVIEW straight back to DOCUMENT_REVIEW,
+// and was checked before the explicit EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS
+// mapping, silently swallowing it every time. The owner saw "Vous pouvez
+// modifier le client." followed only by "Vérifier" again — never the real
+// edit Flow.
+test("nextFlowForReply: EDIT_CLIENT opens DOCUMENT_CLIENT's edit Flow, never DOCUMENT_REVIEW, even though beginEdit moves the document to READY_FOR_REVIEW", () => {
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CLIENT", reopenedDocument), "EDIT_CLIENT");
+  assert.notEqual(nextFlowForReply("EDIT_CLIENT", reopenedDocument), "DOCUMENT_REVIEW");
+});
+
+test("nextFlowForReply: EDIT_CONTENT and EDIT_OPTIONS have the exact same fix, for the same reason", () => {
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CONTENT", reopenedDocument), "EDIT_CONTENT");
+  assert.equal(nextFlowForReply("EDIT_OPTIONS", reopenedDocument), "EDIT_OPTIONS");
+});
+
+test("nextFlowForReply: EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS still route RECU to RECEIPT_DETAILS and DECHARGE to DISCHARGE_DETAILS, unaffected by the ordering fix", () => {
+  const recu = { document_id: "document:1", version: 3, document_type: "RECU", status: "READY_FOR_REVIEW" };
+  const decharge = { document_id: "document:2", version: 3, document_type: "DECHARGE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CLIENT", recu), "RECEIPT_DETAILS");
+  assert.equal(nextFlowForReply("EDIT_OPTIONS", decharge), "DISCHARGE_DETAILS");
+});
+
+test("nextFlowForReply: unrelated actions on a READY_FOR_REVIEW document keep the ordinary generic routing — the fix is scoped only to EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS", () => {
+  const document = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("SAVE_OPTIONS", document), "DOCUMENT_REVIEW");
+});
+
+test("full presentFlowReply reproduces the fix end to end: pressing 'Modifier le client' from review opens the real EDIT_CLIENT Flow, not another 'Vérifier' screen", async () => {
+  const { presenter, calls } = harness();
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-client",
+    result: { handled: true, action: "EDIT_CLIENT", duplicate: false, result: { document: reopenedDocument } },
+  });
+  const flowCall = calls.find(([name]) => name === "flow");
+  assert.ok(flowCall, "must open a Flow, not just repeat text");
+  assert.equal(flowCall[1].interactive.action.parameters.flow_id, FLOW_IDS.EDIT_CLIENT);
+  assert.notEqual(flowCall[1].interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+});
+
+test("explicit CANCEL from review remains entirely unchanged by this fix", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:cancel",
+    result: { handled: true, action: "CANCEL", duplicate: false, result: { status: "CANCELLED" } },
+  });
+  assert.equal(calls.some(([name]) => name === "flow"), false, "cancel must never open a new Flow");
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "L’opération est annulée.");
+});
+
+// REVIEW-001 (exploratory audit): suggestedDataForFlow had no branch at all
+// for DOCUMENT_REVIEW, so review_summary/review_actions always fell back to
+// the Flow JSON's static __example__ ("Résumé du document à vérifier." and
+// the generic action list) — no user ever actually saw the document they
+// were asked to verify.
+
+function factureReviewDocument(overrides = {}) {
+  return {
+    document_id: "document:review-facture",
+    version: 5,
+    document_type: "FACTURE",
+    status: "READY_FOR_REVIEW",
+    options: { invoice_kind: "FINAL" },
+    client: { name: "Awa Traoré" },
+    items: [
+      { item_id: "item:1", description: "Ciment", quantity_millis: 2000, unit: "sac", unit_price: 6000, line_total: 12000 },
+    ],
+    subtotal: 12000,
+    tax_rate_basis_points: 1800,
+    taxes: 2160,
+    discount: 1000,
+    total: 13160,
+    notes: "Livraison incluse",
+    payment_terms: "Paiement à 30 jours",
+    ...overrides,
+  };
+}
+
+test("REVIEW-001: DOCUMENT_REVIEW never sends the Flow JSON placeholder when a real document exists", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-facture",
+    result: { handled: true, action: "SAVE_OPTIONS", duplicate: false, result: factureReviewDocument() },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.notEqual(summary, "Résumé du document à vérifier.");
+});
+
+test("REVIEW-001: FACTURE review_summary shows invoice kind, client, articles, subtotal, discount, tax rate and amount, total, payment terms and notes", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-facture-detail",
+    result: { handled: true, action: "SAVE_OPTIONS", duplicate: false, result: factureReviewDocument() },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Facture définitive/);
+  assert.match(summary, /Client : Awa Traoré/);
+  assert.match(summary, /Ciment/);
+  assert.match(summary, /Sous-total : 12\s000 FCFA/);
+  assert.match(summary, /Remise : 1\s000 FCFA/);
+  assert.match(summary, /TVA \(18%\) : 2\s160 FCFA/);
+  assert.match(summary, /Total : 13\s160 FCFA/);
+  assert.match(summary, /Conditions de paiement : Paiement à 30 jours/);
+  assert.match(summary, /Notes : Livraison incluse/);
+  assert.doesNotMatch(summary, /document:review-facture/, "no internal document_id leak");
+});
+
+test("REVIEW-001: PROFORMA is labelled distinctly from a final FACTURE", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-proforma",
+    result: { handled: true, action: "SAVE_OPTIONS", duplicate: false, result: factureReviewDocument({ options: { invoice_kind: "PROFORMA" } }) },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Facture proforma/);
+});
+
+test("REVIEW-001: no tax applied is stated honestly rather than omitted or shown as zero percent", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-no-tax",
+    result: {
+      handled: true, action: "SAVE_OPTIONS", duplicate: false,
+      result: factureReviewDocument({ tax_rate_basis_points: 0, taxes: 0, discount: 0, total: 12000, notes: null, payment_terms: null }),
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /TVA : non appliquée/);
+  assert.doesNotMatch(summary, /Remise/);
+});
+
+test("REVIEW-001: RECU review_summary shows payer, beneficiary, reason, amount and the selected receipt format, never article-style copy", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-recu",
+    result: {
+      handled: true, action: "SAVE_RECEIPT_DETAILS", duplicate: false,
+      result: {
+        document_id: "document:review-recu", version: 2, document_type: "RECU", status: "READY_FOR_REVIEW",
+        items: [], client: null,
+        receipt: { payer: "Moussa", beneficiary: "Boutique Awa", amount: 15000, reason: "Achat tissu", payment_method: null, reference: null },
+        options: { receipt_format: "TICKET_80" },
+        subtotal: 15000, taxes: 0, discount: 0, total: 15000,
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Payeur : Moussa/);
+  assert.match(summary, /Bénéficiaire : Boutique Awa/);
+  assert.match(summary, /Motif : Achat tissu/);
+  assert.match(summary, /Montant : 15\s000 FCFA/);
+  assert.match(summary, /Format : Ticket 80 mm/);
+  assert.doesNotMatch(summary, /Articles enregistrés/);
+});
+
+test("REVIEW-001: DECHARGE review_summary shows giver, receiver and the type-specific object, never 'Modifier le client' style invoice copy", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-decharge",
+    result: {
+      handled: true, action: "SAVE_DETAILS", duplicate: false,
+      result: {
+        document_id: "document:review-decharge", version: 2, document_type: "DECHARGE", status: "READY_FOR_REVIEW",
+        discharge: {
+          giver: "Ibrahim", receiver: "Fatou",
+          subject: { type: "MONEY", amount: 25000, description: null },
+          quantity: null, reason: "Prêt de matériel", observations: null,
+        },
+        currency: "XOF",
+      },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Remettant : Ibrahim/);
+  assert.match(summary, /Bénéficiaire : Fatou/);
+  assert.match(summary, /25\s000 FCFA/);
+  assert.match(summary, /Motif : Prêt de matériel/);
+});
+
+test("REVIEW-001: review_actions for FACTURE/DEVIS keeps the three distinct edit sections plus verify and cancel", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-actions-facture",
+    result: { handled: true, action: "SAVE_OPTIONS", duplicate: false, result: factureReviewDocument() },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const actions = payload.interactive.action.parameters.flow_action_payload.data.review_actions;
+  assert.deepEqual(actions.map((entry) => entry.id), ["VERIFY", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL"]);
+});
+
+test("REVIEW-001: review_actions for RECU exposes exactly one edit action, not three redundant labels for the same combined Flow", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-actions-recu",
+    result: {
+      handled: true, action: "SAVE_RECEIPT_DETAILS", duplicate: false,
+      result: { document_id: "document:review-recu", version: 2, document_type: "RECU", status: "READY_FOR_REVIEW", items: [], client: null, receipt: {} },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const actions = payload.interactive.action.parameters.flow_action_payload.data.review_actions;
+  assert.deepEqual(actions.map((entry) => entry.id), ["VERIFY", "EDIT_CLIENT", "CANCEL"]);
+  assert.doesNotMatch(actions.find((entry) => entry.id === "EDIT_CLIENT").title, /articles/i);
+});
+
+test("REVIEW-001: review_actions for DECHARGE never offers 'Modifier le client' — a discharge has no invoice-style client", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:review-actions-decharge",
+    result: {
+      handled: true, action: "SAVE_DETAILS", duplicate: false,
+      result: { document_id: "document:review-decharge", version: 2, document_type: "DECHARGE", status: "READY_FOR_REVIEW", discharge: { giver: "Ibrahim", receiver: "Fatou" }, currency: "XOF" },
+    },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const actions = payload.interactive.action.parameters.flow_action_payload.data.review_actions;
+  assert.deepEqual(actions.map((entry) => entry.id), ["VERIFY", "EDIT_CONTENT", "CANCEL"]);
+  assert.equal(actions.some((entry) => entry.id === "EDIT_CLIENT"), false);
+  assert.doesNotMatch(actions.map((entry) => entry.title).join(" "), /client/i);
+});
+
+// INV-001 / INV-002 (exploratory audit): SAVE_CLIENT and FINISH_CONTENT are
+// each reachable from two different screens with the same action name.
+// Without an origin signal both always routed as if it were the initial
+// creation path, forcing every client/content correction into a mandatory
+// new-item form instead of back to the review the owner came from. The
+// origin flow_key is session-verified (kadiV1ConversationSession.js
+// rejects any mismatch before a reply is ever executed) — never trusted
+// from the client payload itself.
+
+test("INV-001: SAVE_CLIENT with no origin (or DOCUMENT_CLIENT origin) still opens ARTICLE_FORM — initial creation is unchanged", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:inv001-initial",
+    result: { handled: true, action: "SAVE_CLIENT", flow_key: "DOCUMENT_CLIENT", duplicate: false, result: { document_id: "document:1", version: 2, document_type: "FACTURE", status: "COLLECTING", items: [] } },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.ARTICLE_FORM);
+});
+
+test("INV-001: SAVE_CLIENT originating from EDIT_CLIENT returns to DOCUMENT_REVIEW instead of forcing a new article", async () => {
+  const { presenter, calls } = harness();
+  const correctedClient = factureReviewDocument({ client: { name: "Awa Traoré (corrigé)" }, status: "COLLECTING" });
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:inv001-edit",
+    result: { handled: true, action: "SAVE_CLIENT", flow_key: "EDIT_CLIENT", duplicate: false, result: correctedClient },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+  assert.notEqual(payload.interactive.action.parameters.flow_id, FLOW_IDS.ARTICLE_FORM);
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Awa Traoré \(corrigé\)/, "refreshed review must show the corrected client");
+  assert.match(summary, /Ciment/, "existing articles must remain visible, untouched");
+});
+
+test("INV-002: FINISH_CONTENT with no origin (or DOCUMENT_CONTENT origin) still opens DOCUMENT_OPTIONS — initial creation is unchanged", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:inv002-initial",
+    result: { handled: true, action: "FINISH_CONTENT", flow_key: "DOCUMENT_CONTENT", duplicate: false, result: { document_id: "document:1", version: 4, document_type: "FACTURE", status: "COLLECTING", items: [{ item_id: "item:1", description: "Ciment", quantity: 2, unit_price: 5000 }] } },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_OPTIONS);
+});
+
+test("INV-002: FINISH_CONTENT originating from EDIT_CONTENT returns to DOCUMENT_REVIEW instead of forcing option resubmission", async () => {
+  const { presenter, calls } = harness();
+  const correctedItems = factureReviewDocument({
+    items: [{ item_id: "item:1", description: "Ciment corrigé", quantity_millis: 3000, unit: "sac", unit_price: 6000, line_total: 18000 }],
+    subtotal: 18000, taxes: 3240, total: 21240, status: "COLLECTING",
+  });
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:inv002-edit",
+    result: { handled: true, action: "FINISH_CONTENT", flow_key: "EDIT_CONTENT", duplicate: false, result: correctedItems },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+  assert.notEqual(payload.interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_OPTIONS);
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Ciment corrigé/, "the corrected item must be visible in the refreshed review");
+  assert.match(summary, /Client : Awa Traoré/, "existing client must remain untouched");
+});
+
+test("INV-002: ADD_CONTENT/UPDATE_CONTENT/REMOVE_CONTENT from EDIT_CONTENT loop back into EDIT_CONTENT, not the initial DOCUMENT_CONTENT decision screen", async () => {
+  const { presenter, calls } = harness();
+  for (const action of ["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"]) {
+    calls.length = 0;
+    await presenter.presentFlowReply({
+      ownerWaId: OWNER, messageId: `wamid:inv002-loop-${action}`,
+      result: { handled: true, action, flow_key: "EDIT_CONTENT", duplicate: false, result: factureReviewDocument({ status: "COLLECTING" }) },
+    });
+    const payload = calls.find(([name]) => name === "flow")[1];
+    assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.EDIT_CONTENT, `${action} must reopen EDIT_CONTENT`);
+  }
+});
+
+test("EDIT_CONTENT is populated with the real current items, never the Flow JSON's fake 'item:example'", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-content-data",
+    result: { handled: true, action: "ADD_CONTENT", flow_key: "EDIT_CONTENT", duplicate: false, result: factureReviewDocument({ status: "COLLECTING" }) },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const data = payload.interactive.action.parameters.flow_action_payload.data;
+  assert.deepEqual(data.item_options, [{ id: "item:1", title: "Ciment" }]);
+  assert.equal(data.item_options.some((entry) => entry.id === "item:example"), false);
+  assert.deepEqual(data.edit_actions.map((entry) => entry.id), ["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT"]);
+});
+
+test("EDIT_CONTENT does not offer FINISH_CONTENT while there is nothing to finish yet", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-content-empty",
+    result: { handled: true, action: "REMOVE_CONTENT", flow_key: "EDIT_CONTENT", duplicate: false, result: factureReviewDocument({ items: [], status: "COLLECTING" }) },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const data = payload.interactive.action.parameters.flow_action_payload.data;
+  assert.deepEqual(data.edit_actions.map((entry) => entry.id), ["ADD_CONTENT"]);
+  assert.deepEqual(data.item_options, []);
+});
+
+test("EDIT_OPTIONS is populated with a real current summary, never the Flow JSON's placeholder", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-options-data",
+    result: { handled: true, action: "EDIT_OPTIONS", duplicate: false, result: { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" } },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.current_summary;
+  assert.notEqual(summary, "Aucune option particulière.");
+});
+
+test("EDIT_OPTIONS round trip: SAVE_OPTIONS always returns to DOCUMENT_REVIEW regardless of origin, with the updated options visible", async () => {
+  const { presenter, calls } = harness();
+  const updatedOptions = factureReviewDocument({ notes: "Note mise à jour", status: "COLLECTING" });
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-options-save",
+    result: { handled: true, action: "SAVE_OPTIONS", flow_key: "EDIT_OPTIONS", duplicate: false, result: updatedOptions },
+  });
+  const payload = calls.find(([name]) => name === "flow")[1];
+  assert.equal(payload.interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+  const summary = payload.interactive.action.parameters.flow_action_payload.data.review_summary;
+  assert.match(summary, /Note mise à jour/);
+  assert.match(summary, /Client : Awa Traoré/, "existing client must remain untouched");
+  assert.match(summary, /Ciment/, "existing articles must remain untouched");
+});
+
+test("SEARCH with results is presented honestly and reopens HISTORY_SEARCH with real options — never the old generic dead-end text", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-results",
+    result: {
+      handled: true, action: "SEARCH", duplicate: false,
+      result: {
+        documents: [
+          { document_id: "document:1", document_number: "FA-1", counterparty: "Paul", status: "DELIVERED" },
+          { document_id: "document:2", document_number: "FA-2", counterparty: "Moussa", status: "RECOVERABLE_FAILURE" },
+        ],
+        next_cursor: null,
+      },
+    },
+  });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "J’ai trouvé 2 documents. Choisissez celui que vous souhaitez consulter dans la liste, puis appuyez sur Continuer.");
+  assert.doesNotMatch(text, /recherche est terminée/);
+  const flowCall = calls.find(([name]) => name === "flow");
+  assert.ok(flowCall, "must reopen the HISTORY_SEARCH flow to show real options");
+  const payload = flowCall[1].interactive.action.parameters.flow_action_payload;
+  assert.equal(payload.screen, "HISTORY_SEARCH");
+  assert.deepEqual(payload.data.history_options, [
+    { id: "document:1", title: "FA-1 — Paul" },
+    { id: "document:2", title: "FA-2 — Moussa" },
+  ]);
+});
+
+test("SEARCH with zero results states so honestly and does not reopen a Flow with nothing to show", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-empty",
+    result: { handled: true, action: "SEARCH", duplicate: false, result: { documents: [], next_cursor: null } },
+  });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "Je n’ai trouvé aucun document correspondant. Donnez-moi un nom, un type de document ou une période.");
+  assert.equal(calls.some(([name]) => name === "flow"), false);
+});
+
+test("history option titles stay within the WhatsApp dropdown length limit, and the label is built only from safe list fields (document_number/counterparty), never owner_wa_id", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-long",
+    result: {
+      handled: true, action: "SEARCH", duplicate: false,
+      result: { documents: [{ document_id: "document:1", document_number: "FA-20260806190633-A0EAC605", counterparty: "Une Entreprise Avec Un Nom Vraiment Tres Long SARL", status: "RECOVERABLE_FAILURE", owner_wa_id: "22670000000" }], next_cursor: null },
+    },
+  });
+  const flowCall = calls.find(([name]) => name === "flow");
+  const title = flowCall[1].interactive.action.parameters.flow_action_payload.data.history_options[0].title;
+  assert.ok(title.length <= 30, `title too long: ${title}`);
+  assert.doesNotMatch(title, /22670000000/, "owner_wa_id must never be read into the option label even if present on the entry");
 });
 
 test("voice failure is non-blocking after the mandatory text", async () => {

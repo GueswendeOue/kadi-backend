@@ -222,14 +222,61 @@ classification d'issue dégradée en historique) — ce risque est maintenant
    [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md)) et vérification
    du commit `live` exact.
 6. **[EN ATTENTE]** Vérification du démarrage et de l'absence d'erreur.
-7. **[EN ATTENTE]** Une vraie reprise de livraison (bouton « Réenvoyer le
-   PDF », depuis le premier échec **et** depuis l'historique) observée en
-   conditions réelles avant de considérer ce correctif comme validé — **la
-   migration de la base ne constitue pas, à elle seule, une reprise de
-   livraison ; le document CANARY du fondateur
-   (`FA-20260806190633-A0EAC605`) reste non récupéré tant que la fusion et
-   le déploiement n'ont pas eu lieu. Ne pas se contenter des tests locaux
-   pour affirmer qu'il a été récupéré.**
+7. **[FAIT]** Une vraie reprise de livraison a été observée en conditions
+   réelles après fusion et déploiement (commit `aacf7621...`) — **et a
+   confirmé trois défauts de production distincts**, voir la fiche S de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) et la section
+   suivante. Le document CANARY du fondateur
+   (`FA-20260806190633-A0EAC605`) reste non récupéré.
+
+## Ordre — `fix/kadi-v1-destination-lookup-and-history-r0` (fiabilité de la recherche de destination, résultats d'historique, navigation d'édition)
+
+Aucune migration Supabase requise pour cette branche (aucun nouveau champ de
+base de données, aucune contrainte modifiée) — code applicatif uniquement.
+
+1. **[FAIT]** Code écrit, testé localement (suite complète verte,
+   `git diff --check` propre).
+2. **[FAIT]** Audit exploratoire produit/UX complet en lecture seule
+   (`KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT_COMPLETE`) : navigation
+   d'édition reconfirmée entièrement corrigée par lecture directe du code ;
+   trois nouveaux défauts confirmés et corrigés (REVIEW-001, INV-001,
+   INV-002 — voir fiche T de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) ; un défaut
+   distinct (CLIENT-001) découvert incidemment, hors périmètre à ce stade ;
+   BILL-001 reste `PLAUSIBLE`/`NOT_REPRODUCED`, hors périmètre.
+3. **[FAIT]** CLIENT-001 corrigé, même branche : `tax_id` (soumis par les
+   deux Flows client réels) normalisé une seule fois vers le champ domaine
+   canonique `ifu`, avec échec explicite sur conflit — voir fiche U de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucune
+   mutation de Flow Meta requise. BILL-001 reste explicitement hors
+   périmètre, `PLAUSIBLE`/`NOT_REPRODUCED`, non touché.
+4. **[FAIT]** Revue finale de fusion (« merge-gate ») de l'intégralité de
+   la PR #15, comparant `main@aacf76211552800054983c726a1211f22ed29aeb` à
+   la tête de branche. Un balayage borné de cohérence Flow/backend a
+   révélé et corrigé EDIT-CONTENT-001 (formulaire combiné d'édition
+   d'articles rejeté pour trois de ses quatre actions réelles — rendu
+   actif pour la première fois par le propre correctif INV-002 de cette
+   PR) et un défaut d'intégration observateur/`emit()` distinct (filtrage
+   de sécurité inopérant en conditions réelles, sans fuite effective) —
+   voir fiche V de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucun autre
+   défaut HIGH/MEDIUM trouvé sur le reste du balayage (recherche de
+   destination, historique, écran de revue, parcours d'édition,
+   observabilité restante, sécurité de rejeu/version obsolète,
+   invariants de facturation).
+5. **[EN ATTENTE]** Fusion dans `main`.
+6. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+7. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
+   fondateur, sur `FA-20260806190633-A0EAC605` **et** sur
+   `FA-20260807010715-1961CBCC`, observée en conditions réelles — ne pas
+   se contenter des tests locaux pour affirmer que l'un ou l'autre a été
+   récupéré.
+8. **[EN ATTENTE]** Une vraie validation téléphone d'au moins un parcours
+   de correction (« Modifier le client », « Modifier les articles »,
+   « Modifier les options » depuis la revue, y compris la saisie d'un
+   identifiant fiscal réel) après déploiement, avant de
+   considérer REVIEW-001/INV-001/INV-002 comme confirmés en production —
+   voir la note phone-only de la fiche T.
 
 ## Déploiement Render
 

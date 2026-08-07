@@ -90,10 +90,25 @@ function normalizeForIntent(value) {
     .toLowerCase();
 }
 
+// Two separate regex literals (never a single shared global one): a global
+// regex object's lastIndex persists across .test()/.exec() calls on the
+// same object, which would silently corrupt repeated intent-detection calls
+// across unrelated requests. The non-global one below is safe to reuse for
+// .test(); a fresh global regex literal is created at each call site that
+// needs .replace() to strip every occurrence.
+const HISTORY_TRIGGER_WORDS_PATTERN = /\b(retrouve|retrouver|historique|dernier|derniers|brouillon|reprends|reprendre)\b/;
+
+function stripHistoryTriggerWords(text) {
+  return String(text || "")
+    .replace(/\b(retrouve|retrouver|historique|dernier|derniers|brouillon|reprends|reprendre)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function detectNaturalIntent(text) {
   const normalized = normalizeForIntent(text);
   if (!normalized) return Object.freeze({ intent: "CONTINUE", document_type: null });
-  if (/\b(retrouve|retrouver|historique|dernier|derniers|brouillon|reprends|reprendre)\b/.test(normalized)) {
+  if (HISTORY_TRIGGER_WORDS_PATTERN.test(normalized)) {
     return Object.freeze({ intent: "HISTORY_SEARCH", document_type: null });
   }
   if (/\b(facture|facturer)\b/.test(normalized)) return Object.freeze({ intent: "PREPARE_DOCUMENT", document_type: "FACTURE" });
@@ -353,7 +368,15 @@ function createKadiV1ConversationOrchestrator({
     }
     if (direct.intent === "HISTORY_SEARCH") {
       if (!config.features.history) return buildResponse({ canonicalText: COPY.SAVED_RETRY, action: "HISTORY_UNAVAILABLE" });
-      const found = asResult(await history.search({ ownerWaId: input.ownerWaId, query: input.text || "", limit: 5 }), "KADI_V1_HISTORY_FAILED");
+      // The bare trigger word itself ("Historique", "Retrouve", …) must
+      // never be forwarded as search criteria — it would filter out every
+      // real document and always report "nothing found", even when recent
+      // documents (including RECOVERABLE_FAILURE ones) genuinely exist. Any
+      // remaining text beyond the trigger word is real search criteria and
+      // is preserved verbatim (original casing/accents), e.g. "Historique
+      // facture" still searches for "facture".
+      const query = stripHistoryTriggerWords(input.text);
+      const found = asResult(await history.search({ ownerWaId: input.ownerWaId, query, limit: 5 }), "KADI_V1_HISTORY_FAILED");
       if (!found.ok) return found;
       if (!Array.isArray(found.value?.documents) || found.value.documents.length === 0) {
         return buildResponse({ canonicalText: COPY.HISTORY_EMPTY, action: "HISTORY_EMPTY", flowKey: "HISTORY_SEARCH" });

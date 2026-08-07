@@ -100,6 +100,175 @@ test("valid reply dispatches only server-bound document context", async () => {
   assert.equal(Object.hasOwn(calls[0].data, "document_id"), false);
 });
 
+// INV-001/INV-002 (exploratory audit): the presenter needs to know which
+// screen a reply actually came from to tell an initial-creation SAVE_CLIENT/
+// FINISH_CONTENT apart from a correction one — this is the session-verified
+// signal it relies on (never a client-supplied flag; unexpected_logical
+// screen above already proves a mismatched flowKey cannot reach this far).
+test("a successful reply's result carries the session-verified originating flow_key, never a client-supplied one", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions);
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => ({ ok: true, value: { status: "COLLECTING" } }) },
+  });
+  const result = await runtime.handle(reply());
+  assert.equal(result.ok, true);
+  assert.equal(result.value.flow_key, "ARTICLE_FORM");
+});
+
+test("EDIT_CONTENT now accepts FINISH_CONTENT so a content correction can signal it is done and return to review", () => {
+  assert.ok(FLOW_ACTIONS.EDIT_CONTENT.includes("FINISH_CONTENT"));
+  const checked = validateActionPayload("EDIT_CONTENT", "FINISH_CONTENT", {});
+  assert.equal(checked.ok, true);
+});
+
+// CLIENT-001: both real client Flows (kadi_document_client_v1.json,
+// kadi_edit_client_v1.json) submit a "tax_id" field labelled "Identifiant
+// fiscal" on every real submission — Meta submits every declared field,
+// even blank ones. The document domain only ever recognizes "ifu" for the
+// same concept. Before this fix, any real SAVE_CLIENT reply — initial or
+// edited — failed with DOCUMENT_CLIENT_FIELD_UNKNOWN.
+
+test("A. SAVE_CLIENT from the real initial DOCUMENT_CLIENT payload shape (tax_id present but blank) is accepted, and no tax_id/ifu key survives when blank", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Awa Traoré", phone: "", email: "", address: "", tax_id: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+  assert.equal(Object.hasOwn(checked.value, "ifu"), false);
+});
+
+test("B. SAVE_CLIENT from the real EDIT_CLIENT payload shape (tax_id present but blank) is accepted the same way as the initial screen", () => {
+  const checked = validateActionPayload("EDIT_CLIENT", "SAVE_CLIENT", {
+    name: "Awa Traoré (corrigée)", phone: "", email: "", address: "", tax_id: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+});
+
+test("C. a legitimate tax_id value is normalized once to the canonical ifu field, never persisted as a second, contradictory representation", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", phone: "", email: "", address: "", tax_id: "  00123456A  ",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(checked.value.ifu, "00123456A");
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+});
+
+test("C2: tax_id and ifu both supplied with the same value normalize cleanly, no conflict", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", tax_id: "00123456A", ifu: "00123456A",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(checked.value.ifu, "00123456A");
+});
+
+test("C3: tax_id and ifu supplied with conflicting non-empty values fail safely instead of silently choosing one", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", tax_id: "00123456A", ifu: "99999999Z",
+  });
+  assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT" });
+});
+
+test("D. an arbitrary unknown client field remains rejected exactly as before — the fix does not weaken the allowlist", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", not_a_real_field: "x",
+  });
+  assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+// Flow/backend field-parity guard: every field either real client Flow
+// contract actually submits must have an explicit backend policy, so a
+// future Flow change can never silently reintroduce CLIENT-001's class of
+// defect.
+test("Flow/backend parity: submitting every field the real kadi_document_client_v1.json and kadi_edit_client_v1.json contracts declare — exactly as Meta really submits a Flow form, blank fields included — is accepted by SAVE_CLIENT's backend policy", () => {
+  const documentClientFlow = require("../flows/v1_draft/kadi_document_client_v1.json");
+  const editClientFlow = require("../flows/v1_draft/kadi_edit_client_v1.json");
+  for (const flow of [documentClientFlow, editClientFlow]) {
+    const payload = flow.screens[0].layout.children.find((child) => child.type === "Form")
+      .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+    const submittedFields = Object.keys(payload.data);
+    assert.ok(submittedFields.includes("tax_id"), `${flow.screens[0].id} must still declare tax_id — this test must keep reproducing the real contract, not a hand-picked subset`);
+    const realSubmission = { name: "Boutique Awa" };
+    for (const field of submittedFields) {
+      if (field === "name") continue;
+      realSubmission[field] = "";
+    }
+    const checked = validateActionPayload(flow.screens[0].id, "SAVE_CLIENT", realSubmission);
+    assert.equal(checked.ok, true, `${flow.screens[0].id}'s real full submission shape must be accepted (got ${checked.error})`);
+  }
+});
+
+// EDIT-CONTENT-001 (found during the PR #15 merge-gate review's flow
+// contract drift sweep — the same class of defect as CLIENT-001):
+// kadi_edit_content_v1.json is one combined form whose single Footer
+// always submits item_id/description/quantity/unit/unit_custom/unit_price
+// together, regardless of which action radio button (ADD_CONTENT/
+// UPDATE_CONTENT/REMOVE_CONTENT/FINISH_CONTENT) was chosen — Meta submits
+// every declared field on every submission. Before this fix, only
+// UPDATE_CONTENT's allowlist happened to include every field the real
+// form sends; the other three rejected the real submission outright
+// (ADD_CONTENT and FINISH_CONTENT on item_id, REMOVE_CONTENT and
+// FINISH_CONTENT on the description/quantity/unit/unit_custom/unit_price
+// group) with KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN — silently reproduced by
+// this PR's own INV-002 fix, which made EDIT_CONTENT genuinely reachable
+// for the first time.
+
+test("EDIT-CONTENT-001: ADD_CONTENT from the real EDIT_CONTENT form (item_id present but irrelevant) is accepted, and item_id never reaches the persisted content", () => {
+  const checked = validateActionPayload("EDIT_CONTENT", "ADD_CONTENT", {
+    item_id: "", description: "Fer à béton", quantity: 5, unit: "unité", unit_custom: "", unit_price: 3000,
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(Object.hasOwn(checked.value, "item_id"), false);
+});
+
+test("EDIT-CONTENT-001: REMOVE_CONTENT from the real EDIT_CONTENT form (the other five fields present but irrelevant) is accepted", () => {
+  const checked = validateActionPayload("EDIT_CONTENT", "REMOVE_CONTENT", {
+    item_id: "item:1", description: "", quantity: "", unit: "", unit_custom: "", unit_price: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(checked.value.item_id, "item:1");
+});
+
+test("EDIT-CONTENT-001: FINISH_CONTENT from the real EDIT_CONTENT form (all six fields present but unused downstream) is accepted", () => {
+  const checked = validateActionPayload("EDIT_CONTENT", "FINISH_CONTENT", {
+    item_id: "", description: "", quantity: "", unit: "", unit_custom: "", unit_price: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+});
+
+test("EDIT-CONTENT-001: ARTICLE_FORM's own ADD_CONTENT (no item_id — the real initial-creation shape) is unaffected by this fix", () => {
+  const checked = validateActionPayload("ARTICLE_FORM", "ADD_CONTENT", {
+    description: "Ciment", quantity: 2, unit: "sac", unit_custom: "", unit_price: 6000,
+  });
+  assert.equal(checked.ok, true, checked.error);
+});
+
+test("Flow/backend parity: every action kadi_edit_content_v1.json's real edit_actions contract declares, submitted with the real full combined-form field set, is accepted", () => {
+  const editContentFlow = require("../flows/v1_draft/kadi_edit_content_v1.json");
+  const form = editContentFlow.screens[0].layout.children.find((child) => child.type === "Form");
+  // "action"'s own data-source is the runtime template "${data.edit_actions}"
+  // (server-populated, per kadiV1ProductionPresenter.js's suggestedDataForFlow
+  // EDIT_CONTENT branch) — the screen's declared data schema for
+  // edit_actions is the closed contract of which action ids this screen
+  // can ever actually submit.
+  const declaredActionIds = editContentFlow.screens[0].data.edit_actions.__example__.map((entry) => entry.id);
+  assert.deepEqual(declaredActionIds.sort(), ["ADD_CONTENT", "FINISH_CONTENT", "REMOVE_CONTENT", "UPDATE_CONTENT"].sort());
+  const footerPayload = form.children.find((child) => child.type === "Footer")["on-click-action"].payload;
+  const submittedFields = Object.keys(footerPayload.data);
+  // ADD_CONTENT/UPDATE_CONTENT separately require real, non-blank content
+  // (a genuine, pre-existing, unrelated validation rule) — this test's
+  // purpose is the field-allowlist contract, not content validation, so
+  // each action gets realistic values where it needs them.
+  const realValues = { item_id: "item:1", description: "Ciment", quantity: 2, unit: "sac", unit_custom: "", unit_price: 6000 };
+  for (const action of declaredActionIds) {
+    const realSubmission = Object.fromEntries(submittedFields.map((field) => [field, realValues[field] ?? ""]));
+    const checked = validateActionPayload("EDIT_CONTENT", action, realSubmission);
+    assert.equal(checked.ok, true, `EDIT_CONTENT's real combined-form submission for declared action "${action}" must be accepted (got ${checked.error})`);
+  }
+});
+
 test("owner mismatch is absorbed before command execution", async () => {
   const sessions = makeSessionService();
   await openSession(sessions);

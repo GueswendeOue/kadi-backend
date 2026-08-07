@@ -26,7 +26,7 @@ const FLOW_ACTIONS = Object.freeze({
   DOCUMENT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_REVIEW: Object.freeze(["VERIFY", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL"]),
   EDIT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
-  EDIT_CONTENT: Object.freeze(["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"]),
+  EDIT_CONTENT: Object.freeze(["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT"]),
   EDIT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_PREVIEW: Object.freeze(["PREPARE_PDF", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "SAVE_FOR_LATER", "CANCEL"]),
   GENERATION_CONFIRMATION: Object.freeze(["CONFIRM_GENERATION", "CANCEL"]),
@@ -45,10 +45,26 @@ const ACTION_FIELDS = Object.freeze({
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
   SAVE_INVOICE_TYPE: Object.freeze(["invoice_kind"]),
   SAVE_RECEIPT_DETAILS: Object.freeze(["payer", "amount", "reason", "payment_method", "reference", "receipt_format"]),
-  SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
-  ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
+  // "ifu" is accepted alongside "tax_id" only so a conflicting pair (both
+  // present, both non-blank, disagreeing) can be detected and rejected by
+  // normalizeClientTaxIdentifier() below — neither real client Flow
+  // currently submits "ifu" itself (see CLIENT-001 in
+  // docs/KADI_ENGINEERING_MEMORY.md).
+  SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id", "ifu"]),
+  // kadi_edit_content_v1.json is a single combined form shared by all four
+  // EDIT_CONTENT actions — its one Footer always submits item_id/
+  // description/quantity/unit/unit_custom/unit_price together, regardless
+  // of which action radio button was chosen (Meta submits every declared
+  // form field on every submission). ARTICLE_FORM's own ADD_CONTENT never
+  // submits item_id (a brand-new item has none yet) — accepted here only
+  // so it can be safely stripped by normalizeAddContentItemId() below,
+  // never persisted. REMOVE_CONTENT only ever reads item_id downstream
+  // (kadiV1FlowCommandRuntime.js); the other fields it now accepts are
+  // simply unused, exactly like SAVE_OPTIONS already always receives
+  // fields the user didn't touch.
+  ADD_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
-  REMOVE_CONTENT: Object.freeze(["item_id"]),
+  REMOVE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   SAVE_OPTIONS: Object.freeze(["tax_rate_percent", "tax_rate_basis_points", "discount_amount", "notes", "payment_terms", "validity_days", "payment_method", "reference"]),
   VERIFY: Object.freeze([]),
   EDIT_CLIENT: Object.freeze([]),
@@ -64,7 +80,14 @@ const ACTION_FIELDS = Object.freeze({
   SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to"]),
   OPEN_DOCUMENT: Object.freeze(["document_id"]),
   SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "amount", "description", "quantity", "reason", "observations"]),
-  FINISH_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_price"]),
+  // FINISH_CONTENT is reachable from two shapes: DOCUMENT_CONTENT submits
+  // no data at all, EDIT_CONTENT's combined form always submits all six
+  // fields (see the ADD_CONTENT/REMOVE_CONTENT comment above). None of
+  // them are read for FINISH_CONTENT downstream
+  // (kadiV1FlowCommandRuntime.js's FINISH_CONTENT mapping passes only
+  // documentBase, never data) — accepted here so neither origin's real
+  // payload is rejected.
+  FINISH_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
 });
 
 const FORBIDDEN_AUTHORITY_FIELDS = new Set([
@@ -139,6 +162,21 @@ function normalizeDischargeNumbers(action, data) {
   return ok(normalized);
 }
 
+// kadi_edit_content_v1.json's single combined form always submits item_id
+// alongside every action, including ADD_CONTENT — but a brand-new item has
+// no id yet, and kadiV1SharedDocumentPolicies.js's normalizeLineInput has
+// its own closed field allowlist that does not recognize item_id at all
+// (it would fail DOCUMENT_CONTENT_FIELD_UNKNOWN downstream even though
+// this function's own allowlist above now accepts the field). Stripped
+// here, the same Flow/backend boundary used for every other field-name
+// mismatch already handled in this file — never forwarded to the domain.
+function normalizeAddContentItemId(action, data) {
+  if (action !== "ADD_CONTENT" || !Object.hasOwn(data, "item_id")) return ok(data);
+  const normalized = { ...data };
+  delete normalized.item_id;
+  return ok(normalized);
+}
+
 function resolveUnitCustom(action, data) {
   if (!UNIT_CUSTOM_ACTIONS.has(action)) return ok(data);
   const normalized = { ...data };
@@ -149,6 +187,32 @@ function resolveUnitCustom(action, data) {
   const cleaned = raw.trim().replace(/\s+/g, " ");
   if (cleaned.length < 1 || cleaned.length > 50) return fail("KADI_V1_FLOW_REPLY_UNIT_CUSTOM_INVALID");
   normalized.unit = cleaned;
+  return ok(normalized);
+}
+
+// CLIENT-001: both real client Flows (kadi_document_client_v1.json,
+// kadi_edit_client_v1.json) submit a field named "tax_id", labelled
+// "Identifiant fiscal" — the French term for exactly what IFU
+// (Identifiant Financier Unique) means. The document domain's own
+// CLIENT_FIELDS (kadiV1SharedDocumentPolicies.js) and the Brain contract
+// (kadiV1BrainContracts.js) both only ever recognize "ifu" — "tax_id" is
+// not a distinct, separately-persisted concept anywhere else in the
+// codebase. tax_id is therefore a Flow-layer alias for ifu, normalized
+// once here, at the same boundary as every other Flow/backend field-name
+// mismatch already handled in this function — never persisted as a
+// second, contradictory representation of the same identifier.
+function normalizeClientTaxIdentifier(action, data) {
+  if (action !== "SAVE_CLIENT") return ok(data);
+  if (!Object.hasOwn(data, "tax_id")) return ok(data);
+  const normalized = { ...data };
+  const submittedTaxId = typeof normalized.tax_id === "string" ? normalized.tax_id.trim() : "";
+  delete normalized.tax_id;
+  if (!submittedTaxId) return ok(normalized);
+  const existingIfu = typeof normalized.ifu === "string" ? normalized.ifu.trim() : "";
+  if (existingIfu && existingIfu !== submittedTaxId) {
+    return fail("KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT");
+  }
+  normalized.ifu = submittedTaxId;
   return ok(normalized);
 }
 
@@ -340,7 +404,11 @@ function validateActionPayload(flowKey, action, data) {
   if (!taxRateNormalized.ok) return taxRateNormalized;
   const unitResolved = resolveUnitCustom(action, taxRateNormalized.value);
   if (!unitResolved.ok) return unitResolved;
-  return ok(Object.freeze(structuredClone(unitResolved.value)));
+  const addContentItemIdResolved = normalizeAddContentItemId(action, unitResolved.value);
+  if (!addContentItemIdResolved.ok) return addContentItemIdResolved;
+  const clientTaxIdentifierNormalized = normalizeClientTaxIdentifier(action, addContentItemIdResolved.value);
+  if (!clientTaxIdentifierNormalized.ok) return clientTaxIdentifierNormalized;
+  return ok(Object.freeze(structuredClone(clientTaxIdentifierNormalized.value)));
 }
 
 function validateReplyEnvelope(input) {
@@ -389,6 +457,16 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
     return ok(Object.freeze({
       handled: true,
       action: input.action,
+      // The screen the reply was actually submitted from, exactly as
+      // verified against the session's own expected_flow_key by
+      // sessions.consumeReply() above (kadiV1ConversationSession.js's
+      // validateReply rejects any mismatch with KADI_V1_SESSION_UNEXPECTED_FLOW
+      // before this point is ever reached) — never a client-supplied
+      // "edit mode" flag. Lets the presenter distinguish the same action
+      // name reached from an initial-creation screen versus a correction
+      // screen (e.g. SAVE_CLIENT from DOCUMENT_CLIENT vs EDIT_CLIENT)
+      // without trusting anything the payload itself claims.
+      flow_key: input.flowKey,
       duplicate: consumed.duplicate === true || executed.duplicate === true,
       result: executed.value == null ? null : structuredClone(executed.value),
     }));

@@ -8,6 +8,34 @@ const ID_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
 const PRIVATE_BUCKET_PATTERN = /^[a-z0-9][a-z0-9._-]{2,62}$/;
 const STORAGE_PREFIX = "kadi-v1-private:";
 
+// A real production incident (fiche R, KADI_ENGINEERING_MEMORY.md) traced
+// two independent delivery failures — one on the founder's own CANARY
+// document, one on a freshly-generated document minutes after this fix was
+// deployed — both to a single-shot Supabase read of the destination owner
+// failing or returning no row, with the whole delivery attempt then failing
+// closed before ever contacting Meta. Bounded, retried only for this one
+// read; never applied to the Meta send itself, and never used to override a
+// genuine mismatch once the destination has actually been resolved.
+const DESTINATION_LOOKUP_MAX_ATTEMPTS = 3;
+const DESTINATION_LOOKUP_RETRY_DELAY_MS = 75;
+// Errors shaped like a permission/schema problem are not transient — no
+// number of retries will make them succeed, so retrying them only delays an
+// inevitable, honestly-classified failure. Everything else defaults to
+// retryable: an unrecognized error is far more likely to be a transient
+// network/timeout condition than a new permanent failure mode.
+const PERMANENT_LOOKUP_ERROR_CODES = new Set([
+  "42501", // insufficient_privilege
+  "42P01", // undefined_table
+  "PGRST301", // JWT/auth
+  "PGRST202", // schema cache / function or column not found
+]);
+
+function isTransientLookupError(error) {
+  if (!error) return false;
+  const code = typeof error.code === "string" ? error.code : null;
+  return !(code && PERMANENT_LOOKUP_ERROR_CODES.has(code));
+}
+
 const ok = (value, extra = {}) => ({ ok: true, value, ...extra });
 const fail = (error) => ({ ok: false, error });
 
@@ -691,6 +719,8 @@ function createKadiV1WhatsAppDeliveryProvider({
   client,
   storage,
   whatsappApi,
+  destinationLookupMaxAttempts = DESTINATION_LOOKUP_MAX_ATTEMPTS,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   const supabase = assertSupabaseClient(client);
   if (typeof storage?.readFinal !== "function") {
@@ -702,6 +732,26 @@ function createKadiV1WhatsAppDeliveryProvider({
     }
   }
 
+  // Bounded retry around the destination-owner read only — never around the
+  // Meta send itself, and never used to second-guess a genuine mismatch
+  // once one has actually been observed. A permanent-shaped error (see
+  // isTransientLookupError) exits immediately rather than exhausting the
+  // full budget on a read that cannot possibly succeed.
+  async function lookupDestinationOwner(documentId) {
+    let result = null;
+    for (let attempt = 0; attempt < destinationLookupMaxAttempts; attempt += 1) {
+      result = await supabase
+        .from("kadi_v1_documents")
+        .select("owner_wa_id,document_type,options,document_number")
+        .eq("document_id", documentId)
+        .maybeSingle();
+      if (!result?.error && result?.data) return ok(result.data);
+      if (result?.error && !isTransientLookupError(result.error)) break;
+      if (attempt < destinationLookupMaxAttempts - 1) await sleep(DESTINATION_LOOKUP_RETRY_DELAY_MS);
+    }
+    return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
+  }
+
   return Object.freeze({
     async deliverDocument({
       finalFile,
@@ -711,28 +761,28 @@ function createKadiV1WhatsAppDeliveryProvider({
       if (!ID_PATTERN.test(finalFile?.document_id || "")) {
         return fail("DELIVERY_DOCUMENT_INVALID");
       }
-      const document = await supabase
-        .from("kadi_v1_documents")
-        .select("owner_wa_id,document_type,options,document_number")
-        .eq("document_id", finalFile.document_id)
-        .maybeSingle();
       // A failed or empty lookup means the destination could not be
       // verified at all — it must never be reported as a confirmed
       // mismatch (a real production incident traced this exact ambiguity:
       // a transient lookup failure and a genuine mismatch shared one error
       // code, making the two indistinguishable after the fact). Both still
       // fail closed; only the recorded reason differs.
-      if (document?.error) return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
-      const ownerWaId = document?.data?.owner_wa_id;
+      const document = await lookupDestinationOwner(finalFile.document_id);
+      if (!document.ok) return document;
+      const ownerWaId = document.value.owner_wa_id;
       const expectedDestination = OWNER_PATTERN.test(ownerWaId || "")
         ? `owner:${digest(ownerWaId).slice(0, 12)}`
         : null;
+      // Not a lookup failure: the row was read successfully but the owner
+      // field itself is absent/malformed — still fails closed, but this is
+      // a data-integrity signal, never worth retrying (retrying the exact
+      // same successful read would return the exact same row).
       if (!expectedDestination) return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
       if (expectedDestination !== destinationRef) return fail("DELIVERY_DESTINATION_MISMATCH");
       const deliveryFilename = canonicalFinalFilename({
-        document_type: document.data.document_type,
-        invoice_kind: document.data.options?.invoice_kind ?? null,
-        document_number: document.data.document_number,
+        document_type: document.value.document_type,
+        invoice_kind: document.value.options?.invoice_kind ?? null,
+        document_number: document.value.document_number,
       });
       if (!deliveryFilename) return fail("DELIVERY_FILENAME_UNRESOLVED");
       const bytes = await storage.readFinal(finalFile.storage_ref);
@@ -762,6 +812,8 @@ function createKadiV1WhatsAppDeliveryProvider({
 module.exports = {
   STORAGE_PREFIX,
   APPROVED_LOGO_BUCKETS,
+  DESTINATION_LOOKUP_MAX_ATTEMPTS,
+  DESTINATION_LOOKUP_RETRY_DELAY_MS,
   createKadiV1BalanceReader,
   createKadiV1IssuerLogoLoader,
   createKadiV1IssuerResolver,

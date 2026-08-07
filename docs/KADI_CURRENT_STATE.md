@@ -327,11 +327,89 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   document → présentateur → bouton webhook réel → reprise de livraison,
   pour un échec confirmé et pour une issue inconnue) a également été
   ajoutée, fermant le dernier écart de test identifié par la revue
-  précédente. **PR #14 reste `DRAFT`, non fusionnée, non déployée. Le
-  document CANARY du fondateur (`FA-20260806190633-A0EAC605`) reste non
-  récupéré** — la migration de la base ne constitue en rien une reprise de
-  livraison réelle ; celle-ci exige la fusion, un déploiement Render manuel
-  explicite, puis une vraie reprise observée en conditions réelles.
+  précédente.
+* **Mise à jour (2026-08-07) : PR #14 fusionnée et déployée.** Commit de
+  fusion `aacf76211552800054983c726a1211f22ed29aeb`, déployé manuellement
+  sur Render (`dep-d9qilviju40c73batvn0`), lecture de préparation confirmée
+  (`KADI_V1_WEBHOOK_READY` : `ready:true`, `state:"READY"`,
+  `rollout_mode:"CANARY"`, `deliveryRetryRuntime:true`). **Une vraie
+  tentative de reprise par le fondateur a ensuite confirmé trois défauts de
+  production distincts** — voir fiche S de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet : (1) la recherche de destination échouait avant tout appel Meta,
+  y compris sur un document flambant neuf ; (2) « Historique » en texte
+  brut et les résultats de recherche via Flow ne s'affichaient pas ; (3) la
+  navigation d'édition depuis l'écran de revue rouvrait systématiquement le
+  même écran au lieu du Flow d'édition attendu. Correctifs écrits sur la
+  branche `fix/kadi-v1-destination-lookup-and-history-r0`, **non fusionnée,
+  non déployée**. **Le document CANARY du fondateur
+  (`FA-20260806190633-A0EAC605`) reste non récupéré**, ainsi que le
+  document créé pendant l'incident (`FA-20260807010715-1961CBCC`) — aucun
+  des deux n'a été retenté pendant le diagnostic ni la correction.
+* **Mise à jour (2026-08-07) : audit exploratoire complet en lecture seule,
+  toujours sur la même branche, PR #15 toujours `OPEN`/`DRAFT`/non fusionnée/
+  non déployée.** Un audit produit/UX exploratoire complet
+  (`KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT_COMPLETE`) a confirmé, par lecture
+  directe du code, que le défaut de navigation d'édition ci-dessus (point 3)
+  est **entièrement corrigé** — pas seulement couvert par des tests
+  incomplets — puis a découvert et corrigé trois défauts supplémentaires,
+  distincts, tous sur la même branche : **REVIEW-001** (l'écran de revue
+  n'affichait jamais le vrai contenu du document, seulement l'exemple
+  statique du contrat Flow), **INV-001** (corriger le client depuis la revue
+  forçait l'ajout d'un article obligatoire au lieu de revenir à la revue) et
+  **INV-002** (corriger les articles depuis la revue ne pouvait jamais se
+  terminer — l'écran n'avait ni données réelles ni action de fin). Voir
+  fiche T de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour
+  le détail complet. **Statut de ce lot de correctifs :
+  `IMPLEMENTED_NOT_DEPLOYED`.**
+* **Mise à jour (2026-08-07) : CLIENT-001 corrigé, même branche, PR #15
+  toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** `SAVE_CLIENT`
+  échouait systématiquement (`DOCUMENT_CLIENT_FIELD_UNKNOWN`) dès qu'un
+  champ `tax_id` était soumis, ce que font les deux Flows client réels
+  (`kadi_document_client_v1.json` et `kadi_edit_client_v1.json`) à chaque
+  soumission — `CLIENT_FIELDS` (`kadiV1SharedDocumentPolicies.js`) n'acceptait
+  que `ifu`/`rccm`, jamais `tax_id`. **Contrat canonique déterminé avant
+  correction :** `tax_id` (libellé Flow « Identifiant fiscal ») est un alias
+  du Flow pour le champ domaine canonique `ifu` — confirmé par recherche
+  exhaustive (`ifu` est le seul nom reconnu par `CLIENT_FIELDS` **et** par
+  le contrat du cerveau conversationnel `kadiV1BrainContracts.js` ;
+  `tax_id` n'existe nulle part ailleurs comme concept distinct). **Correctif
+  :** normalisation `tax_id` → `ifu` une seule fois, à la frontière
+  Flow→domaine (`kadiV1FlowReplyRuntime.js`), avec échec explicite en cas
+  de valeurs contradictoires non vides (jamais un choix silencieux) ;
+  aucune mutation de Flow Meta requise. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche U de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve (tests de parité Flow/backend inclus).
+* **Mise à jour (2026-08-07) : revue finale de fusion de la PR #15, deux
+  défauts confirmés et corrigés avant fusion, même branche, PR #15 toujours
+  `OPEN`/`DRAFT`/non fusionnée/non déployée.** Un balayage borné de
+  cohérence Flow/backend (même méthode que CLIENT-001) a révélé
+  **EDIT-CONTENT-001** : le formulaire combiné `kadi_edit_content_v1.json`
+  soumet toujours les mêmes six champs quelle que soit l'action choisie,
+  mais trois des quatre actions réelles (`ADD_CONTENT`, `REMOVE_CONTENT`,
+  `FINISH_CONTENT`) rejetaient cette vraie forme — rendu actif pour la
+  première fois par le propre correctif INV-002 de cette PR, qui a rendu
+  `EDIT_CONTENT` réellement atteignable. Une revue croisée de
+  l'observabilité a révélé un second défaut, distinct : l'observateur de
+  cycle de vie (fiche S/T) attendait deux arguments séparés alors que le
+  vrai `emit()` en passe un seul fusionné — la liste blanche de filtrage
+  ne s'exécutait donc jamais en conditions réelles (aucune fuite
+  effective : chaque site d'appel réel ne passait déjà que des champs
+  sûrs, mais la garantie elle-même était inopérante). Les deux corrigés
+  sur la même branche. Voir fiche V de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+* **BILL-001, rappel — toujours `PLAUSIBLE`, `NOT_REPRODUCED`, hors
+  périmètre de ce lot :** le solde affiché (« Mon solde ») ne semble pas
+  déduire les crédits retenus par une réservation restée `RESERVED` sans
+  job de réconciliation équivalent à celui de la livraison — reconstruction
+  plausible à partir du code, jamais reproduit sur un cas réel. Nécessite un
+  audit dédié, en lecture seule, avant toute décision de correction ; aucun
+  code de portefeuille, de prix ou de crédit n'a été touché par ce lot.
+* **Validation téléphone requise après déploiement éventuel :** comme pour
+  tout correctif de cette branche, la validation manuelle sur téléphone
+  reste requise après un déploiement réel avant de considérer un parcours
+  comme confirmé en production — un test de composition, même complet,
+  n'observe jamais le rendu visuel réel d'un écran WhatsApp Flow.
 
 ## Blocages connus
 

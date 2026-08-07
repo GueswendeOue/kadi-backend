@@ -1698,3 +1698,444 @@ Render** (voir statut en tête de fiche).
   fournisseur, offre à deux boutons, seule la confirmation explicite
   atteint `retryDelivery` avec `confirmed:true`, l'annulation ne mute
   rien). Le câblage réel s'est révélé correct, sans défaut détecté.
+
+## S. Reprise réelle par le fondateur (2026-08-07) : trois défauts de production confirmés et corrigés — recherche de destination, résultats d'historique, navigation d'édition en revue
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, distincte de
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0` (fiche R, déjà
+  fusionnée et déployée). Non fusionnée, non déployée à la date de cette
+  fiche.
+* **Contexte :** après le déploiement du correctif de la fiche R
+  (commit `aacf7621...`), le fondateur a réellement tenté une reprise de
+  livraison en conditions réelles. Trois défauts distincts ont été
+  confirmés, chacun par lecture directe des logs Render réels et par
+  requêtes en lecture seule contre la base réelle — jamais par simulation.
+
+### S.1 — Recherche de destination : échec confirmé avant tout appel Meta
+
+* **Constat :** la tentative de reprise n'a **jamais atteint Meta** —
+  `kadi_v1_delivery_attempts.last_error_code` est resté
+  `DELIVERY_DESTINATION_LOOKUP_FAILED` sur un document flambant neuf
+  (`FA-20260807010715-1961CBCC`, généré et échoué dans la même fenêtre),
+  prouvant que ce n'est pas un problème isolé au document CANARY d'origine
+  (`FA-20260806190633-A0EAC605`, resté lui-même intact et non retenté).
+* **Correctif :** `kadiV1ProductionInfrastructure.js`'s `deliverDocument`
+  relit désormais le propriétaire jusqu'à `DESTINATION_LOOKUP_MAX_ATTEMPTS`
+  fois (3, `DESTINATION_LOOKUP_RETRY_DELAY_MS` = 75 ms, horloge/sleeper
+  injectables) — **uniquement** autour de cette lecture, jamais autour de
+  l'envoi Meta lui-même, jamais utilisé pour remettre en cause une
+  incohérence de destination réellement confirmée (`DELIVERY_DESTINATION_MISMATCH`
+  reste un échec immédiat, sans retry). Une erreur de forme permanente
+  (droits/schéma — codes `42501`, `42P01`, `PGRST301`, `PGRST202`) sort
+  immédiatement sans épuiser le budget de tentatives.
+* **Preuve :** `tests/kadiV1DeliveryProvider.test.js`, scénarios A à E.
+
+### S.2 — Deux défauts distincts d'historique, confirmés séparément
+
+1. **`Historique` en texte brut listait « aucun document ».** Le mot
+   déclencheur lui-même était transmis comme critère de recherche
+   (`query: input.text`), filtrant tout. Reproduit par une requête directe
+   contre le RPC réel : `text: "Historique"` → 0 ligne ; requête vide → 11
+   lignes. **Correctif minimal dans `kadiV1ConversationOrchestrator.js`** :
+   seul le texte résiduel après retrait des mots déclencheurs
+   (`retrouve`, `retrouver`, `historique`, `dernier(s)`, `brouillon`,
+   `reprends`, `reprendre`) devient la requête ; `"Historique facture"`
+   continue de chercher `"facture"`.
+2. **L'action Flow `SEARCH` acceptait la recherche mais n'affichait jamais
+   les résultats.** `nextFlowForReply` n'avait aucun cas pour `"SEARCH"` ;
+   le texte générique « La recherche est terminée. » était renvoyé que 0
+   ou 20 documents aient été trouvés, sans jamais rouvrir le Flow. Le
+   contrat JSON de `kadi_history_search_v1.json` prévoyait déjà un champ
+   `history_options` (dropdown de résultats) — jamais alimenté.
+   **Correctif :** `canonicalReplyText` distingue désormais 0 résultat
+   (texte honnête, aucun Flow rouvert) de N résultats (texte avec le
+   compte réel) ; `nextFlowForReply("SEARCH", ...)` rouvre `HISTORY_SEARCH`
+   uniquement quand des résultats existent ; `suggestedDataForFlow` peuple
+   `history_options` avec les vrais `document_id`/`document_number`/
+   `counterparty` (jamais `owner_wa_id`, jamais un identifiant complet).
+   **Aucun nouveau Flow Meta requis** — le contrat existant suffisait.
+* **Preuve :** `tests/kadiV1ConversationOrchestrator.test.js`,
+  `tests/kadiV1ProductionPresenter.test.js`,
+  `tests/kadiV1HistorySearchPresentationE2E.test.js` (chaîne complète
+  réelle : `nfm_reply(SEARCH)` → présentateur → `history_options` réels →
+  `nfm_reply(OPEN_DOCUMENT)` → « Réenvoyer le PDF » atteint).
+
+### S.3 — Navigation d'édition en revue : dérivée vers un défaut distinct, observée en cours de mission
+
+* **Constat (fenêtre 2026-08-07T01:24–01:26Z) :** depuis l'écran de revue,
+  choisir « Modifier le client », « Modifier les articles » ou « Modifier
+  les options » renvoyait systématiquement le texte attendu (« Vous pouvez
+  modifier le client. », etc.) mais **rouvrait à chaque fois l'écran de
+  revue lui-même** (`flow_key: 'DOCUMENT_REVIEW'` dans les logs), jamais le
+  Flow d'édition réel — l'utilisateur ne voyait ensuite que l'action
+  générique « Vérifier ». L'annulation explicite (« Annuler ») a, elle,
+  fonctionné correctement (« L'opération est annulée. ») — **ce n'est pas
+  un défaut**, seulement la confirmation que la voie de sortie normale
+  restait, elle, opérationnelle.
+* **Cause racine confirmée (classification B —
+  REVIEW_EDIT_ACTION_MAPPING_WRONG) :** `kadiV1ProductionPresenter.js`'s
+  `nextFlowForReply` évaluait `routeDocument(document)` (qui mappe
+  `READY_FOR_REVIEW` → `DOCUMENT_REVIEW`) **avant** le mappage explicite de
+  `EDIT_CLIENT`/`EDIT_CONTENT`/`EDIT_OPTIONS`, qui existait pourtant déjà
+  dans le code mais n'était jamais atteint pour ce statut précis.
+* **Correction DOC-001 (audit exploratoire du 2026-08-07) :** la phrase
+  précédente de cette fiche attribuait à tort le statut
+  `READY_FOR_REVIEW` observé à `reopenForCorrection`
+  (`kadiV1SharedDocumentPipeline.js`) — c'est inexact. Lu directement dans
+  le code : `beginEdit` (`kadiV1RuntimeAdapters.js`) court-circuite avant
+  même d'appeler `reopenForCorrection` dès que le document est déjà dans un
+  état éditable mais non `VERIFIED` (`if (loaded.value.status !==
+  "VERIFIED") return loaded;`) — il renvoie alors le document strictement
+  inchangé, sans aucune transition. `reopenForCorrection` n'est appelé que
+  lorsque le document est réellement `VERIFIED`, et il fait alors passer le
+  document à `COLLECTING` (via l'événement `MODIFY` de
+  `kadiV1DocumentStateMachine.js`), **jamais** à `READY_FOR_REVIEW`. Le
+  correctif de routage lui-même reste entièrement correct et n'a pas eu à
+  être modifié — seule cette explication de la cause était imprécise.
+  Confirmé par lecture directe du code (aucune preuve par test de
+  composition de production requise pour cette correction documentaire).
+* **Correctif :** le mappage explicite `EDIT_CLIENT`/`EDIT_CONTENT`/
+  `EDIT_OPTIONS` (y compris ses cas spéciaux RECU→`RECEIPT_DETAILS` et
+  DECHARGE→`DISCHARGE_DETAILS`) est désormais évalué **avant**
+  `routeDocument`, uniquement pour ces trois actions — aucune autre
+  action/route n'est affectée.
+* **Preuve :** `tests/kadiV1ProductionPresenter.test.js`, nouveaux tests
+  reproduisant exactement le document `READY_FOR_REVIEW` post-édition pour
+  les trois actions, plus la confirmation que `CANCEL` reste inchangé.
+* **Limite assumée, comblée depuis (voir fiche T) :** au moment de cette
+  fiche, le correctif n'avait **pas** reçu de test de composition de
+  production complet avec le vrai `documentRuntime.beginEdit` bout en bout
+  (contrainte de temps) — les tests couvraient le présentateur réel avec la
+  forme exacte de document que `beginEdit` produit réellement (vérifiée par
+  lecture directe du code), ce qui prouvait le correctif sans exercer la
+  chaîne complète de mutation. L'audit exploratoire suivant (fiche
+  KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT, 2026-08-07) a confirmé par lecture
+  directe du code que ceci n'était qu'une limite de couverture de test, pas
+  un défaut vivant — voir la correction DOC-001 ci-dessus. La fiche T ajoute
+  le test de composition de production complet resté manquant ici
+  (scénario B : `EDIT_CLIENT` → vrai `beginEdit` → `SAVE_CLIENT` → retour
+  réel à `DOCUMENT_REVIEW`).
+* **Prévention :** quand une fonction de mutation fait transiter un
+  document vers un statut partagé par une règle de routage générique,
+  vérifier explicitement l'ordre d'évaluation entre cette règle générique
+  et tout mappage spécifique à l'action qui a déclenché la mutation — un
+  mappage présent dans le code n'est une garantie de rien s'il n'est
+  jamais atteint.
+
+## T. Audit exploratoire (2026-08-07) : contenu de revue jamais réel, retours d'édition mal routés — trois défauts confirmés et corrigés
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, PR #15, toujours non
+  fusionnée, non déployée.
+* **Contexte :** avant fusion de la PR #15, une mission d'audit exploratoire
+  complète en lecture seule (`KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT_COMPLETE`)
+  a exploré l'ensemble des parcours Kadi V1 supportés à la recherche de
+  parcours bloqués, circulaires ou incomplets. Quatre défauts ont été
+  confirmés par lecture directe du code puis corrigés dans une mission de
+  correction dédiée sur la même branche.
+
+### T.1 — REVIEW-001 : l'écran de revue n'a jamais montré le vrai document
+
+* **Constat :** `kadiV1ProductionPresenter.js`'s `suggestedDataForFlow()`
+  n'avait **aucune branche** pour `flowKey === "DOCUMENT_REVIEW"` — le champ
+  `review_summary` restait donc systématiquement le texte d'exemple statique
+  du contrat JSON du Flow (« Résumé du document à vérifier. »), pour tous
+  les types de document, à chaque fois. `review_actions` restait de même
+  l'exemple statique — par coïncidence identique à l'ensemble d'actions
+  universel réellement souhaité pour FACTURE/DEVIS, ce qui masquait le
+  défaut côté navigation tout en laissant le contenu totalement faux.
+* **Correctif :** nouvelles fonctions `buildReviewSummary`/
+  `buildReviewActions` dans `kadiV1ProductionPresenter.js`, construites à
+  partir de la même projection `kadiV1PreviewService.buildPreviewData(document)`
+  déjà utilisée pour `DOCUMENT_PREVIEW`, plus les champs propres au document
+  (`tax_rate_basis_points`, `notes`, `payment_terms`). RECU et DECHARGE
+  reçoivent chacun un unique bouton d'édition combiné (au lieu de trois
+  boutons identiquement destinés au même Flow combiné) ; DECHARGE n'expose
+  plus jamais « Modifier le client ». Aucun nouvel identifiant d'action
+  n'est introduit — tout reste dans la liste fermée déjà validée par
+  `kadiV1FlowReplyRuntime.js`'s `FLOW_ACTIONS.DOCUMENT_REVIEW`.
+
+### T.2 — INV-001 : corriger le client depuis la revue forçait l'ajout d'un article
+
+* **Constat :** `SAVE_CLIENT` est atteignable depuis deux écrans distincts
+  avec le même nom d'action — `DOCUMENT_CLIENT` (création initiale) et
+  `EDIT_CLIENT` (correction depuis la revue) — mais `nextFlowForReply`
+  routait `SAVE_CLIENT` de façon inconditionnelle vers `ARTICLE_FORM`.
+  Corriger le client d'une facture déjà en revue forçait donc l'utilisateur
+  dans un formulaire d'article obligatoire (aucune option pour ignorer),
+  sans retour possible vers la revue sans ajouter un article indésirable.
+* **Correctif :** l'écran d'origine réel de la réponse (`flow_key`,
+  vérifié par la session avant que la réponse ne soit exécutée —
+  `kadiV1ConversationSession.js`'s `validateReply` rejette tout `flow_key`
+  ne correspondant pas à `expected_flow_key` de la session, jamais une
+  valeur envoyée par le client) est désormais transmis par
+  `kadiV1FlowReplyRuntime.js` jusqu'au présentateur
+  (`result.flow_key`), qui l'utilise pour distinguer les deux origines :
+  `SAVE_CLIENT` originaire de `EDIT_CLIENT` retourne à `DOCUMENT_REVIEW`
+  rafraîchi ; originaire de `DOCUMENT_CLIENT` (ou sans origine connue),
+  le comportement initial vers `ARTICLE_FORM` reste inchangé.
+
+### T.3 — INV-002 : corriger les articles depuis la revue ne pouvait jamais se terminer
+
+* **Constat :** même défaut que T.2 pour `FINISH_CONTENT` (routait toujours
+  vers `DOCUMENT_OPTIONS`) — et un défaut plus profond : l'écran
+  `EDIT_CONTENT` n'avait ni donnée réelle (`items_summary`/`item_options`
+  restaient l'exemple statique du Flow, avec un faux identifiant
+  `item:example` que `UPDATE_CONTENT`/`REMOVE_CONTENT` réels ne pouvaient
+  jamais résoudre), ni même la possibilité de signaler la fin de la
+  correction — `kadiV1FlowReplyRuntime.js`'s `FLOW_ACTIONS.EDIT_CONTENT`
+  n'autorisait que `ADD_CONTENT`/`UPDATE_CONTENT`/`REMOVE_CONTENT`, jamais
+  `FINISH_CONTENT`. Le parcours de correction d'articles était donc
+  entièrement bloqué, pas seulement mal routé.
+* **Correctif :** `FINISH_CONTENT` ajouté à `FLOW_ACTIONS.EDIT_CONTENT` ;
+  `suggestedDataForFlow` peuple désormais `EDIT_CONTENT` avec les vrais
+  articles courants (`item_options` avec les vrais `item_id`) et un
+  `edit_actions` construit côté serveur (n'offre « Terminer la
+  modification » que lorsqu'il reste au moins un article). `nextFlowForReply`
+  fait boucler `ADD_CONTENT`/`UPDATE_CONTENT`/`REMOVE_CONTENT` originaires
+  de `EDIT_CONTENT` vers `EDIT_CONTENT` (jamais vers `DOCUMENT_CONTENT`,
+  qui n'accepte pas ces actions), et route `FINISH_CONTENT` originaire de
+  `EDIT_CONTENT` vers `DOCUMENT_REVIEW` rafraîchi.
+
+### T.4 — Défaut distinct découvert incidemment, non corrigé dans cette mission
+
+* **CLIENT-001 — CONFIRMED → `FIXED_ON_BRANCH` (voir fiche U ci-dessous) :**
+  en construisant les tests de composition de production pour T.2,
+  `SAVE_CLIENT` a échoué avec `DOCUMENT_CLIENT_FIELD_UNKNOWN` dès qu'un
+  champ `tax_id` était soumis — or `flows/v1_draft/kadi_document_client_v1.json`
+  **et** `flows/v1_draft/kadi_edit_client_v1.json` soumettent tous deux
+  systématiquement un champ `tax_id` (Meta soumet tous les champs déclarés
+  du formulaire, y compris vides). `CLIENT_FIELDS`
+  (`kadiV1SharedDocumentPolicies.js`) n'autorisait que
+  `name`/`phone`/`address`/`email`/`ifu`/`rccm` — jamais `tax_id`. En l'état
+  du code à cette date, **toute soumission réelle de `SAVE_CLIENT` aurait
+  échoué**, que ce soit à la création initiale ou en correction. Confirmé
+  par exécution réelle (pas seulement lecture) : les tests de ce correctif
+  ont dû volontairement omettre `tax_id` de leurs données soumises pour
+  pouvoir exercer T.2/T.3, ce qui documentait le défaut sans le corriger.
+  Strictement hors périmètre de cette mission (limitée à REVIEW-001/
+  INV-001/INV-002/DOC-001) au moment de la fiche T — corrigé dans une
+  mission dédiée immédiatement suivante, voir fiche U.
+
+### Preuve
+
+* `tests/kadiV1ProductionPresenter.test.js` : nouveaux tests
+  REVIEW-001/INV-001/INV-002 au niveau présentateur.
+* `tests/kadiV1FlowReplyRuntime.test.js` : `flow_key` propagé dans
+  l'enveloppe de réponse ; `EDIT_CONTENT` accepte `FINISH_CONTENT`.
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` (nouveau) : onze
+  scénarios de composition de production réelle bout en bout (A à K, sans
+  section J numérotée séparément dans le fichier mais couverte), avec le
+  vrai `sharedPipeline`/`dischargePipeline`/`documentRuntime` — jamais de
+  simulation du résultat de `beginEdit`. Chaque port sans rapport
+  (paiement, génération, recharge, historique, solde) est un bouchon qui
+  lève une exception au moindre appel : si une correction touchait par
+  erreur la facturation, le rendu ou un fichier final, le test échouerait
+  immédiatement.
+
+### Sécurité re-vérifiée
+
+Aucune réservation de crédit, aucune capture, aucun rendu, aucun fichier
+final créé pendant une correction (prouvé structurellement par les bouchons
+ci-dessus, pas seulement affirmé) ; même `document_id`, même propriétaire,
+même type de document ; `document_number`/`issued_at` non affectés (jamais
+assignés avant génération) ; rejeu strictement idempotent (`duplicate: true`
+sur une réponse rejouée, aucune mutation supplémentaire) ; une réponse
+d'édition obsolète (version de document dépassée par une autre mutation
+entre-temps) est rejetée, jamais appliquée silencieusement ; l'annulation
+explicite reste inchangée et reste la seule voie d'annulation normale.
+
+## U. CLIENT-001 — corrigé : `tax_id` du Flow n'était jamais reconnu comme l'`ifu` canonique du domaine
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, PR #15, toujours non
+  fusionnée, non déployée.
+* **Constat, reproduit par exécution réelle (pas seulement par lecture) :**
+  voir T.4 ci-dessus.
+
+### Contrat canonique déterminé avant toute correction
+
+Recherche exhaustive de `tax_id`/`ifu`/`rccm` dans tout le dépôt (contrats
+Flow, schéma document, politiques, aperçu, rendu PDF, persistance,
+documentation, tests) :
+
+* `ifu` est le nom canonique reconnu par **toutes** les couches V1 qui
+  connaissent ce concept : `CLIENT_FIELDS`
+  (`kadiV1SharedDocumentPolicies.js`) et le contrat du cerveau
+  conversationnel (`kadiV1BrainContracts.js`) n'utilisent tous deux que
+  `ifu`, jamais `tax_id`.
+* `tax_id` n'apparaît **nulle part ailleurs** dans le dépôt comme concept
+  distinct persisté — ni dans le domaine, ni dans la projection d'aperçu,
+  ni dans un quelconque rendu, ni dans l'ancien système pré-V1 (qui utilise
+  lui aussi `ifu`, avec un champ Flow historique nommé différemment,
+  `client_ifu`).
+* Le champ Flow `tax_id` porte le libellé **« Identifiant fiscal »** — la
+  traduction française exacte de ce que signifie IFU (Identifiant Financier
+  Unique) au Burkina Faso.
+* `rccm` (registre du commerce, un concept distinct — pas un identifiant
+  fiscal) reste accepté par la politique mais n'est soumis par **aucun**
+  écran Flow V1 réel actuellement ; aucune incohérence ne s'ensuit, donc
+  aucun correctif n'était nécessaire pour `rccm`.
+* **Conclusion (option A du choix proposé par la mission) : `tax_id` est
+  l'alias du Flow pour le champ canonique `ifu` du domaine.** Ni une
+  option B (champ distinct supporté), ni C (champ obsolète à ne plus
+  soumettre — les deux Flows réels le soumettent toujours), ni un autre
+  mapping.
+
+### Correctif
+
+Nouvelle fonction `normalizeClientTaxIdentifier(action, data)` dans
+`kadiV1FlowReplyRuntime.js`, insérée dans la même séquence de
+normalisation Flow→domaine que celle déjà utilisée pour
+`tax_rate_percent`/`tax_rate_basis_points` (fiche P) : appelée uniquement
+pour `SAVE_CLIENT`, elle retire `tax_id` du payload et, s'il contient une
+valeur non vide après nettoyage, la fusionne dans `ifu`. `ifu` ajouté à
+`ACTION_FIELDS.SAVE_CLIENT` (uniquement pour permettre la détection de
+conflit ci-dessous — aucun des deux Flows réels ne soumet `ifu`
+directement aujourd'hui). Si `tax_id` et `ifu` sont tous deux soumis avec
+des valeurs non vides et **différentes**, la soumission échoue
+explicitement (`KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT`) plutôt
+que de choisir silencieusement l'une des deux. Un `tax_id` vide (le cas
+normal, la grande majorité des soumissions réelles) ne laisse aucune trace
+(`tax_id` ni `ifu` dans le document persisté). Aucune autre validation de
+champ n'est affaiblie : la liste fermée de champs connus
+(`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`) reste strictement appliquée.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : scénarios A à D de la mission
+  (soumission initiale réelle avec `tax_id` vide, soumission d'édition
+  réelle avec `tax_id` vide, valeur légitime normalisée vers `ifu`, valeurs
+  identiques sans conflit, valeurs contradictoires rejetées, champ inconnu
+  toujours rejeté), plus un test de parité qui reconstruit la vraie forme
+  de soumission des deux Flows réels (`kadi_document_client_v1.json`,
+  `kadi_edit_client_v1.json`) directement depuis leurs fichiers JSON, pour
+  empêcher toute dérive future entre ce que le Flow soumet et ce que la
+  politique accepte.
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` : les données
+  `SAVE_CLIENT` de tous les scénarios ont été restaurées à la vraie forme
+  de soumission (avec `tax_id`, plus une valeur légitime réelle dans le
+  scénario A) — CLIENT-001 est donc fermé sur la même composition de
+  production qui a servi à le découvrir, pas seulement par un test isolé.
+  Onze scénarios toujours verts après correctif, y compris la persistance
+  effective de `document.client.ifu` et l'absence de toute clé `tax_id`
+  résiduelle.
+* Suite complète après correctif : voir section Tests de la mission
+  courante dans `docs/KADI_RELEASE_CHECKLIST.md`.
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté (le test D le confirme
+explicitement) ; aucune donnée n'est perdue silencieusement (un `tax_id`
+non vide est toujours soit fusionné dans `ifu`, soit rejeté par conflit,
+jamais simplement abandonné) ; le comportement est identique pour la
+création initiale et la correction ; aucun champ soumis par le client ne
+contrôle le routage (le routage reste piloté uniquement par `action` et le
+`flow_key` d'origine vérifié par la session, comme pour les correctifs de
+la fiche T) ; aucune réservation de crédit, capture, rendu ou fichier
+final pendant un `SAVE_CLIENT`. Aucune migration Supabase requise ; aucune
+mutation Meta requise (le contrat Flow existant, `tax_id` inclus, reste
+valide tel quel).
+
+### Prévention
+
+Quand une même donnée métier a deux noms différents entre la couche Flow
+(pilotée par ce que Meta a historiquement publié comme libellé/nom de
+champ) et la couche domaine (pilotée par le vocabulaire métier canonique),
+normaliser une fois, à la frontière de validation Flow→domaine déjà
+établie pour ce genre de cas (voir aussi fiche P) — jamais laisser
+persister deux représentations contradictoires, et toujours faire échouer
+explicitement un conflit plutôt que d'en choisir une silencieusement.
+
+## V. Revue finale de fusion de la PR #15 : deux défauts confirmés et corrigés avant fusion
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, PR #15, toujours non
+  fusionnée, non déployée.
+* **Contexte :** revue finale de fusion (« merge-gate ») de l'intégralité
+  de la PR #15, comparant `main@aacf76211552800054983c726a1211f22ed29aeb`
+  à la tête de branche. Un balayage borné de cohérence entre chaque
+  contrat Flow réellement touché ou dépendant de la PR et la politique
+  backend correspondante (même méthode que celle qui a révélé CLIENT-001)
+  a révélé un second défaut de la même famille ; une revue croisée de
+  l'observabilité a révélé un défaut d'intégration distinct.
+
+### V.1 — EDIT-CONTENT-001 : le formulaire combiné d'édition d'articles était rejeté pour trois de ses quatre actions réelles
+
+* **Constat :** `flows/v1_draft/kadi_edit_content_v1.json` est un formulaire
+  unique combiné pour les quatre actions `EDIT_CONTENT`
+  (`ADD_CONTENT`/`UPDATE_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT`) — son
+  unique bouton de pied de page soumet toujours
+  `item_id`/`description`/`quantity`/`unit`/`unit_custom`/`unit_price`
+  ensemble, quelle que soit l'action choisie (Meta soumet tous les champs
+  déclarés du formulaire à chaque soumission). Avant correctif, seule la
+  liste blanche d'`UPDATE_CONTENT` acceptait déjà l'ensemble exact de ces
+  champs ; les trois autres rejetaient la vraie soumission avec
+  `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN` : `ADD_CONTENT` et `FINISH_CONTENT`
+  sur `item_id`, `REMOVE_CONTENT` et `FINISH_CONTENT` sur le groupe
+  `description`/`quantity`/`unit`/`unit_custom`/`unit_price`. **Ce défaut
+  préexistait mais était resté invisible/sans conséquence pratique tant
+  que INV-002 (fiche T) n'avait pas rendu `EDIT_CONTENT` réellement
+  atteignable** (avant ce correctif, l'écran n'avait ni données réelles ni
+  action de fin) — le propre correctif de cette PR pour INV-002 rendait ce
+  défaut actif pour la première fois, sans que les tests de composition de
+  production existants (qui reproduisaient une forme de soumission
+  incomplète, à l'image de l'erreur initiale sur `tax_id`) ne le
+  détectent.
+* **Correctif :** `ACTION_FIELDS.ADD_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT`
+  élargis pour accepter la vraie forme combinée du formulaire ;
+  `item_id`, non pertinent pour un nouvel article, est retiré une seule
+  fois par une nouvelle fonction `normalizeAddContentItemId`, à la même
+  frontière de normalisation Flow→domaine que `resolveUnitCustom` et
+  `normalizeClientTaxIdentifier` — jamais transmis au domaine, qui ne le
+  reconnaît pas. `ARTICLE_FORM`'s propre `ADD_CONTENT` (sans `item_id`)
+  reste inchangé.
+* **Preuve :** `tests/kadiV1FlowReplyRuntime.test.js`, quatre scénarios
+  directs (`ADD_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT` avec la vraie
+  forme complète, `ARTICLE_FORM` non affecté) plus un test de parité qui
+  dérive les quatre actions déclarées et le vrai jeu de champs soumis
+  directement depuis `kadi_edit_content_v1.json`. `tests/kadiV1ReviewEditReturnJourneysE2E.test.js`
+  (scénarios C et J) corrigés pour soumettre la vraie forme complète —
+  fermé sur la même composition de production qui aurait dû le détecter.
+
+### V.2 — L'observateur de cycle de vie ne filtrait jamais rien en conditions réelles
+
+* **Constat :** `kadiV1GenerationLifecycleService.js`'s vrai `emit()`
+  appelle l'observateur avec **un seul objet fusionné**
+  (`observer(Object.freeze({ event, ...details }))`) — le contrat
+  préexistant déjà utilisé ailleurs (`kadiV1GenerationLifecycle.test.js`,
+  `kadiV1Recharge.test.js` : `observer: (event) => ...`). Le nouvel
+  observateur introduit par la fiche R/S attendait à tort **deux**
+  arguments séparés (`(event, details)`). Appelé de la vraie façon,
+  `event` recevait l'objet fusionné entier et `details` restait toujours
+  `{}` par défaut — la liste blanche de filtrage
+  (`SAFE_LIFECYCLE_OBSERVER_KEYS`) ne s'exécutait donc jamais réellement,
+  bien qu'elle passe ses propres tests unitaires (qui appelaient
+  l'observateur isolément avec la forme à deux arguments qu'il attendait
+  lui-même, sans jamais l'exercer avec le vrai `emit()`). **Aucune fuite
+  réelle n'en a résulté** : chaque site d'appel réel d'`emit()` ne passe
+  aujourd'hui que `reason_code`/`duplicate`, jamais un champ sensible —
+  mais la garantie de défense en profondeur elle-même était inopérante,
+  et un futur `emit()` portant un champ non prévu aurait atteint le
+  logger sans filtrage.
+* **Correctif :** l'observateur accepte désormais l'objet fusionné unique
+  réel, en extrait `event` puis filtre le reste selon la même liste
+  blanche.
+* **Preuve :** `tests/kadiV1ProductionBootstrap.test.js` — les trois tests
+  existants adaptés à la vraie forme d'appel, plus un nouveau test
+  d'intégration qui construit le vrai `kadiV1GenerationLifecycleService`
+  avec le vrai observateur ensemble (pas chacun isolément contre sa propre
+  hypothèse de contrat) et vérifie qu'un événement réellement émis
+  n'atteint le logger qu'avec des champs de la liste blanche.
+
+### Prévention (les deux)
+
+Un composant testé isolément contre sa propre hypothèse de contrat ne
+prouve rien sur son intégration réelle avec l'unique appelant qui compte —
+toujours ajouter au moins un test qui construit les deux côtés réels
+ensemble. Et, comme pour CLIENT-001 : quand un écran Flow combine
+plusieurs actions dans un seul formulaire, vérifier explicitement que la
+vraie forme de soumission (tous les champs déclarés, à chaque fois) est
+acceptée pour **chacune** des actions qu'il peut soumettre, pas seulement
+celle testée en premier.

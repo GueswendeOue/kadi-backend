@@ -237,6 +237,48 @@ function createProviderAdapters({ env, adapters = null } = {}) {
   });
 }
 
+// Bridges the already-injected structured `logger` into the (event,
+// details) shape kadiV1GenerationLifecycleService.js's observer expects —
+// mirrors the same bridging pattern already used for the conversational
+// multimodal foundation's own observability logger. Before this, the
+// service's default no-op observer meant every delivery_retry_* event
+// (offered/requested/started/succeeded/failed/confirmation-required,
+// stale-claim reconciled) was silently discarded in production, and a real
+// incident had to be diagnosed from persisted database state alone,
+// without any log trail. Every current emit() call in that module only
+// ever passes `reason_code` (a closed-set internal string literal) or
+// `duplicate` (boolean) — filtered again here, defensively, so a future
+// emit() call can never introduce an unsafe field without an explicit,
+// reviewed addition to this allowlist. Exported standalone (a pure
+// function) so its filtering behavior can be unit-tested directly, without
+// needing to boot the full production bootstrap.
+const SAFE_LIFECYCLE_OBSERVER_KEYS = Object.freeze(["reason_code", "duplicate"]);
+function createKadiV1GenerationLifecycleObserver(logger) {
+  // kadiV1GenerationLifecycleService.js's real emit() — the only real
+  // caller — invokes the observer with a single merged, frozen object
+  // (`observer(Object.freeze({ event, ...details }))`), matching the
+  // pre-existing observer contract already relied on elsewhere
+  // (kadiV1GenerationLifecycle.test.js, kadiV1Recharge.test.js both use
+  // `observer: (event) => ...` with the event's own name accessible as
+  // `event.event`). A two-argument `(event, details)` signature here
+  // would silently receive the whole merged object as `event` and an
+  // always-empty `details`, making the allowlist filter below a dead
+  // no-op — confirmed by merge-gate review before this fix existed.
+  return function generationLifecycleObserver(payload) {
+    const { event, ...details } = payload && typeof payload === "object" ? payload : {};
+    const safeDetails = {};
+    for (const key of SAFE_LIFECYCLE_OBSERVER_KEYS) {
+      if (Object.hasOwn(details, key)) safeDetails[key] = details[key];
+    }
+    try {
+      logger?.log?.(event, safeDetails);
+    } catch {
+      // Observability must never break the business outcome it is
+      // describing.
+    }
+  };
+}
+
 function createBlockedBootstrap({ config, logger, error }) {
   const composition = createKadiV1ProductionComposition({
     config,
@@ -474,6 +516,19 @@ function createKadiV1ProductionBootstrap({
       provider: deliveryProvider,
       clock,
     });
+    // Bridges the already-injected structured `logger` into the
+    // (event, details) shape kadiV1GenerationLifecycleService.js's
+    // observer expects — mirrors the same bridging pattern already used
+    // above for conversationalObservabilityLogger. Before this, the
+    // service's own default no-op observer meant every delivery_retry_*
+    // event (offered/requested/started/succeeded/failed/confirmation
+    // required, stale-claim reconciled) was silently discarded, and a real
+    // production incident had to be diagnosed from persisted database
+    // state alone instead of logs. Every current emit() call in that
+    // module only ever passes `reason_code` (a closed-set internal string
+    // literal) or `duplicate` (boolean) — filtered again here, defensively,
+    // so a future emit() call can never introduce an unsafe field without
+    // an explicit, reviewed addition to this allowlist.
     const generationLifecycleService = createGenerationLifecycleService({
       documentRepository,
       previewRepository,
@@ -483,6 +538,7 @@ function createKadiV1ProductionBootstrap({
       finalGenerationService,
       deliveryService,
       clock,
+      observer: createKadiV1GenerationLifecycleObserver(logger),
     });
 
     const paymentProvider = createManualOrangeMoneyPaymentProvider({
@@ -761,6 +817,7 @@ function inspectKadiV1ProductionBootstrap({
 
 module.exports = {
   DEFAULT_PACKS,
+  createKadiV1GenerationLifecycleObserver,
   createKadiV1ProductionBootstrap,
   createPricingConfiguration,
   inspectKadiV1ProductionBootstrap,
