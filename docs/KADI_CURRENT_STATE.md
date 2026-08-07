@@ -559,6 +559,36 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche Z de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet, la preuve et le suivi requis.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite (annulation
+  inter-session, HIGH/P0) corrigée avant fusion, même branche, PR #19
+  toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une revue
+  adversariale indépendante de la PR #19 a signalé un défaut HIGH/P0,
+  bloquant de fusion : `kadiV1FlowReplyRuntime.js`'s `handle()` exécute
+  toujours la commande métier même quand la couche session a déjà
+  identifié un rejeu exact comme doublon, et `RECHARGE`/`CANCEL`
+  (contrairement à `SELECT_PACK`/`CHECK_PAYMENT`) n'avait aucune clé
+  d'idempotence propre — il résolvait toujours « la recharge active la
+  plus récente du propriétaire », sans aucune borne. **Deux scénarios
+  concrets prouvés dans la composition de production avant correctif :**
+  un rejeu différé d'un message `CANCEL` déjà consommé pouvait annuler une
+  recharge plus récente et totalement différente ; un Flow `RECHARGE`
+  obsolète, jamais encore soumis, pouvait annuler une recharge créée après
+  son ouverture — ni l'un ni l'autre n'est un rejeu classique. **Corrigé :**
+  `sessionOpenedAt` (l'instant serveur de confiance auquel la session Flow
+  exacte a été ouverte, jamais fourni par le client) borne désormais quelle
+  session de recharge `cancel()` peut cibler — seule une session créée à
+  ou avant cet instant est éligible. **Aucune nouvelle colonne Supabase** :
+  `opened_at` et `created_at` existent déjà toutes les deux sur leurs
+  tables respectives. Un raccourci générique de doublon dans `handle()` a
+  été envisagé mais délibérément écarté, faute de preuve exhaustive de son
+  innocuité pour tous les Flows existants — solution la plus petite et
+  spécifique à `RECHARGE` retenue à la place. Incohérence signalée, non
+  tranchée : le libellé « Revenir plus tard » du bouton `CANCEL` suggère
+  une pause reprenable, alors que le comportement réel place la recharge
+  dans un état terminal `CANCELLED` définitivement non créditable — décision
+  produit à prendre séparément. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche Z.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

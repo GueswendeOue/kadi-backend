@@ -444,19 +444,43 @@ Orange Money ou tout autre fournisseur de paiement.
    suite complète (1387/1387), `git diff --check` propre.
 4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM
    trouvé.
-5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-6. **[EN ATTENTE]** Fusion dans `main`.
-7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-8. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
+5. **[FAIT]** Revue adversariale indépendante de la PR #19 — a signalé un
+   défaut HIGH/P0, bloquant de fusion : `handle()` exécutait toujours la
+   commande métier même après qu'un rejeu exact ait été identifié comme
+   doublon par la couche session, et `RECHARGE`/`CANCEL` n'avait aucune
+   clé d'idempotence propre, résolvant toujours « la recharge active la
+   plus récente », sans borne. Deux scénarios concrets prouvés dans la
+   composition de production : rejeu différé d'un `CANCEL` déjà consommé
+   annulant une recharge plus récente et différente ; Flow `RECHARGE`
+   obsolète jamais soumis annulant une recharge créée après son ouverture.
+   Corrigé sur la même branche : `sessionOpenedAt` (instant serveur de
+   confiance d'ouverture de la session Flow exacte, jamais fourni par le
+   client) borne désormais l'éligibilité de `cancel()` — aucune nouvelle
+   colonne Supabase, `opened_at`/`created_at` existaient déjà toutes les
+   deux. Raccourci générique de doublon dans `handle()` envisagé puis
+   délibérément écarté (preuve exhaustive d'innocuité non établie) — voir
+   fiche Z.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Incohérence de libellé « Revenir plus tard » vs état terminal
+   `CANCELLED` signalée, non tranchée. Tests ciblés (240/240 sur les
+   fichiers concernés) puis suite complète (1393/1393), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet mis à
+   jour.
+6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
+   mise à jour (post-`sessionOpenedAt`).
+7. **[EN ATTENTE]** Fusion dans `main`.
+8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+9. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
    et annulation via le Flow `RECHARGE` réel, observée en conditions
    réelles (validation téléphone).
-9. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
-   mission de correction dédiée, non commencée.
-10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+10. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
+    mission de correction dédiée, non commencée.
+11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
-11. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
+12. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
     financier exactement-une-fois de bout en bout, tâche séparée future.
-12. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
+13. **[EN ATTENTE]** Décision produit requise sur la sémantique de
+    « Revenir plus tard » (libellé vs état terminal `CANCELLED`).
+14. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
     FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
     présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
     repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.

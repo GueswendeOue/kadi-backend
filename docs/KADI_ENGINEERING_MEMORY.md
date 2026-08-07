@@ -3071,3 +3071,182 @@ concernée. Et, comme confirmé ici positivement pour la première fois dans
 cette série : un traçage complet de la chaîne peut légitimement ne
 révéler aucun défaut de second niveau — le correctif de la liste blanche
 suffit alors, et il ne faut pas en chercher un là où il n'y en a pas.
+
+### Z.1 — RECHARGE-CONTRACT-001, suite : `CANCEL` pouvait annuler une recharge appartenant à un contexte Flow différent (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R1 »),
+  constat HIGH/P0, bloquant de fusion.
+
+### Constat, reproduit deux fois avant tout correctif
+
+`kadiV1FlowReplyRuntime.js`'s `handle()` appelle
+`commands.execute(...)` **sans condition**, même quand
+`sessions.consumeReply()` a déjà signalé `consumed.duplicate === true` — le
+présentateur supprime ensuite l'affichage à l'utilisateur, mais la
+commande métier s'exécute quand même une seconde fois. Pour
+`SELECT_PACK`/`CHECK_PAYMENT`, ceci était masqué par leur propre
+idempotence par clé plus bas dans la pile
+(`createRechargeSession`'s `findSessionByIdempotencyKey`,
+`confirmPaymentAndCredit`'s empreinte d'événement). `RECHARGE`/`CANCEL`
+n'avait **aucune** clé d'idempotence de ce type :
+`createKadiV1RechargeRuntime`'s `cancel({ownerWaId} = {})` ne
+déstructurait que `ownerWaId` — la `idempotencyKey` que
+`kadiV1FlowCommandRuntime.js` lui transmettait était silencieusement
+ignorée — et résolvait toujours à nouveau « la session `CREATED`/
+`PAYMENT_PENDING` la plus récente du propriétaire », sans aucune borne.
+Vérifié en lecture seule contre la base réelle : aucune contrainte
+unique n'impose une seule recharge active par propriétaire, et
+`kadi_v1_create_recharge_session` ne l'impose pas non plus — plusieurs
+sessions actives séquentielles sont un état de base valide.
+
+**Reproduction A (rejeu exact différé), prouvée dans la composition de
+production :** `SELECT_PACK` crée la recharge A → un message `CANCEL` C
+annule A avec succès → une nouvelle recharge B est créée pour le même
+propriétaire → le même message C exact est rejoué → la couche session
+identifie correctement le rejeu comme doublon, **mais la commande
+s'exécute quand même** et annule B, la recharge active la plus récente à
+ce moment, au lieu de A.
+
+**Reproduction B (Flow obsolète, première soumission réelle), également
+prouvée :** un Flow `RECHARGE` est ouvert (jamais encore soumis) → une
+recharge B plus récente est créée par un tout autre aller-retour → le
+Flow obsolète toujours valide est soumis pour la première fois avec
+`action=CANCEL` → **ce n'est pas un rejeu** (`duplicate: false`), pourtant
+B pouvait être annulée simplement parce qu'elle était la recharge active
+la plus récente au moment de l'annulation.
+
+### Contrat d'exécution de doublon (constat, non modifié dans ce correctif)
+
+Le signal `consumed.duplicate` de la couche session est déjà autoritaire
+et déjà utilisé pour supprimer l'affichage utilisateur
+(`kadiV1ProductionPresenter.js`'s `presentFlowReply` retourne
+immédiatement sans rien envoyer quand `result.duplicate === true`), mais
+`handle()` ne l'utilise **pas** pour empêcher une seconde exécution de la
+commande métier elle-même. Un raccourci générique dans `handle()` (ne
+jamais appeler `commands.execute(...)` quand `consumed.duplicate ===
+true`) a été envisagé comme le mécanisme préféré, mais explicitement
+**non retenu** ici : aucune preuve exhaustive n'a été établie qu'aucun
+Flow existant ne dépend d'une réexécution après un doublon confirmé par
+`consumeReply`, et introduire un tel changement générique sans cette
+preuve aurait été un risque non maîtrisé pour une mission dont le
+périmètre est `RECHARGE`. La correction ci-dessous est donc
+délibérément la plus petite solution durable, spécifique à `RECHARGE`.
+
+### Contrat de ciblage de `RECHARGE`/`CANCEL` — correctif
+
+Puisque le vrai Flow `RECHARGE` ne porte aucun `recharge_session_id`
+propre, `cancel()` doit nécessairement résoudre « quelle session » depuis
+un contexte plutôt qu'un identifiant explicite fourni par le client
+(jamais `pack_id`/`payment_reference` pour cela — déjà établi en R0).
+**Correctif :** `sessionOpenedAt` — l'instant serveur de confiance
+auquel cette session Flow précise a été ouverte, fourni uniquement par
+`kadiV1FlowReplyRuntime.js` depuis l'enregistrement de session déjà
+authentifié, jamais fourni par le client — borne désormais l'éligibilité
+au niveau de `cancel()` : seule une session de recharge créée à ou avant
+cet instant peut jamais être ciblée
+(`.lte("created_at", sessionOpenedAt)`, ajouté à la requête brute
+existante). Une annulation réellement courante ouvre toujours une
+session fraîche immédiatement avant sa soumission, donc cette borne
+n'exclut jamais une annulation réelle et actuelle — elle exclut
+uniquement les sessions de recharge qui n'existaient pas encore quand ce
+Flow précis a été ouvert. **Aucune nouvelle colonne Supabase requise** :
+`kadi_v1_conversation_sessions.opened_at` et
+`kadi_v1_recharge_sessions.created_at` existent déjà toutes les deux —
+aucune migration, aucune mutation Supabase.
+
+Plomberie : `kadiV1FlowReplyRuntime.js`'s `handle()` transmet désormais
+`sessionOpenedAt: session.opened_at` dans chaque commande (champ neuf,
+inoffensif pour toute action qui ne le lit pas — confirmé par régression
+complète) ; `kadiV1FlowCommandRuntime.js`'s branche `RECHARGE`/`CANCEL`
+valide sa présence (`KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID` sinon)
+et la transmet ; `kadiV1ProductionInfrastructure.js`'s `cancel()` la
+valide à nouveau et l'applique à la requête.
+
+### Sémantique du libellé produit — signalée, non modifiée
+
+Le bouton `CANCEL` du vrai Flow `RECHARGE` porte le libellé « Revenir
+plus tard » — qui suggère une pause reprenable. Le comportement réel
+(`cancelRechargeSession`) place la session en état terminal `CANCELLED` :
+`initiatePayment` exige `status === "CREATED"`, et
+`confirmPaymentEvent`'s vérification de correspondance exige
+`status === "PAYMENT_PENDING"` — une session `CANCELLED` ne peut donc
+plus jamais être créditée, même si l'utilisateur paie réellement après
+avoir appuyé sur ce bouton ; il faudrait recommencer une toute nouvelle
+sélection de pack. **Incohérence entre le libellé et le comportement
+signalée telle quelle, non modifiée dans cette mission** — décision
+produit à trancher séparément (soit un libellé plus honnête, soit un
+véritable état « en pause, reprenable »), hors périmètre de ce correctif
+de sécurité de contrat de champs.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : les deux reproductions
+  ci-dessus, prouvées d'abord contre le code non corrigé, puis remplacées
+  par leurs contreparties de régression fermée après correctif — rejeu
+  différé de C laisse B strictement inchangée (`PAYMENT_PENDING`, solde
+  inchangé), Flow obsolète échoue proprement
+  (`RECHARGE_SESSION_NOT_FOUND`) sans jamais toucher B ; nouveau scénario
+  prouvant qu'une annulation réellement courante continue de fonctionner
+  normalement (la borne ne bloque jamais un cas réel) ; nouveau scénario
+  prouvant que le présentateur n'envoie strictement rien pour une réponse
+  dupliquée ; `DOCUMENT_PREVIEW`/`CANCEL` ajouté à la preuve d'isolation
+  déjà existante pour `DOCUMENT_REVIEW`/`CANCEL`, à travers la chaîne
+  complète.
+* `tests/kadiV1FlowCommandRuntime.test.js` : nouveau scénario prouvant
+  qu'un `sessionOpenedAt` manquant ou invalide échoue explicitement
+  (`KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID`) sans jamais appeler
+  `cancelRecharge` — pas de repli silencieux vers l'ancien comportement
+  non borné.
+* Un correctif d'horloge de la suite de tests était nécessaire pour que
+  ces preuves soient significatives : l'horloge fixe précédemment
+  utilisée par la composition de test rendait tous les horodatages
+  identiques, masquant silencieusement toute borne temporelle — remplacée
+  par une horloge réellement croissante, partagée entre le service de
+  session et le service de recharge.
+* Focused : 240/240 (fichiers concernés). Suite complète : 1393/1393.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`sessionOpenedAt` provient exclusivement de l'enregistrement de session
+déjà authentifié et persisté côté serveur, jamais d'une valeur cliente ;
+aucune nouvelle table ni colonne ; la requête Supabase reste paramétrée
+(aucun risque d'injection) ; aucun autre appelant réel de `cancel()`
+n'existe dans le dépôt en dehors de `kadiV1FlowCommandRuntime.js`
+(vérifié) ; isolation propriétaire, rejet des champs inconnus,
+comportement `SELECT_PACK`/`CHECK_PAYMENT`, et non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé)
+tous confirmés inchangés par la suite complète. Aucune migration ni
+mutation Supabase, Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Le raccourci générique de doublon dans `kadiV1FlowReplyRuntime.js`'s
+  `handle()` reste une option architecturale plus large, non implémentée
+  ici faute de preuve exhaustive de son innocuité pour tous les Flows
+  existants — à évaluer séparément si un besoin similaire réapparaît
+  ailleurs.
+* Le `RECHARGE-EXACTLY-ONCE-GATE` dédié (déjà noté en fiche Z) reste une
+  tâche séparée.
+* Décision produit requise sur la sémantique de « Revenir plus tard »
+  (libellé vs état terminal `CANCELLED`) — signalée, non tranchée ici.
+
+### Prévention
+
+Quand une action métier doit résoudre implicitement « sur quelle entité
+agir » à partir du contexte plutôt que d'un identifiant explicite fourni
+par le client (parce que le vrai contrat Flow n'en porte aucun), vérifier
+systématiquement qu'une borne de fraîcheur/appartenance existe et est
+appliquée — sans quoi un rejeu différé ou un contexte obsolète peut cibler
+une entité totalement différente créée entre-temps. Le signal de doublon
+d'une couche ne suffit pas à lui seul : si la couche métier en dessous
+peut être réexécutée indépendamment de ce signal, elle doit se protéger
+elle-même. Et, quand une correction de sécurité candidate est générique
+(ici : court-circuiter toute commande dupliquée), préférer la solution la
+plus petite et la plus spécifique dont la sûreté est prouvée dans le
+périmètre de la mission, plutôt qu'un changement de comportement large
+non prouvé sur l'ensemble du système.
