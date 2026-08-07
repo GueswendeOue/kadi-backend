@@ -376,11 +376,21 @@ test("history adapter drops document_id from SEARCH filters — it must never in
   assert.equal(Object.hasOwn(received.filters, "document_id"), false);
 });
 
-test("wallet adapter accepts only a non-negative integer credit balance", async () => {
-  const valid = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { credits: 7 } }) } });
-  assert.deepEqual(await valid.getBalance({ ownerWaId: OWNER }), { ok: true, value: { credits: 7 } });
-  const invalid = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { credits: 1.5 } }) } });
-  assert.deepEqual(await invalid.getBalance({ ownerWaId: OWNER }), { ok: false, error: "KADI_V1_BALANCE_INVALID" });
+// T6/BALANCE-001: the canonical shape is
+// {total_credits, reserved_credits, available_credits}, with the
+// available = total - reserved invariant re-validated at this layer too.
+test("wallet adapter accepts only a consistent, non-negative integer available-balance snapshot", async () => {
+  const valid = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { total_credits: 10, reserved_credits: 3, available_credits: 7 } }) } });
+  assert.deepEqual(await valid.getBalance({ ownerWaId: OWNER }), { ok: true, value: { total_credits: 10, reserved_credits: 3, available_credits: 7 } });
+
+  const nonInteger = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { total_credits: 1.5, reserved_credits: 0, available_credits: 1.5 } }) } });
+  assert.deepEqual(await nonInteger.getBalance({ ownerWaId: OWNER }), { ok: false, error: "KADI_V1_BALANCE_INVALID" });
+
+  const negative = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { total_credits: 5, reserved_credits: -1, available_credits: 6 } }) } });
+  assert.deepEqual(await negative.getBalance({ ownerWaId: OWNER }), { ok: false, error: "KADI_V1_BALANCE_INVALID" });
+
+  const inconsistent = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { total_credits: 10, reserved_credits: 3, available_credits: 8 } }) } });
+  assert.deepEqual(await inconsistent.getBalance({ ownerWaId: OWNER }), { ok: false, error: "KADI_V1_BALANCE_INVALID" });
 });
 
 test("voice adapter translates the deterministic engine contract and never debits", async () => {

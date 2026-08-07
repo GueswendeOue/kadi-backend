@@ -427,8 +427,20 @@ function createKadiV1IssuerLogoLoader({ client, buckets = APPROVED_LOGO_BUCKETS,
   });
 }
 
+// T6/BALANCE-001 (BILL-001 confirmed): the raw wallet balance is not
+// necessarily what a user can actually commit to a new generation —
+// kadi_v1_reserve_generation_credits already computes spendability as
+// balance minus the sum of live RESERVED holds, and this reader must use
+// the exact same authoritative semantics, never a second, independent
+// meaning of "reserved". Reads rechargeRepository.getAvailableBalance()
+// (a single database round trip in production — see
+// migrations/20260807_add_kadi_v1_available_wallet_balance.sql), never
+// getBalance() (which stays the raw number, still used unchanged by
+// kadiV1RechargeService.js's resumePendingGeneration). Fails closed —
+// never clamps or fabricates a value — on any impossible financial state
+// (negative field, or total_credits - reserved_credits !== available_credits).
 function createKadiV1BalanceReader({ rechargeRepository } = {}) {
-  if (typeof rechargeRepository?.getBalance !== "function") {
+  if (typeof rechargeRepository?.getAvailableBalance !== "function") {
     throw new TypeError("KADI_V1_RECHARGE_REPOSITORY_REQUIRED");
   }
   return Object.freeze({
@@ -436,11 +448,20 @@ function createKadiV1BalanceReader({ rechargeRepository } = {}) {
       if (!OWNER_PATTERN.test(ownerWaId || "")) {
         return fail("KADI_V1_BALANCE_OWNER_INVALID");
       }
-      const result = await rechargeRepository.getBalance({ ownerWaId });
-      const credits = Number(result?.value);
-      return result?.ok === true && Number.isSafeInteger(credits) && credits >= 0
-        ? ok({ credits })
-        : fail(result?.error || "KADI_V1_BALANCE_INVALID");
+      const result = await rechargeRepository.getAvailableBalance({ ownerWaId });
+      if (result?.ok !== true) return fail(result?.error || "KADI_V1_BALANCE_INVALID");
+      const total = result.value?.total_credits;
+      const reserved = result.value?.reserved_credits;
+      const available = result.value?.available_credits;
+      if (
+        !Number.isSafeInteger(total) || total < 0 ||
+        !Number.isSafeInteger(reserved) || reserved < 0 ||
+        !Number.isSafeInteger(available) || available < 0 ||
+        total - reserved !== available
+      ) {
+        return fail("KADI_V1_BALANCE_INVALID");
+      }
+      return ok({ total_credits: total, reserved_credits: reserved, available_credits: available });
     },
   });
 }

@@ -523,12 +523,33 @@ function createKadiV1HistoryRuntimeAdapter({ historyService } = {}) {
   return Object.freeze({ search, open });
 }
 
+// T6/BALANCE-001: the canonical runtime result is
+// {total_credits, reserved_credits, available_credits} — the same shape
+// balanceReader.getBalance() (kadiV1ProductionInfrastructure.js's
+// createKadiV1BalanceReader) already produces and already validates.
+// Re-validated here too (defense in depth, matching this adapter's
+// existing style) rather than trusted blindly — this is the one port both
+// kadiV1FlowCommandRuntime.js's BALANCE action and
+// kadiV1ConversationOrchestrator.js's natural-language BALANCE path share,
+// so both derive their copy from this exact same value, never two
+// independent calculations.
 function createKadiV1WalletRuntimeAdapter({ balanceReader } = {}) {
   const reader = assertMethods(balanceReader, ["getBalance"], "KADI_V1_BALANCE_READER");
   async function getBalance({ ownerWaId }) {
     const balance = await reader.getBalance({ ownerWaId });
-    if (!balance?.ok || !Number.isSafeInteger(balance.value?.credits) || balance.value.credits < 0) return fail(balance?.error || "KADI_V1_BALANCE_INVALID");
-    return ok(Object.freeze({ credits: balance.value.credits }));
+    if (!balance?.ok) return fail(balance?.error || "KADI_V1_BALANCE_INVALID");
+    const total = balance.value?.total_credits;
+    const reserved = balance.value?.reserved_credits;
+    const available = balance.value?.available_credits;
+    if (
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(reserved) || reserved < 0 ||
+      !Number.isSafeInteger(available) || available < 0 ||
+      total - reserved !== available
+    ) {
+      return fail("KADI_V1_BALANCE_INVALID");
+    }
+    return ok(Object.freeze({ total_credits: total, reserved_credits: reserved, available_credits: available }));
   }
   return Object.freeze({ getBalance });
 }

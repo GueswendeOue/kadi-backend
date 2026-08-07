@@ -4074,3 +4074,277 @@ Flow qui n'a qu'un état légitime peut recevoir une constante serveur
 fixe ; un Flow qui en a plusieurs doit transmettre la valeur exacte déjà
 validée de la session, jamais une valeur générique qui rendrait les
 états légitimes interchangeables entre eux.
+
+## AA.3 — T6/BALANCE-001 : « Mon solde » affichait un texte statique, et le solde brut ignorait les retenues de crédit vivantes (BILL-001 confirmé)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche isolée
+  `fix/kadi-v1-available-balance-t6`, créée depuis
+  `main@1b605ebd34e0fe259f221a60f8b697038f13e9ef` (PR #21/T4.5 déjà
+  fusionnée), PR brouillon ouverte, non fusionnée, non déployée. Aucune
+  migration appliquée à Supabase de production.
+* **Origine :** mission « KADI V1 — T6 BALANCE NUMERIC +
+  AVAILABLE-CREDITS AUTHORITY ».
+
+### Défaut A — présentation : le solde numérique réel était systématiquement remplacé par un texte statique
+
+Le chemin réel Flow/menu (`MENU`/`BALANCE` → `FlowCommandRuntime` →
+`walletRuntime.getBalance()` → `FlowReplyRuntime` →
+`ProductionPresenter`) obtenait bien la valeur numérique depuis le
+backend, mais `kadiV1ProductionPresenter.js`'s `canonicalReplyText`
+retombait toujours sur `BALANCE: "Votre solde a été consulté."` dans sa
+table statique — le nombre était donc systématiquement jeté à la couche
+de présentation, quel que soit le solde réel.
+
+**Reproduction, prouvée dans la composition de production avant
+correctif** (correctif de production temporairement retiré via
+`git stash` puis restauré) : sur 17 scénarios E2E, 11 échouaient
+exactement comme prévu — y compris le scénario le plus simple (solde
+réel de 7 crédits, texte reçu : « Votre solde a été consulté. » au lieu
+de « Vous avez 7 crédits disponibles. »).
+
+### Défaut B — BILL-001 confirmé : solde brut du portefeuille vs crédits réellement disponibles
+
+Inspection en lecture seule confirmée : `public.kadi_v1_get_wallet_balance`
+retournait directement `kadi_wallets.balance`, sans jamais tenir compte
+des retenues de crédit vivantes. Or `public.kadi_v1_reserve_generation_credits`
+détermine déjà la solvabilité réelle comme :
+
+```sql
+select coalesce(sum(amount), 0) into v_held from public.kadi_v1_wallet_reservations
+  where owner_wa_id = p_owner_wa_id and status = 'RESERVED';
+if coalesce(v_balance, 0) - v_held < p_amount then
+  return jsonb_build_object('ok', false, 'error', 'INSUFFICIENT_CREDITS');
+end if;
+```
+
+Un solde brut de 10 avec 3 crédits retenus (`RESERVED`) aurait donc pu
+afficher « 10 crédits » à l'utilisateur alors que seuls 7 sont réellement
+engageables pour une nouvelle opération — financièrement trompeur.
+**BILL-001 est confirmé**, avec la distinction exacte : **solde brut du
+portefeuille** vs **crédits disponibles après retenues vivantes**. Un
+instantané de production en lecture seule au moment de la revue
+indépendante montrait `RESERVED = 0` (aucun incident réel constaté à cet
+instant précis) — cet état temporaire n'a jamais été utilisé comme base
+du correctif, qui reste valable indépendamment de l'état courant des
+réservations.
+
+### Modèle d'autorité retenu
+
+`available_credits = total_credits - reserved_credits`, avec
+`reserved_credits` = somme des montants de réservation dont le statut
+authentique est `RESERVED` — exactement la même sémantique que
+`kadi_v1_reserve_generation_credits` utilise déjà, jamais une seconde
+définition indépendante de « réservé ». Une réservation `CAPTURED` ne
+doit jamais être soustraite une seconde fois : au moment de la capture,
+`kadi_v1_capture_generation_reservation` a déjà consommé le crédit du
+solde brut (`kadi_consume_credits_v2`) dans la même transaction qui fait
+aussi basculer la réservation vers `CAPTURED` — donc le solde brut
+post-capture reflète déjà la consommation, et seules les réservations
+encore `RESERVED` sont soustraites.
+
+### Conception base de données / atomicité
+
+Une lecture en deux requêtes applicatives séparées (solde puis
+réservations) aurait pu observer un instantané incohérent en cas de
+réservation/capture concurrente. Conformément à la convention de
+migration existante, une **nouvelle migration forward-only**
+(`migrations/20260807_add_kadi_v1_available_wallet_balance.sql` et son
+miroir `supabase/migrations/20260807220000_...sql`, jamais la migration
+d'origine `20260802_add_kadi_v1_recharge.sql`/`20260803022217_...sql`,
+qui reste intacte) remplace le corps de la fonction existante
+`public.kadi_v1_get_wallet_balance(p_owner_wa_id text)` **en place**
+(même nom, même signature, mêmes privilèges service-role-only) : une
+seule fonction PL/pgSQL calcule `balance`/`total_credits`/
+`reserved_credits`/`available_credits` en un seul appel base de données,
+avec un verrou `for share` sur la ligne du portefeuille — cohérent avec
+le verrou `for update` que `kadi_v1_reserve_generation_credits` prend
+déjà sur la même ligne, et avec le fait que
+`kadi_v1_capture_generation_reservation` modifie cette même ligne dans
+la même transaction que le basculement de statut de la réservation.
+**Un seul appelant existant** de cette RPC a été trouvé
+(`kadiV1SupabaseRechargeRepository.js`'s `getBalance()`), lui-même
+préservé intact.
+
+### Contrat de dépôt / runtime
+
+`getBalance()` (nombre brut) reste **totalement inchangé**, dans les
+deux dépôts (Supabase et en mémoire) — c'est le seul appelant existant
+critique, `kadiV1RechargeService.js`'s `resumePendingGeneration`
+(comparaison numérique directe `balance.value >= quote.value.total_credits`),
+qui aurait cassé silencieusement si la forme de retour avait changé.
+Une nouvelle méthode strictement additive, `getAvailableBalance()`,
+porte la nouvelle sémantique `{total_credits, reserved_credits,
+available_credits}` — tracée de bout en bout : RPC/dépôt en mémoire →
+`BalanceReader` (`kadiV1ProductionInfrastructure.js`) →
+`WalletRuntimeAdapter` (`kadiV1RuntimeAdapters.js`, le port partagé par
+`FlowCommandRuntime` **et** `ConversationOrchestrator`) → présentateur /
+orchestrateur. Chaque couche revalide indépendamment l'invariant
+`total_credits - reserved_credits === available_credits` et échoue
+fermé (jamais de solde négatif ou deviné) en cas d'état financier
+impossible — jamais une confiance aveugle en la couche du dessous.
+
+### Présentation
+
+`kadiV1ProductionPresenter.js`'s `canonicalReplyText` a désormais une
+branche `BALANCE` dynamique (avant la table statique), et l'entrée
+statique `BALANCE: "Votre solde a été consulté."` a été retirée de cette
+table. `kadiV1ConversationOrchestrator.js`'s chemin conversationnel
+naturel utilise le **même port** `walletRuntime` et délègue au **même**
+formateur partagé, nouveau fichier `kadiV1BalancePresentation.js`
+(`formatAvailableBalanceText`), pour que les deux chemins ne puissent
+jamais diverger. Copie exacte : « Vous avez 0 crédit disponible. » /
+« Vous avez 1 crédit disponible. » / « Vous avez N crédits
+disponibles. », avec une seconde phrase courte uniquement si des crédits
+sont retenus (« N crédits sont temporairement réservés pour une
+génération en cours. », singulier correct pour N=1). Aucun identifiant
+interne, aucun statut, aucun identifiant WhatsApp complet jamais exposé.
+
+### Preuve
+
+* `tests/kadiV1AvailableBalanceE2E.test.js` (nouveau, 17 scénarios, pile
+  de génération réelle identique à celle des fiches AA.1/AA.2) : défaut A
+  **prouvé concrètement avant correctif** (`git stash` puis
+  restauration, 11/17 échouant comme prévu) ; menu et langage naturel
+  rapportent le même texte exact pour le même solde (10 total, 3
+  retenus → 7 disponibles sur les deux chemins) ; zéro/un/pluriel
+  corrects ; une réservation `RESERVED` réduit le disponible ; une
+  réservation `RELEASED` ne le réduit pas ; une réservation `CAPTURED`
+  n'est jamais soustraite une seconde fois ; un solde consulté pendant
+  une génération réellement en vol (barrière déterministe sur le
+  renderer réel, jamais un `sleep`) montre correctement le crédit retenu
+  sans jamais perturber la réservation vivante, et le solde redevient
+  correct après capture réelle ; un instantané financier impossible
+  échoue fermé sans jamais afficher de nombre négatif ; isolation
+  propriétaire ; zéro mutation financière causée par `BALANCE` ; le texte
+  statique n'est plus jamais la sortie réussie ; les réponses non liées
+  au solde restent inchangées.
+* `tests/kadiV1AvailableBalance.test.js` (nouveau, 22 scénarios) :
+  couverture exacte des cas obligatoires A–H (aucune réservation ;
+  une réservation vivante ; plusieurs réservations vivantes ; `RELEASED`
+  ignoré ; `CAPTURED` non soustrait deux fois ; mélange
+  `RESERVED`/`RELEASED` ; limite exacte (disponible = 0) ; état
+  impossible → échec fermé) au niveau du dépôt, plus le contrat de la
+  RPC via un client Supabase factice (ligne bien formée, ligne enveloppée
+  dans un tableau, erreur RPC, état impossible, champ non entier,
+  triplet incohérent), plus le formateur de présentation partagé en
+  isolation.
+* Preuve structurelle du contrat SQL (dans le fichier E2E) : la nouvelle
+  migration utilise exactement le même filtre `status = 'RESERVED'` que
+  `kadi_v1_reserve_generation_credits`, verrouille la ligne du
+  portefeuille, calcule les quatre champs en une seule fonction, et les
+  deux miroirs de migration restent strictement identiques.
+* Focused : 317/317 (fichiers concernés, dont T1–T4.5 déjà fusionnés).
+  Suite complète : 1498/1498. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`ownerWaId` reste la seule source de portée, jamais un `profile_id`/
+`wallet_id`/override de propriétaire accepté depuis un payload Meta ou
+une entrée utilisateur — vérifié avant même d'interroger le dépôt.
+`MENU`/`BALANCE` ne transporte toujours aucune valeur financière du
+client (aucun champ ajouté au Flow). Aucun identifiant WhatsApp complet
+jamais journalisé ou affiché. `kadiV1RechargeService.js`'s
+`resumePendingGeneration` confirmé inchangé par la suite complète.
+Contrats T3/T4/T4.5 confirmés inchangés. Aucune migration ni mutation
+Supabase, Meta, Render ou WhatsApp réelle.
+
+### R1 — revue adversariale indépendante (documentation uniquement) : ordre de déploiement, backlog séparé, précision de formulation
+
+* **Statut R1 : documentation uniquement — aucun code de production, de
+  test ou SQL modifié.** `git diff` entre le head R0
+  (`a6440b9b3f576c366c39f9fadf37c7b42146103d`) et R1 ne contient que des
+  fichiers `docs/`.
+* **Origine :** revue adversariale indépendante de la PR #22, mission
+  « KADI V1 — T6 AVAILABLE BALANCE INDEPENDENT REVIEW FIX R1 ». Le code
+  R0 lui-même est confirmé correct (modèle d'autorité, `balance` legacy
+  préservé, `getAvailableBalance()` additif, formateur partagé, échec
+  fermé sur instantané malformé) — **aucun changement de code requis**.
+
+**Constat MEDIUM — ordre de déploiement dangereux dans la documentation.**
+`docs/KADI_RELEASE_CHECKLIST.md` décrivait auparavant, conceptuellement,
+l'ordre : (1) déployer Render, (2) puis appliquer la migration. Cet
+ordre est dangereux : le nouveau code applicatif (`getAvailableBalance()`,
+tracé jusqu'à `WalletRuntimeAdapter`/`BalanceReader`) exige
+`total_credits`/`reserved_credits`/`available_credits` dans la réponse
+de la RPC ; avant l'application de la migration, la RPC de production ne
+retourne encore que `balance`. Déployer le nouveau code Render avant la
+migration ferait donc échouer fermé le parcours `BALANCE` jusqu'à
+l'application réussie de la migration — et si la migration échouait
+après le déploiement Render, `BALANCE` resterait cassé en production.
+
+**Contrat de déploiement sûr corrigé** (`docs/KADI_RELEASE_CHECKLIST.md`,
+section T6, item 9) : (1) appliquer d'abord la migration Supabase
+`20260807_add_kadi_v1_available_wallet_balance.sql` ; (2) vérifier en
+lecture seule que `balance` reste présent, que `total_credits`/
+`reserved_credits`/`available_credits` sont désormais exposés, que
+l'invariant `total_credits - reserved_credits = available_credits` tient,
+et que les privilèges restent `service_role` uniquement — pendant cette
+vérification, l'ancien code Render reste en production, sans rupture,
+car il ne lit encore que `balance` ; (3) seulement après succès de cette
+vérification, déployer le nouveau commit `main` sur Render ; (4) vérifier
+`/health` ; (5) effectuer des tests `BALANCE` contrôlés en conditions
+réelles (menu, langage naturel, puis si possible un cas à crédits
+réellement retenus). En cas d'échec d'application ou de vérification de
+la migration : ne pas déployer le nouveau code Render.
+
+**Preuve de rétrocompatibilité :** la migration
+(`migrations/20260807_add_kadi_v1_available_wallet_balance.sql`) fait un
+`create or replace function` sur le même nom/signature et retourne
+explicitement `'balance', v_balance` en plus des nouveaux champs — le
+code Render actuellement déployé (`kadiV1SupabaseRechargeRepository.js`'s
+`getBalance()` d'avant T6, qui ne lit que `row.balance`) continue de
+fonctionner à l'identique immédiatement après l'application de la
+migration, avant même qu'un nouveau déploiement Render n'ait lieu. C'est
+précisément ce qui rend l'ordre « migration d'abord » sûr.
+
+**Constat backlog séparé, non corrigé dans T6 —
+`RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) :**
+`kadiV1RechargeService.js`'s `resumePendingGeneration` utilise
+`store.getBalance({ownerWaId})` (délibérément le solde brut) et vérifie
+`balance.value >= quote.value.total_credits`. Une autre retenue
+`RESERVED` vivante peut donc rendre cette pré-vérification optimiste :
+exemple, solde brut = 10, autres retenues `RESERVED` = 3 (disponible réel
+= 7), coût du devis de reprise = 8 — la pré-vérification actuelle voit
+`10 >= 8` et peut faire sortir le document de `RECHARGE_REQUIRED` avant
+que la vraie réservation de génération n'échoue ensuite avec
+`INSUFFICIENT_CREDITS`. Préexistant, et délibérément **hors périmètre de
+T6** (la mission interdisait explicitement de modifier la sémantique du
+cycle de vie recharge). **Ne pas corriger dans la PR #22.** À traiter
+dans une mission bornée séparée, backlog pré-RC / intégrité recharge.
+
+**Précision de formulation « lecture seule ».** Inspection de production
+indépendante confirmée : `kadi_v1_get_wallet_balance` appelle
+`kadi_resolve_profile_v2`, qui peut mettre à jour des métadonnées/alias
+de profil et créer un portefeuille/profil manquant — un comportement
+**préexistant à T6**, non introduit par cette mission. L'invariant exact
+de T6 n'est donc pas « `BALANCE` n'effectue littéralement aucune écriture
+base de données dans tous les scénarios de résolution de profil possibles »,
+mais : **`BALANCE` cause zéro mutation FINANCIÈRE** — aucun débit, aucun
+crédit, aucune création/capture/libération de réservation, aucune
+mutation de recharge, aucune mutation de document/génération/livraison.
+`kadi_resolve_profile_v2` lui-même n'est pas modifié par cette mission et
+reste hors périmètre.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Application de la migration à Supabase de production, **dans l'ordre
+  sûr ci-dessus (migration d'abord)** — hors périmètre, nécessite une
+  autorisation et une mission de déploiement distinctes.
+* Validation téléphone réelle requise après un déploiement éventuel, avec
+  au moins un cas de crédits réellement retenus.
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) — voir
+  ci-dessus, mission bornée séparée requise.
+* T5 — prochaine mission de correction dédiée, non commencée.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+### Prévention
+
+Un dépôt qui expose un nombre financier brut sous un nom générique
+(`getBalance`) ne doit jamais être élargi silencieusement en place si un
+appelant existant en dépend numériquement — préférer une méthode
+additive distincte portant la nouvelle sémantique, et vérifier
+explicitement tous les appelants existants avant tout changement de
+forme. Quand deux chemins utilisateur différents (ici Flow/menu et
+langage naturel) doivent rapporter le même calcul financier, les faire
+dépendre du même port et du même formateur de présentation partagé,
+jamais deux implémentations indépendantes qui pourraient diverger.

@@ -748,6 +748,57 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   (1457/1457), `git diff --check` propre. Voir fiche AA.2 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-07) : PR #21 fusionnée dans `main`.**
+  `main@1b605ebd34e0fe259f221a60f8b697038f13e9ef`.
+  **T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE est désormais
+  `CLOSED/MERGED`** (avec T1/T2/T3/T4 déjà fusionnés). Le déploiement
+  Render de ce commit n'est pas vérifiable depuis cet environnement — ne
+  pas déduire qu'il a été déployé, ni qu'il ne l'a pas été.
+* **Mise à jour (2026-08-07) : T6/BALANCE-001 corrigée, branche isolée
+  `fix/kadi-v1-available-balance-t6` créée depuis
+  `main@1b605ebd34e0fe259f221a60f8b697038f13e9ef`, PR brouillon ouverte,
+  **non fusionnée, non déployée. Aucune migration appliquée à Supabase de
+  production.** Deux défauts confirmés : (A) `ProductionPresenter`
+  retombait systématiquement sur le texte statique « Votre solde a été
+  consulté. » au lieu du solde numérique réel — **prouvé concrètement
+  avant correctif** (`git stash` du correctif puis restauration, 11/17
+  scénarios E2E échouant comme prévu) ; (B) **BILL-001 confirmé** —
+  `kadi_v1_get_wallet_balance` retournait le solde brut du portefeuille,
+  ignorant les retenues de crédit vivantes (`kadi_v1_wallet_reservations`
+  `status = 'RESERVED'`) que `kadi_v1_reserve_generation_credits` utilise
+  déjà pour déterminer la solvabilité réelle — un solde brut de 10 avec 3
+  crédits retenus aurait pu afficher « 10 crédits » alors que seuls 7
+  sont réellement engageables. **Corrigé** : nouvelle migration
+  forward-only remplaçant en place le corps de la fonction existante
+  (même nom/signature, `balance` préservé pour compatibilité ascendante,
+  `kadiV1RechargeService.js`'s `resumePendingGeneration` — l'unique
+  appelant existant du nombre brut — confirmé inchangé) ; nouvelle
+  méthode additive `getAvailableBalance()` tracée de bout en bout jusqu'au
+  port `walletRuntime` partagé par `FlowCommandRuntime` **et**
+  `ConversationOrchestrator`, garantissant que « Mon solde » et « Quel
+  est mon solde ? » rapportent toujours le même nombre. Échec fermé à
+  chaque couche sur tout état financier impossible. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Tests ciblés (317/317) puis suite complète
+  (1498/1498), `git diff --check` propre. Voir fiche AA.3 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
+* **Mise à jour (2026-08-07) : T6 R1 (documentation uniquement) — revue
+  adversariale indépendante de la PR #22.** Code R0 confirmé correct,
+  aucun changement de code. Un défaut MEDIUM corrigé dans
+  `docs/KADI_RELEASE_CHECKLIST.md` : l'ordre de déploiement décrit devait
+  appliquer **la migration Supabase en premier** (elle préserve `balance`,
+  rétrocompatible avec le code Render actuellement déployé), la vérifier
+  en lecture seule, puis seulement ensuite déployer le nouveau code
+  Render — jamais l'inverse, sous peine de casser `BALANCE` en
+  production si la migration n'était pas encore appliquée ou échouait
+  après le déploiement. Toujours **`IMPLEMENTED_NOT_DEPLOYED`, aucune
+  migration appliquée à Supabase de production.** Constat backlog séparé
+  enregistré, non corrigé ici : `RECHARGE_RESUME_AVAILABLE_BALANCE_001`
+  (MEDIUM/P1 avant RC — `kadiV1RechargeService.js`'s
+  `resumePendingGeneration` reste basé sur le solde brut, préexistant,
+  hors périmètre T6). Voir fiche AA.3 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet.
 
 ## Blocages connus
 

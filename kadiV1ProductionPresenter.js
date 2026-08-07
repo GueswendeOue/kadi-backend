@@ -14,6 +14,7 @@ const {
 } = require("./kadiV1DraftFlowCatalog");
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
 const { buildPreviewData } = require("./kadiV1PreviewService");
+const { formatAvailableBalanceText } = require("./kadiV1BalancePresentation");
 
 const MAX_SUMMARY_ITEMS = 10;
 
@@ -775,6 +776,30 @@ function canonicalReplyText(action, value) {
     return `J’ai trouvé ${count} document${count === 1 ? "" : "s"}. Choisissez celui que vous souhaitez consulter dans la liste, puis appuyez sur Continuer.`;
   }
 
+  // T6/BALANCE-001: value here is result.result — for BALANCE this is
+  // exactly whatever kadiV1RuntimeAdapters.js's walletRuntime.getBalance()
+  // returned, already validated end to end
+  // (total_credits/reserved_credits/available_credits, integers, the
+  // available = total - reserved invariant). Re-validated once more here
+  // regardless — this function must never surface a raw object dump, an
+  // internal identifier, or a negative/guessed number to the user even if
+  // an upstream contract were ever violated; a malformed value falls
+  // through to the generic fallback below instead of throwing or
+  // fabricating a figure.
+  if (action === "BALANCE") {
+    const total = value?.total_credits;
+    const reserved = value?.reserved_credits;
+    const available = value?.available_credits;
+    if (
+      Number.isSafeInteger(total) && total >= 0 &&
+      Number.isSafeInteger(reserved) && reserved >= 0 &&
+      Number.isSafeInteger(available) && available >= 0 &&
+      total - reserved === available
+    ) {
+      return formatAvailableBalanceText({ availableCredits: available, reservedCredits: reserved });
+    }
+  }
+
   const copy = {
     START: "Merci. Votre profil est enregistré. Que voulez-vous préparer aujourd’hui ?",
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
@@ -797,7 +822,6 @@ function canonicalReplyText(action, value) {
     CHECK_PAYMENT: "La vérification du paiement est terminée.",
     OPEN_DOCUMENT: "Le document est ouvert.",
     SAVE_DETAILS: "Les informations de la décharge sont enregistrées.",
-    BALANCE: "Votre solde a été consulté.",
     HELP: "Kadi peut préparer une facture, un devis, un reçu ou une décharge.",
     CANCEL: "L’opération est annulée.",
     SAVE_FOR_LATER: "Votre travail est conservé.",

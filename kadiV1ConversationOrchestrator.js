@@ -1,6 +1,7 @@
 "use strict";
 
 const { resolveFlowKey } = require("./kadiV1FlowRouter");
+const { formatAvailableBalanceText } = require("./kadiV1BalancePresentation");
 
 const INPUT_TYPES = Object.freeze([
   "TEXT",
@@ -37,7 +38,11 @@ const COPY = Object.freeze({
     DECHARGE: "Bien sûr. Indiquez qui remet, qui reçoit, ce qui est remis et le motif.",
   }),
   HISTORY_EMPTY: "Je n’ai trouvé aucun document correspondant. Donnez-moi un nom, un type de document ou une période.",
-  BALANCE: (credits) => `Votre solde est de ${credits} crédit${credits === 1 ? "" : "s"}.`,
+  // T6/BALANCE-001: delegates to the same shared formatter
+  // kadiV1ProductionPresenter.js's Flow/menu BALANCE path uses, so both
+  // paths report the exact same available_credits/reserved_credits text —
+  // never two independent financial calculations.
+  BALANCE: (available, reserved) => formatAvailableBalanceText({ availableCredits: available, reservedCredits: reserved }),
   SAVED_RETRY: "Je n’ai pas pu continuer pour le moment. Vos informations sont conservées. Réessayez dans un instant.",
   MEDIA_DISABLED: "Cette entrée n’est pas encore disponible ici. Vous pouvez écrire les informations ou envoyer un vocal.",
   CANCELLED: "D’accord, j’ai annulé cette préparation.",
@@ -362,9 +367,25 @@ function createKadiV1ConversationOrchestrator({
       });
     }
     if (direct.intent === "BALANCE") {
+      // T6/BALANCE-001: wallet.getBalance() here is the exact same
+      // walletRuntime port kadiV1FlowCommandRuntime.js's BALANCE action
+      // uses (kadiV1RuntimeAdapters.js's createKadiV1WalletRuntimeAdapter)
+      // — the natural-language and Flow/menu paths share one authority,
+      // never two independent financial calculations.
       const balance = asResult(await wallet.getBalance({ ownerWaId: input.ownerWaId }), "KADI_V1_BALANCE_FAILED");
-      if (!balance.ok || !Number.isSafeInteger(balance.value?.credits) || balance.value.credits < 0) return fail("KADI_V1_BALANCE_INVALID");
-      return buildResponse({ canonicalText: COPY.BALANCE(balance.value.credits), action: "SHOW_BALANCE" });
+      const total = balance.value?.total_credits;
+      const reserved = balance.value?.reserved_credits;
+      const available = balance.value?.available_credits;
+      if (
+        !balance.ok ||
+        !Number.isSafeInteger(total) || total < 0 ||
+        !Number.isSafeInteger(reserved) || reserved < 0 ||
+        !Number.isSafeInteger(available) || available < 0 ||
+        total - reserved !== available
+      ) {
+        return fail("KADI_V1_BALANCE_INVALID");
+      }
+      return buildResponse({ canonicalText: COPY.BALANCE(available, reserved), action: "SHOW_BALANCE" });
     }
     if (direct.intent === "HISTORY_SEARCH") {
       if (!config.features.history) return buildResponse({ canonicalText: COPY.SAVED_RETRY, action: "HISTORY_UNAVAILABLE" });

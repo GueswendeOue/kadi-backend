@@ -89,6 +89,35 @@ function createSupabaseRechargeRepository(client) {
     return result.error ? fail("WALLET_BALANCE_LOOKUP_FAILED") : ok(Number(row(result.data)?.balance ?? row(result.data) ?? 0));
   }
 
+  // T6/BALANCE-001: additive method, never replacing getBalance() above —
+  // kadiV1RechargeService.js's resumePendingGeneration still calls
+  // getBalance() for its raw-number check and must not be affected. Reads
+  // the SAME single RPC call (kadi_v1_get_wallet_balance), which now also
+  // returns total_credits/reserved_credits/available_credits computed
+  // atomically alongside balance (see
+  // migrations/20260807_add_kadi_v1_available_wallet_balance.sql) — one
+  // database round trip, never two separate application-side reads that
+  // could observe a torn snapshot across a concurrent reserve/capture.
+  // Fails closed (never clamps or fabricates) if the RPC ever returns an
+  // impossible financial state.
+  async function getAvailableBalance({ ownerWaId }) {
+    const result = await client.rpc("kadi_v1_get_wallet_balance", { p_owner_wa_id: ownerWaId });
+    if (result.error) return fail("WALLET_BALANCE_LOOKUP_FAILED");
+    const data = row(result.data) || {};
+    const total = Number(data.total_credits);
+    const reserved = Number(data.reserved_credits);
+    const available = Number(data.available_credits);
+    if (
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(reserved) || reserved < 0 ||
+      !Number.isSafeInteger(available) || available < 0 ||
+      total - reserved !== available
+    ) {
+      return fail("KADI_V1_BALANCE_INVALID");
+    }
+    return ok({ total_credits: total, reserved_credits: reserved, available_credits: available });
+  }
+
   async function createResumeLink({ link }) {
     const existing = await getResumeLink({ rechargeSessionId: link.recharge_session_id });
     if (existing.ok) return ok(existing.value, { duplicate: true });
@@ -108,7 +137,7 @@ function createSupabaseRechargeRepository(client) {
 
   return Object.freeze(assertRechargeRepository({
     createRechargeSession, getRechargeSession, findSessionByIdempotencyKey, updateRechargeSession,
-    recordPaymentEvent, getPaymentEvent, confirmPaymentAndCredit, getBalance,
+    recordPaymentEvent, getPaymentEvent, confirmPaymentAndCredit, getBalance, getAvailableBalance,
     createResumeLink, getResumeLink, updateResumeLink,
   }));
 }
