@@ -77,8 +77,20 @@ const ACTION_FIELDS = Object.freeze({
   CONFIRM_GENERATION: Object.freeze(["quote_id"]),
   SELECT_PACK: Object.freeze(["pack_id"]),
   CHECK_PAYMENT: Object.freeze(["payment_reference"]),
-  SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to"]),
-  OPEN_DOCUMENT: Object.freeze(["document_id"]),
+  // HISTORY-CONTRACT-001: kadi_history_search_v1.json is one combined form
+  // whose single Footer always submits query/document_type/date_from/
+  // date_to/document_id together, regardless of which action radio button
+  // (SEARCH/OPEN_DOCUMENT) was chosen (Meta submits every declared form
+  // field on every submission) — the same class of defect already
+  // confirmed for CLIENT-001/EDIT-CONTENT-001/OPTIONS-001. document_id is
+  // meaningless for SEARCH; query/document_type/date_from/date_to are
+  // meaningless for OPEN_DOCUMENT — both accepted here so neither real
+  // submission is rejected outright, and dropped/ignored downstream
+  // (kadiV1RuntimeAdapters.js's history adapter for SEARCH; only
+  // data.document_id is ever read for OPEN_DOCUMENT in
+  // kadiV1FlowCommandRuntime.js).
+  SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to", "document_id"]),
+  OPEN_DOCUMENT: Object.freeze(["document_id", "query", "document_type", "date_from", "date_to"]),
   SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "amount", "description", "quantity", "reason", "observations"]),
   // FINISH_CONTENT is reachable from two shapes: DOCUMENT_CONTENT submits
   // no data at all, EDIT_CONTENT's combined form always submits all six

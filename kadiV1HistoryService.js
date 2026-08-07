@@ -99,6 +99,45 @@ function listProjection(bundle) {
   };
 }
 
+// HISTORY-CONTRACT-001 (R1 independent review): the real HISTORY_SEARCH
+// Flow's date_from/date_to text fields submit a bare calendar date
+// ("2026-04-01"), never a full timestamp. Both history repositories
+// (kadiV1HistoryRepository.js's in-memory reference, and the
+// kadi_v1_search_owned_documents Supabase RPC — see
+// supabase/migrations/20260803022258_add_kadi_v1_history_search.sql)
+// compare `to` as an inclusive upper bound against a real timestamp
+// (issued_at/updated_at) with `<=`. A bare date parses as that day's exact
+// midnight, so `to: "2026-04-01"` silently excluded every document from
+// the rest of that day — a document updated at 10:00 on the very day the
+// owner asked to search through. `from` needs no such adjustment: a bare
+// date already parses to that day's midnight, which is exactly the
+// inclusive lower bound a calendar-day range needs.
+//
+// Burkina Faso (Africa/Ouagadougou) has no DST and sits at a fixed UTC+0
+// offset — already the documented product convention elsewhere (see
+// index.js "Burkina = UTC", kadiReengagementWorker.js "Burkina = UTC+0",
+// and issued_at_timezone: "Africa/Ouagadougou" recorded alongside UTC
+// issued_at values in kadiInvoiceFlowCompletion.js/kadiInvoiceFlowEndpoint.js).
+// Treating a bare calendar date as a UTC calendar day reuses that existing
+// assumption rather than inventing a new timezone policy.
+//
+// A `to` that already carries a time component (a full ISO timestamp) is
+// left completely untouched — this is an existing part of the history
+// service's contract (see tests/kadiV1HistorySearch.test.js) and must
+// never be reinterpreted as a calendar date.
+//
+// This is the single point both repository implementations pass through
+// (kadiV1HistoryRepository.js's in-memory reference receives the already-
+// expanded value and needs no change of its own; the Supabase RPC
+// receives an unambiguous UTC-suffixed timestamp it casts correctly
+// regardless of session timezone) — no repository-specific or SQL change
+// required, and no Supabase migration.
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function endOfCalendarDayUtc(dateOnly) {
+  return `${dateOnly}T23:59:59.999Z`;
+}
+
 function normalizeFilters(filters = {}) {
   if (!filters || typeof filters !== "object" || Array.isArray(filters)) return fail("HISTORY_FILTERS_INVALID");
   const allowed = new Set(["document_type", "document_number", "counterparty", "from", "to", "status", "min_total", "max_total", "text", "has_final_file"]);
@@ -107,7 +146,11 @@ function normalizeFilters(filters = {}) {
   if (filters.status && !DOCUMENT_STATES.includes(filters.status)) return fail("HISTORY_DOCUMENT_STATUS_INVALID");
   if (filters.from && !validDate(filters.from)) return fail("HISTORY_DATE_INVALID");
   if (filters.to && !validDate(filters.to)) return fail("HISTORY_DATE_INVALID");
-  if (filters.from && filters.to && Date.parse(filters.from) > Date.parse(filters.to)) return fail("HISTORY_DATE_RANGE_INVALID");
+  const normalized = clone(filters);
+  if (typeof normalized.to === "string" && DATE_ONLY_PATTERN.test(normalized.to)) {
+    normalized.to = endOfCalendarDayUtc(normalized.to);
+  }
+  if (filters.from && filters.to && Date.parse(filters.from) > Date.parse(normalized.to)) return fail("HISTORY_DATE_RANGE_INVALID");
   for (const field of ["min_total", "max_total"]) {
     if (filters[field] != null && (!Number.isSafeInteger(filters[field]) || filters[field] < 0)) return fail("HISTORY_AMOUNT_INVALID");
   }
@@ -116,7 +159,7 @@ function normalizeFilters(filters = {}) {
     if (filters[field] != null && (typeof filters[field] !== "string" || !filters[field].trim() || filters[field].length > 200)) return fail("HISTORY_TEXT_FILTER_INVALID");
   }
   if (filters.has_final_file != null && typeof filters.has_final_file !== "boolean") return fail("HISTORY_FINAL_FILE_FILTER_INVALID");
-  return ok(clone(filters));
+  return ok(normalized);
 }
 
 function createV1HistoryService({ historyRepository, documentRepository, clock = () => new Date().toISOString(), idFactory, logger = () => {}, maxPageSize = MAX_PAGE_SIZE }) {

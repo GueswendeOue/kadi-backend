@@ -342,22 +342,80 @@ applicatif). Aucune mutation Meta requise.
    [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Tests ciblés
    (184/184) puis suite complète (1345/1345), `git diff --check` propre.
    Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet mis à jour.
-6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #17
-   mise à jour (post-EDIT_OPTIONS-001).
-7. **[EN ATTENTE]** Fusion dans `main`.
-8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-9. **[EN ATTENTE]** Une vraie soumission FACTURE et DEVIS via le Flow
+6. **[FAIT]** Fusion de la PR #17 dans `main` — commit de fusion
+   `7f09f624b60b58d2de56eedae086be69883f4dad`.
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie soumission FACTURE et DEVIS via le Flow
    `DOCUMENT_OPTIONS` réel, observée en conditions réelles (validation
    téléphone), y compris une validité DEVIS non vide et une correction
    `EDIT_OPTIONS` ne portant que sur la taxe préservant une note réelle.
-10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global (test structurel unique
-    couvrant tous les Flows JSON de `flows/v1_draft/`) — à programmer dans
-    le backlog suivant, pas construit dans cette mission.
-11. **[EN ATTENTE]** Suivi produit non bloquant : mutation de Flow future
+9. **[EN ATTENTE]** `FLOW-PARITY-GATE` global (test structurel unique
+   couvrant tous les Flows JSON de `flows/v1_draft/`) — à programmer dans
+   le backlog suivant, pas construit dans cette mission.
+10. **[EN ATTENTE]** Suivi produit non bloquant : mutation de Flow future
     pour retirer `payment_method`/`reference` de l'écran FACTURE/DEVIS
     (visuellement présents mais sans effet persistant) ; mécanisme séparé
     pour permettre l'effacement explicite d'une note existante — voir
     fiche X.1.
+
+## Ordre — `fix/kadi-v1-history-contract-r0` (T2/HISTORY-CONTRACT-001 : contrat de recherche/ouverture d'historique aligné sur la vraie forme combinée du Flow)
+
+Aucune migration Supabase requise pour cette branche (correctif entièrement
+applicatif). Aucune mutation Meta requise.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@7f09f624b60b58d2de56eedae086be69883f4dad` (PR #17 fusionnée) avant
+   de créer la branche isolée.
+2. **[FAIT]** T2/HISTORY-CONTRACT-001 reproduit puis corrigé : le vrai Flow
+   combiné `kadi_history_search_v1.json` soumet toujours `query`/
+   `document_type`/`date_from`/`date_to`/`document_id` ensemble, quelle que
+   soit l'action (`SEARCH`/`OPEN_DOCUMENT`) — aucune recherche ni ouverture
+   de document depuis l'historique ne pouvait jamais réussir via le vrai
+   Flow Meta. Deux défauts annexes de la même chaîne, jusque-là masqués par
+   le premier, corrigés dans le même correctif : le texte de recherche réel
+   (`query`) jamais transmis au filtre (mauvais chemin vérifié dans
+   l'adaptateur) ; `date_from`/`date_to` (noms du Flow) jamais traduits vers
+   `from`/`to` (noms canoniques du service), rejetés avec
+   `HISTORY_FILTER_UNKNOWN`. Le constat terrain du fondateur (recherche
+   réussie puis échec générique à l'ouverture) est expliqué de bout en bout
+   et reproduit avant correctif — voir fiche Y de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). T3
+   (`RECHARGE-CONTRACT-001`) **volontairement non traité**.
+3. **[FAIT]** Tests ciblés (238/238 sur les fichiers concernés) puis suite
+   complète (1361/1361), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM trouvé
+   (passe de simplification appliquée : code défensif non exercé par aucun
+   appelant réel retiré de l'adaptateur d'historique).
+5. **[FAIT]** Revue adversariale indépendante de la PR #18 — a signalé une
+   suite au défaut HISTORY-CONTRACT-001 (MEDIUM/bloquant de fusion) :
+   `date_to` transmis tel quel, une date calendaire brute (`"2026-04-01"`)
+   analysée comme minuit exact par les deux dépôts d'historique (mémoire et
+   RPC Supabase, vérifiée en lecture seule) — une recherche « Au : 1er
+   avril » excluait silencieusement tout document mis à jour plus tard ce
+   jour-là. Corrigé sur la même branche : `kadiV1HistoryService.js`'s
+   `normalizeFilters` étend désormais une valeur `to` au format
+   `YYYY-MM-DD` jusqu'à la fin de cette journée calendaire, seule frontière
+   de normalisation traversée par les deux dépôts ; fuseau Burkina Faso
+   (UTC+0 fixe) déjà documenté ailleurs, aucune politique inventée ; un
+   horodatage ISO complet explicite reste intégralement préservé. Aucune
+   mutation ni migration Supabase — voir fiche Y.1 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Tests
+   ciblés (115/115 sur les fichiers concernés) puis suite complète
+   (1367/1367), `git diff --check` propre. Aucun autre défaut HIGH/MEDIUM
+   trouvé sur le diff complet mis à jour.
+6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #18
+   mise à jour (post-`date_to`).
+7. **[EN ATTENTE]** Fusion dans `main`.
+8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+9. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
+   l'historique via le Flow `HISTORY_SEARCH` réel, observée en conditions
+   réelles (validation téléphone), y compris un filtrage par date incluant
+   réellement le jour de fin, et le parcours de reprise de livraison déjà
+   construit (fiche R) toujours atteignable depuis un document ouvert.
+10. **[EN ATTENTE]** T3 (`RECHARGE-CONTRACT-001`) — prochaine mission de
+    correction dédiée, non commencée.
+11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+    backlog distinct, non construit dans cette mission.
 
 ## Déploiement Render
 

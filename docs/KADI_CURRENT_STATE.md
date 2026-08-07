@@ -474,6 +474,59 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche X.1 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet, la preuve et les deux suivis produit non bloquants consignés.
+* **Mise à jour (2026-08-07) : PR #17 (T1/OPTIONS-001 + EDIT_OPTIONS-001)
+  fusionnée dans `main`** (commit de fusion
+  `7f09f624b60b58d2de56eedae086be69883f4dad`) — les deux entrées
+  ci-dessus restent le compte rendu du contenu du correctif ; seul son
+  statut de fusion a changé. Non encore déployée sur Render à la date de
+  cette mise à jour.
+* **Mise à jour (2026-08-07) : T2/HISTORY-CONTRACT-001 corrigé, nouvelle
+  branche dédiée `fix/kadi-v1-history-contract-r0` créée depuis
+  `main@7f09f624b60b58d2de56eedae086be69883f4dad`, PR distincte, brouillon,
+  non fusionnée, non déployée.** Même défaut de classe que `CLIENT-001`/
+  `EDIT-CONTENT-001`/`OPTIONS-001` : le vrai Flow combiné
+  `kadi_history_search_v1.json` soumet toujours `query`/`document_type`/
+  `date_from`/`date_to`/`document_id` ensemble, quelle que soit l'action
+  choisie (`SEARCH`/`OPEN_DOCUMENT`) — **aucune recherche ni ouverture de
+  document depuis l'historique ne pouvait jamais réussir via le vrai Flow
+  Meta.** Deux défauts supplémentaires, jusque-là masqués par le premier,
+  ont été découverts et corrigés dans le même correctif : le texte de
+  recherche réel (`query`) n'était jamais transmis au filtre (mauvais
+  chemin vérifié dans l'adaptateur — le texte tapé par l'utilisateur était
+  silencieusement ignoré) ; `date_from`/`date_to` (noms du Flow) ne
+  correspondaient à aucun filtre reconnu côté service (`from`/`to`
+  attendus), rejetés avec `HISTORY_FILTER_UNKNOWN`. **Corrigé :**
+  `ACTION_FIELDS.SEARCH`/`OPEN_DOCUMENT` élargis pour accepter la vraie
+  forme combinée ; `kadiV1RuntimeAdapters.js`'s adaptateur d'historique
+  mappe désormais `query`→`text` et `date_from`/`date_to`→`from`/`to` (la
+  seule frontière de traduction Flow↔service), avec vide traité comme
+  « non fourni » pour tous les champs optionnels, et `document_id` jamais
+  transmis au filtre de recherche. Le constat terrain du fondateur
+  (recherche réussie, puis échec générique à l'ouverture) est expliqué de
+  bout en bout et reproduit avant correctif. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche Y de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet, la preuve et le suivi requis (T3 encore à corriger,
+  `FLOW-PARITY-GATE` global toujours un suivi de backlog distinct).
+* **Mise à jour (2026-08-07) : HISTORY-CONTRACT-001 suite (`date_to`)
+  corrigée avant fusion, même branche, PR #18 toujours
+  `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une revue adversariale
+  indépendante de la PR #18 a signalé un défaut MEDIUM/bloquant de fusion :
+  le vrai champ `date_to` du Flow soumet une date calendaire brute
+  (`"2026-04-01"`), analysée par les deux dépôts d'historique (mémoire et
+  RPC Supabase `kadi_v1_search_owned_documents`, vérifiée en lecture seule)
+  comme un horodatage exact à minuit — une recherche « Au : 1er avril »
+  excluait donc silencieusement tout document mis à jour plus tard dans la
+  même journée. **Corrigé :** `kadiV1HistoryService.js`'s `normalizeFilters`
+  étend désormais une valeur `to` au format `YYYY-MM-DD` jusqu'à la toute
+  fin de cette journée calendaire (`23:59:59.999Z`) avant de la transmettre
+  au dépôt — le fuseau horaire Burkina Faso (UTC+0 fixe, déjà la convention
+  documentée ailleurs dans le dépôt) est réutilisé, aucune nouvelle
+  politique inventée. Un horodatage ISO complet explicite reste
+  intégralement préservé, jamais réinterprété. **Aucune mutation ni
+  migration Supabase.** **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche
+  Y.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

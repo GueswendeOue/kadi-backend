@@ -2598,3 +2598,295 @@ les champs vides, vérifier que la couche de fusion en aval (ici
 `domain.modifyDocument`, qui rejette un correctif vide) est explicitement
 gérée par l'appelant plutôt que de laisser échouer une soumission qui ne
 change réellement rien.
+
+## Y. HISTORY-CONTRACT-001 — corrigé : le contrat de recherche/ouverture d'historique n'acceptait pas la vraie forme combinée du Flow `HISTORY_SEARCH`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-history-contract-r0`, créée depuis `main` au commit
+  `7f09f624b60b58d2de56eedae086be69883f4dad`. PR distincte, brouillon, non
+  fusionnée, non déployée.
+* **Origine :** item T2 du backlog produit par l'audit final « FINAL
+  ROADMAP GAP AUDIT R0 » (voir fiche X pour T1/`OPTIONS-001`, déjà
+  corrigé) : `HISTORY-CONTRACT-001`, même classe de défaut que
+  `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`, confirmée cette fois pour
+  l'écran `HISTORY_SEARCH`.
+
+### Constat, reproduit par exécution réelle
+
+`flows/v1_draft/kadi_history_search_v1.json` est un formulaire combiné
+unique : un seul groupe de boutons radio `action` (`SEARCH`/
+`OPEN_DOCUMENT`) et un unique pied de page qui soumet toujours ensemble
+`query`, `document_type`, `date_from`, `date_to` et `document_id`, quelle
+que soit l'action choisie. Avant correctif :
+
+```js
+validateActionPayload("HISTORY_SEARCH", "SEARCH", { query: "", document_type: "", date_from: "", date_to: "", document_id: "" })
+// → { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" }  (document_id inattendu pour SEARCH)
+validateActionPayload("HISTORY_SEARCH", "OPEN_DOCUMENT", { query: "x", document_type: "FACTURE", date_from: "...", date_to: "...", document_id: "doc:1" })
+// → { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" }  (query/document_type/date_from/date_to inattendus pour OPEN_DOCUMENT)
+```
+
+**Conséquence en production réelle : aucune recherche ni aucune ouverture
+de document depuis l'historique ne pouvait jamais réussir via le vrai
+Flow Meta** — la toute première soumission réelle échouait systématiquement,
+quelle que soit l'action choisie.
+
+### Deux défauts supplémentaires découverts pendant l'investigation, dans la même chaîne
+
+En traçant `kadiV1FlowCommandRuntime.js`'s `SEARCH` (qui transmet
+`{ownerWaId, criteria: data}` à `historyRuntime.search`) jusqu'à
+`kadiV1RuntimeAdapters.js`'s `createKadiV1HistoryRuntimeAdapter`, deux
+défauts distincts et jusque-là masqués par le rejet `FIELD_FORBIDDEN`
+ci-dessus ont été confirmés :
+
+1. **Le texte de recherche réel n'était jamais transmis.** L'adaptateur
+   vérifiait `command.query` (un champ à plat) alors que le vrai chemin
+   Flow transmet le texte sous `command.criteria.query` (imbriqué) — la
+   condition ne se déclenchait donc jamais pour ce chemin, et la ligne
+   suivante supprimait purement et simplement la clé `query` du critère
+   sans jamais la copier vers `text` (le nom canonique attendu par
+   `kadiV1HistoryService.js`). Toute recherche réelle par nom de client ou
+   mot-clé aurait silencieusement ignoré ce que l'utilisateur avait tapé.
+   (Le chemin conversationnel de `kadiV1ConversationOrchestrator.js`, qui
+   appelle `historyRuntime.search({ownerWaId, query, limit})` à plat, n'est
+   pas affecté — c'est précisément la forme que l'adaptateur vérifiait
+   correctement.)
+2. **`date_from`/`date_to` (noms du Flow) ne correspondaient à rien côté
+   service.** `kadiV1HistoryService.js`'s `normalizeFilters` ne reconnaît
+   que les noms canoniques `from`/`to` — reproduit directement :
+   `searchDocuments({filters: {date_from: "...", date_to: "..."}})` →
+   `{ok: false, error: "HISTORY_FILTER_UNKNOWN"}`, quelle que soit la
+   valeur (même vide). Une fois le premier défaut `FIELD_FORBIDDEN`
+   corrigé sans corriger celui-ci, **toute** soumission `SEARCH` réelle
+   (même entièrement vide) aurait donc continué à échouer, cette fois à la
+   couche service plutôt qu'à la couche Flow.
+
+### Correctif
+
+* `kadiV1FlowReplyRuntime.js`'s `ACTION_FIELDS.SEARCH` élargi pour inclure
+  `document_id` (accepté, jamais transmis à la recherche) ;
+  `ACTION_FIELDS.OPEN_DOCUMENT` élargi pour inclure `query`/
+  `document_type`/`date_from`/`date_to` (acceptés, jamais lus —
+  `kadiV1FlowCommandRuntime.js`'s traitement d'`OPEN_DOCUMENT` ne lit que
+  `data.document_id`, inchangé).
+* `kadiV1RuntimeAdapters.js`'s `createKadiV1HistoryRuntimeAdapter`'s
+  `search()` réécrite : nouvelle fonction `nonBlankString` (même
+  convention de tolérance au vide que les fiches P/X/X.1 : `""` traité
+  comme non fourni) ; `criteria.query` (chemin Flow imbriqué) et
+  `command.query` (chemin conversationnel à plat, inchangé) fusionnés vers
+  `text` ; `date_from`/`date_to` mappés vers `from`/`to`, la seule
+  frontière de traduction entre le vocabulaire du Flow et celui du
+  service ; `document_id` jamais transmis au service, quelle que soit sa
+  valeur — il ne doit jamais influencer `SEARCH`.
+* Aucune modification de `kadiV1HistoryService.js` ni de
+  `kadiV1HistoryRepository.js` — leur logique de filtrage
+  (`document_type`/`from`/`to`/`text`/...) était déjà correcte ; seule la
+  frontière de traduction Flow→service était en cause.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : reproduction directe des deux
+  échecs `FIELD_FORBIDDEN`, plus un test de parité qui dérive la vraie
+  forme combinée et les deux actions déclarées directement depuis
+  `kadi_history_search_v1.json` (même méthode que les fiches U/V/X).
+* `tests/kadiV1RuntimeAdapters.test.js` : nouveaux scénarios prouvant le
+  mappage `query`/`date_from`/`date_to` → `text`/`from`/`to`, la
+  tolérance au vide (une soumission entièrement vide devient une
+  recherche non contrainte, jamais un filtre qui ne correspond à rien), et
+  l'abandon de `document_id` — le scénario préexistant du chemin
+  conversationnel reste vert sans modification.
+* `tests/kadiV1HistorySearchPresentationE2E.test.js` : le générateur de
+  dépôt d'historique délègue désormais au vrai
+  `createInMemoryV1HistoryRepository` (`kadiV1HistoryRepository.js`) au
+  lieu d'ignorer les filtres, ce qui a permis de prouver un filtrage
+  réellement discriminant plutôt que simplement accepté sans effet. Onze
+  scénarios de composition de production réelle : soumission combinée
+  réelle complète (recherche puis ouverture, valeurs `query`/
+  `document_type`/`date_from`/`date_to` volontairement obsolètes laissées
+  dans le formulaire au moment d'`OPEN_DOCUMENT`, ignorées comme
+  attendu) ; `document_id` vide sur `OPEN_DOCUMENT` échoue proprement ;
+  champ inconnu toujours rejeté par la chaîne complète ; recherche par
+  nom de client ; recherche par type de document ; recherche par
+  `date_from`/`date_to` restreignant réellement les résultats ; recherche
+  non contrainte renvoyant les vrais `history_options` (jamais l'exemple
+  statique du schéma) ; isolation propriétaire (un propriétaire ne peut
+  jamais ouvrir le document d'un autre en soumettant son identifiant) ;
+  rejeu de `SEARCH` et d'`OPEN_DOCUMENT` reconnus comme doublons sans
+  second effet ; parcours de reprise de livraison existant toujours
+  atteignable depuis l'historique.
+* Focused : 238/238. Suite complète : 1361/1361. `git diff --check` :
+  propre.
+
+### Réconciliation du constat terrain (téléphone)
+
+Le constat observé (« recherche trouve 5 documents ; `HISTORY_SEARCH`
+rouvert ; tentative d'ouverture/continuation → échec générique ») est
+maintenant expliqué de bout en bout par le code, sans supposition :
+la fiche S.2 avait déjà corrigé la présentation des résultats de
+recherche (texte honnête, `history_options` réels peuplés,
+`HISTORY_SEARCH` rouvert) — la recherche « réussissait » donc
+visiblement, y compris via le défaut n°1 ci-dessus (un `query` vide ou
+silencieusement ignoré ne filtrant simplement rien). Mais l'écran
+`HISTORY_SEARCH` réel conserve dans son unique formulaire les valeurs
+`query`/`document_type`/`date_from`/`date_to` de l'étape de recherche —
+la vraie pression sur « Continuer » avec `action=OPEN_DOCUMENT` soumettait
+donc ces quatre champs en plus de `document_id`, et
+`ACTION_FIELDS.OPEN_DOCUMENT` (qui n'acceptait alors que `document_id`)
+rejetait cette vraie soumission avec `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`
+— exactement l'« échec générique » observé. Reproduit et fermé par le
+scénario E2E ci-dessus, qui soumet délibérément ces quatre champs comme
+obsolètes au moment d'`OPEN_DOCUMENT`.
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté (testé explicitement) ;
+`document_id` n'influence jamais `SEARCH` ; `query`/`document_type`/
+`date_from`/`date_to` n'influencent jamais quel document `OPEN_DOCUMENT`
+ouvre (seul `data.document_id` est lu, inchangé) ; un propriétaire ne peut
+jamais ouvrir le document d'un autre en soumettant ou devinant son
+identifiant (vérification propriétaire du dépôt inchangée, testée) ;
+aucun identifiant WhatsApp complet exposé ; aucune génération, rendu,
+débit, réservation ni capture ne se produit lors d'une `SEARCH`/
+`OPEN_DOCUMENT` (prouvé structurellement — tous les ports non liés lèvent
+une exception au moindre appel) ; rejeu/idempotence inchangés et testés
+spécifiquement pour ces deux actions pour la première fois ; le parcours
+de reprise de livraison déjà construit (fiche R) reste atteignable depuis
+l'historique. Aucune migration Supabase requise ; aucune mutation Meta
+requise (le contrat Flow existant reste valide tel quel).
+
+### Suivi requis (hors périmètre de cette correction)
+
+T3 (`RECHARGE-CONTRACT-001`) reste non traité, à corriger dans une mission
+séparée. Le `FLOW-PARITY-GATE` global (fiche X) reste un suivi de backlog
+distinct — cette correction ajoute la couverture de parité spécifique à
+`HISTORY_SEARCH`, sans construire le gate générique.
+
+### Prévention
+
+Même principe que les fiches U/V/X : quand un écran Flow combine plusieurs
+actions dans un seul formulaire, vérifier explicitement, à partir du vrai
+fichier JSON, que chaque champ qu'il peut soumettre a un traitement
+backend explicite pour **chaque** action déclarée — jamais un rejet
+générique du fait de la présence d'un champ non pertinent pour l'action en
+cours. Et, spécifique à cette fiche : quand un même adaptateur sert deux
+appelants réels de formes différentes (ici un chemin conversationnel à
+plat et un chemin Flow imbriqué), vérifier explicitement, avec un test qui
+construit chaque forme réelle séparément, que le champ pertinent est bien
+lu à l'endroit où l'appelant le place réellement — une condition qui
+vérifie le mauvais chemin ne produit ni erreur ni avertissement, elle
+échoue simplement en silence.
+
+### Y.1 — HISTORY-CONTRACT-001, suite : `date_to` excluait silencieusement le jour de fin d'une recherche par date
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-history-contract-r0`, PR #18, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #18 (mission
+  « KADI V1 — T2 HISTORY-CONTRACT-001 INDEPENDENT REVIEW FIX R1 »), constat
+  MEDIUM/bloquant de fusion.
+
+### Constat, reproduit avant tout correctif
+
+Le vrai champ Flow `date_to` (libellé « Au ») soumet une date calendaire
+brute (`"2026-04-01"`), jamais un horodatage complet. Les deux
+implémentations du dépôt d'historique comparent `to` comme une borne
+supérieure **inclusive** contre un vrai horodatage
+(`issued_at`/`updated_at`) avec `<=` :
+
+* Dépôt de référence en mémoire (`kadiV1HistoryRepository.js`) :
+  `new Date(document.issued_at || document.updated_at) > new Date(filters.to)` → exclu.
+* RPC Supabase en production, vérifiée en lecture seule dans
+  `supabase/migrations/20260803022258_add_kadi_v1_history_search.sql`,
+  jamais modifiée :
+  `coalesce(d.issued_at, d.updated_at) <= (p_filters->>'to')::timestamptz`.
+
+Une date brute analysée comme horodatage correspond exactement à minuit ce
+jour-là. **Conséquence : `date_to: "2026-04-01"` excluait silencieusement
+tout document du reste de cette journée** — reproduit directement avant
+correctif avec trois documents (31 mars 23h, 1er avril 10h, 2 avril 0h) et
+une recherche `from`/`to` = 1er avril/1er avril : résultat vide, alors que
+le document du 1er avril 10h aurait dû apparaître.
+
+### Sémantique canonique déterminée avant correction
+
+`from` ne nécessite **aucun** correctif : une date brute s'analyse déjà
+comme minuit ce jour-là, exactement la borne inférieure inclusive qu'une
+plage calendaire attend. Seul `to` doit être étendu à la toute fin de la
+même journée calendaire.
+
+**Fuseau horaire — aucune nouvelle politique inventée :** le Burkina Faso
+(Africa/Ouagadougou) est à UTC+0 fixe, sans heure d'été — déjà la
+convention produit documentée ailleurs dans le dépôt : `index.js`
+(« Burkina = UTC »), `kadiReengagementWorker.js` (« Burkina = UTC+0 »), et
+`issued_at_timezone: "Africa/Ouagadougou"` enregistré aux côtés
+d'horodatages UTC dans `kadiInvoiceFlowCompletion.js`/
+`kadiInvoiceFlowEndpoint.js`. Traiter une date calendaire brute comme un
+jour calendaire UTC réutilise cette convention déjà établie, sans en
+inventer une nouvelle.
+
+Une date déjà accompagnée d'une composante horaire (un horodatage ISO
+complet, déjà une partie existante du contrat du service — voir
+`tests/kadiV1HistorySearch.test.js`) reste **intégralement inchangée** :
+jamais réinterprétée comme une date calendaire.
+
+### Correctif — la plus petite correction sûre, aucune migration Supabase
+
+Une seule frontière de normalisation, dans `kadiV1HistoryService.js`'s
+`normalizeFilters` (le point unique par lequel passent les deux
+implémentations de dépôt) : une valeur `to` correspondant exactement au
+format `YYYY-MM-DD` est étendue vers `${to}T23:59:59.999Z` avant d'être
+transmise au dépôt. Le dépôt en mémoire n'a besoin d'aucune modification
+propre (il reçoit déjà la valeur étendue) ; le dépôt Supabase transmet la
+valeur telle quelle au RPC, qui la caste en `timestamptz` — un horodatage
+explicitement suffixé `Z` est interprété sans ambiguïté par PostgreSQL
+quel que soit le fuseau horaire de session, donc compatible avec le `<=`
+existant sans aucune modification SQL. **Aucune mutation ni migration
+Supabase effectuée ni requise.**
+
+La vérification de plage inversée (`from > to`) utilise désormais la
+valeur `to` **étendue** pour la comparaison — nécessaire pour qu'une plage
+sur un seul jour (`from === to`) ou un `from` explicite tardif dans la
+journée avec un `to` calendaire du même jour ne soit jamais rejetée à tort
+comme inversée.
+
+### Preuve
+
+* Reproduction directe avant correctif (script isolé contre
+  `kadiV1HistoryService.js`/`kadiV1HistoryRepository.js`, résultat vide),
+  confirmée corrigée après (le document du 1er avril 10h apparaît).
+* `tests/kadiV1HistorySearch.test.js` : nouveaux scénarios — plage sur un
+  seul jour calendaire (inclut le document du jour de fin, exclut le
+  lendemain) ; `from` seul ; `to` seul ; plage mars→avril déjà existante
+  toujours correcte avec le jour de fin désormais réellement inclusif ;
+  horodatage ISO complet explicite préservé exactement, jamais
+  réinterprété ; date invalide toujours rejetée après la normalisation ;
+  plage réellement inversée toujours rejetée, plage sur un seul jour
+  jamais confondue avec une plage inversée ; valeur transmise au RPC
+  Supabase vérifiée être l'horodatage de fin de journée étendu (lecture
+  seule, aucune mutation).
+* `tests/kadiV1HistorySearchPresentationE2E.test.js` : nouveau scénario de
+  composition de production réelle utilisant la vraie forme combinée à
+  cinq champs — recherche `date_from`/`date_to` = même jour calendaire,
+  document du jour de fin inclus, document du lendemain exclu.
+* Focused : 115/115 (fichiers concernés). Suite complète : 1367/1367.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucune mutation ni migration Supabase ; aucune mutation Meta ; recherche
+par texte/type de document inchangée et testée ; `OPEN_DOCUMENT`
+inchangé et testé ; isolation propriétaire inchangée et testée ; date
+invalide et plage réellement inversée toujours rejetées ; horodatage ISO
+complet explicite jamais réinterprété comme une date calendaire.
+
+### Prévention
+
+Quand un filtre de plage inclusif (`<=`) compare une date fournie par
+l'utilisateur sous forme calendaire (« Au : 1er avril ») à un horodatage
+réel, vérifier explicitement ce qu'une comparaison exacte de date brute
+signifie réellement — une date calendaire n'est jamais un instant précis,
+c'est une journée entière. Toujours normaliser à la frontière unique par
+laquelle passent toutes les implémentations concernées (ici le service,
+en amont des deux dépôts), jamais dans chaque implémentation séparément ;
+et toujours vérifier la convention de fuseau horaire déjà établie dans le
+dépôt avant d'en choisir une, plutôt que d'en inventer une nouvelle.

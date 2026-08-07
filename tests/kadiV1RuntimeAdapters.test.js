@@ -333,6 +333,49 @@ test("history adapter maps natural search to the existing text filter", async ()
   assert.equal(received.ownerWaId, OWNER);
 });
 
+// HISTORY-CONTRACT-001: the real HISTORY_SEARCH Flow's combined form
+// submits query/document_type/date_from/date_to/document_id together on
+// every SEARCH submission, blank fields included. kadiV1HistoryService.js's
+// normalizeFilters only recognizes the canonical text/from/to — never
+// query/date_from/date_to, which it previously received unchanged and
+// rejected outright as HISTORY_FILTER_UNKNOWN (or, for document_type, would
+// have silently persisted an empty-string filter matching nothing).
+test("history adapter maps the real Flow's query/date_from/date_to to the canonical text/from/to filters", async () => {
+  let received;
+  const adapter = createKadiV1HistoryRuntimeAdapter({ historyService: {
+    searchDocuments: async (command) => { received = command; return { ok: true, value: { documents: [] } }; },
+    getDocumentDetails: async () => ({ ok: true, value: {} }),
+  } });
+  await adapter.search({
+    ownerWaId: OWNER,
+    criteria: { query: "Moussa", document_type: "FACTURE", date_from: "2026-01-01", date_to: "2026-08-01", document_id: "" },
+  });
+  assert.deepEqual(received.filters, { text: "Moussa", document_type: "FACTURE", from: "2026-01-01", to: "2026-08-01" });
+});
+
+test("history adapter treats every blank real-Flow field as not provided, never a literal empty-string filter", async () => {
+  let received;
+  const adapter = createKadiV1HistoryRuntimeAdapter({ historyService: {
+    searchDocuments: async (command) => { received = command; return { ok: true, value: { documents: [] } }; },
+    getDocumentDetails: async () => ({ ok: true, value: {} }),
+  } });
+  await adapter.search({
+    ownerWaId: OWNER,
+    criteria: { query: "", document_type: "", date_from: "", date_to: "", document_id: "" },
+  });
+  assert.deepEqual(received.filters, {}, "an all-blank real SEARCH submission must become an unconstrained search, never a filter that matches nothing");
+});
+
+test("history adapter drops document_id from SEARCH filters — it must never influence which documents are returned", async () => {
+  let received;
+  const adapter = createKadiV1HistoryRuntimeAdapter({ historyService: {
+    searchDocuments: async (command) => { received = command; return { ok: true, value: { documents: [] } }; },
+    getDocumentDetails: async () => ({ ok: true, value: {} }),
+  } });
+  await adapter.search({ ownerWaId: OWNER, criteria: { query: "", document_type: "", date_from: "", date_to: "", document_id: "doc:leftover-from-a-previous-search" } });
+  assert.equal(Object.hasOwn(received.filters, "document_id"), false);
+});
+
 test("wallet adapter accepts only a non-negative integer credit balance", async () => {
   const valid = createKadiV1WalletRuntimeAdapter({ balanceReader: { getBalance: async () => ({ ok: true, value: { credits: 7 } }) } });
   assert.deepEqual(await valid.getBalance({ ownerWaId: OWNER }), { ok: true, value: { credits: 7 } });
