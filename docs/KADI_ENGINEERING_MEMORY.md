@@ -1698,3 +1698,107 @@ Render** (voir statut en tête de fiche).
   fournisseur, offre à deux boutons, seule la confirmation explicite
   atteint `retryDelivery` avec `confirmed:true`, l'annulation ne mute
   rien). Le câblage réel s'est révélé correct, sans défaut détecté.
+
+## S. Reprise réelle par le fondateur (2026-08-07) : trois défauts de production confirmés et corrigés — recherche de destination, résultats d'historique, navigation d'édition en revue
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, distincte de
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0` (fiche R, déjà
+  fusionnée et déployée). Non fusionnée, non déployée à la date de cette
+  fiche.
+* **Contexte :** après le déploiement du correctif de la fiche R
+  (commit `aacf7621...`), le fondateur a réellement tenté une reprise de
+  livraison en conditions réelles. Trois défauts distincts ont été
+  confirmés, chacun par lecture directe des logs Render réels et par
+  requêtes en lecture seule contre la base réelle — jamais par simulation.
+
+### S.1 — Recherche de destination : échec confirmé avant tout appel Meta
+
+* **Constat :** la tentative de reprise n'a **jamais atteint Meta** —
+  `kadi_v1_delivery_attempts.last_error_code` est resté
+  `DELIVERY_DESTINATION_LOOKUP_FAILED` sur un document flambant neuf
+  (`FA-20260807010715-1961CBCC`, généré et échoué dans la même fenêtre),
+  prouvant que ce n'est pas un problème isolé au document CANARY d'origine
+  (`FA-20260806190633-A0EAC605`, resté lui-même intact et non retenté).
+* **Correctif :** `kadiV1ProductionInfrastructure.js`'s `deliverDocument`
+  relit désormais le propriétaire jusqu'à `DESTINATION_LOOKUP_MAX_ATTEMPTS`
+  fois (3, `DESTINATION_LOOKUP_RETRY_DELAY_MS` = 75 ms, horloge/sleeper
+  injectables) — **uniquement** autour de cette lecture, jamais autour de
+  l'envoi Meta lui-même, jamais utilisé pour remettre en cause une
+  incohérence de destination réellement confirmée (`DELIVERY_DESTINATION_MISMATCH`
+  reste un échec immédiat, sans retry). Une erreur de forme permanente
+  (droits/schéma — codes `42501`, `42P01`, `PGRST301`, `PGRST202`) sort
+  immédiatement sans épuiser le budget de tentatives.
+* **Preuve :** `tests/kadiV1DeliveryProvider.test.js`, scénarios A à E.
+
+### S.2 — Deux défauts distincts d'historique, confirmés séparément
+
+1. **`Historique` en texte brut listait « aucun document ».** Le mot
+   déclencheur lui-même était transmis comme critère de recherche
+   (`query: input.text`), filtrant tout. Reproduit par une requête directe
+   contre le RPC réel : `text: "Historique"` → 0 ligne ; requête vide → 11
+   lignes. **Correctif minimal dans `kadiV1ConversationOrchestrator.js`** :
+   seul le texte résiduel après retrait des mots déclencheurs
+   (`retrouve`, `retrouver`, `historique`, `dernier(s)`, `brouillon`,
+   `reprends`, `reprendre`) devient la requête ; `"Historique facture"`
+   continue de chercher `"facture"`.
+2. **L'action Flow `SEARCH` acceptait la recherche mais n'affichait jamais
+   les résultats.** `nextFlowForReply` n'avait aucun cas pour `"SEARCH"` ;
+   le texte générique « La recherche est terminée. » était renvoyé que 0
+   ou 20 documents aient été trouvés, sans jamais rouvrir le Flow. Le
+   contrat JSON de `kadi_history_search_v1.json` prévoyait déjà un champ
+   `history_options` (dropdown de résultats) — jamais alimenté.
+   **Correctif :** `canonicalReplyText` distingue désormais 0 résultat
+   (texte honnête, aucun Flow rouvert) de N résultats (texte avec le
+   compte réel) ; `nextFlowForReply("SEARCH", ...)` rouvre `HISTORY_SEARCH`
+   uniquement quand des résultats existent ; `suggestedDataForFlow` peuple
+   `history_options` avec les vrais `document_id`/`document_number`/
+   `counterparty` (jamais `owner_wa_id`, jamais un identifiant complet).
+   **Aucun nouveau Flow Meta requis** — le contrat existant suffisait.
+* **Preuve :** `tests/kadiV1ConversationOrchestrator.test.js`,
+  `tests/kadiV1ProductionPresenter.test.js`,
+  `tests/kadiV1HistorySearchPresentationE2E.test.js` (chaîne complète
+  réelle : `nfm_reply(SEARCH)` → présentateur → `history_options` réels →
+  `nfm_reply(OPEN_DOCUMENT)` → « Réenvoyer le PDF » atteint).
+
+### S.3 — Navigation d'édition en revue : dérivée vers un défaut distinct, observée en cours de mission
+
+* **Constat (fenêtre 2026-08-07T01:24–01:26Z) :** depuis l'écran de revue,
+  choisir « Modifier le client », « Modifier les articles » ou « Modifier
+  les options » renvoyait systématiquement le texte attendu (« Vous pouvez
+  modifier le client. », etc.) mais **rouvrait à chaque fois l'écran de
+  revue lui-même** (`flow_key: 'DOCUMENT_REVIEW'` dans les logs), jamais le
+  Flow d'édition réel — l'utilisateur ne voyait ensuite que l'action
+  générique « Vérifier ». L'annulation explicite (« Annuler ») a, elle,
+  fonctionné correctement (« L'opération est annulée. ») — **ce n'est pas
+  un défaut**, seulement la confirmation que la voie de sortie normale
+  restait, elle, opérationnelle.
+* **Cause racine confirmée (classification B —
+  REVIEW_EDIT_ACTION_MAPPING_WRONG) :** `beginEdit`/`reopenForCorrection`
+  (`kadiV1SharedDocumentPipeline.js`) fait légitimement repasser le
+  document à `READY_FOR_REVIEW` (pour permettre sa re-vérification une
+  fois l'édition enregistrée) — mais `kadiV1ProductionPresenter.js`'s
+  `nextFlowForReply` évaluait `routeDocument(document)` (qui mappe
+  `READY_FOR_REVIEW` → `DOCUMENT_REVIEW`) **avant** le mappage explicite de
+  `EDIT_CLIENT`/`EDIT_CONTENT`/`EDIT_OPTIONS`, qui existait pourtant déjà
+  dans le code mais n'était jamais atteint pour ce statut précis.
+* **Correctif :** le mappage explicite `EDIT_CLIENT`/`EDIT_CONTENT`/
+  `EDIT_OPTIONS` (y compris ses cas spéciaux RECU→`RECEIPT_DETAILS` et
+  DECHARGE→`DISCHARGE_DETAILS`) est désormais évalué **avant**
+  `routeDocument`, uniquement pour ces trois actions — aucune autre
+  action/route n'est affectée.
+* **Preuve :** `tests/kadiV1ProductionPresenter.test.js`, nouveaux tests
+  reproduisant exactement le document `READY_FOR_REVIEW` post-édition pour
+  les trois actions, plus la confirmation que `CANCEL` reste inchangé.
+* **Limite assumée :** contrairement aux deux défauts précédents, celui-ci
+  n'a **pas** reçu de test de composition de production complet avec le
+  vrai `documentRuntime.beginEdit` bout en bout (contrainte de temps) — les
+  tests couvrent le présentateur réel avec la forme exacte de document que
+  `beginEdit` produit réellement (vérifiée par lecture directe du code),
+  ce qui prouve le correctif sans exercer la chaîne complète de mutation.
+* **Prévention :** quand une fonction de mutation fait transiter un
+  document vers un statut partagé par une règle de routage générique,
+  vérifier explicitement l'ordre d'évaluation entre cette règle générique
+  et tout mappage spécifique à l'action qui a déclenché la mutation — un
+  mappage présent dans le code n'est une garantie de rien s'il n'est
+  jamais atteint.

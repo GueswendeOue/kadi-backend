@@ -327,11 +327,25 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   document → présentateur → bouton webhook réel → reprise de livraison,
   pour un échec confirmé et pour une issue inconnue) a également été
   ajoutée, fermant le dernier écart de test identifié par la revue
-  précédente. **PR #14 reste `DRAFT`, non fusionnée, non déployée. Le
-  document CANARY du fondateur (`FA-20260806190633-A0EAC605`) reste non
-  récupéré** — la migration de la base ne constitue en rien une reprise de
-  livraison réelle ; celle-ci exige la fusion, un déploiement Render manuel
-  explicite, puis une vraie reprise observée en conditions réelles.
+  précédente.
+* **Mise à jour (2026-08-07) : PR #14 fusionnée et déployée.** Commit de
+  fusion `aacf76211552800054983c726a1211f22ed29aeb`, déployé manuellement
+  sur Render (`dep-d9qilviju40c73batvn0`), lecture de préparation confirmée
+  (`KADI_V1_WEBHOOK_READY` : `ready:true`, `state:"READY"`,
+  `rollout_mode:"CANARY"`, `deliveryRetryRuntime:true`). **Une vraie
+  tentative de reprise par le fondateur a ensuite confirmé trois défauts de
+  production distincts** — voir fiche S de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet : (1) la recherche de destination échouait avant tout appel Meta,
+  y compris sur un document flambant neuf ; (2) « Historique » en texte
+  brut et les résultats de recherche via Flow ne s'affichaient pas ; (3) la
+  navigation d'édition depuis l'écran de revue rouvrait systématiquement le
+  même écran au lieu du Flow d'édition attendu. Correctifs écrits sur la
+  branche `fix/kadi-v1-destination-lookup-and-history-r0`, **non fusionnée,
+  non déployée**. **Le document CANARY du fondateur
+  (`FA-20260806190633-A0EAC605`) reste non récupéré**, ainsi que le
+  document créé pendant l'incident (`FA-20260807010715-1961CBCC`) — aucun
+  des deux n'a été retenté pendant le diagnostic ni la correction.
 
 ## Blocages connus
 

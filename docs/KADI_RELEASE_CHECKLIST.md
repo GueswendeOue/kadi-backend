@@ -222,14 +222,28 @@ classification d'issue dégradée en historique) — ce risque est maintenant
    [`runbooks/DEPLOY_CANARY.md`](runbooks/DEPLOY_CANARY.md)) et vérification
    du commit `live` exact.
 6. **[EN ATTENTE]** Vérification du démarrage et de l'absence d'erreur.
-7. **[EN ATTENTE]** Une vraie reprise de livraison (bouton « Réenvoyer le
-   PDF », depuis le premier échec **et** depuis l'historique) observée en
-   conditions réelles avant de considérer ce correctif comme validé — **la
-   migration de la base ne constitue pas, à elle seule, une reprise de
-   livraison ; le document CANARY du fondateur
-   (`FA-20260806190633-A0EAC605`) reste non récupéré tant que la fusion et
-   le déploiement n'ont pas eu lieu. Ne pas se contenter des tests locaux
-   pour affirmer qu'il a été récupéré.**
+7. **[FAIT]** Une vraie reprise de livraison a été observée en conditions
+   réelles après fusion et déploiement (commit `aacf7621...`) — **et a
+   confirmé trois défauts de production distincts**, voir la fiche S de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) et la section
+   suivante. Le document CANARY du fondateur
+   (`FA-20260806190633-A0EAC605`) reste non récupéré.
+
+## Ordre — `fix/kadi-v1-destination-lookup-and-history-r0` (fiabilité de la recherche de destination, résultats d'historique, navigation d'édition)
+
+Aucune migration Supabase requise pour cette branche (aucun nouveau champ de
+base de données, aucune contrainte modifiée) — code applicatif uniquement.
+
+1. **[FAIT]** Code écrit, testé localement (suite complète verte,
+   `git diff --check` propre).
+2. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+3. **[EN ATTENTE]** Fusion dans `main`.
+4. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+5. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
+   fondateur, sur `FA-20260806190633-A0EAC605` **et** sur
+   `FA-20260807010715-1961CBCC`, observée en conditions réelles — ne pas
+   se contenter des tests locaux pour affirmer que l'un ou l'autre a été
+   récupéré.
 
 ## Déploiement Render
 
