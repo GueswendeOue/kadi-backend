@@ -335,6 +335,14 @@ function createSharedDocumentPipeline({
     }
     const patch = { ...options.value };
     if (patch.options) patch.options = { ...(loaded.value.options || {}), ...patch.options };
+    // EDIT_OPTIONS-001: now that normalizeOptions drops every blank optional
+    // field (numeric and text alike), a real submission where nothing was
+    // actually changed can legitimately normalize down to an empty patch —
+    // domain.modifyDocument() rejects a genuinely empty patch with
+    // DOCUMENT_PATCH_INVALID, so that case is handled here as an explicit
+    // no-op instead: the loaded document is returned unchanged, version and
+    // idempotency guards above already ran normally.
+    if (Object.keys(patch).length === 0) return ok(loaded.value);
     return persistModifiedLoaded(loaded.value, command, "OPTIONS_SET", patch, ["options", "taxes", "discount", "notes", "payment_terms", "validity"]);
   }
 

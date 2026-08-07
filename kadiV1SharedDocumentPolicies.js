@@ -247,17 +247,39 @@ function normalizeOptions(documentType, value) {
   // field today (the only existing meaning anywhere in the domain is
   // receipt-specific). Silently dropped by design, not a bug — see
   // docs/KADI_ENGINEERING_MEMORY.md.
+  //
+  // EDIT_OPTIONS-001: unlike ARTICLE_FORM/EDIT_CLIENT, the real EDIT_OPTIONS
+  // Flow never prefills notes/payment_terms with the document's current
+  // values — its single combined form submits them as blank whenever the
+  // owner leaves them untouched, exactly like the numeric fields above. A
+  // blank value here must mean "not provided", never "clear the existing
+  // value": kadiV1SharedDocumentPipeline.js's setOptions shallow-merges this
+  // patch directly onto the persisted document, so persisting an explicit ""
+  // would silently erase a real, previously-saved note the owner never
+  // touched, purely because they corrected something unrelated (e.g. tax).
+  // Same rule applies identically to the initial DOCUMENT_OPTIONS
+  // submission: a blank field there means "no note", which omitting the key
+  // achieves identically. Explicitly clearing an already-set note is a
+  // separate, unsolved product/UX question (see docs/KADI_ENGINEERING_MEMORY.md)
+  // — not addressed here, since blank-as-absent makes it structurally
+  // impossible today and inventing a new client-controlled "clear" sentinel
+  // is explicitly out of scope for this fix.
   for (const field of ["notes", "payment_terms"]) {
-    if (Object.hasOwn(value, field)) result[field] = value[field];
+    if (Object.hasOwn(value, field) && value[field] !== "" && value[field] != null) {
+      result[field] = value[field];
+    }
   }
   // A real Flow submission with every optional field left blank (the most
   // common real case — a user who has nothing to change) now legitimately
   // normalizes down to an empty patch: payment_method/reference are always
-  // dropped, and every numeric/text field above is skipped when blank. This
-  // must succeed as a harmless no-op, never an error — the adapter layer
+  // dropped, and every numeric/text field above (including notes/
+  // payment_terms as of EDIT_OPTIONS-001) is skipped when blank. This must
+  // succeed as a harmless no-op, never an error — the adapter layer
   // (kadiV1RuntimeAdapters.js's setOptions) already short-circuits before
   // ever reaching this function when the raw submitted object itself has
-  // zero keys; DOCUMENT_OPTIONS_EMPTY served no caller and is removed.
+  // zero keys, and the shared pipeline's own setOptions treats a fully-empty
+  // normalized result as a no-op rather than an invalid patch (see there);
+  // DOCUMENT_OPTIONS_EMPTY served no caller and is removed.
   return ok(result);
 }
 
