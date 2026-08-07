@@ -527,6 +527,38 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   migration Supabase.** **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche
   Y.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-07) : PR #18 (T2/HISTORY-CONTRACT-001 +
+  `date_to`) fusionnée dans `main`** (commit de fusion
+  `07ea815ce016ac4a034498e436db391486b420ff`) — **T1 et T2 sont donc tous
+  deux `CLOSED`/`MERGED`.** Les entrées ci-dessus restent le compte rendu
+  du contenu du correctif ; seul son statut de fusion a changé. Non
+  encore déployée sur Render à la date de cette mise à jour.
+* **Mise à jour (2026-08-07) : T3/RECHARGE-CONTRACT-001 corrigé, nouvelle
+  branche dédiée `fix/kadi-v1-recharge-contract-r0` créée depuis
+  `main@07ea815ce016ac4a034498e436db391486b420ff`, PR distincte,
+  brouillon, non fusionnée, non déployée.** Même défaut de classe que
+  `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`/`HISTORY-CONTRACT-001` : le
+  vrai Flow combiné `kadi_recharge_v1.json` soumet toujours `pack_id`/
+  `payment_reference` ensemble, quelle que soit l'action choisie
+  (`SELECT_PACK`/`CHECK_PAYMENT`/`CANCEL`) — **aucune sélection de pack,
+  aucune vérification de paiement et aucune annulation de recharge ne
+  pouvait jamais réussir via le vrai Flow Meta.** Contrainte
+  architecturale respectée : `CANCEL` est une action partagée
+  globalement par `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/
+  `GENERATION_CONFIRMATION`/`RECHARGE` — une nouvelle table flow-aware
+  (`FLOW_ACTION_FIELD_OVERRIDES`, consultée avant la liste blanche
+  globale) accepte `pack_id`/`payment_reference` uniquement pour
+  `RECHARGE`/`CANCEL`, sans jamais faire fuiter ce contrat vers les
+  autres Flows (testé explicitement). Traçage complet de la chaîne :
+  **aucun défaut de second niveau trouvé** — le reste de la chaîne
+  (résolution du pack depuis le catalogue serveur, isolation
+  propriétaire de `CHECK_PAYMENT`/`CANCEL`, rejet des champs financiers
+  fournis par le client) était déjà correct. Un défaut de la même classe,
+  confirmé pour `GENERATION_CONFIRMATION`/`CANCEL`, est délibérément
+  **non corrigé** et consigné pour un futur T4. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche Z de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet, la preuve et le suivi requis.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

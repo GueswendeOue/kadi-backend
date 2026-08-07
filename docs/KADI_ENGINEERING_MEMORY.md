@@ -2890,3 +2890,184 @@ laquelle passent toutes les implémentations concernées (ici le service,
 en amont des deux dépôts), jamais dans chaque implémentation séparément ;
 et toujours vérifier la convention de fuseau horaire déjà établie dans le
 dépôt avant d'en choisir une, plutôt que d'en inventer une nouvelle.
+
+## Z. RECHARGE-CONTRACT-001 — corrigé : le contrat de sélection de pack/vérification de paiement/annulation n'acceptait pas la vraie forme combinée du Flow `RECHARGE`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-recharge-contract-r0`, créée depuis `main` au commit
+  `07ea815ce016ac4a034498e436db391486b420ff` (PR #18 fusionnée). PR
+  distincte, brouillon, non fusionnée, non déployée.
+* **Origine :** item T3 du backlog produit par l'audit final « FINAL
+  ROADMAP GAP AUDIT R0 » (voir fiche X pour T1/`OPTIONS-001`, fiche Y pour
+  T2/`HISTORY-CONTRACT-001`, tous deux déjà corrigés et fusionnés) :
+  `RECHARGE-CONTRACT-001`, même classe de défaut que `CLIENT-001`/
+  `EDIT-CONTENT-001`/`OPTIONS-001`/`HISTORY-CONTRACT-001`, confirmée cette
+  fois pour l'écran `RECHARGE`.
+
+### Constat, reproduit par exécution réelle
+
+`flows/v1_draft/kadi_recharge_v1.json` est un formulaire combiné unique :
+un seul groupe de boutons radio `action` (`SELECT_PACK`/`CHECK_PAYMENT`/
+`CANCEL`) et un unique pied de page qui soumet toujours ensemble `pack_id`
+et `payment_reference`, quelle que soit l'action choisie. Avant correctif,
+les trois actions réelles échouaient systématiquement avec
+`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN` — reproduit directement pour chacune.
+**Conséquence en production réelle : aucune sélection de pack, aucune
+vérification de paiement et aucune annulation de recharge ne pouvait
+jamais réussir via le vrai Flow Meta.**
+
+### Contrainte architecturale : `CANCEL` est une action globale partagée
+
+`ACTION_FIELDS.CANCEL` (`[]`) est une entrée **unique**, partagée par
+`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`, `GENERATION_CONFIRMATION` et
+`RECHARGE` — `validateActionPayload(flowKey, action, data)` ne consultait
+jusqu'ici que `action`, jamais `flowKey`, pour déterminer la liste blanche
+de champs. Élargir `ACTION_FIELDS.CANCEL` globalement aurait fait accepter
+silencieusement `pack_id`/`payment_reference` à `DOCUMENT_REVIEW`/
+`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION` — jamais validé comme
+intentionnel, et réouvrant exactement la classe de défaut visée par cette
+correction.
+
+**Correctif structurel minimal :** nouvelle table
+`FLOW_ACTION_FIELD_OVERRIDES`, consultée en premier dans
+`validateActionPayload` (`FLOW_ACTION_FIELD_OVERRIDES[flowKey]?.[action] || ACTION_FIELDS[action] || []`)
+— une seule entrée, `RECHARGE.CANCEL`, acceptant `pack_id`/
+`payment_reference`. Aucune autre paire (`flowKey`, `action`) n'est
+affectée. `SELECT_PACK`/`CHECK_PAYMENT` n'ont, eux, aucun risque
+inter-Flow (déclarés uniquement pour `RECHARGE` dans `FLOW_ACTIONS`) et
+sont élargis directement dans la table globale `ACTION_FIELDS`, comme pour
+`OPTIONS-001`/`HISTORY-CONTRACT-001`.
+
+### Traçage complet de la chaîne : aucun défaut de second niveau trouvé
+
+Contrairement à `OPTIONS-001`/`HISTORY-CONTRACT-001`, le traçage complet
+(Flow JSON → `validateActionPayload` → session → `FlowCommandRuntime` →
+`kadiV1ProductionInfrastructure.js`'s `createKadiV1RechargeRuntime` →
+`kadiV1RechargeService.js`/`kadiV1RechargeRepository.js`/fournisseur de
+paiement) n'a révélé **aucun** défaut masqué supplémentaire :
+
+* `kadiV1FlowCommandRuntime.js`'s `SELECT_PACK` ne lit jamais que
+  `data.pack_id` ; `CHECK_PAYMENT` ne lit jamais que
+  `data.payment_reference` ; `RECHARGE`/`CANCEL` ne transmet aucune
+  donnée du tout à l'exécution recharge — les trois ignoraient déjà
+  correctement les champs non pertinents avant ce correctif.
+* `selectPack()` résout le pack exclusivement depuis le catalogue
+  serveur ; `createRechargeSession` rejette explicitement toute
+  soumission contenant `amount`/`currency`/`credits`.
+* `checkPayment()` vérifie déjà `resolved.value.owner_wa_id !== ownerWaId`
+  avant tout accès — isolation propriétaire déjà correcte.
+* `cancel()` dérive déjà exclusivement `ownerWaId` du contexte
+  authentifié (jamais un identifiant de session/paiement fourni par le
+  client) et ne prend même pas `pack_id`/`payment_reference` en
+  paramètre.
+
+Le seul défaut réel était la couche `validateActionPayload` — corrigée
+ici, sans aucune autre modification de fichier de production.
+
+### Constat annexe enregistré, non corrigé (T4)
+
+`kadi_generation_confirmation_v1.json` est **également** un formulaire
+combiné : son unique pied de page soumet toujours `quote_id`, y compris
+pour `CANCEL` — mais `ACTION_FIELDS.CANCEL` reste `[]`, donc une vraie
+soumission `GENERATION_CONFIRMATION`/`CANCEL` échoue encore aujourd'hui
+avec `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`, même classe de défaut.
+**Volontairement non corrigé dans cette mission** (hors périmètre T3
+explicite) — reproduit et consigné par un test dédié qui prouve que ce
+défaut reste inchangé, prêt pour un futur T4.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : reproduction directe des trois
+  échecs `FIELD_FORBIDDEN` ; acceptation avec champ non pertinent vide ou
+  obsolète pour chaque action ; champ inconnu toujours rejeté ; un champ
+  d'autorité financière (`credits`) toujours rejeté
+  (`KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN`) ; isolation flow-aware
+  de `CANCEL` prouvée explicitement sur `DOCUMENT_REVIEW` et
+  `DOCUMENT_PREVIEW` (acceptent toujours `{}`, rejettent toujours
+  `pack_id`/`payment_reference`) ; défaut `GENERATION_CONFIRMATION`
+  consigné, non corrigé ; test de parité qui dérive la vraie forme
+  combinée et les trois actions déclarées directement depuis
+  `kadi_recharge_v1.json`.
+* `tests/kadiV1RechargeContractE2E.test.js` (nouveau) : composition de
+  production réelle complète — vrai `createKadiV1RechargeRuntime`
+  (`kadiV1ProductionInfrastructure.js`), vrai `kadiV1RechargeService.js`,
+  vrai dépôt recharge en mémoire, fournisseur de paiement factice
+  (aucun appel réseau réel, aucune mutation Supabase — un faux client
+  Supabase minimal implémente uniquement la requête brute en lecture que
+  `cancel()` émet, synchronisée avec le vrai dépôt en mémoire). Treize
+  scénarios couvrant les seize exigences de la mission : `SELECT_PACK`
+  avec forme combinée réelle (`payment_reference` vide ou obsolète),
+  pack exact du catalogue sélectionné, aucune donnée client injectée
+  (montant/devise/crédits) ; `pack_id` vide échoue proprement ; rejeu
+  `SELECT_PACK` idempotent (session et paiement créés au plus une fois) ;
+  `CHECK_PAYMENT` avec `pack_id` obsolète ignoré, référence vide échoue
+  proprement, isolation propriétaire stricte, rejeu sans double crédit ;
+  `CANCEL` avec les deux champs obsolètes ignorés, aucun changement de
+  crédit ; champ inconnu rejeté ; `DOCUMENT_REVIEW`/`CANCEL` toujours
+  isolé via la chaîne complète ; aucun port document/aperçu/génération
+  jamais touché (preuve structurelle).
+* Focused : 226/226. Suite complète : 1387/1387. `git diff --check` :
+  propre.
+
+### Constat annexe sur le rejeu de `CANCEL`
+
+Contrairement à `SELECT_PACK` (création de session par clé
+d'idempotence) et `CHECK_PAYMENT` (crédit confirmé par empreinte
+d'événement, également par clé d'idempotence), le vrai chemin
+`RECHARGE`/`CANCEL` ne porte aucune clé d'idempotence propre — il
+re-résout à chaque fois « la session `CREATED`/`PAYMENT_PENDING` la plus
+récente du propriétaire ». **Comportement préexistant, non modifié par ce
+correctif** (`cancel()` lui-même n'a subi aucune modification) : un rejeu
+exact échoue proprement (`RECHARGE_SESSION_NOT_FOUND`, plus rien à
+annuler) plutôt que de silencieusement réussir une seconde fois ou de
+corrompre l'état — sûr dans les faits, mais pas signalé `duplicate: true`
+par la couche session. Documenté ici, non traité comme un défaut de cette
+mission (le `RECHARGE-EXACTLY-ONCE-GATE` dédié reste une tâche séparée).
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté pour aucune des trois
+actions (testé explicitement) ; aucun champ financier fourni par le
+client (`amount`/`currency`/`credits`) n'est jamais accepté ; le pack
+sélectionné provient exclusivement du catalogue serveur ; l'isolation
+propriétaire de `CHECK_PAYMENT` et `CANCEL` reste inchangée et testée à
+travers la chaîne complète ; le remplacement flow-aware de `CANCEL` ne
+fuit vers aucun autre Flow (testé explicitement pour
+`DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`) ; aucune génération, aucun rendu,
+aucune mutation de document ne se produit lors d'une sélection, vérification
+ou annulation de recharge (preuve structurelle) ; aucun prix, aucun
+nombre de crédits, aucune version de tarification, aucun calcul de
+portefeuille modifié. Aucune migration Supabase requise ; aucune
+mutation Meta requise ; aucun appel réseau réel vers Orange Money ou tout
+autre fournisseur.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* `GENERATION_CONFIRMATION`/`CANCEL` (T4) — même classe de défaut,
+  reproduit et consigné, non corrigé.
+* Le `FLOW-PARITY-GATE` global (fiche X) reste un suivi de backlog
+  distinct.
+* Le `RECHARGE-EXACTLY-ONCE-GATE` dédié (durcissement financier
+  exactement-une-fois de bout en bout, au-delà de ce que ce correctif de
+  contrat de champs prouve) reste une tâche séparée.
+* La tarification actuelle des packs (`legacy-v1`) est intentionnellement
+  laissée inchangée — la tâche produit « 200 FCFA/crédit » reste future
+  et hors périmètre.
+* La copie du présentateur pour `RECHARGE` (le Flow rouvert après
+  `SELECT_PACK` ne repeuple pas `pack_options`/`balance_summary`, contrairement
+  à `HISTORY_SEARCH`'s `history_options` — les instructions de paiement
+  elles-mêmes sont bien envoyées comme texte réel) est une question UX,
+  pas un défaut de contrat ou de sécurité ; consignée pour une future
+  tâche présentateur/recharge, non traitée ici.
+
+### Prévention
+
+Quand une action partagée par plusieurs Flows (ici `CANCEL`) doit
+accepter un contrat de champs différent pour un seul de ces Flows, ne
+jamais élargir la liste blanche globale de cette action — introduire une
+table de correspondance explicitement indexée par `(flowKey, action)`,
+consultée en priorité, qui ne modifie le comportement que pour la paire
+concernée. Et, comme confirmé ici positivement pour la première fois dans
+cette série : un traçage complet de la chaîne peut légitimement ne
+révéler aucun défaut de second niveau — le correctif de la liste blanche
+suffit alors, et il ne faut pas en chercher un là où il n'y en a pas.

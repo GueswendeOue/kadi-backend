@@ -403,19 +403,63 @@ applicatif). Aucune mutation Meta requise.
    ciblés (115/115 sur les fichiers concernés) puis suite complète
    (1367/1367), `git diff --check` propre. Aucun autre défaut HIGH/MEDIUM
    trouvé sur le diff complet mis à jour.
-6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #18
-   mise à jour (post-`date_to`).
-7. **[EN ATTENTE]** Fusion dans `main`.
-8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-9. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
+6. **[FAIT]** Fusion de la PR #18 dans `main` — commit de fusion
+   `07ea815ce016ac4a034498e436db391486b420ff`. **T2 est donc `CLOSED`/`MERGED`.**
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
    l'historique via le Flow `HISTORY_SEARCH` réel, observée en conditions
    réelles (validation téléphone), y compris un filtrage par date incluant
    réellement le jour de fin, et le parcours de reprise de livraison déjà
    construit (fiche R) toujours atteignable depuis un document ouvert.
-10. **[EN ATTENTE]** T3 (`RECHARGE-CONTRACT-001`) — prochaine mission de
-    correction dédiée, non commencée.
-11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+9. **[FAIT]** T3 (`RECHARGE-CONTRACT-001`) — corrigé, voir section dédiée
+   ci-dessous.
+10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
+
+## Ordre — `fix/kadi-v1-recharge-contract-r0` (T3/RECHARGE-CONTRACT-001 : contrat de sélection de pack/vérification de paiement/annulation aligné sur la vraie forme combinée du Flow)
+
+Aucune migration Supabase requise pour cette branche (correctif entièrement
+applicatif). Aucune mutation Meta requise. Aucun appel réseau réel vers
+Orange Money ou tout autre fournisseur de paiement.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@07ea815ce016ac4a034498e436db391486b420ff` (PR #18 fusionnée) avant
+   de créer la branche isolée.
+2. **[FAIT]** T3/RECHARGE-CONTRACT-001 reproduit puis corrigé : le vrai
+   Flow combiné `kadi_recharge_v1.json` soumet toujours `pack_id`/
+   `payment_reference` ensemble, quelle que soit l'action
+   (`SELECT_PACK`/`CHECK_PAYMENT`/`CANCEL`) — aucune sélection de pack,
+   vérification de paiement ni annulation ne pouvait jamais réussir via
+   le vrai Flow Meta. `CANCEL` étant une action partagée globalement avec
+   `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`, une
+   nouvelle table flow-aware (`FLOW_ACTION_FIELD_OVERRIDES`) accepte
+   `pack_id`/`payment_reference` uniquement pour `RECHARGE`/`CANCEL`,
+   sans fuite vers les autres Flows (testé explicitement). Traçage
+   complet de la chaîne : aucun défaut de second niveau trouvé — voir
+   fiche Z de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Défaut de la même classe confirmé pour
+   `GENERATION_CONFIRMATION`/`CANCEL`, délibérément **non corrigé**,
+   consigné pour T4.
+3. **[FAIT]** Tests ciblés (226/226 sur les fichiers concernés) puis
+   suite complète (1387/1387), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM
+   trouvé.
+5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+6. **[EN ATTENTE]** Fusion dans `main`.
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
+   et annulation via le Flow `RECHARGE` réel, observée en conditions
+   réelles (validation téléphone).
+9. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
+   mission de correction dédiée, non commencée.
+10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+    backlog distinct, non construit dans cette mission.
+11. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
+    financier exactement-une-fois de bout en bout, tâche séparée future.
+12. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
+    FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
+    présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
+    repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.
 
 ## Déploiement Render
 
