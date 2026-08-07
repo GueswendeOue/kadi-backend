@@ -3396,3 +3396,135 @@ explicitement qu'elle couvre bien **tous** les états de base valides
 possibles avant l'instant de référence choisi — ici, plusieurs entités
 actives simultanées pour un même propriétaire étaient un état valide non
 couvert par une simple borne temporelle.
+
+### Z.3 — RECHARGE-CONTRACT-001, suite : la requête de ciblage pouvait glisser vers une recharge plus ancienne (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée. Les correctifs R1 (`sessionOpenedAt`, fiche Z.1) et R2
+  (court-circuit de doublon, fiche Z.2) restent corrects et inchangés.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R3 »),
+  constat HIGH/P0, bloquant de fusion.
+
+### Constat, reproduit avant tout correctif
+
+La requête de ciblage de R1 filtrait le statut (`IN (CREATED,
+PAYMENT_PENDING)`) **avant** de trier/limiter à la session contextuelle
+la plus récente :
+
+```sql
+owner_wa_id = owner
+  and status in ('CREATED', 'PAYMENT_PENDING')
+  and created_at <= sessionOpenedAt
+order by created_at desc
+limit 1
+```
+
+Si la session qui était réellement la plus récente au moment de
+l'ouverture du Flow change ensuite d'état (créditée, annulée par une
+autre interaction, etc.) **avant** que `CANCEL` ne soit jamais soumis, le
+filtre de statut l'exclut silencieusement et la requête **glisse** vers
+une ligne plus ancienne qui correspond encore au filtre de statut et à
+la borne `created_at` — annulant une recharge dont ce contexte Flow n'a
+jamais parlé, même sur une soumission réellement première (pas un
+rejeu).
+
+**Reproduction, prouvée dans la composition de production :** A et B
+créées (toutes deux `PAYMENT_PENDING`), B plus récente que A → la session
+Flow C de `CANCEL` n'est ouverte qu'après que A et B existent — B est la
+recharge contextuelle la plus récente à cet instant → **avant** de
+soumettre `CANCEL`, B passe à `CREDITED` via un vrai `CHECK_PAYMENT` →
+`CANCEL` est soumis pour la première fois (pas un rejeu) → **avant
+correctif**, la requête exclut B (statut filtré) et glisse vers A, qui
+est annulée à tort. Variante prouvée également avec B déjà `CANCELLED`
+plutôt que `CREDITED`.
+
+### Principe de ciblage retenu
+
+Résoudre la candidate contextuelle **d'abord** :
+
+1. uniquement les sessions créées à ou avant `sessionOpenedAt` (borne de
+   confiance déjà établie en R1) ;
+2. triées par `created_at` décroissant ;
+3. exactement la plus récente, **quel que soit son statut** ;
+4. **ensuite seulement** déterminer si cette session précise est
+   annulable.
+
+Si la session contextuelle la plus récente n'est plus annulable :
+**échec fermé**, jamais de recherche d'une autre recharge plus ancienne.
+
+### Correctif
+
+`createKadiV1RechargeRuntime.cancel()` : la requête brute retire le
+filtre `.in("status", ...)` et sélectionne désormais `status` en plus de
+`recharge_session_id` ; l'éligibilité au statut est vérifiée **après**
+avoir résolu la session contextuelle exacte, contre un ensemble
+`CANCELLABLE_STATUSES` explicite (`CREATED`, `PAYMENT_PENDING`) — si la
+session résolue n'y figure pas, échec immédiat
+(`RECHARGE_SESSION_NOT_CANCELLABLE`), sans jamais retenter une autre
+ligne. **L'ensemble annulable visible par ce runtime reste
+intentionnellement inchangé** : `kadiV1RechargeService.js`'s
+`cancelRechargeSession` accepte déjà aussi `FAILED` en interne (une
+question produit préexistante, distincte), mais ce correctif ne l'étend
+pas au niveau de ce runtime sans autorisation produit explicite — conforme
+à la consigne de la mission de préserver le comportement actuellement
+visible.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : Test A — B créditée via un
+  vrai `CHECK_PAYMENT` avant la première soumission de `CANCEL`, échec
+  fermé (`RECHARGE_SESSION_NOT_CANCELLABLE`), B reste `CREDITED`, A reste
+  `PAYMENT_PENDING`, aucun changement de crédit ; Test B — variante avec B
+  déjà `CANCELLED` par une annulation réelle distincte, même échec fermé,
+  A intacte ; Test C — annulation normale courante avec B toujours active,
+  toujours annulée normalement (aucune régression du cas nominal). Le
+  fournisseur de paiement factice du fichier a été corrigé pour suivre le
+  montant/la devise réels par identifiant de paiement (il renvoyait
+  auparavant toujours ceux de `PACK_1000`, provoquant un
+  `PAYMENT_EVENT_MISMATCH` dès qu'un autre pack était crédité) — défaut de
+  fixture de test, pas de code de production.
+* Régression complète R0+R1+R2 : tous les scénarios existants
+  (`SELECT_PACK`/`CHECK_PAYMENT` inchangés, isolation propriétaire,
+  isolation `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`,
+  rejeu exact R2 avec sa protection après reconstruction complète de la
+  pile) toujours verts sans modification de leur logique.
+* Focused : 251/251 (fichiers concernés). Suite complète : 1402/1402.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`status` n'est jamais journalisé ni exposé à l'utilisateur (utilisé
+uniquement en interne pour la vérification d'éligibilité) ; la
+vérification finale de statut au niveau de `cancelRechargeSession`'s
+`expectedStatuses` reste un filet de sécurité supplémentaire contre toute
+condition de course entre la lecture et l'écriture (préexistant,
+inchangé) ; isolation propriétaire, contrat de champs combiné, protection
+R1 (`sessionOpenedAt`) et protection R2 (court-circuit de doublon) tous
+confirmés inchangés par la suite complète ; non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé).
+Aucune migration ni mutation Supabase, Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Reprises des fiches Z.1/Z.2 : décision produit sur « Revenir plus
+  tard », `RECHARGE-EXACTLY-ONCE-GATE` dédié, raccourci générique de
+  doublon non implémenté au-delà de `RECHARGE`/`CANCEL`.
+* Question produit distincte, non traitée : `cancelRechargeSession`
+  accepte déjà `FAILED` en interne alors que ce runtime ne l'expose pas —
+  à clarifier si un besoin produit d'annuler explicitement une recharge
+  `FAILED` apparaît.
+
+### Prévention
+
+Quand une requête combine un filtre de sélection (ici le statut) avec un
+tri/limite destiné à choisir « le candidat contextuellement pertinent »,
+vérifier explicitement l'ordre d'application : filtrer d'abord peut faire
+glisser silencieusement le résultat vers un candidat différent de celui
+réellement visé par le contexte, si le vrai candidat contextuel ne
+correspond plus au filtre au moment de la requête. Résoudre toujours le
+candidat contextuel en premier (sans filtre de statut), puis appliquer
+la validation de statut comme une décision séparée et fermée sur cette
+cible exacte — jamais comme un filtre qui élargit implicitement la
+recherche à un autre candidat.

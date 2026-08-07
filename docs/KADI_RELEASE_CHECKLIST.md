@@ -487,22 +487,42 @@ Orange Money ou tout autre fournisseur de paiement.
    ciblés (248/248) puis suite complète (1399/1399), `git diff --check`
    propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
    R1 + R2.
-7. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
-   mise à jour (post-court-circuit R2).
-8. **[EN ATTENTE]** Fusion dans `main`.
-9. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-10. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
+7. **[FAIT]** Troisième revue adversariale indépendante de la PR #19 — a
+   signalé un troisième défaut HIGH/P0, bloquant de fusion : la requête de
+   ciblage de R1 filtrait le statut **avant** de choisir la recharge
+   contextuellement la plus récente — si cette recharge changeait d'état
+   (créditée, annulée ailleurs) avant que `CANCEL` ne soit soumis, la
+   requête glissait silencieusement vers une recharge plus ancienne encore
+   éligible au filtre de statut, l'annulant à tort même sur une
+   soumission réellement première. Prouvé concrètement : B créditée via un
+   vrai `CHECK_PAYMENT`, puis A (plus ancienne) annulée à tort par le
+   `CANCEL` suivant. Corrigé sur la même branche : la session
+   contextuelle la plus récente est résolue d'abord (bornée par
+   `sessionOpenedAt`, sans filtre de statut), son éligibilité vérifiée
+   ensuite séparément, échec fermé immédiat sans jamais rechercher une
+   autre recharge plus ancienne — ensemble de statuts annulables
+   intentionnellement inchangé, sans extension à `FAILED` — voir fiche
+   Z.3 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Tests ciblés (251/251) puis suite complète (1402/1402), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
+   R1 + R2 + R3.
+8. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
+   mise à jour (post-résolution-contextuelle R3).
+9. **[EN ATTENTE]** Fusion dans `main`.
+10. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+11. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
     et annulation via le Flow `RECHARGE` réel, observée en conditions
     réelles (validation téléphone).
-11. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
+12. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
     mission de correction dédiée, non commencée.
-12. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+13. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
-13. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
+14. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
     financier exactement-une-fois de bout en bout, tâche séparée future.
-14. **[EN ATTENTE]** Décision produit requise sur la sémantique de
-    « Revenir plus tard » (libellé vs état terminal `CANCELLED`).
-15. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
+15. **[EN ATTENTE]** Décision produit requise sur la sémantique de
+    « Revenir plus tard » (libellé vs état terminal `CANCELLED`) et sur
+    l'exposition éventuelle de `FAILED` comme statut annulable.
+16. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
     FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
     présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
     repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.

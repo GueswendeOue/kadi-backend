@@ -617,6 +617,29 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   `GENERATION_CONFIRMATION`). **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir
   fiche Z.2 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
   pour le détail complet et la preuve.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite 3 (glissement
+  de cible d'annulation, HIGH/P0) corrigée avant fusion, même branche, PR
+  #19 toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une troisième
+  revue adversariale indépendante a signalé que la requête de ciblage de
+  R1 filtrait le statut (`CREATED`/`PAYMENT_PENDING`) **avant** de choisir
+  la recharge contextuellement la plus récente : si la recharge réellement
+  la plus récente au moment de l'ouverture du Flow changeait ensuite
+  d'état (créditée, annulée ailleurs) avant que `CANCEL` ne soit soumis,
+  la requête glissait silencieusement vers une recharge plus ancienne
+  encore éligible au filtre de statut — annulant une recharge dont ce
+  contexte Flow n'a jamais parlé, même sur une soumission réellement
+  première. **Prouvé concrètement dans la composition de production avant
+  correctif**, avec une recharge B créditée via un vrai `CHECK_PAYMENT`
+  puis une recharge A plus ancienne annulée à tort. **Corrigé :** la
+  session contextuelle la plus récente est désormais résolue d'abord
+  (bornée par `sessionOpenedAt`, sans filtre de statut), puis son
+  éligibilité est vérifiée séparément — en cas d'inéligibilité, échec
+  fermé immédiat, sans jamais rechercher une autre recharge plus
+  ancienne. L'ensemble de statuts annulables reste intentionnellement
+  inchangé (`CREATED`/`PAYMENT_PENDING`), sans extension à `FAILED` sans
+  autorisation produit explicite. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche Z.3 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours
