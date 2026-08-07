@@ -490,6 +490,39 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
     if (!consumed?.ok) return consumed || fail("KADI_V1_FLOW_REPLY_SESSION_FAILED");
 
     const session = consumed.value;
+
+    // RECHARGE-CONTRACT-001 (R2 independent review, HIGH/P0): an exact
+    // duplicate reply must execute zero second business mutation.
+    // sessionOpenedAt (R1) prevents a stale/replayed CANCEL from ever
+    // affecting a recharge session created after this Flow was opened,
+    // but does not by itself make cancel() idempotent when MULTIPLE
+    // eligible active sessions already existed before the Flow was
+    // opened: cancel() always re-resolves "the newest remaining eligible
+    // session", so a replay after the first cancel already removed one
+    // session from that set would find and cancel a second, different one.
+    // consumed.duplicate === true here is the same authoritative,
+    // persisted signal (kadiV1ConversationSession.js's CONSUMED status +
+    // matching consumed_reply_key, safe across process restarts — never
+    // an in-memory flag) the presenter already relies on to suppress the
+    // user-visible reply; RECHARGE/CANCEL is the one action with no
+    // command-level idempotency key of its own, so it is the one place
+    // that signal must also prevent re-execution here. Scoped narrowly to
+    // (RECHARGE, CANCEL) only — every other Flow/action's existing
+    // duplicate-execution behavior (already covered by each command's own
+    // idempotency key, e.g. SELECT_PACK/CHECK_PAYMENT/document mutations)
+    // is completely unchanged; generalizing this further would need its
+    // own exhaustive proof across every existing Flow, which this
+    // targeted fix does not attempt.
+    if (consumed.duplicate === true && input.flowKey === "RECHARGE" && input.action === "CANCEL") {
+      return ok(Object.freeze({
+        handled: true,
+        action: input.action,
+        flow_key: input.flowKey,
+        duplicate: true,
+        result: null,
+      }));
+    }
+
     const executed = await commands.execute({
       ownerWaId: input.ownerWaId,
       flowKey: input.flowKey,
