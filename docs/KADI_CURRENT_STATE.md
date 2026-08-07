@@ -346,6 +346,43 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   (`FA-20260806190633-A0EAC605`) reste non récupéré**, ainsi que le
   document créé pendant l'incident (`FA-20260807010715-1961CBCC`) — aucun
   des deux n'a été retenté pendant le diagnostic ni la correction.
+* **Mise à jour (2026-08-07) : audit exploratoire complet en lecture seule,
+  toujours sur la même branche, PR #15 toujours `OPEN`/`DRAFT`/non fusionnée/
+  non déployée.** Un audit produit/UX exploratoire complet
+  (`KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT_COMPLETE`) a confirmé, par lecture
+  directe du code, que le défaut de navigation d'édition ci-dessus (point 3)
+  est **entièrement corrigé** — pas seulement couvert par des tests
+  incomplets — puis a découvert et corrigé trois défauts supplémentaires,
+  distincts, tous sur la même branche : **REVIEW-001** (l'écran de revue
+  n'affichait jamais le vrai contenu du document, seulement l'exemple
+  statique du contrat Flow), **INV-001** (corriger le client depuis la revue
+  forçait l'ajout d'un article obligatoire au lieu de revenir à la revue) et
+  **INV-002** (corriger les articles depuis la revue ne pouvait jamais se
+  terminer — l'écran n'avait ni données réelles ni action de fin). Voir
+  fiche T de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour
+  le détail complet. **Statut de ce lot de correctifs :
+  `IMPLEMENTED_NOT_DEPLOYED`.**
+* **Défaut distinct découvert incidemment, non corrigé, hors périmètre :**
+  **CLIENT-001** — `SAVE_CLIENT` échoue systématiquement
+  (`DOCUMENT_CLIENT_FIELD_UNKNOWN`) dès qu'un champ `tax_id` est soumis, ce
+  que font les deux Flows client réels (`kadi_document_client_v1.json` et
+  `kadi_edit_client_v1.json`) à chaque soumission — `CLIENT_FIELDS`
+  (`kadiV1SharedDocumentPolicies.js`) n'accepte que `ifu`/`rccm`, jamais
+  `tax_id`. Confirmé par exécution réelle des tests de composition de
+  production. Nécessite sa propre mission de correction ; voir fiche T,
+  section T.4.
+* **BILL-001, rappel — toujours `PLAUSIBLE`, `NOT_REPRODUCED`, hors
+  périmètre de ce lot :** le solde affiché (« Mon solde ») ne semble pas
+  déduire les crédits retenus par une réservation restée `RESERVED` sans
+  job de réconciliation équivalent à celui de la livraison — reconstruction
+  plausible à partir du code, jamais reproduit sur un cas réel. Nécessite un
+  audit dédié, en lecture seule, avant toute décision de correction ; aucun
+  code de portefeuille, de prix ou de crédit n'a été touché par ce lot.
+* **Validation téléphone requise après déploiement éventuel :** comme pour
+  tout correctif de cette branche, la validation manuelle sur téléphone
+  reste requise après un déploiement réel avant de considérer un parcours
+  comme confirmé en production — un test de composition, même complet,
+  n'observe jamais le rendu visuel réel d'un écran WhatsApp Flow.
 
 ## Blocages connus
 

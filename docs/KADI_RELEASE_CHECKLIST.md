@@ -236,14 +236,28 @@ base de données, aucune contrainte modifiée) — code applicatif uniquement.
 
 1. **[FAIT]** Code écrit, testé localement (suite complète verte,
    `git diff --check` propre).
-2. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-3. **[EN ATTENTE]** Fusion dans `main`.
-4. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-5. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
+2. **[FAIT]** Audit exploratoire produit/UX complet en lecture seule
+   (`KADI_V1_FULL_EXPLORATORY_PRODUCT_AUDIT_COMPLETE`) : navigation
+   d'édition reconfirmée entièrement corrigée par lecture directe du code ;
+   trois nouveaux défauts confirmés et corrigés (REVIEW-001, INV-001,
+   INV-002 — voir fiche T de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)) ; un défaut
+   distinct (CLIENT-001) et BILL-001 restent documentés mais non corrigés,
+   hors périmètre de cette branche.
+3. **[EN ATTENTE]** Revue adversariale indépendante de la PR (diff cumulé,
+   y compris les correctifs REVIEW-001/INV-001/INV-002).
+4. **[EN ATTENTE]** Fusion dans `main`.
+5. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+6. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
    fondateur, sur `FA-20260806190633-A0EAC605` **et** sur
    `FA-20260807010715-1961CBCC`, observée en conditions réelles — ne pas
    se contenter des tests locaux pour affirmer que l'un ou l'autre a été
    récupéré.
+7. **[EN ATTENTE]** Une vraie validation téléphone d'au moins un parcours
+   de correction (« Modifier le client », « Modifier les articles »,
+   « Modifier les options » depuis la revue) après déploiement, avant de
+   considérer REVIEW-001/INV-001/INV-002 comme confirmés en production —
+   voir la note phone-only de la fiche T.
 
 ## Déploiement Render
 

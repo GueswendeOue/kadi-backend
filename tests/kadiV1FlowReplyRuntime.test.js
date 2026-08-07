@@ -100,6 +100,29 @@ test("valid reply dispatches only server-bound document context", async () => {
   assert.equal(Object.hasOwn(calls[0].data, "document_id"), false);
 });
 
+// INV-001/INV-002 (exploratory audit): the presenter needs to know which
+// screen a reply actually came from to tell an initial-creation SAVE_CLIENT/
+// FINISH_CONTENT apart from a correction one — this is the session-verified
+// signal it relies on (never a client-supplied flag; unexpected_logical
+// screen above already proves a mismatched flowKey cannot reach this far).
+test("a successful reply's result carries the session-verified originating flow_key, never a client-supplied one", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions);
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => ({ ok: true, value: { status: "COLLECTING" } }) },
+  });
+  const result = await runtime.handle(reply());
+  assert.equal(result.ok, true);
+  assert.equal(result.value.flow_key, "ARTICLE_FORM");
+});
+
+test("EDIT_CONTENT now accepts FINISH_CONTENT so a content correction can signal it is done and return to review", () => {
+  assert.ok(FLOW_ACTIONS.EDIT_CONTENT.includes("FINISH_CONTENT"));
+  const checked = validateActionPayload("EDIT_CONTENT", "FINISH_CONTENT", {});
+  assert.equal(checked.ok, true);
+});
+
 test("owner mismatch is absorbed before command execution", async () => {
   const sessions = makeSessionService();
   await openSession(sessions);
