@@ -645,6 +645,46 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   reste requise après un déploiement réel avant de considérer un parcours
   comme confirmé en production — un test de composition, même complet,
   n'observe jamais le rendu visuel réel d'un écran WhatsApp Flow.
+* **Mise à jour (2026-08-07) : PR #19 fusionnée dans `main`.**
+  `main@71362c71a5524d1c24192f584ca3cb7f3fe20785`.
+  **T1/OPTIONS-001, T2/HISTORY-CONTRACT-001 et T3/RECHARGE-CONTRACT-001 sont
+  désormais tous `CLOSED/MERGED`.** Le déploiement Render de ce commit
+  n'est pas vérifiable depuis cet environnement — ne pas déduire qu'il a
+  été déployé, ni qu'il ne l'a pas été ; la validation téléphone réelle du
+  parcours `RECHARGE` reste en attente.
+* **Mise à jour (2026-08-07) : T4/GENERATION_CONFIRMATION-001 (annulation
+  de confirmation de génération) corrigée, branche isolée
+  `fix/kadi-v1-generation-confirmation-cancel-t4` créée depuis
+  `main@71362c71a5524d1c24192f584ca3cb7f3fe20785`, PR brouillon ouverte,
+  **non fusionnée, non déployée.** Le vrai Flow combiné
+  `kadi_generation_confirmation_v1.json` soumet toujours `quote_id`, quelle
+  que soit l'action (`CONFIRM_GENERATION`/`CANCEL`) — une vraie annulation
+  depuis `AWAITING_GENERATION_CONFIRMATION` ne pouvait jamais réussir via
+  le vrai Flow Meta (`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`), même défaut de
+  classe que RECHARGE-CONTRACT-001 (T3). **Corrigé** par le même mécanisme
+  flow-aware (`FLOW_ACTION_FIELD_OVERRIDES`) : `quote_id` accepté
+  uniquement pour `GENERATION_CONFIRMATION`/`CANCEL`, sans fuite vers
+  `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`RECHARGE` (prouvé explicitement).
+  `quote_id` n'est jamais devenu une autorité de ciblage : le routage
+  générique existant vers `documentRuntime.cancel(documentBase)` (jamais
+  `command.data`) était déjà correct et n'a pas été modifié — seul le
+  contexte document de session serveur décide du document affecté.
+  Traçage complet de la chaîne : aucun défaut de second niveau masqué —
+  l'annulation était déjà idempotente via le pipeline document partagé
+  existant (aucun court-circuit spécifique RECHARGE copié). Constat
+  confirmé : les transitions d'état pures (`CANCEL` inclus) ne font jamais
+  avancer `document.version` — seules les mutations de contenu le font —
+  donc le risque réel pour un Flow obsolète est une course d'état, pas une
+  course de version ; le même mécanisme serveur (`fromState` + table
+  `TRANSITIONS`) échoue fermé de façon identique, sans champ contrôlé par
+  le client. Un seul fichier de production modifié
+  (`kadiV1FlowReplyRuntime.js`, ajout additif). Tests ciblés (287/287) puis
+  suite complète (1418/1418), `git diff --check` propre, revue
+  adversariale du diff complet sans défaut HIGH/MEDIUM. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`, en attente de revue adversariale
+  indépendante et de fusion.** Voir fiche AA de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet et la preuve.
 
 ## Blocages connus
 

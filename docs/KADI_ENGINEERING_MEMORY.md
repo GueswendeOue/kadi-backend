@@ -3528,3 +3528,188 @@ candidat contextuel en premier (sans filtre de statut), puis appliquer
 la validation de statut comme une décision séparée et fermée sur cette
 cible exacte — jamais comme un filtre qui élargit implicitement la
 recherche à un autre candidat.
+
+## AA. GENERATION_CONFIRMATION-001 — corrigé : le contrat d'annulation de confirmation de génération n'acceptait pas la vraie forme combinée du Flow `GENERATION_CONFIRMATION`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — branche isolée dédiée
+  `fix/kadi-v1-generation-confirmation-cancel-t4`, créée depuis
+  `main@71362c71a5524d1c24192f584ca3cb7f3fe20785` (PR #19/T3 déjà
+  fusionnée), PR brouillon ouverte, non fusionnée, non déployée.
+* **Origine :** mission « KADI V1 — T4 GENERATION_CONFIRMATION/CANCEL
+  ROOT-CONTRACT FIX », faisant suite au constat déjà consigné et
+  volontairement laissé non corrigé dans les fiches Z/Z.1/Z.2/Z.3 (T3).
+
+### Constat, reproduit avant tout correctif
+
+Le vrai Flow Meta combiné `flows/v1_draft/kadi_generation_confirmation_v1.json`
+n'a qu'un seul écran (`GENERATION_CONFIRMATION`) et un seul Footer, qui
+soumet toujours :
+
+```json
+{ "quote_id": "${data.quote_id}" }
+```
+
+— quelle que soit l'action choisie par l'utilisateur
+(`CONFIRM_GENERATION` ou `CANCEL`), exactement le même défaut de classe
+que `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`/`RECHARGE-CONTRACT-001`.
+Avant correctif : `ACTION_FIELDS.CONFIRM_GENERATION` acceptait déjà
+`quote_id`, mais `ACTION_FIELDS.CANCEL` est globalement `[]` (correct pour
+`DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`, dont le vrai Flow ne soumet aucune
+donnée pour `CANCEL`) — donc toute vraie soumission
+`GENERATION_CONFIRMATION`/`CANCEL` échouait systématiquement à la
+frontière de validation avec `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`, avant
+même d'atteindre le chemin d'annulation de document existant. Reproduit
+directement par `validateActionPayload("GENERATION_CONFIRMATION",
+"CANCEL", { quote_id: "quote:1" })`, qui retournait cette erreur avant
+correctif (test dédié dans
+`tests/kadiV1FlowReplyRuntime.test.js`, préexistant depuis T3 — voir fiche
+Z).
+
+### Modèle d'autorité d'annulation (inspecté, confirmé correct, non modifié)
+
+`quote_id` est un champ incident du formulaire combiné réel : il ne doit
+jamais devenir une autorité de ciblage pour savoir quel document annuler.
+Inspection du chemin complet **avant toute modification** :
+
+`kadiV1FlowCommandRuntime.js`'s `execute()` : pour `(CANCEL,
+GENERATION_CONFIRMATION)`, la branche spéciale `(CANCEL, RECHARGE)` ne
+s'applique pas (flowKey différent) — la commande tombe dans la branche
+générique de document, qui construit `documentBase` uniquement à partir de
+`command.documentContext` (jamais `command.data`) et route vers
+`documentRuntime.cancel(documentBase)`. `command.documentContext` lui-même
+provient exclusivement de `kadiV1FlowReplyRuntime.js`'s `handle()`, à
+partir du contexte document de la session serveur de confiance
+(`session.document_id`/`document_version`/`document_type`/`document_state`),
+jamais du payload client. `createKadiV1DocumentRuntimeAdapter.cancel()`
+(`kadiV1RuntimeAdapters.js`) ne lit ensuite que
+`ownerWaId`/`documentId`/`expectedVersion`/`documentType` — jamais
+`command.data` — avant de router vers `shared.cancelDocument`/
+`discharge.cancelDischarge`. **Ce modèle était déjà correct avant T4 et
+n'a nécessité aucune modification.**
+
+### Correctif
+
+Un seul fichier de production modifié, `kadiV1FlowReplyRuntime.js` : ajout
+d'une entrée `GENERATION_CONFIRMATION: { CANCEL: ["quote_id"] }` dans la
+table `FLOW_ACTION_FIELD_OVERRIDES` déjà introduite en T3 pour exactement
+cette classe de défaut — consultée avant le tableau global
+`ACTION_FIELDS`, et remplaçant entièrement sa recherche pour la paire
+`(flowKey, action)` concernée sans toucher aux autres. `CONFIRM_GENERATION`
+n'a pas d'entrée dans cette table et continue de résoudre `quote_id` via
+`ACTION_FIELDS.CONFIRM_GENERATION`, inchangé. `RECHARGE`/`CANCEL` (T3),
+`DOCUMENT_REVIEW`/`CANCEL` et `DOCUMENT_PREVIEW`/`CANCEL` restent
+inchangés — chaque entrée de la table est indépendante par `flowKey`.
+Aucune modification de `kadiV1FlowCommandRuntime.js`, `kadiV1RuntimeAdapters.js`,
+`kadiV1SharedDocumentPipeline.js`, `kadiV1DischargePipeline.js` ni
+`kadiV1DocumentStateMachine.js` — le modèle d'autorité et la sémantique de
+`CANCEL` (`AWAITING_GENERATION_CONFIRMATION → CANCELLED`, terminal, déjà
+présente dans `TRANSITIONS`) étaient déjà corrects.
+
+### Traçage complet de la chaîne (défauts de second niveau masqués)
+
+Chaîne inspectée en entier après la levée du premier défaut : Flow JSON →
+`FlowReplyRuntime` → session de conversation → `FlowCommandRuntime` →
+`documentRuntime.cancel` → pipeline partagé/décharge → dépôt document/
+version → présentateur. **Aucun défaut de second niveau masqué trouvé** :
+
+* **Rejeu exact.** L'annulation de document a déjà sa propre idempotence,
+  indépendante et préexistante, au niveau du pipeline document partagé
+  (`replayFor` dans `kadiV1SharedDocumentPipeline.js`, clé dérivée de
+  l'idempotencyKey de la commande Flow) — contrairement à
+  `RECHARGE`/`CANCEL` (T3), qui n'avait aucune clé d'idempotence propre.
+  **Aucun court-circuit spécifique de doublon copié depuis T3** : la
+  mission demandait explicitement de ne pas généraliser ce mécanisme sans
+  preuve dédiée, et cette preuve dédiée confirme qu'il n'est pas
+  nécessaire ici.
+* **Version/état obsolète.** Constat confirmé par inspection directe de
+  `kadiV1DocumentDomain.js`'s `transitionDocument` : les transitions
+  d'état pures (`CANCEL` inclus, et toutes les transitions sortantes
+  possibles depuis `AWAITING_GENERATION_CONFIRMATION`) ne font **jamais**
+  avancer `document.version` — seules les mutations de contenu
+  (`modifyDocument`, utilisées par `SAVE_CLIENT`/`ADD_CONTENT`/
+  `SAVE_OPTIONS`, etc.) le font, et aucune n'est atteignable une fois le
+  document rendu à `AWAITING_GENERATION_CONFIRMATION`. Le risque réel pour
+  un Flow `GENERATION_CONFIRMATION`/`CANCEL` obsolète n'est donc pas une
+  course de version mais une **course d'état** : si le document a déjà
+  basculé ailleurs (par exemple déjà `CANCELLED` par une interaction
+  différente), la vérification `fromState` du pipeline document
+  (`loadMutation`), combinée à la table `TRANSITIONS` (aucune arête
+  sortante depuis `CANCELLED`), échoue fermé de façon tout aussi fiable —
+  sans jamais introduire de champ de version contrôlé par le client, et
+  sans étape de sélection de candidat pouvant glisser vers un autre
+  document (l'identité du document reste toujours l'identifiant de session
+  de confiance, jamais choisie par une requête).
+* **Devis (quote).** `kadiV1GenerationQuoteService.js` inspecté : aucune
+  réservation ni capture de crédit à la création du devis
+  (`createGenerationQuote`) — uniquement du tarifage. `CANCEL` ne touche
+  jamais le devis directement, mais toute tentative future de l'utiliser
+  (par exemple un `CONFIRM_GENERATION` obsolète sur le même document)
+  échoue déjà via `kadiV1GenerationLifecycleService.js`'s
+  `confirmOrRetryGeneration`, qui vérifie `document.status ===
+  "AWAITING_GENERATION_CONFIRMATION"` en premier — un document `CANCELLED`
+  échoue immédiatement, avant même la validation du devis.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : contrat combiné réel accepté
+  pour `CANCEL` (`quote_id` inclus, y compris vide), champ non déclaré
+  toujours rejeté, non-fuite vers `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/
+  `RECHARGE`, non-régression de `CONFIRM_GENERATION`, parité Flow/backend
+  dérivée directement de `kadi_generation_confirmation_v1.json`.
+* `tests/kadiV1GenerationConfirmationCancelE2E.test.js` (nouveau, 12
+  scénarios) : composition de production réelle (domaine document réel,
+  pipeline partagé réel, dépôt document en mémoire réel, service
+  d'aperçu/rendu/devis réel avec stockage en mémoire, seuls les ports
+  onboarding/recharge/historique/portefeuille/livraison sont des bouchons
+  qui lèvent une exception au moindre appel — `generationRuntime.confirm`
+  est un espion qui enregistre les appels, jamais un bouchon, pour prouver
+  positivement la non-régression de `CONFIRM_GENERATION`) — un vrai
+  FACTURE est mené jusqu'à `AWAITING_GENERATION_CONFIRMATION` via le vrai
+  pipeline aperçu/rendu/devis (PDF réel via `pdf-lib`, aucune donnée
+  fabriquée à la main) : annulation réelle avec le vrai `quote_id`
+  acceptée et transitionne le document à `CANCELLED` ; deux documents A/B
+  du même propriétaire — le Flow de A ne peut jamais annuler B même avec
+  le vrai `quote_id` de B dans le payload ; isolation propriétaire ; Flow
+  obsolète après que le document a déjà basculé ailleurs échoue fermé sans
+  seconde mutation ; rejeu exact reconnu comme doublon sans seconde
+  transition ; zéro appel à `generationRuntime.confirm`, zéro appel
+  crédit/portefeuille/livraison structurellement prouvé ; champ inconnu
+  rejeté ; isolation `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`RECHARGE`
+  (contrat T3 non affecté) ; `CONFIRM_GENERATION` toujours fonctionnel de
+  bout en bout avec le vrai `quote_id` atteignant `generation.confirm`.
+* Focused : 287/287 (fichiers concernés, dont l'ensemble T1/T2/T3 déjà
+  fusionné). Suite complète : 1418/1418. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`quote_id` n'est jamais journalisé ni utilisé comme sélecteur — seul le
+contexte document de session (jamais le payload) détermine le document
+affecté ; isolation propriétaire confirmée inchangée ; contrat
+`RECHARGE`/`CANCEL` (T3, R0–R3) confirmé inchangé par la suite complète ;
+`DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`CANCEL` confirmés inchangés. Un seul
+fichier de production modifié, ajout strictement additif. Aucune migration
+ni mutation Supabase, Meta, Render ou WhatsApp réelle ; aucun rendu PDF
+réel ; aucune génération réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct, non
+  construit dans cette mission.
+* T5 — prochaine mission de correction dédiée, non commencée (périmètre à
+  définir).
+* Validation téléphone réelle requise après un déploiement éventuel, comme
+  pour toute correction de cette famille.
+
+### Prévention
+
+Même classe de défaut que `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`/
+`RECHARGE-CONTRACT-001` : tout écran Meta Flow combiné (un seul Footer,
+plusieurs actions) doit être vérifié directement contre le JSON réel du
+Flow avant de faire confiance à un allowlist de champs par action —
+`ACTION_FIELDS`/`FLOW_ACTIONS` déclarés dans le code ne garantissent rien
+sur ce que Meta soumet réellement. Quand une action (ici `CANCEL`) est
+partagée par plusieurs Flows avec des contrats de champs différents,
+utiliser systématiquement `FLOW_ACTION_FIELD_OVERRIDES` (jamais élargir
+l'entrée globale) — et vérifier explicitement, comme ici, que le champ
+incident ajouté ne devient jamais une autorité de ciblage pour l'entité
+affectée par l'action.

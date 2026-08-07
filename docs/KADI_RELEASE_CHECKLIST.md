@@ -506,15 +506,20 @@ Orange Money ou tout autre fournisseur de paiement.
    Tests ciblés (251/251) puis suite complète (1402/1402), `git diff --check`
    propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
    R1 + R2 + R3.
-8. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
-   mise à jour (post-résolution-contextuelle R3).
-9. **[EN ATTENTE]** Fusion dans `main`.
+8. **[FAIT]** Nouvelle revue adversariale indépendante de la PR #19 mise à
+   jour (post-résolution-contextuelle R3) — aucun défaut HIGH/MEDIUM
+   supplémentaire signalé.
+9. **[FAIT]** PR #19 fusionnée dans `main` (`main@71362c71a5524d1c24192f584ca3cb7f3fe20785`).
+   **T3/RECHARGE-CONTRACT-001 : CLOSED/MERGED.**
 10. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
 11. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
     et annulation via le Flow `RECHARGE` réel, observée en conditions
     réelles (validation téléphone).
-12. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
-    mission de correction dédiée, non commencée.
+12. **[FAIT]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — corrigé sur la
+    branche dédiée `fix/kadi-v1-generation-confirmation-cancel-t4`, PR
+    brouillon ouverte, non fusionnée. Voir la section « Ordre —
+    `fix/kadi-v1-generation-confirmation-cancel-t4` » ci-dessous et fiche
+    AA de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
 13. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
 14. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
@@ -526,6 +531,60 @@ Orange Money ou tout autre fournisseur de paiement.
     FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
     présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
     repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.
+
+## Ordre — `fix/kadi-v1-generation-confirmation-cancel-t4` (T4/GENERATION_CONFIRMATION-001 : contrat d'annulation de confirmation de génération aligné sur la vraie forme combinée du Flow)
+
+Aucune migration Supabase requise pour cette branche (correctif entièrement
+applicatif, un seul fichier de production modifié). Aucune mutation Meta
+requise. Aucune génération, livraison ou opération de crédit réelle.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@71362c71a5524d1c24192f584ca3cb7f3fe20785` (PR #19 fusionnée) avant
+   de créer la branche isolée.
+2. **[FAIT]** GENERATION_CONFIRMATION-001 reproduit puis corrigé : le vrai
+   Flow combiné `kadi_generation_confirmation_v1.json` soumet toujours
+   `quote_id`, quelle que soit l'action (`CONFIRM_GENERATION`/`CANCEL`) —
+   une vraie annulation depuis `AWAITING_GENERATION_CONFIRMATION` ne
+   pouvait jamais réussir via le vrai Flow Meta
+   (`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`), même défaut de classe que
+   RECHARGE-CONTRACT-001 (T3). Corrigé par le même mécanisme flow-aware
+   (`FLOW_ACTION_FIELD_OVERRIDES`) : `quote_id` accepté uniquement pour
+   `GENERATION_CONFIRMATION`/`CANCEL`, sans fuite vers
+   `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`RECHARGE` (testé explicitement).
+   `quote_id` n'est et ne devient jamais une autorité de ciblage :
+   `kadiV1FlowCommandRuntime.js` route déjà `GENERATION_CONFIRMATION`/
+   `CANCEL` par sa branche générique vers
+   `documentRuntime.cancel(documentBase)`, qui ne lit jamais
+   `command.data` — seul le contexte document de session serveur
+   (`document_id`/`document_version`/`document_type`/`document_state`)
+   détermine le document affecté ; ce modèle était déjà correct avant T4
+   et n'a pas été modifié. Traçage complet de la chaîne (Flow JSON →
+   `FlowReplyRuntime` → session → `FlowCommandRuntime` →
+   `documentRuntime.cancel` → pipeline partagé/décharge → dépôt/version →
+   présentateur) : aucun défaut de second niveau masqué trouvé — l'annulation
+   idempotente existait déjà via le pipeline document partagé (aucun
+   court-circuit spécifique RECHARGE copié, conformément à la mission).
+   Constat confirmé et documenté : les transitions d'état pures
+   (`CANCEL` inclus) ne font jamais avancer `document.version` dans
+   `kadiV1DocumentDomain.js` — seules les mutations de contenu
+   (`modifyDocument`) le font — donc le risque réel pour un Flow
+   `GENERATION_CONFIRMATION`/`CANCEL` obsolète est une course d'état, pas
+   une course de version ; le même mécanisme serveur (vérification
+   `fromState` + table `TRANSITIONS`, jamais un champ contrôlé par le
+   client) échoue fermé de façon identique. Voir fiche AA de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+3. **[FAIT]** Tests ciblés (287/287 sur les fichiers concernés) puis suite
+   complète (1418/1418), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
+   trouvé.
+5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+6. **[EN ATTENTE]** Fusion dans `main`.
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie confirmation de génération et une vraie
+   annulation via le Flow `GENERATION_CONFIRMATION` réel, observées en
+   conditions réelles (validation téléphone).
+9. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
+   commencée.
 
 ## Déploiement Render
 
