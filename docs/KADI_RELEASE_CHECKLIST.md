@@ -673,8 +673,11 @@ Aucune génération, livraison ou opération de crédit réelle.
    complète (1457/1457), `git diff --check` propre.
 4. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
    trouvé.
-5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-6. **[EN ATTENTE]** Fusion dans `main`.
+5. **[FAIT]** Revue adversariale indépendante de la PR #21 — aucun défaut
+   HIGH/MEDIUM supplémentaire signalé.
+6. **[FAIT]** PR #21 fusionnée dans `main`
+   (`main@1b605ebd34e0fe259f221a60f8b697038f13e9ef`).
+   **T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE : CLOSED/MERGED.**
 7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
 8. **[EN ATTENTE]** Une vraie annulation `DOCUMENT_REVIEW` et
    `DOCUMENT_PREVIEW` obsolète, observée en conditions réelles (validation
@@ -682,7 +685,71 @@ Aucune génération, livraison ou opération de crédit réelle.
    difficilement observable, la preuve de composition reste la preuve
    principale.
 9. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
-   commencée.
+   commencée. (T6/BALANCE-001 a été traité en parallèle, hors ordre T5 —
+   voir la section « Ordre — `fix/kadi-v1-available-balance-t6` »
+   ci-dessous.)
+
+## Ordre — `fix/kadi-v1-available-balance-t6` (T6/BALANCE-001 : solde numérique + autorité des crédits disponibles, BILL-001 confirmé)
+
+Migration SQL forward-only requise (voir ci-dessous) — remplace le corps
+de la fonction existante `kadi_v1_get_wallet_balance` en place (même nom,
+même signature), jamais la migration d'origine. **Aucune migration
+appliquée à Supabase de production dans cette mission.** Aucune mutation
+Meta/Render/WhatsApp requise.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@1b605ebd34e0fe259f221a60f8b697038f13e9ef` (PR #21 fusionnée) avant
+   de créer la branche isolée.
+2. **[FAIT]** Défaut A (présentation) reproduit puis corrigé : la
+   composition de production confirmait que `ProductionPresenter` retombait
+   toujours sur le texte statique « Votre solde a été consulté. » même
+   quand le solde numérique réel était disponible — **prouvé concrètement
+   avant correctif** (`git stash` du correctif puis restauration, 11/17
+   scénarios E2E échouant exactement comme prévu). **Corrigé** :
+   `canonicalReplyText` a désormais une branche `BALANCE` dynamique,
+   déléguant à un formateur partagé (`kadiV1BalancePresentation.js`),
+   utilisé identiquement par `kadiV1ConversationOrchestrator.js`.
+3. **[FAIT]** Défaut B (BILL-001) confirmé : `kadi_v1_get_wallet_balance`
+   retournait `kadi_wallets.balance` brut, ignorant les retenues de crédit
+   vivantes (`kadi_v1_wallet_reservations` avec `status = 'RESERVED'`) que
+   `kadi_v1_reserve_generation_credits` utilise déjà pour déterminer la
+   solvabilité réelle. Un solde brut de 10 avec 3 crédits retenus aurait pu
+   afficher « 10 crédits » alors que seuls 7 sont réellement engageables —
+   confirmé financièrement trompeur. **Corrigé** : une nouvelle migration
+   forward-only remplace le corps de `kadi_v1_get_wallet_balance` (même
+   nom, même signature) pour calculer `total_credits`/`reserved_credits`/
+   `available_credits` en une seule fonction atomique, avec un verrou
+   `for share` sur la ligne du portefeuille pour rester cohérent face à une
+   réservation/capture concurrente — jamais deux lectures applicatives
+   séparées. `balance` préservé pour compatibilité ascendante :
+   `kadiV1RechargeService.js`'s `resumePendingGeneration`, l'unique
+   appelant existant du nombre brut, reste totalement inchangé
+   (`getBalance()` intact) ; une nouvelle méthode additive
+   `getAvailableBalance()` porte la nouvelle sémantique.
+4. **[FAIT]** Modèle d'autorité tracé de bout en bout : RPC → dépôt
+   Supabase/en mémoire → `BalanceReader` → `WalletRuntimeAdapter` (le port
+   partagé entre `FlowCommandRuntime` et `ConversationOrchestrator`) →
+   présentateur / orchestrateur — un seul calcul financier, jamais deux
+   indépendants. Chaque couche revalide l'invariant
+   `total_credits - reserved_credits === available_credits` et échoue
+   fermé (jamais de solde négatif ou deviné) en cas d'état financier
+   impossible.
+5. **[FAIT]** Tests ciblés (317/317 sur les fichiers concernés) puis suite
+   complète (1498/1498), `git diff --check` propre.
+6. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
+   trouvé.
+7. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+8. **[EN ATTENTE]** Fusion dans `main`.
+9. **[EN ATTENTE]** Déploiement manuel explicite sur Render, puis
+   application de la migration
+   `20260807_add_kadi_v1_available_wallet_balance.sql` à Supabase de
+   production (hors périmètre de cette mission — non exécutée ici).
+10. **[EN ATTENTE]** Une vraie consultation de solde ("Mon solde" et
+    "Quel est mon solde ?"), observée en conditions réelles (validation
+    téléphone), avec au moins un cas où des crédits sont réellement
+    retenus par une génération en cours.
+11. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
+    commencée.
 
 ## Déploiement Render
 
