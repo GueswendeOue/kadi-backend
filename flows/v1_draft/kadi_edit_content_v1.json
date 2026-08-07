@@ -42,7 +42,8 @@
           "__example__": [
             { "id": "ADD_CONTENT", "title": "Ajouter un article" },
             { "id": "UPDATE_CONTENT", "title": "Modifier cet article" },
-            { "id": "REMOVE_CONTENT", "title": "Supprimer cet article" }
+            { "id": "REMOVE_CONTENT", "title": "Supprimer cet article" },
+            { "id": "FINISH_CONTENT", "title": "Terminer la modification" }
           ]
         },
         "unit_options": {

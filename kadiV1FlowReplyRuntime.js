@@ -26,7 +26,7 @@ const FLOW_ACTIONS = Object.freeze({
   DOCUMENT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_REVIEW: Object.freeze(["VERIFY", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "CANCEL"]),
   EDIT_CLIENT: Object.freeze(["SAVE_CLIENT"]),
-  EDIT_CONTENT: Object.freeze(["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT"]),
+  EDIT_CONTENT: Object.freeze(["ADD_CONTENT", "UPDATE_CONTENT", "REMOVE_CONTENT", "FINISH_CONTENT"]),
   EDIT_OPTIONS: Object.freeze(["SAVE_OPTIONS"]),
   DOCUMENT_PREVIEW: Object.freeze(["PREPARE_PDF", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS", "SAVE_FOR_LATER", "CANCEL"]),
   GENERATION_CONFIRMATION: Object.freeze(["CONFIRM_GENERATION", "CANCEL"]),
@@ -389,6 +389,16 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
     return ok(Object.freeze({
       handled: true,
       action: input.action,
+      // The screen the reply was actually submitted from, exactly as
+      // verified against the session's own expected_flow_key by
+      // sessions.consumeReply() above (kadiV1ConversationSession.js's
+      // validateReply rejects any mismatch with KADI_V1_SESSION_UNEXPECTED_FLOW
+      // before this point is ever reached) — never a client-supplied
+      // "edit mode" flag. Lets the presenter distinguish the same action
+      // name reached from an initial-creation screen versus a correction
+      // screen (e.g. SAVE_CLIENT from DOCUMENT_CLIENT vs EDIT_CLIENT)
+      // without trusting anything the payload itself claims.
+      flow_key: input.flowKey,
       duplicate: consumed.duplicate === true || executed.duplicate === true,
       result: executed.value == null ? null : structuredClone(executed.value),
     }));
