@@ -306,6 +306,41 @@ renommée). Aucune mutation Meta requise.
    propriétaire, sur `FA-20260806190633-A0EAC605` **et** sur
    `FA-20260807010715-1961CBCC`, observée en conditions réelles.
 
+## Ordre — `fix/kadi-v1-options-contract-r0` (T1/OPTIONS-001 : contrat d'options FACTURE/DEVIS aligné sur la vraie forme combinée du Flow)
+
+Aucune migration Supabase requise pour cette branche (correctif entièrement
+applicatif). Aucune mutation Meta requise.
+
+1. **[FAIT]** Audit final « FINAL ROADMAP GAP AUDIT R0 » : Kadi V1 non prêt
+   pour un audit de release candidate, backlog T1–T16 produit ; T1 =
+   `OPTIONS-001`, confirmé même classe de défaut que `CLIENT-001`/
+   `EDIT-CONTENT-001`.
+2. **[FAIT]** T1/OPTIONS-001 corrigé, sur une branche isolée dédiée depuis
+   `main@d2fee1a1adbae59ce452411f2eb37fe8bcb5b298` : `normalizeOptions`
+   (`kadiV1SharedDocumentPolicies.js`) élargi pour accepter la vraie forme
+   combinée à sept champs des Flows `kadi_document_options_v1.json`/
+   `kadi_edit_options_v1.json`, `validity_days` plat correctement mappé
+   vers sa place canonique existante avec détection de conflit,
+   `payment_method`/`reference` acceptés puis explicitement abandonnés pour
+   FACTURE/DEVIS (aucune signification confirmée pour ces types). Défaut
+   annexe (`discount_amount` blanc rejeté) corrigé dans le même correctif.
+   `DECHARGE` confirmé hors périmètre par lecture du code, non-régression
+   testée. T2 (`HISTORY-CONTRACT-001`) et T3 (`RECHARGE-CONTRACT-001`)
+   **volontairement non traités** — voir fiche X de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+3. **[FAIT]** Tests ciblés (180/180 sur les fichiers concernés) puis suite
+   complète (1341/1341), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM trouvé.
+5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+6. **[EN ATTENTE]** Fusion dans `main`.
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie soumission FACTURE et DEVIS via le Flow
+   `DOCUMENT_OPTIONS` réel, observée en conditions réelles (validation
+   téléphone), y compris une validité DEVIS non vide.
+9. **[EN ATTENTE]** `FLOW-PARITY-GATE` global (test structurel unique
+   couvrant tous les Flows JSON de `flows/v1_draft/`) — à programmer dans
+   le backlog suivant, pas construit dans cette mission.
+
 ## Déploiement Render
 
 - [ ] **Commit Render attendu** : vérifier que le commit qui sera déployé

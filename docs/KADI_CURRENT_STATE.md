@@ -425,6 +425,38 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   plausible à partir du code, jamais reproduit sur un cas réel. Nécessite un
   audit dédié, en lecture seule, avant toute décision de correction ; aucun
   code de portefeuille, de prix ou de crédit n'a été touché par ce lot.
+* **Mise à jour (2026-08-07) : audit final « FINAL ROADMAP GAP AUDIT R0 »
+  puis correction T1/OPTIONS-001, nouvelle branche dédiée
+  `fix/kadi-v1-options-contract-r0`, PR distincte, brouillon, non fusionnée,
+  non déployée.** L'audit final (backlog T1–T16) a confirmé Kadi V1 **non
+  prêt** pour un audit de mise en release candidate, trois parcours cœur
+  étant totalement cassés par le même défaut de classe déjà vu deux fois
+  (`CLIENT-001`, `EDIT-CONTENT-001`) : `OPTIONS-001`/T1,
+  `HISTORY-CONTRACT-001`/T2, `RECHARGE-CONTRACT-001`/T3. **T1/OPTIONS-001
+  corrigé, T2/T3 volontairement laissés hors périmètre de cette mission** —
+  le vrai Flow combiné `kadi_document_options_v1.json` (et son pendant
+  d'édition) soumet toujours ses sept champs ensemble
+  (`tax_rate_percent`/`tax_rate_basis_points`, `discount_amount`, `notes`,
+  `payment_terms`, `validity_days`, `payment_method`, `reference`), mais
+  `normalizeOptions` (`kadiV1SharedDocumentPolicies.js`) ne reconnaissait
+  ni la forme plate de `validity_days` ni `payment_method`/`reference` pour
+  FACTURE/DEVIS — **aucune FACTURE ni aucun DEVIS ne pouvait jamais quitter
+  l'écran DOCUMENT_OPTIONS via le vrai Flow Meta.** Un second défaut de la
+  même fonction (`discount_amount` blanc rejeté, masqué jusque-là par le
+  premier) corrigé dans le même correctif. **Contrat déterminé avant
+  correction :** `validity_days` persiste à sa place canonique déjà établie
+  `document.options.validity_days` (même convention qu'`invoice_kind`),
+  désormais acceptée sous forme plate avec détection de conflit si la forme
+  imbriquée est aussi soumise ; `payment_method`/`reference` n'ont aucune
+  signification FACTURE/DEVIS confirmée nulle part dans le domaine (leur
+  seule signification réelle est celle du reçu) et sont donc acceptés puis
+  explicitement abandonnés pour ces deux types, jamais persistés. `DECHARGE`
+  confirmé hors d'atteinte de ce défaut (parcours initial `SAVE_DETAILS`,
+  politique d'options dédiée et séparée) — non-régression testée. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche X de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet, la preuve et le suivi requis (`FLOW-PARITY-GATE` global, T2/T3
+  encore à corriger).
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours
