@@ -67,33 +67,35 @@ function createFakeRechargeSupabaseClient({ rechargeRepository, sessionIdsByOwne
     from(table) {
       if (table !== "kadi_v1_recharge_sessions") throw new Error(`UNEXPECTED_TABLE:${table}`);
       return {
+        // RECHARGE-CONTRACT-001 R3: mirrors the real query exactly —
+        // status is no longer filtered here at all. The contextual newest
+        // session (owner-scoped, created_at <= sessionOpenedAt) is
+        // resolved first, regardless of status; kadiV1ProductionInfrastructure.js's
+        // cancel() itself checks cancellability against the returned
+        // status and fails closed without ever falling through to an
+        // older row.
         select: () => ({
           eq: (_col, ownerWaId) => ({
-            in: (_col2, statuses) => ({
-              // RECHARGE-CONTRACT-001 R1: mirrors the real
-              // .lte("created_at", sessionOpenedAt) bound added to
-              // createKadiV1RechargeRuntime.cancel() — only a recharge
-              // session created at or before the trusted Flow session's
-              // own opened_at is ever eligible.
-              lte: (_col3, upperBound) => ({
-                order: () => ({
-                  limit: () => ({
-                    async maybeSingle() {
-                      const ids = sessionIdsByOwner.get(ownerWaId) || [];
-                      const sessions = [];
-                      for (const id of ids) {
-                        const loaded = await rechargeRepository.getRechargeSession({ rechargeSessionId: id });
-                        if (
-                          loaded.ok && loaded.value.owner_wa_id === ownerWaId && statuses.includes(loaded.value.status) &&
-                          loaded.value.created_at <= upperBound
-                        ) {
-                          sessions.push(loaded.value);
-                        }
+            // RECHARGE-CONTRACT-001 R1: mirrors the real
+            // .lte("created_at", sessionOpenedAt) bound — only a recharge
+            // session created at or before the trusted Flow session's own
+            // opened_at is ever eligible.
+            lte: (_col2, upperBound) => ({
+              order: () => ({
+                limit: () => ({
+                  async maybeSingle() {
+                    const ids = sessionIdsByOwner.get(ownerWaId) || [];
+                    const sessions = [];
+                    for (const id of ids) {
+                      const loaded = await rechargeRepository.getRechargeSession({ rechargeSessionId: id });
+                      if (loaded.ok && loaded.value.owner_wa_id === ownerWaId && loaded.value.created_at <= upperBound) {
+                        sessions.push(loaded.value);
                       }
-                      sessions.sort((a, b) => b.created_at.localeCompare(a.created_at));
-                      return { data: sessions[0] ? { recharge_session_id: sessions[0].recharge_session_id } : null, error: null };
-                    },
-                  }),
+                    }
+                    sessions.sort((a, b) => b.created_at.localeCompare(a.created_at));
+                    const newest = sessions[0];
+                    return { data: newest ? { recharge_session_id: newest.recharge_session_id, status: newest.status } : null, error: null };
+                  },
                 }),
               }),
             }),
@@ -112,7 +114,7 @@ function createFakeRechargeSupabaseClient({ rechargeRepository, sessionIdsByOwne
 // kadiV1PaymentProvider.js contract requires.
 function fakePaymentProvider({ confirmOnVerify = true } = {}) {
   const requests = [];
-  const merchantReferenceByProviderPaymentId = new Map();
+  const paymentsById = new Map();
   let sequence = 0;
   return {
     name: "SYNTHETIC_PAY",
@@ -120,7 +122,9 @@ function fakePaymentProvider({ confirmOnVerify = true } = {}) {
     async createPaymentRequest(request) {
       sequence += 1;
       const providerPaymentId = `payment:${sequence}`;
-      merchantReferenceByProviderPaymentId.set(providerPaymentId, request.merchant_reference);
+      paymentsById.set(providerPaymentId, {
+        merchant_reference: request.merchant_reference, amount: request.amount, currency: request.currency,
+      });
       requests.push(request);
       return {
         ok: true,
@@ -132,13 +136,13 @@ function fakePaymentProvider({ confirmOnVerify = true } = {}) {
       };
     },
     async getPaymentStatus({ providerPaymentId }) {
-      const merchantReference = merchantReferenceByProviderPaymentId.get(providerPaymentId);
-      if (!merchantReference) return { ok: false, error: "PAYMENT_NOT_FOUND" };
+      const payment = paymentsById.get(providerPaymentId);
+      if (!payment) return { ok: false, error: "PAYMENT_NOT_FOUND" };
       return {
         ok: true,
         value: {
           provider: "SYNTHETIC_PAY", provider_payment_id: providerPaymentId, provider_event_id: `event:${providerPaymentId}`,
-          merchant_reference: merchantReference, amount: PACK_1000.amount, currency: PACK_1000.currency,
+          merchant_reference: payment.merchant_reference, amount: payment.amount, currency: payment.currency,
           status: confirmOnVerify ? "CONFIRMED" : "PENDING", verified: true, occurred_at: NOW, metadata: {},
         },
       };
@@ -743,6 +747,102 @@ test("R2 HIGH/P0 (Test B): the exact-replay protection survives a full runtime r
 
   const aAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
   assert.equal(aAfterReplay.value.status, "PAYMENT_PENDING", "A must remain untouched even after the entire runtime was rebuilt from persisted state");
+});
+
+// R3 independent review (HIGH/P0): the R1 targeting query filtered status
+// (IN CREATED/PAYMENT_PENDING) BEFORE ordering/limiting to the contextual
+// newest session. If the contextual-newest session (the one that actually
+// existed when the Flow was opened) transitions out of that status set
+// before CANCEL is ever submitted, the status filter silently excludes it
+// and the query falls through to an OLDER row that still matches both the
+// status filter and the created_at bound — cancelling a session the Flow
+// context was never actually about, even on a genuine first-time (not a
+// replay) submission.
+
+// Test A (mandatory): contextual newest session B transitions to CREDITED
+// via a real CHECK_PAYMENT before CANCEL is submitted for the first time.
+test("R3 HIGH/P0 (Test A): a CANCEL Flow whose contextual newest recharge became CREDITED before submission must never fall through and cancel an older recharge", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  // 1. SELECT_PACK creates recharge A.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-credited-select-a") });
+  const sessionA = await latestSession(f);
+
+  // 2. Another SELECT_PACK creates recharge B, newer than A.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-credited-select-b") });
+  const sessionB = await latestSession(f);
+
+  // 3. Open RECHARGE Flow/session C only after both A and B exist — B is
+  // the contextual newest recharge at this exact moment.
+  const cancelSessionId = await openSession(f, { idempotencyKey: nextKey("falltrough-credited-cancel-session") });
+
+  // 4. Before submitting C/CANCEL, transition B out of CREATED/
+  // PAYMENT_PENDING through a real, existing chain — CHECK_PAYMENT on B.
+  await send(f, { action: "CHECK_PAYMENT", data: { pack_id: "", payment_reference: sessionB.provider_payment_id }, idempotencyKey: nextKey("falltrough-credited-check-b") });
+  const bAfterCredit = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfterCredit.value.status, "CREDITED");
+  const balanceAfterCredit = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
+  assert.equal(balanceAfterCredit.value, PACK_2000.credits);
+
+  // 5. Submit C for the FIRST TIME with action=CANCEL — not a duplicate.
+  const cancelMessage = nfmReply({ sessionId: cancelSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const result = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.notEqual(result.results[0].duplicate, true, "this is a first-time submission, not a replay");
+  assert.equal(result.results[0].accepted, false, "CANCEL must fail closed — the contextual newest recharge (B) is no longer cancellable, and must never fall through to an older one");
+  assert.equal(result.results[0].reason, "RECHARGE_SESSION_NOT_CANCELLABLE");
+
+  const bAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfter.value.status, "CREDITED", "B must remain exactly as the real CHECK_PAYMENT left it");
+  const aAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfter.value.status, "PAYMENT_PENDING", "A must remain untouched — CANCEL must never fall through to it");
+  const balanceAfter = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
+  assert.equal(balanceAfter.value, PACK_2000.credits, "no credit change from the failed CANCEL attempt");
+});
+
+// Test B (mandatory): terminal/CANCELLED variant — contextual B already
+// CANCELLED (e.g. by an earlier, unrelated CANCEL) before the stale Flow
+// C is submitted for the first time.
+test("R3 HIGH/P0 (Test B): a CANCEL Flow whose contextual newest recharge is already CANCELLED must never fall through and cancel an older recharge", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-cancelled-select-a") });
+  const sessionA = await latestSession(f);
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-cancelled-select-b") });
+  const sessionB = await latestSession(f);
+
+  const cancelSessionId = await openSession(f, { idempotencyKey: nextKey("falltrough-cancelled-cancel-session") });
+
+  // B is cancelled through a separate, real CANCEL round-trip before the
+  // stale session C above is ever submitted.
+  await send(f, { action: "CANCEL", data: { pack_id: "", payment_reference: "" }, idempotencyKey: nextKey("falltrough-cancelled-cancel-b") });
+  const bAfterCancel = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfterCancel.value.status, "CANCELLED");
+
+  const staleMessage = nfmReply({ sessionId: cancelSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const result = await f.composition.webhookHandler({ messages: [staleMessage] });
+  assert.notEqual(result.results[0].duplicate, true);
+  assert.equal(result.results[0].accepted, false, "CANCEL must fail closed — B is already terminal, must never fall through to A");
+  assert.equal(result.results[0].reason, "RECHARGE_SESSION_NOT_CANCELLABLE");
+
+  const aAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfter.value.status, "PAYMENT_PENDING", "A must remain untouched");
+});
+
+// Test C (mandatory): normal current cancel — B still active, must still
+// be the one cancelled (no regression from the R3 targeting change).
+test("R3 (Test C): a normal current CANCEL with B still active continues to cancel B only", async () => {
+  const f = await buildComposition({ balance: 0 });
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-normal-select-a") });
+  const sessionA = await latestSession(f);
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("falltrough-normal-select-b") });
+  const sessionB = await latestSession(f);
+
+  await send(f, { action: "CANCEL", data: { pack_id: "", payment_reference: "" }, idempotencyKey: nextKey("falltrough-normal-cancel") });
+
+  const bAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfter.value.status, "CANCELLED", "B, the contextual newest and still-cancellable session, must be the one cancelled");
+  const aAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfter.value.status, "PAYMENT_PENDING", "A must remain untouched");
 });
 
 test("10. The presenter sends nothing at all for a duplicate SELECT_PACK reply (kadiV1ProductionPresenter.js's presentFlowReply short-circuits on result.duplicate === true)", async () => {
