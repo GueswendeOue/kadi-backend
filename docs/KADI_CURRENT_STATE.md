@@ -457,6 +457,23 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet, la preuve et le suivi requis (`FLOW-PARITY-GATE` global, T2/T3
   encore à corriger).
+* **Mise à jour (2026-08-07) : EDIT_OPTIONS-001 corrigé avant fusion, même
+  branche, PR #17 toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une
+  revue adversariale indépendante de la PR #17 a signalé un défaut
+  MEDIUM/bloquant de fusion : contrairement à `EDIT_CLIENT`/`EDIT_CONTENT`,
+  le vrai formulaire `EDIT_OPTIONS` ne pré-remplit jamais
+  `notes`/`payment_terms` avec les valeurs actuelles du document — une
+  correction ne portant que sur la taxe pouvait donc silencieusement
+  effacer une note ou une condition de paiement réelle déjà enregistrée.
+  **Corrigé :** vide traité comme « non fourni » pour `notes`/
+  `payment_terms`, même principe déjà appliqué à
+  `discount_amount`/`validity_days` par le correctif X — une seule règle
+  canonique couvre `DOCUMENT_OPTIONS` et `EDIT_OPTIONS`. Effacer
+  explicitement une note existante reste structurellement impossible via ce
+  Flow ; consigné comme question produit/UX séparée, non traitée ici.
+  **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche X.1 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet, la preuve et les deux suivis produit non bloquants consignés.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

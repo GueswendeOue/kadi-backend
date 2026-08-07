@@ -2458,3 +2458,143 @@ liste blanche d'une couche (ici `ACTION_FIELDS` dans
 suivante (ici `normalizeOptions` dans `kadiV1SharedDocumentPolicies.js`)
 reste en retard — vérifier la parité Flow↔backend à **chaque** couche de
 validation, pas seulement la première atteinte.
+
+### X.1 — EDIT_OPTIONS-001 : corrigé avant fusion, revue indépendante — les champs `notes`/`payment_terms` non pré-remplis pouvaient être effacés silencieusement
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-options-contract-r0`, PR #17, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #17 (mission « KADI
+  V1 — T1 OPTIONS-001 INDEPENDENT REVIEW FIX R1 »), constat MEDIUM/bloquant
+  de fusion.
+
+### Constat, reproduit avant tout correctif
+
+Contrairement à `EDIT_CLIENT`/`EDIT_CONTENT`, le vrai formulaire
+`EDIT_OPTIONS` ne pré-remplit jamais `notes`/`payment_terms` avec les
+valeurs actuelles du document — son formulaire unique combiné les soumet
+vides à chaque fois que le propriétaire ne les touche pas, exactement comme
+les champs numériques (`discount_amount`/`validity_days`) déjà traités par
+la fiche X. Le correctif X initial traitait déjà correctement les champs
+numériques vides comme « non fournis », mais copiait toujours
+`notes`/`payment_terms` vides tels quels dans le correctif persisté — et
+`kadiV1SharedDocumentPipeline.js`'s `setOptions` fusionne ce correctif à
+plat directement sur le document existant. Reproduit directement :
+
+```js
+normalizeOptions("FACTURE", {
+  tax_rate_basis_points: 1800, discount_amount: "", notes: "", payment_terms: "",
+  validity_days: "", payment_method: "", reference: "",
+})
+// avant correctif → { ok: true, value: { tax_rate_basis_points: 1800, notes: "", payment_terms: "" } }
+```
+
+**Conséquence en production réelle : une correction portant uniquement sur
+la taxe (le cas le plus courant) aurait silencieusement effacé une note ou
+une condition de paiement réelle et déjà enregistrée**, en violation directe
+de l'exigence d'acceptation de T1 selon laquelle les champs optionnels
+vides ne doivent jamais corrompre l'état persisté.
+
+### Sémantique du texte vide déterminée avant correction
+
+Même règle que pour les champs numériques (« vide = non fourni, jamais
+zéro/vidé ») appliquée à `notes`/`payment_terms`, pour la raison suivante :
+puisque `EDIT_OPTIONS` ne pré-remplit jamais ces deux champs, un champ vide
+soumis par le vrai Flow ne peut structurellement **jamais** distinguer
+« le propriétaire n'a rien tapé » de « le propriétaire veut effacer la
+valeur existante » — les deux produisent exactement la même soumission.
+Choisir « vide = non fourni » est donc la seule interprétation qui ne
+risque jamais de perte de donnée silencieuse, au prix d'une conséquence
+assumée : il devient structurellement impossible d'effacer une note déjà
+enregistrée via ce Flow. **Question produit/UX séparée, non résolue ici** —
+consigné en suivi ci-dessous, pas de nouveau sentinel client-contrôlé
+inventé (explicitement écarté par la mission). Même règle appliquée sans
+distinction à la soumission initiale `DOCUMENT_OPTIONS` : un champ vide y
+signifie aussi « pas de note », ce qu'omettre la clé obtient de façon
+identique — un seul principe canonique couvre les deux écrans, pas besoin
+d'un traitement distinct.
+
+### Correctif
+
+`kadiV1SharedDocumentPolicies.js`'s `normalizeOptions` : la boucle
+`notes`/`payment_terms` n'inclut désormais le champ dans le correctif que
+si sa valeur n'est pas la chaîne vide (ni `null`) — même principe que
+`parseOptionalInteger`, sans réutiliser cette fonction (le texte n'est pas
+numérique). Une valeur explicitement non vide continue de mettre à jour
+normalement.
+
+Effet de bord découvert pendant la correction, également corrigé dans le
+même correctif : une soumission réelle où **tout** est vide (y compris la
+taxe) normalise désormais vers un correctif entièrement vide (`{}`), ce que
+`kadiV1DocumentDomain.js`'s `modifyDocument` rejette avec
+`DOCUMENT_PATCH_INVALID` (il exige un correctif non vide). Corrigé dans
+`kadiV1SharedDocumentPipeline.js`'s `setOptions` : un correctif normalisé
+entièrement vide (hors RECU, chemin distinct et non atteint par le vrai
+Flow) renvoie désormais explicitement le document chargé inchangé, sans
+appeler `persistModifiedLoaded` — même comportement de non-événement que le
+court-circuit déjà existant côté adaptateur pour une soumission brute
+réellement vide, appliqué ici au niveau du correctif normalisé.
+
+### Preuve
+
+* `tests/kadiV1SharedDocumentPipeline.test.js` : reproduction directe suivie
+  de quatre nouveaux scénarios — correction taxe seule préserve
+  `notes`/`payment_terms` existants et relus après rechargement ;
+  soumission initiale avec champs vides ne modifie ni ne corrompt
+  `notes`/`payment_terms` ; mise à jour explicite non vide fonctionne
+  toujours normalement ; le scénario « soumission entièrement vide » déjà
+  existant renforcé pour vérifier explicitement l'absence de changement de
+  version (non-événement réel, pas seulement une valeur inchangée par
+  coïncidence).
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` : nouveau scénario O,
+  composition de production réelle complète — document créé avec
+  `notes`/`payment_terms` réels non vides → revue → `EDIT_OPTIONS` →
+  soumission réelle à sept champs avec seule la taxe changée → document
+  rechargé → `notes`/`payment_terms` toujours présents, identiques,
+  visibles dans le résumé de revue rafraîchi.
+* Focused : 184/184. Suite complète : 1345/1345. `git diff --check` :
+  propre.
+
+### Sécurité re-vérifiée
+
+Aucune donnée n'est perdue silencieusement pour le cas réel (correction
+partielle) ; une valeur explicitement soumise continue de mettre à jour
+normalement ; le comportement `discount_amount`/`validity_days`/
+`tax_rate_basis_points`/liste blanche/rejeu/version obsolète du correctif X
+reste inchangé (confirmé par la suite complète, aucune régression) ; RECU
+non affecté (chemin `setOptions` non atteint par son vrai Flow, confirmé
+par lecture du code) ; aucune migration Supabase requise ; aucune mutation
+Meta requise.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* **Effacement explicite d'une note existante** : aujourd'hui
+  structurellement impossible via `EDIT_OPTIONS` (conséquence assumée de la
+  règle « vide = non fourni »). Nécessite soit un vrai pré-remplissage côté
+  Meta (mutation de Flow), soit un mécanisme explicite de suppression
+  distinct d'un champ simplement laissé vide — question produit/UX séparée,
+  non traitée ici.
+* **Incohérence d'affichage FACTURE/DEVIS non bloquante** : le Flow
+  `DOCUMENT_OPTIONS`/`EDIT_OPTIONS` réel affiche toujours visuellement des
+  champs `payment_method`/`reference` pour FACTURE/DEVIS, alors que le
+  correctif X les abandonne délibérément (aucune signification
+  invoice-level confirmée dans le domaine). L'utilisateur peut donc voir un
+  champ qui semble accepté sans jamais avoir d'effet persistant. Non
+  bloquant pour T1 (aucune perte de donnée, aucun échec) ; à traiter par une
+  future mutation de Flow qui retire ces deux champs de l'écran FACTURE/DEVIS,
+  hors périmètre de ce correctif.
+
+### Prévention
+
+Quand un champ Flow n'est **jamais pré-rempli** avec la valeur actuelle du
+document (contrairement aux écrans qui rouvrent avec les vraies valeurs),
+une soumission vide de ce champ ne peut structurellement jamais exprimer
+une intention de le vider — elle ne peut signifier que « non touché ».
+Traiter alors systématiquement vide comme absent, jamais comme une valeur
+à appliquer, y compris pour du texte libre (pas seulement les champs
+numériques déjà couverts par ce principe). Et, plus généralement : quand un
+correctif normalisé peut légitimement devenir vide après avoir retiré tous
+les champs vides, vérifier que la couche de fusion en aval (ici
+`domain.modifyDocument`, qui rejette un correctif vide) est explicitement
+gérée par l'appelant plutôt que de laisser échouer une soumission qui ne
+change réellement rien.

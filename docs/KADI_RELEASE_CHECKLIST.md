@@ -331,15 +331,33 @@ applicatif). Aucune mutation Meta requise.
 3. **[FAIT]** Tests ciblés (180/180 sur les fichiers concernés) puis suite
    complète (1341/1341), `git diff --check` propre.
 4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM trouvé.
-5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-6. **[EN ATTENTE]** Fusion dans `main`.
-7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-8. **[EN ATTENTE]** Une vraie soumission FACTURE et DEVIS via le Flow
+5. **[FAIT]** Revue adversariale indépendante de la PR #17 — a signalé
+   EDIT_OPTIONS-001 (MEDIUM/bloquant de fusion) : le vrai formulaire
+   `EDIT_OPTIONS` ne pré-remplit jamais `notes`/`payment_terms`, donc une
+   correction ne portant que sur la taxe pouvait silencieusement effacer
+   une note ou une condition de paiement réelle déjà enregistrée. Corrigé
+   sur la même branche : vide traité comme « non fourni » pour
+   `notes`/`payment_terms`, même principe déjà appliqué à
+   `discount_amount`/`validity_days` — voir fiche X.1 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Tests ciblés
+   (184/184) puis suite complète (1345/1345), `git diff --check` propre.
+   Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet mis à jour.
+6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #17
+   mise à jour (post-EDIT_OPTIONS-001).
+7. **[EN ATTENTE]** Fusion dans `main`.
+8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+9. **[EN ATTENTE]** Une vraie soumission FACTURE et DEVIS via le Flow
    `DOCUMENT_OPTIONS` réel, observée en conditions réelles (validation
-   téléphone), y compris une validité DEVIS non vide.
-9. **[EN ATTENTE]** `FLOW-PARITY-GATE` global (test structurel unique
-   couvrant tous les Flows JSON de `flows/v1_draft/`) — à programmer dans
-   le backlog suivant, pas construit dans cette mission.
+   téléphone), y compris une validité DEVIS non vide et une correction
+   `EDIT_OPTIONS` ne portant que sur la taxe préservant une note réelle.
+10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global (test structurel unique
+    couvrant tous les Flows JSON de `flows/v1_draft/`) — à programmer dans
+    le backlog suivant, pas construit dans cette mission.
+11. **[EN ATTENTE]** Suivi produit non bloquant : mutation de Flow future
+    pour retirer `payment_method`/`reference` de l'écran FACTURE/DEVIS
+    (visuellement présents mais sans effet persistant) ; mécanisme séparé
+    pour permettre l'effacement explicite d'une note existante — voir
+    fiche X.1.
 
 ## Déploiement Render
 
