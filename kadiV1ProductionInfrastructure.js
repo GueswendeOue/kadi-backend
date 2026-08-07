@@ -692,15 +692,38 @@ function createKadiV1RechargeRuntime({
       : confirmed;
   }
 
-  async function cancel({ ownerWaId } = {}) {
+  // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0 — cross-session
+  // CANCEL safety): the real RECHARGE Flow carries no recharge_session_id
+  // of its own, so this always had to resolve "which session" from
+  // context rather than an explicit, client-supplied id (never trust
+  // pack_id/payment_reference for that). Before this fix it resolved to
+  // "the owner's current newest CREATED/PAYMENT_PENDING session" with no
+  // bound at all — a delayed exact replay of an already-consumed CANCEL
+  // message, or a first-time submission of a stale still-valid RECHARGE
+  // Flow opened before a newer recharge existed, could both cancel a
+  // completely different, newer recharge session than the one that Flow
+  // context was ever about. sessionOpenedAt (kadiV1FlowReplyRuntime.js,
+  // the trusted server-side moment this exact Flow session was opened,
+  // never client-supplied) now bounds eligibility: only a session created
+  // at or before that moment can ever be the target. A legitimate CANCEL
+  // always opens a fresh session immediately before submission, so this
+  // never excludes a real, current cancellation — it only excludes
+  // sessions that did not yet exist when this specific Flow was opened.
+  // No new Supabase column required: kadi_v1_conversation_sessions.opened_at
+  // and kadi_v1_recharge_sessions.created_at both already exist.
+  async function cancel({ ownerWaId, sessionOpenedAt } = {}) {
     if (!OWNER_PATTERN.test(ownerWaId || "")) {
       return fail("RECHARGE_CANCEL_OWNER_INVALID");
+    }
+    if (!Number.isFinite(Date.parse(sessionOpenedAt || ""))) {
+      return fail("RECHARGE_CANCEL_SESSION_CONTEXT_INVALID");
     }
     const lookup = await supabase
       .from("kadi_v1_recharge_sessions")
       .select("recharge_session_id")
       .eq("owner_wa_id", ownerWaId)
       .in("status", ["CREATED", "PAYMENT_PENDING"])
+      .lte("created_at", sessionOpenedAt)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();

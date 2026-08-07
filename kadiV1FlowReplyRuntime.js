@@ -503,6 +503,14 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
         document_state: session.document_state,
         return_state: session.return_state,
       }) : null,
+      // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): the
+      // trusted server-side moment this session was opened — never a
+      // client-supplied value. Used only by RECHARGE/CANCEL
+      // (kadiV1FlowCommandRuntime.js) to bound which recharge session a
+      // stale or replayed Flow submission is allowed to affect, since
+      // Meta's RECHARGE form carries no session/recharge identifier of
+      // its own. See kadiV1ProductionInfrastructure.js's cancel().
+      sessionOpenedAt: session.opened_at,
     });
     if (!executed || typeof executed.ok !== "boolean") return fail("KADI_V1_FLOW_COMMAND_RESULT_INVALID");
     if (!executed.ok) return executed;
