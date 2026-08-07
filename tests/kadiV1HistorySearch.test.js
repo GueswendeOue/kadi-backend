@@ -114,6 +114,82 @@ test("search rejects unknown filters, invalid ranges, cursors and oversized page
   assert.equal((await service.searchDocuments({ ownerWaId: OWNER, limit: MAX_PAGE_SIZE + 1 })).error, "HISTORY_LIMIT_INVALID");
 });
 
+// HISTORY-CONTRACT-001 (R1 independent review, MEDIUM/merge blocker): the
+// real HISTORY_SEARCH Flow's date_from/date_to text fields submit a bare
+// calendar date ("2026-04-01"), never a full timestamp. Both history
+// repositories compare `to` as an inclusive upper bound against a real
+// timestamp with `<=` — a bare date parses as that day's exact midnight,
+// so `to: "2026-04-01"` silently excluded every document from the rest of
+// that day. `from` needed no fix: a bare date already parses to that day's
+// midnight, exactly the inclusive lower bound a calendar-day range needs.
+test("HISTORY-CONTRACT-001: a calendar-day date_from/date_to search genuinely includes the whole end day and excludes the next", async () => {
+  const { service } = setup([
+    bundle({ id: "doc_mar31", updated: "2026-03-31T23:00:00.000Z" }),
+    bundle({ id: "doc_apr01", updated: "2026-04-01T10:00:00.000Z" }),
+    bundle({ id: "doc_apr02", updated: "2026-04-02T00:00:00.000Z" }),
+  ]);
+
+  const sameDay = await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "2026-04-01", to: "2026-04-01" } });
+  assert.deepEqual(sameDay.value.documents.map((row) => row.document_id), ["doc_apr01"], "a same-day range must include a document updated during that day, not just at its exact midnight");
+
+  const fromOnly = await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "2026-04-01" } });
+  assert.deepEqual(fromOnly.value.documents.map((row) => row.document_id).sort(), ["doc_apr01", "doc_apr02"].sort());
+
+  const toOnly = await service.searchDocuments({ ownerWaId: OWNER, filters: { to: "2026-04-01" } });
+  assert.deepEqual(toOnly.value.documents.map((row) => row.document_id).sort(), ["doc_apr01", "doc_mar31"].sort(), "to: 2026-04-01 must include documents updated anywhere during April 1, not exclude everything after its midnight");
+
+  const marchToApril = await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "2026-03-01", to: "2026-04-01" } });
+  assert.deepEqual(marchToApril.value.documents.map((row) => row.document_id).sort(), ["doc_apr01", "doc_mar31"].sort(), "an existing March->April range must still work, with the end day now genuinely inclusive");
+});
+
+test("HISTORY-CONTRACT-001: an explicit full ISO timestamp for `to` is preserved exactly, never reinterpreted as a calendar date", async () => {
+  const { service } = setup([
+    bundle({ id: "doc_early", updated: "2026-04-01T05:00:00.000Z" }),
+    bundle({ id: "doc_late", updated: "2026-04-01T20:00:00.000Z" }),
+  ]);
+  const result = await service.searchDocuments({ ownerWaId: OWNER, filters: { to: "2026-04-01T12:00:00.000Z" } });
+  assert.deepEqual(result.value.documents.map((row) => row.document_id), ["doc_early"], "an explicit non-midnight timestamp must be used exactly as given, not expanded to end of day");
+});
+
+test("HISTORY-CONTRACT-001: an invalid date still fails closed after the calendar-day normalization", async () => {
+  const { service } = setup([]);
+  assert.equal((await service.searchDocuments({ ownerWaId: OWNER, filters: { to: "not-a-date" } })).error, "HISTORY_DATE_INVALID");
+  assert.equal((await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "not-a-date" } })).error, "HISTORY_DATE_INVALID");
+});
+
+test("HISTORY-CONTRACT-001: a genuinely reversed date range still fails closed once the end day is expanded", async () => {
+  const { service } = setup([]);
+  const reversed = await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "2026-04-02", to: "2026-04-01" } });
+  assert.equal(reversed.error, "HISTORY_DATE_RANGE_INVALID");
+  // A same-day range (from === to) must never be rejected as reversed now
+  // that `to` expands to the end of that day.
+  const sameDay = await service.searchDocuments({ ownerWaId: OWNER, filters: { from: "2026-04-01", to: "2026-04-01" } });
+  assert.notEqual(sameDay.error, "HISTORY_DATE_RANGE_INVALID");
+});
+
+// Compatibility with the read-only-verified production RPC contract
+// (kadi_v1_search_owned_documents — see
+// supabase/migrations/20260803022258_add_kadi_v1_history_search.sql:
+// `... and (p_filters->>'to' is null or coalesce(d.issued_at, d.updated_at)
+// <= (p_filters->>'to')::timestamptz)`). No Supabase mutation is made or
+// required by this test — it only proves the JSON value the Supabase
+// repository would forward as p_filters.to is the fully-expanded,
+// unambiguous UTC timestamp the RPC's existing `<=` cast already handles
+// correctly, not the bare date that caused the boundary exclusion.
+test("HISTORY-CONTRACT-001: the value forwarded to the Supabase RPC's p_filters.to is the expanded end-of-day timestamp, not the bare date", async () => {
+  const calls = [];
+  const client = {
+    rpc: async (name, args) => { calls.push({ name, args }); return { data: [], error: null }; },
+    from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) }),
+  };
+  const historyRepository = createSupabaseV1HistoryRepository(client);
+  const documentRepository = createInMemoryV1DocumentRepository();
+  const service = createV1HistoryService({ historyRepository, documentRepository, clock: () => "2026-08-07T02:00:00.000Z" });
+  await service.searchDocuments({ ownerWaId: OWNER, filters: { to: "2026-04-01" } });
+  const call = calls.find((entry) => entry.name === "kadi_v1_search_owned_documents");
+  assert.equal(call.args.p_filters.to, "2026-04-01T23:59:59.999Z", "the RPC must receive the calendar-day-inclusive timestamp, matching its existing <= comparison exactly");
+});
+
 test("page maximum is configurable within the hard safety ceiling", async () => {
   const historyRepository = createInMemoryV1HistoryRepository();
   const documentRepository = createInMemoryV1DocumentRepository();

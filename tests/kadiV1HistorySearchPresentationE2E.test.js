@@ -397,6 +397,24 @@ test("HISTORY-CONTRACT-001: search by date_from/date_to genuinely narrows result
   assert.deepEqual(options.map((entry) => entry.id), [MULTI.quote.documentId], "only the document updated inside the real date range must be returned");
 });
 
+// HISTORY-CONTRACT-001 (R1 independent review, MEDIUM/merge blocker): the
+// real HISTORY_SEARCH Flow's date_from/date_to fields submit a bare
+// calendar date ("2026-04-01"), never a full timestamp — a document
+// updated during the last day of the requested range must still be
+// included, not silently excluded because a bare date parses as that
+// day's exact midnight.
+const DATE_BOUNDARY = Object.freeze({
+  mar31: { documentId: "doc:boundary:mar31", type: "FACTURE", client: "Client Frontière", updatedAt: "2026-03-31T23:00:00.000Z" },
+  apr01: { documentId: "doc:boundary:apr01", type: "FACTURE", client: "Client Frontière", updatedAt: "2026-04-01T10:00:00.000Z" },
+  apr02: { documentId: "doc:boundary:apr02", type: "FACTURE", client: "Client Frontière", updatedAt: "2026-04-02T00:00:00.000Z" },
+});
+
+test("HISTORY-CONTRACT-001: a real same-day date_from/date_to search includes the document updated during the end date and excludes the next day", async () => {
+  const f = await buildMultiDocumentComposition(Object.values(DATE_BOUNDARY));
+  const options = await searchOnce(f, OWNER, { query: "", document_type: "", date_from: "2026-04-01", date_to: "2026-04-01", document_id: "" });
+  assert.deepEqual(options.map((entry) => entry.id), [DATE_BOUNDARY.apr01.documentId], "a document updated at 10:00 on the requested end day must be included, not excluded by a midnight-only upper bound");
+});
+
 test("HISTORY-CONTRACT-001: an unconstrained search returns every owned document as real history_options — no placeholder", async () => {
   const f = await buildMultiDocumentComposition(Object.values(MULTI));
   const options = await searchOnce(f, OWNER, { query: "", document_type: "", date_from: "", date_to: "", document_id: "" });
