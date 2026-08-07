@@ -2598,3 +2598,180 @@ les champs vides, vérifier que la couche de fusion en aval (ici
 `domain.modifyDocument`, qui rejette un correctif vide) est explicitement
 gérée par l'appelant plutôt que de laisser échouer une soumission qui ne
 change réellement rien.
+
+## Y. HISTORY-CONTRACT-001 — corrigé : le contrat de recherche/ouverture d'historique n'acceptait pas la vraie forme combinée du Flow `HISTORY_SEARCH`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-history-contract-r0`, créée depuis `main` au commit
+  `7f09f624b60b58d2de56eedae086be69883f4dad`. PR distincte, brouillon, non
+  fusionnée, non déployée.
+* **Origine :** item T2 du backlog produit par l'audit final « FINAL
+  ROADMAP GAP AUDIT R0 » (voir fiche X pour T1/`OPTIONS-001`, déjà
+  corrigé) : `HISTORY-CONTRACT-001`, même classe de défaut que
+  `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`, confirmée cette fois pour
+  l'écran `HISTORY_SEARCH`.
+
+### Constat, reproduit par exécution réelle
+
+`flows/v1_draft/kadi_history_search_v1.json` est un formulaire combiné
+unique : un seul groupe de boutons radio `action` (`SEARCH`/
+`OPEN_DOCUMENT`) et un unique pied de page qui soumet toujours ensemble
+`query`, `document_type`, `date_from`, `date_to` et `document_id`, quelle
+que soit l'action choisie. Avant correctif :
+
+```js
+validateActionPayload("HISTORY_SEARCH", "SEARCH", { query: "", document_type: "", date_from: "", date_to: "", document_id: "" })
+// → { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" }  (document_id inattendu pour SEARCH)
+validateActionPayload("HISTORY_SEARCH", "OPEN_DOCUMENT", { query: "x", document_type: "FACTURE", date_from: "...", date_to: "...", document_id: "doc:1" })
+// → { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" }  (query/document_type/date_from/date_to inattendus pour OPEN_DOCUMENT)
+```
+
+**Conséquence en production réelle : aucune recherche ni aucune ouverture
+de document depuis l'historique ne pouvait jamais réussir via le vrai
+Flow Meta** — la toute première soumission réelle échouait systématiquement,
+quelle que soit l'action choisie.
+
+### Deux défauts supplémentaires découverts pendant l'investigation, dans la même chaîne
+
+En traçant `kadiV1FlowCommandRuntime.js`'s `SEARCH` (qui transmet
+`{ownerWaId, criteria: data}` à `historyRuntime.search`) jusqu'à
+`kadiV1RuntimeAdapters.js`'s `createKadiV1HistoryRuntimeAdapter`, deux
+défauts distincts et jusque-là masqués par le rejet `FIELD_FORBIDDEN`
+ci-dessus ont été confirmés :
+
+1. **Le texte de recherche réel n'était jamais transmis.** L'adaptateur
+   vérifiait `command.query` (un champ à plat) alors que le vrai chemin
+   Flow transmet le texte sous `command.criteria.query` (imbriqué) — la
+   condition ne se déclenchait donc jamais pour ce chemin, et la ligne
+   suivante supprimait purement et simplement la clé `query` du critère
+   sans jamais la copier vers `text` (le nom canonique attendu par
+   `kadiV1HistoryService.js`). Toute recherche réelle par nom de client ou
+   mot-clé aurait silencieusement ignoré ce que l'utilisateur avait tapé.
+   (Le chemin conversationnel de `kadiV1ConversationOrchestrator.js`, qui
+   appelle `historyRuntime.search({ownerWaId, query, limit})` à plat, n'est
+   pas affecté — c'est précisément la forme que l'adaptateur vérifiait
+   correctement.)
+2. **`date_from`/`date_to` (noms du Flow) ne correspondaient à rien côté
+   service.** `kadiV1HistoryService.js`'s `normalizeFilters` ne reconnaît
+   que les noms canoniques `from`/`to` — reproduit directement :
+   `searchDocuments({filters: {date_from: "...", date_to: "..."}})` →
+   `{ok: false, error: "HISTORY_FILTER_UNKNOWN"}`, quelle que soit la
+   valeur (même vide). Une fois le premier défaut `FIELD_FORBIDDEN`
+   corrigé sans corriger celui-ci, **toute** soumission `SEARCH` réelle
+   (même entièrement vide) aurait donc continué à échouer, cette fois à la
+   couche service plutôt qu'à la couche Flow.
+
+### Correctif
+
+* `kadiV1FlowReplyRuntime.js`'s `ACTION_FIELDS.SEARCH` élargi pour inclure
+  `document_id` (accepté, jamais transmis à la recherche) ;
+  `ACTION_FIELDS.OPEN_DOCUMENT` élargi pour inclure `query`/
+  `document_type`/`date_from`/`date_to` (acceptés, jamais lus —
+  `kadiV1FlowCommandRuntime.js`'s traitement d'`OPEN_DOCUMENT` ne lit que
+  `data.document_id`, inchangé).
+* `kadiV1RuntimeAdapters.js`'s `createKadiV1HistoryRuntimeAdapter`'s
+  `search()` réécrite : nouvelle fonction `nonBlankString` (même
+  convention de tolérance au vide que les fiches P/X/X.1 : `""` traité
+  comme non fourni) ; `criteria.query` (chemin Flow imbriqué) et
+  `command.query` (chemin conversationnel à plat, inchangé) fusionnés vers
+  `text` ; `date_from`/`date_to` mappés vers `from`/`to`, la seule
+  frontière de traduction entre le vocabulaire du Flow et celui du
+  service ; `document_id` jamais transmis au service, quelle que soit sa
+  valeur — il ne doit jamais influencer `SEARCH`.
+* Aucune modification de `kadiV1HistoryService.js` ni de
+  `kadiV1HistoryRepository.js` — leur logique de filtrage
+  (`document_type`/`from`/`to`/`text`/...) était déjà correcte ; seule la
+  frontière de traduction Flow→service était en cause.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : reproduction directe des deux
+  échecs `FIELD_FORBIDDEN`, plus un test de parité qui dérive la vraie
+  forme combinée et les deux actions déclarées directement depuis
+  `kadi_history_search_v1.json` (même méthode que les fiches U/V/X).
+* `tests/kadiV1RuntimeAdapters.test.js` : nouveaux scénarios prouvant le
+  mappage `query`/`date_from`/`date_to` → `text`/`from`/`to`, la
+  tolérance au vide (une soumission entièrement vide devient une
+  recherche non contrainte, jamais un filtre qui ne correspond à rien), et
+  l'abandon de `document_id` — le scénario préexistant du chemin
+  conversationnel reste vert sans modification.
+* `tests/kadiV1HistorySearchPresentationE2E.test.js` : le générateur de
+  dépôt d'historique délègue désormais au vrai
+  `createInMemoryV1HistoryRepository` (`kadiV1HistoryRepository.js`) au
+  lieu d'ignorer les filtres, ce qui a permis de prouver un filtrage
+  réellement discriminant plutôt que simplement accepté sans effet. Onze
+  scénarios de composition de production réelle : soumission combinée
+  réelle complète (recherche puis ouverture, valeurs `query`/
+  `document_type`/`date_from`/`date_to` volontairement obsolètes laissées
+  dans le formulaire au moment d'`OPEN_DOCUMENT`, ignorées comme
+  attendu) ; `document_id` vide sur `OPEN_DOCUMENT` échoue proprement ;
+  champ inconnu toujours rejeté par la chaîne complète ; recherche par
+  nom de client ; recherche par type de document ; recherche par
+  `date_from`/`date_to` restreignant réellement les résultats ; recherche
+  non contrainte renvoyant les vrais `history_options` (jamais l'exemple
+  statique du schéma) ; isolation propriétaire (un propriétaire ne peut
+  jamais ouvrir le document d'un autre en soumettant son identifiant) ;
+  rejeu de `SEARCH` et d'`OPEN_DOCUMENT` reconnus comme doublons sans
+  second effet ; parcours de reprise de livraison existant toujours
+  atteignable depuis l'historique.
+* Focused : 238/238. Suite complète : 1361/1361. `git diff --check` :
+  propre.
+
+### Réconciliation du constat terrain (téléphone)
+
+Le constat observé (« recherche trouve 5 documents ; `HISTORY_SEARCH`
+rouvert ; tentative d'ouverture/continuation → échec générique ») est
+maintenant expliqué de bout en bout par le code, sans supposition :
+la fiche S.2 avait déjà corrigé la présentation des résultats de
+recherche (texte honnête, `history_options` réels peuplés,
+`HISTORY_SEARCH` rouvert) — la recherche « réussissait » donc
+visiblement, y compris via le défaut n°1 ci-dessus (un `query` vide ou
+silencieusement ignoré ne filtrant simplement rien). Mais l'écran
+`HISTORY_SEARCH` réel conserve dans son unique formulaire les valeurs
+`query`/`document_type`/`date_from`/`date_to` de l'étape de recherche —
+la vraie pression sur « Continuer » avec `action=OPEN_DOCUMENT` soumettait
+donc ces quatre champs en plus de `document_id`, et
+`ACTION_FIELDS.OPEN_DOCUMENT` (qui n'acceptait alors que `document_id`)
+rejetait cette vraie soumission avec `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`
+— exactement l'« échec générique » observé. Reproduit et fermé par le
+scénario E2E ci-dessus, qui soumet délibérément ces quatre champs comme
+obsolètes au moment d'`OPEN_DOCUMENT`.
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté (testé explicitement) ;
+`document_id` n'influence jamais `SEARCH` ; `query`/`document_type`/
+`date_from`/`date_to` n'influencent jamais quel document `OPEN_DOCUMENT`
+ouvre (seul `data.document_id` est lu, inchangé) ; un propriétaire ne peut
+jamais ouvrir le document d'un autre en soumettant ou devinant son
+identifiant (vérification propriétaire du dépôt inchangée, testée) ;
+aucun identifiant WhatsApp complet exposé ; aucune génération, rendu,
+débit, réservation ni capture ne se produit lors d'une `SEARCH`/
+`OPEN_DOCUMENT` (prouvé structurellement — tous les ports non liés lèvent
+une exception au moindre appel) ; rejeu/idempotence inchangés et testés
+spécifiquement pour ces deux actions pour la première fois ; le parcours
+de reprise de livraison déjà construit (fiche R) reste atteignable depuis
+l'historique. Aucune migration Supabase requise ; aucune mutation Meta
+requise (le contrat Flow existant reste valide tel quel).
+
+### Suivi requis (hors périmètre de cette correction)
+
+T3 (`RECHARGE-CONTRACT-001`) reste non traité, à corriger dans une mission
+séparée. Le `FLOW-PARITY-GATE` global (fiche X) reste un suivi de backlog
+distinct — cette correction ajoute la couverture de parité spécifique à
+`HISTORY_SEARCH`, sans construire le gate générique.
+
+### Prévention
+
+Même principe que les fiches U/V/X : quand un écran Flow combine plusieurs
+actions dans un seul formulaire, vérifier explicitement, à partir du vrai
+fichier JSON, que chaque champ qu'il peut soumettre a un traitement
+backend explicite pour **chaque** action déclarée — jamais un rejet
+générique du fait de la présence d'un champ non pertinent pour l'action en
+cours. Et, spécifique à cette fiche : quand un même adaptateur sert deux
+appelants réels de formes différentes (ici un chemin conversationnel à
+plat et un chemin Flow imbriqué), vérifier explicitement, avec un test qui
+construit chaque forme réelle séparément, que le champ pertinent est bien
+lu à l'endroit où l'appelant le place réellement — une condition qui
+vérifie le mauvais chemin ne produit ni erreur ni avertissement, elle
+échoue simplement en silence.

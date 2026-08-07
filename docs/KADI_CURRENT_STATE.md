@@ -474,6 +474,40 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche X.1 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet, la preuve et les deux suivis produit non bloquants consignés.
+* **Mise à jour (2026-08-07) : PR #17 (T1/OPTIONS-001 + EDIT_OPTIONS-001)
+  fusionnée dans `main`** (commit de fusion
+  `7f09f624b60b58d2de56eedae086be69883f4dad`) — les deux entrées
+  ci-dessus restent le compte rendu du contenu du correctif ; seul son
+  statut de fusion a changé. Non encore déployée sur Render à la date de
+  cette mise à jour.
+* **Mise à jour (2026-08-07) : T2/HISTORY-CONTRACT-001 corrigé, nouvelle
+  branche dédiée `fix/kadi-v1-history-contract-r0` créée depuis
+  `main@7f09f624b60b58d2de56eedae086be69883f4dad`, PR distincte, brouillon,
+  non fusionnée, non déployée.** Même défaut de classe que `CLIENT-001`/
+  `EDIT-CONTENT-001`/`OPTIONS-001` : le vrai Flow combiné
+  `kadi_history_search_v1.json` soumet toujours `query`/`document_type`/
+  `date_from`/`date_to`/`document_id` ensemble, quelle que soit l'action
+  choisie (`SEARCH`/`OPEN_DOCUMENT`) — **aucune recherche ni ouverture de
+  document depuis l'historique ne pouvait jamais réussir via le vrai Flow
+  Meta.** Deux défauts supplémentaires, jusque-là masqués par le premier,
+  ont été découverts et corrigés dans le même correctif : le texte de
+  recherche réel (`query`) n'était jamais transmis au filtre (mauvais
+  chemin vérifié dans l'adaptateur — le texte tapé par l'utilisateur était
+  silencieusement ignoré) ; `date_from`/`date_to` (noms du Flow) ne
+  correspondaient à aucun filtre reconnu côté service (`from`/`to`
+  attendus), rejetés avec `HISTORY_FILTER_UNKNOWN`. **Corrigé :**
+  `ACTION_FIELDS.SEARCH`/`OPEN_DOCUMENT` élargis pour accepter la vraie
+  forme combinée ; `kadiV1RuntimeAdapters.js`'s adaptateur d'historique
+  mappe désormais `query`→`text` et `date_from`/`date_to`→`from`/`to` (la
+  seule frontière de traduction Flow↔service), avec vide traité comme
+  « non fourni » pour tous les champs optionnels, et `document_id` jamais
+  transmis au filtre de recherche. Le constat terrain du fondateur
+  (recherche réussie, puis échec générique à l'ouverture) est expliqué de
+  bout en bout et reproduit avant correctif. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche Y de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet, la preuve et le suivi requis (T3 encore à corriger,
+  `FLOW-PARITY-GATE` global toujours un suivi de backlog distinct).
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours
