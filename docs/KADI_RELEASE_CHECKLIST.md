@@ -605,15 +605,84 @@ requise. Aucune génération, livraison ou opération de crédit réelle.
    complète (1430/1430), `git diff --check` propre.
 7. **[FAIT]** Revue adversariale du diff complet R0 + R1 — aucun défaut
    HIGH/MEDIUM trouvé.
-8. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #20
-   mise à jour (post-correctif R1).
-9. **[EN ATTENTE]** Fusion dans `main`.
+8. **[FAIT]** Nouvelle revue adversariale indépendante de la PR #20 mise à
+   jour (post-correctif R1) — a signalé le défaut HIGH/P0 corrigé en T4.5
+   (voir la section « Ordre —
+   `fix/kadi-v1-document-cancel-state-authority-t4-5` » ci-dessous),
+   distinct du périmètre GENERATION_CONFIRMATION déjà fermé ici.
+9. **[FAIT]** PR #20 fusionnée dans `main`
+   (`main@a2c2ead17e109c2de5c46905c291f5133cc817ab`).
+   **T4/GENERATION_CONFIRMATION-001 : CLOSED/MERGED.**
 10. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
 11. **[EN ATTENTE]** Une vraie confirmation de génération et une vraie
     annulation via le Flow `GENERATION_CONFIRMATION` réel, observées en
     conditions réelles (validation téléphone).
-12. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
+12. **[FAIT]** T4.5 (`DOCUMENT_REVIEW`/`CANCEL` et `DOCUMENT_PREVIEW`/
+    `CANCEL` — même classe de défaut d'autorité d'état) — corrigé sur la
+    branche dédiée `fix/kadi-v1-document-cancel-state-authority-t4-5`, PR
+    brouillon ouverte, non fusionnée. Voir la section « Ordre —
+    `fix/kadi-v1-document-cancel-state-authority-t4-5` » ci-dessous et
+    fiche AA.2 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+13. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
     commencée.
+
+## Ordre — `fix/kadi-v1-document-cancel-state-authority-t4-5` (T4.5/DOCUMENT_CANCEL_STATE_AUTHORITY_GATE : même défaut d'autorité d'état de session obsolète, pour `DOCUMENT_REVIEW`/`CANCEL` et `DOCUMENT_PREVIEW`/`CANCEL`)
+
+Aucune migration Supabase requise (correctif entièrement applicatif, un
+seul fichier de production modifié — la RPC Supabase existante
+`p_from_state` couvre déjà le besoin). Aucune mutation Meta requise.
+Aucune génération, livraison ou opération de crédit réelle.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@a2c2ead17e109c2de5c46905c291f5133cc817ab` (PR #20/T4 fusionnée)
+   avant de créer la branche isolée.
+2. **[FAIT]** Défaut reproduit puis corrigé : `DOCUMENT_REVIEW`/`CANCEL`
+   et `DOCUMENT_PREVIEW`/`CANCEL` routaient tous deux par la branche
+   générique de document, qui ne transmettait jamais `expectedState` —
+   exactement le même défaut que celui fermé en T4 pour
+   `GENERATION_CONFIRMATION`/`CANCEL`. Une session Flow obsolète (jamais
+   révoquée automatiquement à l'ouverture d'une nouvelle session — confirmé
+   par inspection de `kadiV1ConversationSession.js`, `revoke()` n'a aucun
+   appelant en production) pouvait donc encore annuler à tort un document
+   ayant légitimement changé de phase métier depuis l'ouverture de cette
+   session, car les transitions d'état pures ne font jamais avancer
+   `document.version`. **Prouvé concrètement dans la composition de
+   production avant correctif** (huit scénarios distincts, `git stash` du
+   correctif puis restauration) : `DOCUMENT_REVIEW` obsolète annulant à
+   tort un document passé à `VERIFIED` ou à
+   `AWAITING_GENERATION_CONFIRMATION` ; `DOCUMENT_PREVIEW` obsolète
+   annulant à tort un document passé à `AWAITING_GENERATION_CONFIRMATION`,
+   `RECHARGE_REQUIRED`, ou en cours de génération réelle
+   (`GENERATION_IN_PROGRESS`, barrière déterministe sur le renderer réel,
+   jamais un `sleep`) ; même défaut confirmé sur la pipeline `DECHARGE`
+   pour les deux Flows. **Corrigé** en réutilisant sans le modifier le
+   primitif `expectedState` déjà introduit en T4 : les états légitimes de
+   chaque Flow sont tracés directement depuis le routage de production
+   (`kadiV1ProductionPresenter.js`'s `routeDocument` et
+   `kadiV1ConversationOrchestrator.js`'s `routeForDocument`, qui
+   s'accordent) — `DOCUMENT_REVIEW` n'a qu'un seul état légitime
+   (`READY_FOR_REVIEW`), `DOCUMENT_PREVIEW` en a deux (`VERIFIED` et
+   `PREVIEW_READY`, un état de repos réel et durable confirmé par
+   inspection de `kadiV1PreviewService.js`). Un seul fichier de production
+   modifié (`kadiV1FlowCommandRuntime.js`, ajout additif) —
+   `kadiV1RuntimeAdapters.js`, `kadiV1SharedDocumentPipeline.js` et
+   `kadiV1DischargePipeline.js` étaient déjà suffisamment génériques et
+   n'ont nécessité aucune modification. Voir fiche AA.2 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+3. **[FAIT]** Tests ciblés (405/405 sur les fichiers concernés) puis suite
+   complète (1457/1457), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
+   trouvé.
+5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+6. **[EN ATTENTE]** Fusion dans `main`.
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie annulation `DOCUMENT_REVIEW` et
+   `DOCUMENT_PREVIEW` obsolète, observée en conditions réelles (validation
+   téléphone) — un scénario de course réelle sur téléphone reste
+   difficilement observable, la preuve de composition reste la preuve
+   principale.
+9. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
+   commencée.
 
 ## Déploiement Render
 
