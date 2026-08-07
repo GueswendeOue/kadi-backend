@@ -711,6 +711,28 @@ function createKadiV1RechargeRuntime({
   // sessions that did not yet exist when this specific Flow was opened.
   // No new Supabase column required: kadi_v1_conversation_sessions.opened_at
   // and kadi_v1_recharge_sessions.created_at both already exist.
+  // RECHARGE-CONTRACT-001 (R3 independent review, HIGH/P0 — target
+  // fall-through): the previous query filtered status (IN CREATED/
+  // PAYMENT_PENDING) BEFORE ordering/limiting to the contextual newest
+  // session. If the session that was actually the newest when this Flow
+  // was opened later transitioned out of that status set (credited,
+  // cancelled by another interaction, etc.) before CANCEL was ever
+  // submitted, the status filter silently excluded it and the query fell
+  // through to an OLDER row that still matched both the status filter and
+  // the created_at bound — cancelling a session this Flow context was
+  // never about, even on a genuine first-time (non-replay) submission.
+  // Fixed by resolving the contextual candidate FIRST (owner-scoped,
+  // bounded by created_at <= sessionOpenedAt, newest by created_at,
+  // regardless of status), THEN checking whether that exact session is
+  // still cancellable — never searching further if it is not. Only
+  // CREATED/PAYMENT_PENDING are treated as cancellable here, matching the
+  // set this runtime already exposed before this fix (FAILED is a
+  // separate, pre-existing product question — see
+  // kadiV1RechargeService.js's cancelRechargeSession, which itself
+  // already also allows FAILED; deliberately not extended here without
+  // explicit product authorization).
+  const CANCELLABLE_STATUSES = new Set(["CREATED", "PAYMENT_PENDING"]);
+
   async function cancel({ ownerWaId, sessionOpenedAt } = {}) {
     if (!OWNER_PATTERN.test(ownerWaId || "")) {
       return fail("RECHARGE_CANCEL_OWNER_INVALID");
@@ -720,9 +742,8 @@ function createKadiV1RechargeRuntime({
     }
     const lookup = await supabase
       .from("kadi_v1_recharge_sessions")
-      .select("recharge_session_id")
+      .select("recharge_session_id, status")
       .eq("owner_wa_id", ownerWaId)
-      .in("status", ["CREATED", "PAYMENT_PENDING"])
       .lte("created_at", sessionOpenedAt)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -730,6 +751,9 @@ function createKadiV1RechargeRuntime({
     const rechargeSessionId = lookup?.data?.recharge_session_id;
     if (lookup?.error || !ID_PATTERN.test(rechargeSessionId || "")) {
       return fail("RECHARGE_SESSION_NOT_FOUND");
+    }
+    if (!CANCELLABLE_STATUSES.has(lookup.data.status)) {
+      return fail("RECHARGE_SESSION_NOT_CANCELLABLE");
     }
     const result = await rechargeService.cancelRechargeSession({
       rechargeSessionId,
