@@ -509,3 +509,29 @@ test("RECU and DECHARGE Flow keys never accept a tax field — SAVE_OPTIONS is n
   assert.equal(onDischarge.ok, false);
   assert.equal(onDischarge.error, "KADI_V1_FLOW_REPLY_ACTION_FORBIDDEN");
 });
+
+// OPTIONS-001 (same class of defect as CLIENT-001/EDIT-CONTENT-001): the
+// real kadi_document_options_v1.json / kadi_edit_options_v1.json Footer
+// always submits tax_rate_percent (or the legacy tax_rate_basis_points),
+// discount_amount, notes, payment_terms, validity_days, payment_method and
+// reference together, blank ones included. This layer's ACTION_FIELDS
+// already declared the full shape; the downstream shared-document
+// normalizeOptions allowlist did not — this test guards this layer so a
+// future Flow change can never silently drift from it again.
+test("Flow/backend parity: submitting every field the real kadi_document_options_v1.json and kadi_edit_options_v1.json contracts declare — exactly as Meta really submits a Flow form, blank fields included — is accepted by SAVE_OPTIONS's field allowlist", () => {
+  const documentOptionsFlow = require("../flows/v1_draft/kadi_document_options_v1.json");
+  const editOptionsFlow = require("../flows/v1_draft/kadi_edit_options_v1.json");
+  for (const flow of [documentOptionsFlow, editOptionsFlow]) {
+    const payload = flow.screens[0].layout.children.find((child) => child.type === "Form")
+      .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+    const submittedFields = Object.keys(payload.data);
+    assert.ok(
+      submittedFields.includes("tax_rate_percent") || submittedFields.includes("tax_rate_basis_points"),
+      `${flow.screens[0].id} must still declare a tax rate field — this test must keep reproducing the real contract, not a hand-picked subset`,
+    );
+    const realSubmission = {};
+    for (const field of submittedFields) realSubmission[field] = "";
+    const checked = validateActionPayload(flow.screens[0].id, "SAVE_OPTIONS", realSubmission);
+    assert.equal(checked.ok, true, `${flow.screens[0].id}'s real full submission shape must be accepted at this layer (got ${checked.error})`);
+  }
+});

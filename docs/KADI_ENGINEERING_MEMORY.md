@@ -2285,3 +2285,316 @@ structurellement : un test qui simule entièrement l'interface d'un
 composant ne peut jamais détecter un défaut interne à ce composant — au
 moins un test de composition doit utiliser l'implémentation réelle de
 chaque composant critique, pas seulement son interface simulée.
+
+## X. OPTIONS-001 — corrigé : le contrat d'options FACTURE/DEVIS n'acceptait pas la vraie forme combinée du Flow `DOCUMENT_OPTIONS`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-options-contract-r0`, créée depuis `main` au commit
+  `d2fee1a1adbae59ce452411f2eb37fe8bcb5b298`. PR distincte, brouillon, non
+  fusionnée, non déployée.
+* **Origine :** item T1 du backlog produit par l'audit final
+  « KADI V1 — FINAL ROADMAP GAP AUDIT R0 », qui avait identifié trois
+  parcours cœur totalement cassés (`OPTIONS-001`/T1, `HISTORY-CONTRACT-001`/T2,
+  `RECHARGE-CONTRACT-001`/T3) partageant tous le même défaut de classe déjà
+  vu deux fois dans ce dépôt (`CLIENT-001` fiche U, `EDIT-CONTENT-001` fiche
+  V.1) : un formulaire Flow combiné soumet toujours l'ensemble de ses champs
+  déclarés, quelle que soit l'action réellement voulue par l'utilisateur ;
+  la liste blanche de champs backend ne couvrait pas cet ensemble complet.
+
+### Constat, reproduit par exécution réelle
+
+`flows/v1_draft/kadi_document_options_v1.json` (et son pendant d'édition
+`kadi_edit_options_v1.json`) n'a qu'un seul pied de page, qui soumet
+toujours ensemble `tax_rate_percent` (ou l'ancien `tax_rate_basis_points`),
+`discount_amount`, `notes`, `payment_terms`, `validity_days`,
+`payment_method` et `reference` — les sept champs, y compris ceux laissés
+vides. `kadiV1FlowReplyRuntime.js`'s `ACTION_FIELDS.SAVE_OPTIONS` acceptait
+déjà cette forme complète, mais `kadiV1SharedDocumentPolicies.js`'s
+`normalizeOptions` (la couche suivante, qui alimente réellement le pipeline
+document partagé) ne connaissait que `validity_days` sous sa forme
+imbriquée historique (`options.validity_days`) et ignorait totalement
+`payment_method`/`reference` pour FACTURE/DEVIS. Reproduit directement :
+
+```js
+normalizeOptions("FACTURE", { discount_amount: 0, notes: "", payment_terms: "",
+  tax_rate_basis_points: 1800, validity_days: "" })
+// → { ok: false, error: "DOCUMENT_OPTIONS_FIELD_UNKNOWN" }
+```
+
+**Conséquence en production réelle : aucune FACTURE ni aucun DEVIS ne
+pouvait jamais quitter l'écran `DOCUMENT_OPTIONS` via le vrai Flow Meta** —
+la toute première soumission d'options réelle échouait systématiquement,
+quel que soit ce que l'utilisateur avait réellement rempli.
+
+Un second défaut de la même fonction, jusque-là invisible car masqué par le
+premier (le rejet par champ inconnu se déclenchait toujours avant), a été
+découvert pendant la conception du correctif : `discount_amount: ""` (la
+valeur réaliste qu'un champ Meta `input-type: "number"` soumet quand il est
+laissé vide) était déjà rejeté avec `DOCUMENT_OPTIONS_AMOUNT_INVALID`,
+faute de la même tolérance au blanc déjà établie pour `tax_rate_percent`
+(fiche P). Corrigé dans le même correctif : même classe de défaut, même
+fonction, découvert par la même investigation — pas un élargissement de
+périmètre vers T2/T3/T4.
+
+### Contrat canonique déterminé avant toute correction
+
+* **`validity_days`** : sa place canonique est `document.options.validity_days`
+  (imbriqué), exactement comme la convention déjà établie pour
+  `invoice_kind`/`receipt_format` (également sous `document.options` —
+  voir `kadiV1DocumentDomain.js`). Le défaut n'était jamais un mauvais
+  emplacement de stockage : c'est que le Flow soumet le champ **à plat**
+  alors que le normaliseur n'acceptait que la forme imbriquée. Correctif :
+  accepter la forme plate et la fusionner dans la structure imbriquée ;
+  si les deux formes sont soumises simultanément avec des valeurs
+  différentes, échec explicite (`DOCUMENT_VALIDITY_CONFLICT`) plutôt que
+  de choisir silencieusement l'une des deux — même principe que
+  `tax_id`/`ifu` (fiche U).
+* **`payment_method`/`reference`** : recherche exhaustive dans tout le
+  domaine (`kadiV1DocumentDomain.js`, `kadiV1PreviewService.js`,
+  `kadiV1SharedDocumentPipeline.js`, `kadiV1FinalGenerationService.js`) —
+  ces deux champs n'ont **aucune** signification FACTURE/DEVIS nulle part ;
+  leur seule signification existante dans tout le dépôt est celle du reçu
+  (`document.receipt.payment_method`/`.reference`). Conformément à la
+  consigne explicite de la mission (ne pas élargir aveuglément une liste
+  blanche, ni inventer une nouvelle signification persistée), ils sont
+  désormais acceptés par la liste blanche FACTURE/DEVIS **uniquement**
+  pour ne plus faire échouer la vraie soumission complète du Flow, et
+  explicitement abandonnés (jamais persistés) pour ces deux types de
+  document.
+
+### Correctif
+
+`kadiV1SharedDocumentPolicies.js` : `COMMON_OPTION_FIELDS` élargi à
+`validity_days`/`payment_method`/`reference` ; nouvelle fonction
+`parseOptionalInteger` (tolérance au blanc, réutilisée pour
+`discount_amount` et `validity_days`, même convention que
+`normalizePercentText`) ; `normalizeOptions` réécrit pour fusionner
+`validity_days` plat/imbriqué avec détection de conflit, et pour ignorer
+silencieusement `payment_method`/`reference` sur FACTURE/DEVIS.
+`DOCUMENT_OPTIONS_EMPTY` supprimé (aucun appelant n'en dépendait — la
+couche adaptateur court-circuite déjà toute soumission brute réellement
+vide avant d'atteindre cette fonction) : une soumission réelle où tous les
+champs optionnels sont vides doit désormais réussir comme un non-événement
+inoffensif, jamais comme une erreur.
+
+`DECHARGE` volontairement laissé hors périmètre : son parcours initial
+utilise `SAVE_DETAILS` et sa propre politique dédiée
+(`kadiV1DischargePolicy.js`'s `normalizeOptions`, appelée uniquement avec
+un payload `{observations}` construit côté serveur, jamais un passage
+direct de la forme du Flow partagé) — confirmé par lecture du code, pas
+supposé, et couvert par un test de non-régression dédié.
+
+### Preuve
+
+* `tests/kadiV1SharedDocumentPipeline.test.js` : neuf nouveaux scénarios —
+  forme réelle complète FACTURE acceptée, `validity_days` plat DEVIS
+  persisté et relu après rechargement, conflit plat/imbriqué rejeté,
+  champs optionnels vides sans corruption, chaîne numérique acceptée,
+  `payment_method`/`reference` acceptés puis abandonnés pour FACTURE/DEVIS,
+  champ réellement inconnu toujours rejeté, liste blanche RECU propre
+  toujours inchangée, soumission entièrement vide acceptée comme
+  non-événement.
+* `tests/kadiV1FlowReplyRuntime.test.js` : nouveau test de parité qui
+  reconstruit la vraie forme de soumission des deux Flows réels
+  (`kadi_document_options_v1.json`, `kadi_edit_options_v1.json`)
+  directement depuis leurs fichiers JSON, pour empêcher toute dérive
+  future entre ce que le Flow soumet et ce que cette couche accepte (même
+  méthode que celle qui a révélé `CLIENT-001`).
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` : le générateur
+  `buildFactureAtReview` (utilisé par la quasi-totalité des scénarios du
+  fichier) restauré à la vraie forme complète à sept champs ; nouveau
+  scénario E2 (DEVIS, `validity_days` plat, persistance confirmée après
+  rechargement, `payment_method`/`reference` confirmés jamais persistés) ;
+  nouveaux scénarios L/M (rejeu et version obsolète, spécifiquement pour
+  `SAVE_OPTIONS`, sur le même modèle que I/J/K) ; nouveau scénario N
+  (non-régression explicite du parcours `DECHARGE` `SAVE_DETAILS`, hors
+  périmètre confirmé). Composition de production réelle inchangée : tous
+  les ports non liés (aperçu, génération, recharge, historique, wallet)
+  restent des bouchons qui lèvent une exception au moindre appel.
+* Focused : 180/180. Suite complète : 1341/1341. `git diff --check` :
+  propre.
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté pour FACTURE/DEVIS (la
+liste blanche reste fermée, testée explicitement) ; aucune donnée n'est
+perdue silencieusement (`validity_days` est toujours soit persisté soit
+rejeté par conflit, jamais simplement abandonné) ; `payment_method`/
+`reference` sont abandonnés **par conception documentée**, pas par bug ;
+`RECU` garde sa propre liste blanche stricte, non affectée ; aucun calcul
+financier ni total serveur-autoritaire modifié ; aucun débit, aucune
+réservation, aucun rendu, aucune génération pendant `SAVE_OPTIONS` (prouvé
+structurellement par la composition de production) ; idempotence et rejet
+de version obsolète inchangés et testés spécifiquement pour `SAVE_OPTIONS`
+pour la première fois. Aucune migration Supabase requise ; aucune mutation
+Meta requise (le contrat Flow existant reste valide tel quel).
+
+### Suivi requis (hors périmètre de cette correction, à ne pas ignorer)
+
+Le même défaut de classe (liste blanche backend en retard sur la vraie
+forme combinée d'un Flow) a maintenant été trouvé indépendamment quatre
+fois (`CLIENT-001`, `EDIT-CONTENT-001`, `OPTIONS-001`, et confirmé encore
+présent pour `HISTORY-CONTRACT-001`/T2 et `RECHARGE-CONTRACT-001`/T3 par
+l'audit qui a produit ce backlog). Un **`FLOW-PARITY-GATE`** global est
+requis : un test structurel unique qui, pour chaque Flow JSON réel de
+`flows/v1_draft/`, dérive automatiquement sa vraie forme de soumission
+combinée et vérifie qu'elle est acceptée par la politique backend
+correspondante — plutôt que de découvrir chaque cas un par un, par mission
+séparée. Ne pas construire ce gate dans le cadre de cette mission (portée
+strictement limitée à T1) ; le programmer explicitement dans le backlog
+suivant.
+
+### Prévention
+
+Quand un écran Flow combine plusieurs champs optionnels dans un seul pied
+de page, vérifier explicitement, à partir du vrai fichier JSON (jamais
+d'un sous-ensemble choisi à la main), que **chaque** champ qu'il peut
+soumettre a un traitement backend explicite : accepté et persisté avec une
+sémantique réelle, ou accepté et explicitement abandonné avec une raison
+documentée — jamais un troisième cas silencieux où le champ fait échouer
+toute la soumission. Et, comme pour `CLIENT-001`/`EDIT-CONTENT-001` : la
+liste blanche d'une couche (ici `ACTION_FIELDS` dans
+`kadiV1FlowReplyRuntime.js`) peut déjà être correcte pendant que la couche
+suivante (ici `normalizeOptions` dans `kadiV1SharedDocumentPolicies.js`)
+reste en retard — vérifier la parité Flow↔backend à **chaque** couche de
+validation, pas seulement la première atteinte.
+
+### X.1 — EDIT_OPTIONS-001 : corrigé avant fusion, revue indépendante — les champs `notes`/`payment_terms` non pré-remplis pouvaient être effacés silencieusement
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-options-contract-r0`, PR #17, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #17 (mission « KADI
+  V1 — T1 OPTIONS-001 INDEPENDENT REVIEW FIX R1 »), constat MEDIUM/bloquant
+  de fusion.
+
+### Constat, reproduit avant tout correctif
+
+Contrairement à `EDIT_CLIENT`/`EDIT_CONTENT`, le vrai formulaire
+`EDIT_OPTIONS` ne pré-remplit jamais `notes`/`payment_terms` avec les
+valeurs actuelles du document — son formulaire unique combiné les soumet
+vides à chaque fois que le propriétaire ne les touche pas, exactement comme
+les champs numériques (`discount_amount`/`validity_days`) déjà traités par
+la fiche X. Le correctif X initial traitait déjà correctement les champs
+numériques vides comme « non fournis », mais copiait toujours
+`notes`/`payment_terms` vides tels quels dans le correctif persisté — et
+`kadiV1SharedDocumentPipeline.js`'s `setOptions` fusionne ce correctif à
+plat directement sur le document existant. Reproduit directement :
+
+```js
+normalizeOptions("FACTURE", {
+  tax_rate_basis_points: 1800, discount_amount: "", notes: "", payment_terms: "",
+  validity_days: "", payment_method: "", reference: "",
+})
+// avant correctif → { ok: true, value: { tax_rate_basis_points: 1800, notes: "", payment_terms: "" } }
+```
+
+**Conséquence en production réelle : une correction portant uniquement sur
+la taxe (le cas le plus courant) aurait silencieusement effacé une note ou
+une condition de paiement réelle et déjà enregistrée**, en violation directe
+de l'exigence d'acceptation de T1 selon laquelle les champs optionnels
+vides ne doivent jamais corrompre l'état persisté.
+
+### Sémantique du texte vide déterminée avant correction
+
+Même règle que pour les champs numériques (« vide = non fourni, jamais
+zéro/vidé ») appliquée à `notes`/`payment_terms`, pour la raison suivante :
+puisque `EDIT_OPTIONS` ne pré-remplit jamais ces deux champs, un champ vide
+soumis par le vrai Flow ne peut structurellement **jamais** distinguer
+« le propriétaire n'a rien tapé » de « le propriétaire veut effacer la
+valeur existante » — les deux produisent exactement la même soumission.
+Choisir « vide = non fourni » est donc la seule interprétation qui ne
+risque jamais de perte de donnée silencieuse, au prix d'une conséquence
+assumée : il devient structurellement impossible d'effacer une note déjà
+enregistrée via ce Flow. **Question produit/UX séparée, non résolue ici** —
+consigné en suivi ci-dessous, pas de nouveau sentinel client-contrôlé
+inventé (explicitement écarté par la mission). Même règle appliquée sans
+distinction à la soumission initiale `DOCUMENT_OPTIONS` : un champ vide y
+signifie aussi « pas de note », ce qu'omettre la clé obtient de façon
+identique — un seul principe canonique couvre les deux écrans, pas besoin
+d'un traitement distinct.
+
+### Correctif
+
+`kadiV1SharedDocumentPolicies.js`'s `normalizeOptions` : la boucle
+`notes`/`payment_terms` n'inclut désormais le champ dans le correctif que
+si sa valeur n'est pas la chaîne vide (ni `null`) — même principe que
+`parseOptionalInteger`, sans réutiliser cette fonction (le texte n'est pas
+numérique). Une valeur explicitement non vide continue de mettre à jour
+normalement.
+
+Effet de bord découvert pendant la correction, également corrigé dans le
+même correctif : une soumission réelle où **tout** est vide (y compris la
+taxe) normalise désormais vers un correctif entièrement vide (`{}`), ce que
+`kadiV1DocumentDomain.js`'s `modifyDocument` rejette avec
+`DOCUMENT_PATCH_INVALID` (il exige un correctif non vide). Corrigé dans
+`kadiV1SharedDocumentPipeline.js`'s `setOptions` : un correctif normalisé
+entièrement vide (hors RECU, chemin distinct et non atteint par le vrai
+Flow) renvoie désormais explicitement le document chargé inchangé, sans
+appeler `persistModifiedLoaded` — même comportement de non-événement que le
+court-circuit déjà existant côté adaptateur pour une soumission brute
+réellement vide, appliqué ici au niveau du correctif normalisé.
+
+### Preuve
+
+* `tests/kadiV1SharedDocumentPipeline.test.js` : reproduction directe suivie
+  de quatre nouveaux scénarios — correction taxe seule préserve
+  `notes`/`payment_terms` existants et relus après rechargement ;
+  soumission initiale avec champs vides ne modifie ni ne corrompt
+  `notes`/`payment_terms` ; mise à jour explicite non vide fonctionne
+  toujours normalement ; le scénario « soumission entièrement vide » déjà
+  existant renforcé pour vérifier explicitement l'absence de changement de
+  version (non-événement réel, pas seulement une valeur inchangée par
+  coïncidence).
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` : nouveau scénario O,
+  composition de production réelle complète — document créé avec
+  `notes`/`payment_terms` réels non vides → revue → `EDIT_OPTIONS` →
+  soumission réelle à sept champs avec seule la taxe changée → document
+  rechargé → `notes`/`payment_terms` toujours présents, identiques,
+  visibles dans le résumé de revue rafraîchi.
+* Focused : 184/184. Suite complète : 1345/1345. `git diff --check` :
+  propre.
+
+### Sécurité re-vérifiée
+
+Aucune donnée n'est perdue silencieusement pour le cas réel (correction
+partielle) ; une valeur explicitement soumise continue de mettre à jour
+normalement ; le comportement `discount_amount`/`validity_days`/
+`tax_rate_basis_points`/liste blanche/rejeu/version obsolète du correctif X
+reste inchangé (confirmé par la suite complète, aucune régression) ; RECU
+non affecté (chemin `setOptions` non atteint par son vrai Flow, confirmé
+par lecture du code) ; aucune migration Supabase requise ; aucune mutation
+Meta requise.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* **Effacement explicite d'une note existante** : aujourd'hui
+  structurellement impossible via `EDIT_OPTIONS` (conséquence assumée de la
+  règle « vide = non fourni »). Nécessite soit un vrai pré-remplissage côté
+  Meta (mutation de Flow), soit un mécanisme explicite de suppression
+  distinct d'un champ simplement laissé vide — question produit/UX séparée,
+  non traitée ici.
+* **Incohérence d'affichage FACTURE/DEVIS non bloquante** : le Flow
+  `DOCUMENT_OPTIONS`/`EDIT_OPTIONS` réel affiche toujours visuellement des
+  champs `payment_method`/`reference` pour FACTURE/DEVIS, alors que le
+  correctif X les abandonne délibérément (aucune signification
+  invoice-level confirmée dans le domaine). L'utilisateur peut donc voir un
+  champ qui semble accepté sans jamais avoir d'effet persistant. Non
+  bloquant pour T1 (aucune perte de donnée, aucun échec) ; à traiter par une
+  future mutation de Flow qui retire ces deux champs de l'écran FACTURE/DEVIS,
+  hors périmètre de ce correctif.
+
+### Prévention
+
+Quand un champ Flow n'est **jamais pré-rempli** avec la valeur actuelle du
+document (contrairement aux écrans qui rouvrent avec les vraies valeurs),
+une soumission vide de ce champ ne peut structurellement jamais exprimer
+une intention de le vider — elle ne peut signifier que « non touché ».
+Traiter alors systématiquement vide comme absent, jamais comme une valeur
+à appliquer, y compris pour du texte libre (pas seulement les champs
+numériques déjà couverts par ce principe). Et, plus généralement : quand un
+correctif normalisé peut légitimement devenir vide après avoir retiré tous
+les champs vides, vérifier que la couche de fusion en aval (ici
+`domain.modifyDocument`, qui rejette un correctif vide) est explicitement
+gérée par l'appelant plutôt que de laisser échouer une soumission qui ne
+change réellement rien.

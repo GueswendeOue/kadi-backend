@@ -181,7 +181,11 @@ async function buildFactureAtReview(f, ownerWaId = OWNER) {
   document = await loadDocument(f, document.document_id, ownerWaId);
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_OPTIONS, "initial FINISH_CONTENT must still reach DOCUMENT_OPTIONS");
 
-  await send(f, { document, flowKey: "DOCUMENT_OPTIONS", action: "SAVE_OPTIONS", data: { tax_rate_basis_points: 1800, discount_amount: 0, notes: "", payment_terms: "" }, ownerWaId });
+  // OPTIONS-001: the real Flow always submits all seven fields together,
+  // blank ones included (validity_days/payment_method/reference here,
+  // never meaningful for FACTURE, must still be accepted and silently
+  // dropped, not rejected as unknown).
+  await send(f, { document, flowKey: "DOCUMENT_OPTIONS", action: "SAVE_OPTIONS", data: { tax_rate_basis_points: 1800, discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" }, ownerWaId });
   document = await loadDocument(f, document.document_id, ownerWaId);
   assert.equal(document.status, "READY_FOR_REVIEW");
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_REVIEW);
@@ -316,6 +320,39 @@ test("E. Quotation (DEVIS) client correction reaches the exact same refreshed re
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_REVIEW);
   assert.match(lastFlowData(f).review_summary, /Client Devis \(corrigé\)/);
   assert.match(lastFlowData(f).review_summary, /Facture proforma|Devis/i);
+});
+
+// OPTIONS-001: before this fix, a real DEVIS SAVE_OPTIONS submission (the
+// full seven-field Flow shape, payment_method/reference included even
+// though they have no DEVIS meaning) failed outright with
+// DOCUMENT_OPTIONS_FIELD_UNKNOWN — no DEVIS could ever leave DOCUMENT_OPTIONS
+// via the real Flow, and validity_days, submitted flat by the real form,
+// was never actually reachable.
+test("E2. Quotation (DEVIS) real full DOCUMENT_OPTIONS submission (validity_days flat, payment fields blank) is accepted and validity_days genuinely persists to review and survives a reload", async () => {
+  const f = await buildComposition();
+  await send(f, { flowKey: "MENU", action: "PREPARE_DOCUMENT", data: {} });
+  await send(f, { flowKey: "DOCUMENT_TYPE", action: "SELECT_DOCUMENT_TYPE", data: { document_type: "DEVIS" } });
+  let document = await loadDocument(f, lastCreatedDocumentId(f));
+  await send(f, { document, flowKey: "DOCUMENT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client Devis", phone: "", email: "", address: "", tax_id: "" } });
+  document = await loadDocument(f, document.document_id);
+  await send(f, { document, flowKey: "ARTICLE_FORM", action: "ADD_CONTENT", data: { description: "Étude", quantity: 1, unit: "forfait", unit_custom: "", unit_price: 50000 } });
+  document = await loadDocument(f, document.document_id);
+  await send(f, { document, flowKey: "DOCUMENT_CONTENT", action: "FINISH_CONTENT", data: {} });
+  document = await loadDocument(f, document.document_id);
+
+  await send(f, {
+    document, flowKey: "DOCUMENT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: "", discount_amount: "", notes: "", payment_terms: "Sous 30 jours", validity_days: 15, payment_method: "", reference: "" },
+  });
+  document = await loadDocument(f, document.document_id);
+  assert.equal(document.status, "READY_FOR_REVIEW", "the real full submission must reach review, not fail closed on payment_method/reference");
+  assert.equal(document.options.validity_days, 15, "the flat validity_days the real Flow sends must persist at the canonical location");
+  assert.equal(Object.hasOwn(document, "payment_method"), false, "payment_method has no DEVIS meaning and must never be persisted");
+  assert.equal(Object.hasOwn(document, "reference"), false, "reference has no DEVIS meaning and must never be persisted");
+
+  const reloaded = await loadDocument(f, document.document_id);
+  assert.equal(reloaded.options.validity_days, 15, "retrievable on a fresh read, not just the in-memory return value");
+  assert.match(lastFlowData(f).review_summary, /Sous 30 jours/, "payment_terms actually submitted alongside validity_days must still reach the review as normal");
 });
 
 async function buildRecuAtReview(f, ownerWaId = OWNER) {
@@ -481,4 +518,106 @@ test("K. A stale edit response against a document already mutated by something e
   const after = await loadDocument(f, before.document_id);
   assert.notEqual(after.client.name, "Ne doit pas s’appliquer", "the stale reply must never have overwritten the real, newer state");
   assert.equal(after.notes, "Changé entre-temps", "the real newer state must remain exactly as the non-stale edit left it");
+});
+
+test("L. Replayed SAVE_OPTIONS reply (real full Flow shape, same wamid) is idempotent — no double discount application, no version bump on the replay", async () => {
+  const f = await buildComposition();
+  const before = await buildFactureAtReview(f);
+  await send(f, { document: before, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  const reopened = await loadDocument(f, before.document_id);
+
+  const sessionId = await openSession(f, { document: reopened, expectedFlowKey: "EDIT_OPTIONS" });
+  const data = { tax_rate_basis_points: 1800, discount_amount: 2000, notes: "Livraison offerte", payment_terms: "", validity_days: "", payment_method: "", reference: "" };
+  const message = nfmReply({ sessionId, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS", data });
+
+  const first = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(first.results[0].accepted, true);
+  const afterFirst = await loadDocument(f, before.document_id);
+  assert.equal(afterFirst.discount, 2000);
+
+  const second = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(second.results[0].accepted, true);
+  assert.equal(second.results[0].duplicate, true, "an exact SAVE_OPTIONS replay must be recognized as a duplicate");
+  const afterSecond = await loadDocument(f, before.document_id);
+  assert.equal(afterSecond.version, afterFirst.version, "no additional mutation on replay");
+  assert.equal(afterSecond.discount, 2000, "no double-application of the discount from the replay");
+});
+
+test("M. A stale SAVE_OPTIONS reply against a document already mutated by something else is rejected, never silently overwritten", async () => {
+  const f = await buildComposition();
+  const before = await buildFactureAtReview(f);
+
+  await send(f, { document: before, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  const reopenedForStale = await loadDocument(f, before.document_id);
+  const staleSessionId = await openSession(f, { document: reopenedForStale, expectedFlowKey: "EDIT_OPTIONS" });
+
+  await send(f, { document: before, flowKey: "DOCUMENT_REVIEW", action: "EDIT_CLIENT", data: {} });
+  const reopenedForClient = await loadDocument(f, before.document_id);
+  await send(f, { document: reopenedForClient, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client changé entre-temps", phone: "", email: "", address: "", tax_id: "" } });
+  const mutated = await loadDocument(f, before.document_id);
+  assert.notEqual(mutated.version, before.version, "the document must genuinely have moved on");
+
+  const staleMessage = nfmReply({
+    sessionId: staleSessionId, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: 1800, discount_amount: 9999, notes: "Ne doit pas s’appliquer", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  });
+  const staleResult = await f.composition.webhookHandler({ messages: [staleMessage] });
+  assert.equal(staleResult.results[0].accepted, false, "a stale document_version must be rejected, not silently applied");
+
+  const after = await loadDocument(f, before.document_id);
+  assert.notEqual(after.discount, 9999, "the stale options reply must never have overwritten the real, newer state");
+  assert.equal(after.client.name, "Client changé entre-temps", "the real newer state must remain exactly as the non-stale edit left it");
+});
+
+// OPTIONS-001 cross-contamination guard: widening the shared FACTURE/DEVIS
+// COMMON_OPTION_FIELDS allowlist to accept validity_days/payment_method/
+// reference must never leak into DECHARGE, which has its own, deliberately
+// narrower, single-field (observations) options contract in
+// kadiV1DischargePolicy.js, called only via a server-constructed payload —
+// never a raw pass-through of the shared Flow's field shape.
+test("N. DECHARGE's initial SAVE_DETAILS journey remains completely unaffected by the OPTIONS-001 shared-document fix", async () => {
+  const f = await buildComposition();
+  const document = await buildDechargeAtReview(f);
+  assert.equal(document.discharge.giver, "Ibrahim");
+  assert.equal(document.discharge.receiver, "Fatou");
+  assert.equal(Object.hasOwn(document, "options"), false, "a discharge document has no shared FACTURE/DEVIS-style options bag at all");
+});
+
+// EDIT_OPTIONS-001 (independent review finding on the OPTIONS-001 fix,
+// MEDIUM/merge blocker): unlike EDIT_CLIENT/EDIT_CONTENT, the real
+// EDIT_OPTIONS Flow never prefills notes/payment_terms with the document's
+// current values — its single combined form always submits them blank when
+// the owner leaves them untouched. A correction that only changes tax must
+// never silently erase a previously-persisted note or payment term.
+test("O. Invoice option correction that only changes tax, via the real full EDIT_OPTIONS Flow shape, preserves previously persisted notes and payment_terms", async () => {
+  const f = await buildComposition();
+  let document = await buildFactureAtReview(f);
+
+  await send(f, { document, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  let reopened = await loadDocument(f, document.document_id);
+  await send(f, {
+    document: reopened, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: 1800, discount_amount: "", notes: "Merci pour votre confiance", payment_terms: "Paiement sous 30 jours", validity_days: "", payment_method: "", reference: "" },
+  });
+  const withNotes = await loadDocument(f, document.document_id);
+  assert.equal(withNotes.notes, "Merci pour votre confiance");
+  assert.equal(withNotes.payment_terms, "Paiement sous 30 jours");
+
+  await send(f, { document: withNotes, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  reopened = await loadDocument(f, document.document_id);
+  // The real EDIT_OPTIONS combined-form submission for "I just want to fix
+  // the tax rate": every other field, including notes/payment_terms (never
+  // prefilled by the real Flow), comes back blank exactly as Meta sends it.
+  await send(f, {
+    document: reopened, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: 2000, discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  });
+  const after = await loadDocument(f, document.document_id);
+  assert.equal(after.tax_rate_basis_points, 2000, "the actually-changed tax rate must still update");
+  assert.equal(after.notes, "Merci pour votre confiance", "an untouched, never-prefilled note must survive a tax-only correction");
+  assert.equal(after.payment_terms, "Paiement sous 30 jours", "an untouched, never-prefilled payment term must survive a tax-only correction");
+
+  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+  assert.match(lastFlowData(f).review_summary, /Merci pour votre confiance/, "the refreshed review must still show the preserved note");
+  assert.match(lastFlowData(f).review_summary, /Paiement sous 30 jours/, "the refreshed review must still show the preserved payment terms");
 });
