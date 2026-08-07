@@ -459,12 +459,37 @@ function createKadiV1InterpretationRuntimeAdapter({ brain } = {}) {
   return Object.freeze({ interpret });
 }
 
+// HISTORY-CONTRACT-001: two distinct real callers reach this adapter with
+// two different shapes — kadiV1ConversationOrchestrator.js's natural-
+// language path passes a flat { ownerWaId, query, limit }, while
+// kadiV1FlowCommandRuntime.js's real HISTORY_SEARCH/SEARCH action passes
+// { ownerWaId, criteria } where criteria is kadi_history_search_v1.json's
+// real combined-form submission: query/document_type/date_from/date_to/
+// document_id, blank fields included (document_id is meaningless for
+// SEARCH — dropped here, never forwarded). kadiV1HistoryService.js's
+// normalizeFilters only recognizes the canonical text/from/to — never
+// date_from/date_to/query, which it rejects outright as HISTORY_FILTER_UNKNOWN
+// regardless of blank-ness. This is the single boundary that translates
+// the Flow's field vocabulary into the history service's own, and treats
+// every blank optional field as "not provided" rather than a literal
+// empty-string filter that would silently match nothing.
+function nonBlankString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function createKadiV1HistoryRuntimeAdapter({ historyService } = {}) {
   const service = assertMethods(historyService, ["searchDocuments", "getDocumentDetails"], "KADI_V1_HISTORY_SERVICE");
   async function search(command) {
-    const criteria = command.criteria && typeof command.criteria === "object" ? clone(command.criteria) : {};
-    if (command.query && !criteria.text) criteria.text = String(command.query).trim();
-    for (const field of ["action", "document_id", "limit", "query"]) delete criteria[field];
+    const raw = command.criteria && typeof command.criteria === "object" ? clone(command.criteria) : {};
+    const criteria = {};
+    const text = nonBlankString(raw.text) || nonBlankString(raw.query) || nonBlankString(command.query);
+    if (text) criteria.text = text;
+    const documentType = nonBlankString(raw.document_type);
+    if (documentType) criteria.document_type = documentType;
+    const from = nonBlankString(raw.date_from) || nonBlankString(raw.from);
+    if (from) criteria.from = from;
+    const to = nonBlankString(raw.date_to) || nonBlankString(raw.to);
+    if (to) criteria.to = to;
     const limit = Number.isSafeInteger(command.limit) ? Math.min(Math.max(command.limit, 1), 20) : 5;
     return service.searchDocuments({ ownerWaId: command.ownerWaId, filters: criteria, limit, correlationId: command.correlationId || null });
   }
