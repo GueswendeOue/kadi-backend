@@ -161,25 +161,41 @@ function createAdvancingClock(startIso) {
   };
 }
 
-async function buildComposition({ balance = 0, provider = fakePaymentProvider() } = {}) {
-  const sharedClock = createAdvancingClock(NOW);
+// R2 Test B (process-restart semantics): buildComposition optionally
+// accepts already-existing, already-persisted stores (session repository,
+// recharge repository, its owner index, the payment provider) instead of
+// creating fresh ones — everything else (services, runtimes, presenter,
+// composition) is always rebuilt from scratch. This lets a test simulate
+// "the process restarted" faithfully: only what a real restart would
+// actually keep (the database) survives; nothing in-process does.
+async function buildComposition({
+  balance = 0,
+  provider = fakePaymentProvider(),
+  sessionRepository = createMemoryConversationSessionRepository(),
+  rechargeRepository: existingRechargeRepository = null,
+  sessionIdsByOwner: existingSessionIdsByOwner = null,
+  sharedClock = createAdvancingClock(NOW),
+} = {}) {
   const domain = createDocumentDomain({ clock: () => NOW });
   const documents = createInMemoryV1DocumentRepository();
   const packCatalog = createRechargePackCatalog({ packs: [PACK_1000, PACK_2000] });
 
-  const realRechargeRepository = createInMemoryRechargeRepository({ balances: { [OWNER]: balance, [OTHER_OWNER]: 0 } });
-  const sessionIdsByOwner = new Map();
-  const rechargeRepository = {};
-  for (const key of Object.keys(realRechargeRepository)) rechargeRepository[key] = realRechargeRepository[key];
-  rechargeRepository.createRechargeSession = async (args) => {
-    const result = await realRechargeRepository.createRechargeSession(args);
-    if (result.ok) {
-      const list = sessionIdsByOwner.get(result.value.owner_wa_id) || [];
-      list.push(result.value.recharge_session_id);
-      sessionIdsByOwner.set(result.value.owner_wa_id, list);
-    }
-    return result;
-  };
+  const sessionIdsByOwner = existingSessionIdsByOwner || new Map();
+  let rechargeRepository = existingRechargeRepository;
+  if (!rechargeRepository) {
+    const realRechargeRepository = createInMemoryRechargeRepository({ balances: { [OWNER]: balance, [OTHER_OWNER]: 0 } });
+    rechargeRepository = {};
+    for (const key of Object.keys(realRechargeRepository)) rechargeRepository[key] = realRechargeRepository[key];
+    rechargeRepository.createRechargeSession = async (args) => {
+      const result = await realRechargeRepository.createRechargeSession(args);
+      if (result.ok) {
+        const list = sessionIdsByOwner.get(result.value.owner_wa_id) || [];
+        list.push(result.value.recharge_session_id);
+        sessionIdsByOwner.set(result.value.owner_wa_id, list);
+      }
+      return result;
+    };
+  }
 
   // Document-linked resume (quoteService/generationLifecycleService) is
   // out of scope for these MENU-triggered recharge scenarios — throwing
@@ -213,7 +229,7 @@ async function buildComposition({ balance = 0, provider = fakePaymentProvider() 
     historyRuntime: stubPort(["search", "open"]),
     walletRuntime: stubPort(["getBalance"]),
   });
-  const sessionService = createConversationSessionService({ repository: createMemoryConversationSessionRepository(), clock: sharedClock });
+  const sessionService = createConversationSessionService({ repository: sessionRepository, clock: sharedClock });
   const flowReplyRuntime = createKadiV1FlowReplyRuntime({ sessionService, commandRuntime });
 
   const sent = { texts: [], flows: [] };
@@ -233,7 +249,22 @@ async function buildComposition({ balance = 0, provider = fakePaymentProvider() 
     logger: { warn() {}, log() {} },
   });
   assert.equal(composition.readiness.ready, true, JSON.stringify(composition.readiness));
-  return { composition, sessionService, sent, rechargeRepository, sessionIdsByOwner, provider };
+  return { composition, sessionService, sent, rechargeRepository, sessionIdsByOwner, sessionRepository, provider };
+}
+
+// R2 Test B helper: simulates a real process restart — every in-process
+// object (services, runtimes, presenter, composition) is discarded and
+// rebuilt from scratch, wired only to the same underlying, already-
+// persisted stores (the session repository, the recharge repository and
+// its owner index, the payment provider) a real restart would actually
+// keep.
+async function rebuildCompositionAroundSameRepositories(f) {
+  return buildComposition({
+    sessionRepository: f.sessionRepository,
+    rechargeRepository: f.rechargeRepository,
+    sessionIdsByOwner: f.sessionIdsByOwner,
+    provider: f.provider,
+  });
 }
 
 function nfmReply({ sessionId, action, data = {}, from = OWNER }) {
@@ -432,7 +463,7 @@ test("9-10. RECHARGE/CANCEL real combined-form payload with stale nonblank pack_
 // still safe in the sense required here: the second attempt finds nothing
 // left to cancel (the session is already CANCELLED) and fails closed,
 // rather than double-cancelling, corrupting state, or crashing.
-test("14. A replayed RECHARGE/CANCEL reply (same wamid) never double-cancels or corrupts state — the current cancel path has no command-level idempotency key of its own", async () => {
+test("14. A replayed RECHARGE/CANCEL reply (same wamid) is recognized as a duplicate and executes zero second cancel mutation (R2 short-circuit)", async () => {
   const f = await buildComposition();
   await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("replay-cancel-select") });
   const before = await latestSession(f);
@@ -442,12 +473,13 @@ test("14. A replayed RECHARGE/CANCEL reply (same wamid) never double-cancels or 
 
   const first = await f.composition.webhookHandler({ messages: [message] });
   assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  assert.equal(first.results[0].duplicate, false);
   const afterFirst = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: before.recharge_session_id });
   assert.equal(afterFirst.value.status, "CANCELLED");
 
   const second = await f.composition.webhookHandler({ messages: [message] });
-  assert.equal(second.results[0].accepted, false, "the replay must fail safely (nothing left to cancel), never silently succeed a second time");
-  assert.equal(second.results[0].reason, "RECHARGE_SESSION_NOT_FOUND");
+  assert.equal(second.results[0].accepted, true, second.results[0].reason);
+  assert.equal(second.results[0].duplicate, true, "the replay must be recognized as a duplicate — the R2 short-circuit never calls the recharge lookup/cancel a second time");
   const afterSecond = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: before.recharge_session_id });
   assert.equal(afterSecond.value.status, "CANCELLED", "state must remain exactly as the first cancel left it");
 });
@@ -566,10 +598,12 @@ test("R1 HIGH/P0: a delayed exact replay of an already-consumed CANCEL message n
   assert.equal(sessionB.status, "PAYMENT_PENDING");
 
   // 4. Replay the EXACT original CANCEL message C — same wamid, same Flow
-  // session, same consumed reply idempotency key.
+  // session, same consumed reply idempotency key. The R2 short-circuit
+  // recognizes this as a duplicate before the recharge lookup ever runs
+  // again, so B is never even queried, let alone touched.
   const replay = await f.composition.webhookHandler({ messages: [cancelMessage] });
-  assert.equal(replay.results[0].accepted, false, "the replay must fail closed — B was created after this Flow session was opened, so nothing eligible remains to cancel");
-  assert.equal(replay.results[0].reason, "RECHARGE_SESSION_NOT_FOUND");
+  assert.equal(replay.results[0].accepted, true, replay.results[0].reason);
+  assert.equal(replay.results[0].duplicate, true, "the replay must be recognized as a duplicate");
 
   const sessionBAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
   assert.equal(sessionBAfterReplay.value.status, "PAYMENT_PENDING", "B must remain exactly as it was — a replay of a message that was only ever about A must never touch B");
@@ -613,6 +647,102 @@ test("R1: a genuinely current CANCEL (opened after the active recharge exists) s
 
   const after = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: session.recharge_session_id });
   assert.equal(after.value.status, "CANCELLED", "a CANCEL Flow opened after the active recharge already existed must still cancel it normally");
+});
+
+// R2 independent review (HIGH/P0): sessionOpenedAt (R1) alone does not
+// make RECHARGE/CANCEL idempotent when MULTIPLE eligible active recharge
+// sessions already existed before the cancel Flow was opened. Without a
+// duplicate short-circuit, a replay would re-resolve "the newest
+// remaining eligible session <= sessionOpenedAt" — since the first cancel
+// already removed the true target from that set, the replay would find
+// and cancel a second, different, older session instead. Fixed by a
+// RECHARGE/CANCEL-scoped short-circuit in kadiV1FlowReplyRuntime.js's
+// handle(): when the session layer's own persisted, authoritative
+// duplicate signal (CONSUMED status + matching consumed_reply_key — never
+// an in-process flag, safe across a process restart) reports
+// consumed.duplicate === true for this exact (RECHARGE, CANCEL) pair,
+// commands.execute() is never called at all.
+
+// Test A (mandatory): two active sessions predating the Flow + exact
+// replay — zero second cancel mutation.
+test("R2 HIGH/P0 (Test A): an exact CANCEL replay, with two active sessions predating the Flow, executes zero second cancel mutation", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  // 1 + 2. Two independent SELECT_PACK calls create A and B for the same
+  // owner — createRechargeSession only dedupes by idempotency key, it
+  // does not enforce one active recharge per owner.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("multi-active-select-a") });
+  const sessionA = await latestSession(f);
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("multi-active-select-b") });
+  const sessionB = await latestSession(f);
+  assert.notEqual(sessionA.recharge_session_id, sessionB.recharge_session_id);
+
+  // 3. Confirm both are active before the cancel Flow is even opened.
+  assert.equal((await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id })).value.status, "PAYMENT_PENDING");
+  assert.equal((await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id })).value.status, "PAYMENT_PENDING");
+
+  // 4 + 5. Open RECHARGE Flow/session C only after both A and B exist,
+  // then submit CANCEL message X from C.
+  const cancelSessionId = await openSession(f, { idempotencyKey: nextKey("multi-active-cancel-session") });
+  const cancelMessage = nfmReply({ sessionId: cancelSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const first = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  assert.equal(first.results[0].duplicate, false);
+
+  const bAfterFirst = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfterFirst.value.status, "CANCELLED", "the first CANCEL must cancel B, the newest eligible session");
+  const aAfterFirst = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfterFirst.value.status, "PAYMENT_PENDING", "A must remain untouched by the first CANCEL");
+
+  // 6. Replay the EXACT same CANCEL message X — must execute zero second
+  // cancel mutation: the session layer recognizes the duplicate and the
+  // short-circuit prevents commands.execute() (and therefore
+  // cancelRechargeSession) from ever running a second time.
+  const replay = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(replay.results[0].accepted, true, replay.results[0].reason);
+  assert.equal(replay.results[0].duplicate, true, "the replay must still be recognized as a duplicate");
+
+  const aAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfterReplay.value.status, "PAYMENT_PENDING", "A must remain untouched — the replay must never cancel a second, different session");
+  const bAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(bAfterReplay.value.status, "CANCELLED", "B must remain exactly as the first cancel left it");
+});
+
+// Test B (mandatory): the duplicate protection must derive from the
+// persisted conversation-session state, not an in-process flag — proven
+// by tearing down and reconstructing the entire FlowReplyRuntime/
+// FlowCommandRuntime/recharge-runtime stack around the SAME underlying
+// session repository (and the same recharge repository) between the first
+// CANCEL and the replay, simulating a process restart. No new schema: the
+// conversation session repository already persists status/
+// consumed_reply_key exactly as before.
+test("R2 HIGH/P0 (Test B): the exact-replay protection survives a full runtime reconstruction (process-restart semantics), because it derives from persisted session state", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("restart-select-a") });
+  const sessionA = await latestSession(f);
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("restart-select-b") });
+  const sessionB = await latestSession(f);
+
+  const cancelSessionId = await openSession(f, { idempotencyKey: nextKey("restart-cancel-session") });
+  const cancelMessage = nfmReply({ sessionId: cancelSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const first = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  assert.equal((await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id })).value.status, "CANCELLED");
+
+  // Simulate a process restart: build a completely new
+  // FlowReplyRuntime/FlowCommandRuntime/recharge-runtime/presenter stack
+  // from scratch, wired to the SAME underlying session and recharge
+  // repositories (the only state that genuinely survives a real restart —
+  // no in-memory runtime object is reused).
+  const restarted = await rebuildCompositionAroundSameRepositories(f);
+
+  const replay = await restarted.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(replay.results[0].accepted, true, replay.results[0].reason);
+  assert.equal(replay.results[0].duplicate, true, "the duplicate must still be recognized after a full runtime reconstruction");
+
+  const aAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(aAfterReplay.value.status, "PAYMENT_PENDING", "A must remain untouched even after the entire runtime was rebuilt from persisted state");
 });
 
 test("10. The presenter sends nothing at all for a duplicate SELECT_PACK reply (kadiV1ProductionPresenter.js's presentFlowReply short-circuits on result.duplicate === true)", async () => {

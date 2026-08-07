@@ -333,6 +333,93 @@ test("duplicate webhook reuses the same command idempotency key", async () => {
   assert.deepEqual(second.value.result, { item_id: "item:1" });
 });
 
+// RECHARGE-CONTRACT-001 (R2 independent review, HIGH/P0): an exact
+// duplicate of an already-consumed RECHARGE/CANCEL reply must execute
+// ZERO second business mutation — commands.execute() must never be
+// called at all on the replay, unlike the generic behavior proven above
+// (and reproven below for an unrelated Flow/action) where the command
+// layer's own idempotency key is what makes a second execution safe.
+test("R2: an exact duplicate RECHARGE/CANCEL reply never calls commands.execute a second time", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "RECHARGE", document: null });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const first = await runtime.handle(cancelReply);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.value.duplicate, false);
+  assert.equal(calls, 1);
+
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.ok, true, second.error);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(second.value.result, null, "the short-circuit never replays or invents an old business result");
+  assert.equal(calls, 1, "commands.execute must never be called a second time for an exact RECHARGE/CANCEL duplicate");
+});
+
+// The short-circuit above must be scoped to exactly (RECHARGE, CANCEL) —
+// every other Flow/action's existing generic duplicate-execution
+// behavior (relying on the command layer's own idempotency key, exactly
+// like the pre-existing "duplicate webhook reuses the same command
+// idempotency key" test above) must remain completely unaffected,
+// including CANCEL on every other Flow.
+test("R2: the RECHARGE/CANCEL short-circuit does not affect DOCUMENT_REVIEW/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "DOCUMENT_REVIEW" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "DOCUMENT_REVIEW", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "DOCUMENT_REVIEW/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
+test("R2: the RECHARGE/CANCEL short-circuit does not affect DOCUMENT_PREVIEW/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "DOCUMENT_PREVIEW" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "DOCUMENT_PREVIEW", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "DOCUMENT_PREVIEW/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
+// GENERATION_CONFIRMATION/CANCEL remains T4 (still rejected outright by
+// the field allowlist — see the GENERATION_CONFIRMATION-001 test above)
+// — this only proves the R2 short-circuit itself would not additionally
+// alter its (separately still-broken) duplicate behavior if that field
+// contract were ever fixed later, keeping this fix strictly scoped to
+// (RECHARGE, CANCEL) at the duplicate-execution level too.
+test("R2: the RECHARGE/CANCEL short-circuit does not affect GENERATION_CONFIRMATION/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "GENERATION_CONFIRMATION" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "GENERATION_CONFIRMATION", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "GENERATION_CONFIRMATION/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
 test("recoverable command failure can be retried through consumed-session replay", async () => {
   const sessions = makeSessionService();
   await openSession(sessions);
