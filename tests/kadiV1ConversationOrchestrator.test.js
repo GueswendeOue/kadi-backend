@@ -129,6 +129,49 @@ test("history results remain owner-scoped and open logical selection", async () 
   assert.equal(searchCall.ownerWaId, "22670000000");
 });
 
+test("bare 'Historique' is treated as an empty query, listing recent documents, never as literal search text that matches nothing", async () => {
+  const { orchestrator, calls } = makeHarness({
+    history: { documents: [{ document_id: "doc:1", status: "RECOVERABLE_FAILURE" }, { document_id: "doc:2", status: "DELIVERED" }] },
+  });
+  const response = await orchestrator.handle(input({ text: "Historique" }));
+  const searchCall = calls.find(([name]) => name === "history")[1];
+  assert.equal(searchCall.query, "", "the trigger word itself must never become the search query");
+  assert.equal(response.business_action, "HISTORY_RESULTS", "documents exist, so the empty-query branch must not fire");
+});
+
+test("'Historique facture' keeps 'facture' as real search criteria, stripping only the trigger word", async () => {
+  const { orchestrator, calls } = makeHarness({ history: { documents: [{ document_id: "doc:1" }] } });
+  await orchestrator.handle(input({ text: "Historique facture" }));
+  const searchCall = calls.find(([name]) => name === "history")[1];
+  assert.equal(searchCall.query, "facture");
+});
+
+test("'Retrouve la facture de Paul' keeps the real criteria, stripping only 'Retrouve'", async () => {
+  const { orchestrator, calls } = makeHarness({ history: { documents: [{ document_id: "doc:1" }] } });
+  await orchestrator.handle(input({ text: "Retrouve la facture de Paul" }));
+  const searchCall = calls.find(([name]) => name === "history")[1];
+  assert.equal(searchCall.query, "la facture de Paul");
+});
+
+test("an exact document reference as the whole message is preserved verbatim as the query", async () => {
+  const { orchestrator, calls } = makeHarness({ history: { documents: [{ document_id: "doc:1" }] } });
+  await orchestrator.handle(input({ text: "FA-20260806190633-A0EAC605" }));
+  // A bare reference contains none of the history trigger words, so it does
+  // not even reach the HISTORY_SEARCH intent branch via natural language —
+  // this is unchanged, pre-existing behavior (exact-reference lookup is
+  // reached via the dedicated Flow SEARCH path, not free text triggers).
+  assert.equal(calls.some(([name]) => name === "history"), false);
+});
+
+test("a document with status RECOVERABLE_FAILURE is not filtered out of a natural-language history search result", async () => {
+  const { orchestrator } = makeHarness({
+    history: { documents: [{ document_id: "doc:1", status: "RECOVERABLE_FAILURE" }] },
+  });
+  const response = await orchestrator.handle(input({ text: "derniers documents" }));
+  assert.equal(response.business_action, "HISTORY_RESULTS");
+  assert.equal(response.flow_request.prefill.result_ids[0], "doc:1");
+});
+
 test("an interpretation runtime reporting RECHARGE opens the existing recharge flow, without mutating any document", async () => {
   const { orchestrator, calls } = makeHarness({
     interpretation: { intent: "RECHARGE", document_type: null, brain_result: null },

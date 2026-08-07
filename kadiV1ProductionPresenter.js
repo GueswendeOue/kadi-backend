@@ -190,6 +190,24 @@ function documentLabel(documentType) {
   );
 }
 
+const HISTORY_OPTION_TITLE_MAX_LENGTH = 30;
+
+// Built only from the history projection's already-safe list fields
+// (kadiV1HistoryService.js's listProjection: document_number, counterparty,
+// document_type, status) — never a raw internal code, never a full
+// WhatsApp identifier. Truncated to fit the WhatsApp Flow dropdown option
+// title limit.
+function historyOptionLabel(entry) {
+  const reference = typeof entry?.document_number === "string" && entry.document_number
+    ? entry.document_number
+    : "Brouillon";
+  const who = typeof entry?.counterparty === "string" && entry.counterparty.trim()
+    ? entry.counterparty.trim()
+    : documentLabel(entry?.document_type);
+  const label = `${reference} — ${who}`;
+  return label.length > HISTORY_OPTION_TITLE_MAX_LENGTH ? `${label.slice(0, HISTORY_OPTION_TITLE_MAX_LENGTH - 1)}…` : label;
+}
+
 // items_summary / preview_summary formatting — built exclusively from the
 // server's own kadiV1PreviewService.buildPreviewData(document) projection
 // (real item_id/description/quantity_millis/unit/unit_price/line_total and
@@ -481,6 +499,23 @@ function nextFlowForReply(action, resultValue) {
   }
 
   const document = extractDocument(resultValue);
+
+  // Checked before the generic status-based routeDocument() fallback below
+  // — a real production incident traced this exact ordering conflict:
+  // beginEdit's reopenForCorrection legitimately moves the document back to
+  // READY_FOR_REVIEW as part of reopening it for correction (so the review
+  // Flow can re-verify it once the edit is saved), but routeDocument()
+  // maps READY_FOR_REVIEW straight to DOCUMENT_REVIEW — which, checked
+  // first, silently swallowed the explicit EDIT_CLIENT/EDIT_CONTENT/
+  // EDIT_OPTIONS routing below every time, always reopening the review
+  // screen instead of the intended edit Flow. The explicit, action-driven
+  // choice here must always win over the generic document-status guess.
+  if (["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"].includes(action)) {
+    if (document?.document_type === "DECHARGE") return "DISCHARGE_DETAILS";
+    if (document?.document_type === "RECU") return "RECEIPT_DETAILS";
+    return action;
+  }
+
   const routed = routeDocument(document);
   if (routed) return routed;
 
@@ -506,13 +541,15 @@ function nextFlowForReply(action, resultValue) {
   if (action === "FINISH_CONTENT") return "DOCUMENT_OPTIONS";
   if (action === "SAVE_OPTIONS") return "DOCUMENT_REVIEW";
   if (action === "VERIFY") return "DOCUMENT_PREVIEW";
-  if (["EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS"].includes(action)) {
-    if (document?.document_type === "DECHARGE") return "DISCHARGE_DETAILS";
-    if (document?.document_type === "RECU") return "RECEIPT_DETAILS";
-    return action;
-  }
   if (action === "PREPARE_PDF") return "GENERATION_CONFIRMATION";
   if (action === "SELECT_PACK") return "RECHARGE";
+  // Only re-open the Flow when there is something to show — an empty
+  // result set has nothing to pick from, and canonicalReplyText already
+  // states that honestly; reopening the Flow in that case would show an
+  // unusable empty dropdown instead of just the plain "nothing found" text.
+  if (action === "SEARCH" && Array.isArray(resultValue?.documents) && resultValue.documents.length > 0) {
+    return "HISTORY_SEARCH";
+  }
   return null;
 }
 
@@ -562,6 +599,21 @@ function canonicalReplyText(action, value) {
     return "Le paiement n’est pas encore confirmé. Vérifiez la référence puis réessayez.";
   }
 
+  // SEARCH's result count is only known at reply time, unlike every other
+  // action in the static table below — a fixed "La recherche est
+  // terminée." for every case (whether 0 or 20 documents were found) was
+  // the exact dead-end a real production incident traced: the search ran
+  // and genuinely found nothing usable to say, and genuinely found
+  // documents with nothing usable to show. Both must be told apart and
+  // stated honestly.
+  if (action === "SEARCH") {
+    const count = Array.isArray(value?.documents) ? value.documents.length : 0;
+    if (count === 0) {
+      return "Je n’ai trouvé aucun document correspondant. Donnez-moi un nom, un type de document ou une période.";
+    }
+    return `J’ai trouvé ${count} document${count === 1 ? "" : "s"}. Choisissez celui que vous souhaitez consulter dans la liste, puis appuyez sur Continuer.`;
+  }
+
   const copy = {
     START: "Merci. Votre profil est enregistré. Que voulez-vous préparer aujourd’hui ?",
     PREPARE_DOCUMENT: "Choisissez le document à préparer.",
@@ -582,7 +634,6 @@ function canonicalReplyText(action, value) {
     CONFIRM_GENERATION: "La génération du document est terminée.",
     SELECT_PACK: "Le pack est sélectionné.",
     CHECK_PAYMENT: "La vérification du paiement est terminée.",
-    SEARCH: "La recherche est terminée.",
     OPEN_DOCUMENT: "Le document est ouvert.",
     SAVE_DETAILS: "Les informations de la décharge sont enregistrées.",
     BALANCE: "Votre solde a été consulté.",
@@ -605,6 +656,24 @@ function suggestedDataForFlow(flowKey, source, extra = {}) {
 
   const quoteId = quoteFromResult(source);
   if (quoteId) output.quote_id = quoteId;
+
+  // Populates the same history_options dropdown the Flow's own JSON
+  // contract already declares (kadi_history_search_v1.json) — the search
+  // screen and the results screen are the same single Meta screen (Meta
+  // only allows one terminal screen per Flow — see ADR-002), so "showing
+  // results" means re-opening HISTORY_SEARCH with real options instead of
+  // the schema's placeholder example. Every option's id is the real,
+  // already-server-authoritative document_id (the same opaque reference
+  // used throughout the rest of this presenter); the title is built only
+  // from fields the history projection already exposes (document_number,
+  // counterparty, status) — safe to show the owner their own document
+  // reference, never a full WhatsApp ID or any other party's identity.
+  if (flowKey === "HISTORY_SEARCH" && Array.isArray(source?.documents)) {
+    output.history_options = source.documents.slice(0, 20).map((entry) => ({
+      id: entry.document_id,
+      title: historyOptionLabel(entry),
+    }));
+  }
 
   if (flowKey === "MENU") {
     output.menu_options = [

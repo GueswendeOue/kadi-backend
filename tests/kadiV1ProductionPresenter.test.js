@@ -6,6 +6,7 @@ const {
   createKadiV1ProductionPresenter,
   loadFlowRegistry,
   buildV1FlowMessage,
+  nextFlowForReply,
 } = require("../kadiV1ProductionPresenter");
 
 const OWNER = "22670000000";
@@ -843,6 +844,116 @@ test("opening a document with no delivery issue keeps the ordinary generic OPEN_
   assert.equal(calls.some(([name]) => name === "buttons"), false);
   const [, { text }] = calls.find(([name]) => name === "text");
   assert.equal(text, "Le document est ouvert.");
+});
+
+// Incident regression (2026-08-07T01:24-01:26Z owner CANARY): beginEdit's
+// reopenForCorrection legitimately moves the document back to
+// READY_FOR_REVIEW so it can be re-verified once the edit is saved — but
+// routeDocument() maps READY_FOR_REVIEW straight back to DOCUMENT_REVIEW,
+// and was checked before the explicit EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS
+// mapping, silently swallowing it every time. The owner saw "Vous pouvez
+// modifier le client." followed only by "Vérifier" again — never the real
+// edit Flow.
+test("nextFlowForReply: EDIT_CLIENT opens DOCUMENT_CLIENT's edit Flow, never DOCUMENT_REVIEW, even though beginEdit moves the document to READY_FOR_REVIEW", () => {
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CLIENT", reopenedDocument), "EDIT_CLIENT");
+  assert.notEqual(nextFlowForReply("EDIT_CLIENT", reopenedDocument), "DOCUMENT_REVIEW");
+});
+
+test("nextFlowForReply: EDIT_CONTENT and EDIT_OPTIONS have the exact same fix, for the same reason", () => {
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CONTENT", reopenedDocument), "EDIT_CONTENT");
+  assert.equal(nextFlowForReply("EDIT_OPTIONS", reopenedDocument), "EDIT_OPTIONS");
+});
+
+test("nextFlowForReply: EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS still route RECU to RECEIPT_DETAILS and DECHARGE to DISCHARGE_DETAILS, unaffected by the ordering fix", () => {
+  const recu = { document_id: "document:1", version: 3, document_type: "RECU", status: "READY_FOR_REVIEW" };
+  const decharge = { document_id: "document:2", version: 3, document_type: "DECHARGE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("EDIT_CLIENT", recu), "RECEIPT_DETAILS");
+  assert.equal(nextFlowForReply("EDIT_OPTIONS", decharge), "DISCHARGE_DETAILS");
+});
+
+test("nextFlowForReply: unrelated actions on a READY_FOR_REVIEW document keep the ordinary generic routing — the fix is scoped only to EDIT_CLIENT/EDIT_CONTENT/EDIT_OPTIONS", () => {
+  const document = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  assert.equal(nextFlowForReply("SAVE_OPTIONS", document), "DOCUMENT_REVIEW");
+});
+
+test("full presentFlowReply reproduces the fix end to end: pressing 'Modifier le client' from review opens the real EDIT_CLIENT Flow, not another 'Vérifier' screen", async () => {
+  const { presenter, calls } = harness();
+  const reopenedDocument = { document_id: "document:1", version: 3, document_type: "FACTURE", status: "READY_FOR_REVIEW" };
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:edit-client",
+    result: { handled: true, action: "EDIT_CLIENT", duplicate: false, result: { document: reopenedDocument } },
+  });
+  const flowCall = calls.find(([name]) => name === "flow");
+  assert.ok(flowCall, "must open a Flow, not just repeat text");
+  assert.equal(flowCall[1].interactive.action.parameters.flow_id, FLOW_IDS.EDIT_CLIENT);
+  assert.notEqual(flowCall[1].interactive.action.parameters.flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+});
+
+test("explicit CANCEL from review remains entirely unchanged by this fix", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:cancel",
+    result: { handled: true, action: "CANCEL", duplicate: false, result: { status: "CANCELLED" } },
+  });
+  assert.equal(calls.some(([name]) => name === "flow"), false, "cancel must never open a new Flow");
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "L’opération est annulée.");
+});
+
+test("SEARCH with results is presented honestly and reopens HISTORY_SEARCH with real options — never the old generic dead-end text", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-results",
+    result: {
+      handled: true, action: "SEARCH", duplicate: false,
+      result: {
+        documents: [
+          { document_id: "document:1", document_number: "FA-1", counterparty: "Paul", status: "DELIVERED" },
+          { document_id: "document:2", document_number: "FA-2", counterparty: "Moussa", status: "RECOVERABLE_FAILURE" },
+        ],
+        next_cursor: null,
+      },
+    },
+  });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "J’ai trouvé 2 documents. Choisissez celui que vous souhaitez consulter dans la liste, puis appuyez sur Continuer.");
+  assert.doesNotMatch(text, /recherche est terminée/);
+  const flowCall = calls.find(([name]) => name === "flow");
+  assert.ok(flowCall, "must reopen the HISTORY_SEARCH flow to show real options");
+  const payload = flowCall[1].interactive.action.parameters.flow_action_payload;
+  assert.equal(payload.screen, "HISTORY_SEARCH");
+  assert.deepEqual(payload.data.history_options, [
+    { id: "document:1", title: "FA-1 — Paul" },
+    { id: "document:2", title: "FA-2 — Moussa" },
+  ]);
+});
+
+test("SEARCH with zero results states so honestly and does not reopen a Flow with nothing to show", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-empty",
+    result: { handled: true, action: "SEARCH", duplicate: false, result: { documents: [], next_cursor: null } },
+  });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "Je n’ai trouvé aucun document correspondant. Donnez-moi un nom, un type de document ou une période.");
+  assert.equal(calls.some(([name]) => name === "flow"), false);
+});
+
+test("history option titles stay within the WhatsApp dropdown length limit, and the label is built only from safe list fields (document_number/counterparty), never owner_wa_id", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:search-long",
+    result: {
+      handled: true, action: "SEARCH", duplicate: false,
+      result: { documents: [{ document_id: "document:1", document_number: "FA-20260806190633-A0EAC605", counterparty: "Une Entreprise Avec Un Nom Vraiment Tres Long SARL", status: "RECOVERABLE_FAILURE", owner_wa_id: "22670000000" }], next_cursor: null },
+    },
+  });
+  const flowCall = calls.find(([name]) => name === "flow");
+  const title = flowCall[1].interactive.action.parameters.flow_action_payload.data.history_options[0].title;
+  assert.ok(title.length <= 30, `title too long: ${title}`);
+  assert.doesNotMatch(title, /22670000000/, "owner_wa_id must never be read into the option label even if present on the entry");
 });
 
 test("voice failure is non-blocking after the mandatory text", async () => {

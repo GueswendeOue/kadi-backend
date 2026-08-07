@@ -10,6 +10,7 @@ const {
   createKadiV1RuntimeConfig,
 } = require("../kadiV1RuntimeConfig");
 const {
+  createKadiV1GenerationLifecycleObserver,
   createKadiV1ProductionBootstrap,
   inspectKadiV1ProductionBootstrap,
 } = require("../kadiV1ProductionBootstrap");
@@ -280,6 +281,30 @@ test("bootstrap inspector uses the same real factory", () => {
   assert.equal(report.ready, true);
   assert.deepEqual(report.missing_capabilities, []);
   assert.equal(report.readiness.state, "READY");
+});
+
+test("generation lifecycle observer forwards only the closed-set safe fields (reason_code, duplicate) to the logger, stripping anything else", () => {
+  const calls = [];
+  const observer = createKadiV1GenerationLifecycleObserver({ log: (event, details) => calls.push([event, details]) });
+  observer("delivery_retry_failed", { reason_code: "DELIVERY_DESTINATION_LOOKUP_FAILED", owner_wa_id: "22670000000", document_id: "document:secret", destination_hash: "abc123" });
+  assert.deepEqual(calls, [["delivery_retry_failed", { reason_code: "DELIVERY_DESTINATION_LOOKUP_FAILED" }]]);
+});
+
+test("generation lifecycle observer passes duplicate:true/false through untouched", () => {
+  const calls = [];
+  const observer = createKadiV1GenerationLifecycleObserver({ log: (event, details) => calls.push([event, details]) });
+  observer("delivery_retry_succeeded", { duplicate: true });
+  assert.deepEqual(calls, [["delivery_retry_succeeded", { duplicate: true }]]);
+});
+
+test("generation lifecycle observer accepts an event with no details at all, and never throws even if the logger itself throws", () => {
+  const observer = createKadiV1GenerationLifecycleObserver({ log: () => { throw new Error("logger down"); } });
+  assert.doesNotThrow(() => observer("delivery_retry_started"));
+});
+
+test("production bootstrap wires a real observer into the generation lifecycle service — no longer the silent no-op default", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "kadiV1ProductionBootstrap.js"), "utf8");
+  assert.match(source, /createGenerationLifecycleService\(\{[\s\S]{0,400}observer:\s*createKadiV1GenerationLifecycleObserver\(logger\)/);
 });
 
 test("index mounts the production bootstrap instead of the incomplete composition", () => {
