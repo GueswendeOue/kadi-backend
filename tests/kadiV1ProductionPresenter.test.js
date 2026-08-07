@@ -52,6 +52,9 @@ function harness(overrides = {}) {
       async sendFlow(payload) {
         calls.push(["flow", payload]);
       },
+      async sendButtons(to, body, buttons) {
+        calls.push(["buttons", { to, body, buttons }]);
+      },
     },
     sessionService: {
       async open(command) {
@@ -726,6 +729,122 @@ test("recoverable error sends only canonical user text and never exposes the rea
   assert.doesNotMatch(serialized, /PRIVATE_PROVIDER_FAILURE/);
 });
 
+test("delivery-failure-with-retry offers exactly one button and the exact required French copy, with no technical term exposed", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryFailureWithRetry({
+    ownerWaId: OWNER,
+    messageId: "wamid:delivery-failed",
+    documentId: "document:8a2445480a88eb66f64301faa0eac605",
+  });
+  const buttonsCall = calls.find(([name]) => name === "buttons");
+  assert.ok(buttonsCall, "must send an interactive buttons message");
+  const [, { to, body, buttons }] = buttonsCall;
+  assert.equal(to, OWNER);
+  assert.equal(body, "Votre PDF est prêt, mais son envoi n’a pas abouti.\nAppuyez sur « Réenvoyer le PDF ».\nAucun crédit supplémentaire ne sera débité.");
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].title, "Réenvoyer le PDF");
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  const serialized = JSON.stringify(calls);
+  for (const forbidden of ["DELIVERY_RECOVERABLE_FAILURE", "destination", "flow_token", "document_id", "RECOVERABLE_FAILURE"]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden), `must never expose "${forbidden}" verbatim as a technical field name`);
+  }
+});
+
+test("delivery retry outcome messages match exactly what the mission specifies, per outcome", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:1", outcome: "SUCCEEDED" });
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:2", outcome: "FAILED_PERSISTENT" });
+  await presenter.presentDeliveryRetryOutcome({ ownerWaId: OWNER, messageId: "wamid:3", outcome: "REJECTED" });
+  const texts = calls.filter(([name]) => name === "text").map(([, value]) => value.text);
+  assert.equal(texts[0], "Votre document a bien été renvoyé.");
+  assert.equal(texts[1], "Le PDF est toujours disponible.\nL’envoi n’a pas abouti et aucun crédit supplémentaire n’a été débité.\nVous pourrez réessayer.");
+  assert.match(texts[2], /Réessayez/);
+  assert.doesNotMatch(texts[2], /DELIVERY_RETRY_NOT_ELIGIBLE|documentId|GENERATION_ATTEMPT/);
+});
+
+test("outcome-unknown offer sends two distinct buttons (resend / cancel) with the exact required French copy, no technical term exposed", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryOutcomeUnknownWithRetry({
+    ownerWaId: OWNER, messageId: "wamid:unknown", documentId: "document:8a2445480a88eb66f64301faa0eac605",
+  });
+  const [, { to, body, buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(to, OWNER);
+  assert.equal(body, "Nous ne sommes pas certains que votre document ait été envoyé la dernière fois.\nSouhaitez-vous le renvoyer ?\nAucun crédit supplémentaire ne sera débité.");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].id, "RESEND_UNKNOWN_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  assert.equal(buttons[0].title, "Renvoyer le PDF");
+  assert.equal(buttons[1].id, "CANCEL_UNKNOWN_DELIVERY:document:8a2445480a88eb66f64301faa0eac605");
+  assert.equal(buttons[1].title, "Annuler");
+  const serialized = JSON.stringify(calls);
+  for (const forbidden of ["DELIVERY_OUTCOME_UNKNOWN", "flow_token", "RECOVERABLE_FAILURE"]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden));
+  }
+});
+
+test("cancelling an outcome-unknown resend sends a neutral acknowledgment and nothing else", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryRetryCancelled({ ownerWaId: OWNER, messageId: "wamid:cancel", documentId: "document:1" });
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "D’accord, je ne renvoie rien pour le moment. Vous pourrez le faire plus tard depuis l’historique.");
+});
+
+test("a still-fresh in-progress delivery offers a single check-status button, not a resend offer", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentDeliveryInProgress({ ownerWaId: OWNER, messageId: "wamid:progress", documentId: "document:1" });
+  const [, { body, buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(body, "L’envoi de votre document est toujours en cours.");
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:1");
+});
+
+test("opening a document from history whose delivery needs attention offers the retry action instead of the generic 'document is open' text — confirmed failure", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: {
+        summary: { document_id: "document:stuck", actions: ["VIEW", "DOWNLOAD", "RETRY_DELIVERY"] },
+        delivery: { status: "RECOVERABLE_FAILURE", outcome: "CONFIRMED_FAILURE" },
+      },
+    },
+  });
+  const [, { buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(buttons[0].id, "RETRY_DELIVERY:document:stuck");
+  assert.equal(calls.some(([name]) => name === "text"), false, "must not also send the generic OPEN_DOCUMENT text");
+});
+
+test("opening a document from history classified as outcome-unknown offers the two-button confirmation instead of an immediate resend", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open-unknown",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: {
+        summary: { document_id: "document:stuck", actions: ["VIEW", "DOWNLOAD", "RETRY_DELIVERY"] },
+        delivery: { status: "RECOVERABLE_FAILURE", outcome: "OUTCOME_UNKNOWN" },
+      },
+    },
+  });
+  const [, { buttons }] = calls.find(([name]) => name === "buttons");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].id, "RESEND_UNKNOWN_DELIVERY:document:stuck");
+});
+
+test("opening a document with no delivery issue keeps the ordinary generic OPEN_DOCUMENT presentation", async () => {
+  const { presenter, calls } = harness();
+  await presenter.presentFlowReply({
+    ownerWaId: OWNER, messageId: "wamid:open-normal",
+    result: {
+      handled: true, action: "OPEN_DOCUMENT", duplicate: false,
+      result: { summary: { document_id: "document:ok", actions: ["VIEW", "DOWNLOAD"] }, delivery: { status: "DELIVERED", outcome: null } },
+    },
+  });
+  assert.equal(calls.some(([name]) => name === "buttons"), false);
+  const [, { text }] = calls.find(([name]) => name === "text");
+  assert.equal(text, "Le document est ouvert.");
+});
+
 test("voice failure is non-blocking after the mandatory text", async () => {
   const { presenter, calls } = harness({
     voiceResponseEngine: {
@@ -785,6 +904,9 @@ test("production presenter construction performs no Supabase or WhatsApp I/O", (
         externalCalls += 1;
       },
       async sendFlow() {
+        externalCalls += 1;
+      },
+      async sendButtons() {
         externalCalls += 1;
       },
     },

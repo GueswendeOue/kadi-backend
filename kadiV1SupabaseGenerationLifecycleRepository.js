@@ -80,18 +80,24 @@ function createSupabaseGenerationLifecycleRepository(client) {
     return insertOne("kadi_v1_delivery_attempts", { ...delivery, idempotency_key: idempotencyKey }, "idempotency_key", idempotencyKey, "DELIVERY_ATTEMPT_CREATE_FAILED");
   }
 
-  async function updateDeliveryAttempt({ deliveryAttemptId, changes }) {
+  async function updateDeliveryAttempt({ deliveryAttemptId, expectedStatus, changes }) {
     const current = await getDeliveryAttempt({ deliveryAttemptId });
     if (!current.ok) return current;
+    if (expectedStatus != null && current.value.status !== expectedStatus) return fail("DELIVERY_ATTEMPT_CONCURRENCY_CONFLICT");
     const result = await client.from("kadi_v1_delivery_attempts").update({ ...changes, revision: current.value.revision + 1 })
       .eq("delivery_attempt_id", deliveryAttemptId).eq("revision", current.value.revision).select("*").maybeSingle();
     return result.error || !result.data ? fail("DELIVERY_ATTEMPT_CONCURRENCY_CONFLICT") : ok(result.data);
   }
 
+  async function findDeliveryAttemptByFinalFileId({ finalFileId }) {
+    const result = await client.from("kadi_v1_delivery_attempts").select("*").eq("final_file_id", finalFileId).maybeSingle();
+    return result.error ? fail("DELIVERY_ATTEMPT_LOOKUP_FAILED") : ok(result.data || null);
+  }
+
   return Object.freeze(assertGenerationLifecycleRepository({
     reserveCredits, captureReservation, releaseReservation, getReservation,
     createGenerationAttempt, getGenerationAttempt, updateGenerationAttempt, promoteFinalFile, getFinalFile, findByQuoteId,
-    createDeliveryAttempt, getDeliveryAttempt, updateDeliveryAttempt,
+    createDeliveryAttempt, getDeliveryAttempt, updateDeliveryAttempt, findDeliveryAttemptByFinalFileId,
   }));
 }
 

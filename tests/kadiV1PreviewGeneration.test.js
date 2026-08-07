@@ -225,17 +225,21 @@ test("DEVIS never renders as pro forma, invoice_kind does not apply to it", () =
   assert.equal(previewToDocData({ structured_preview: devis }).type, "DEVIS");
 });
 
-test("delivered PDF filename distinguishes a proforma from a final invoice — a reachable surface that previously always lost invoice_kind", () => {
-  const { deliveryFilenameBase } = require("../kadiV1ProductionInfrastructure");
-  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: { invoice_kind: "PROFORMA" } }), "facture_proforma");
-  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: { invoice_kind: "FINAL" } }), "facture");
-  assert.equal(deliveryFilenameBase({ document_type: "FACTURE", options: null }), "facture");
-  assert.equal(deliveryFilenameBase({ document_type: "FACTURE" }), "facture");
-  assert.equal(deliveryFilenameBase({ document_type: "DEVIS", options: { invoice_kind: "PROFORMA" } }), "devis", "invoice_kind never applies outside FACTURE");
-  assert.equal(deliveryFilenameBase({ document_type: "RECU" }), "recu");
-  assert.equal(deliveryFilenameBase({ document_type: "DECHARGE" }), "decharge");
-  assert.equal(deliveryFilenameBase(null), "document");
-  assert.equal(deliveryFilenameBase(undefined), "document");
+test("delivered PDF filename distinguishes a proforma from a final invoice — see kadiV1FinalFilename.test.js for the full canonical-filename matrix", () => {
+  const { canonicalFinalFilename } = require("../kadiV1FinalFilename");
+  assert.equal(
+    canonicalFinalFilename({ document_type: "FACTURE", invoice_kind: "PROFORMA", document_number: "FA-1" }),
+    "facture-proforma_FA-1.pdf"
+  );
+  assert.equal(
+    canonicalFinalFilename({ document_type: "FACTURE", invoice_kind: "FINAL", document_number: "FA-1" }),
+    "facture_FA-1.pdf"
+  );
+  assert.equal(
+    canonicalFinalFilename({ document_type: "DEVIS", invoice_kind: "PROFORMA", document_number: "DV-1" }),
+    "devis_DV-1.pdf",
+    "invoice_kind never applies outside FACTURE"
+  );
 });
 
 test("refuses incomplete documents and persists a version-bound PREVIEW_READY transition", async () => {

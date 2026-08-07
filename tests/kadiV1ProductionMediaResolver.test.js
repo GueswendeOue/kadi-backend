@@ -250,7 +250,13 @@ test("production composition derives media resolver without boot I/O", () => {
       presentConversation: async () => {},
       presentFlowReply: async () => {},
       presentRecoverableError: async () => {},
+      presentDeliveryFailureWithRetry: async () => {},
+      presentDeliveryOutcomeUnknownWithRetry: async () => {},
+      presentDeliveryRetryCancelled: async () => {},
+      presentDeliveryInProgress: async () => {},
+      presentDeliveryRetryOutcome: async () => {},
     },
+    deliveryRetryRuntime: { handle: async () => ({ ok: true, value: {} }) },
   };
   const dependencies = {
     whatsappApi: {
@@ -292,6 +298,7 @@ test("capability report fails closed without concrete boot composition", () => {
     "flowReplyRuntime",
     "mediaResolver",
     "presenter",
+    "deliveryRetryRuntime",
   ]);
 });
 

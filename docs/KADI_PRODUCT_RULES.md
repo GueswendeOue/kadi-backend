@@ -114,6 +114,22 @@ Aucun débit n'a lieu avant : génération réelle du rendu, calcul du nombre de
 pages réel, présentation du coût et du solde, confirmation explicite de
 l'utilisateur (voir [`../AGENTS.md`](../AGENTS.md) §3 et §16).
 
+* si le PDF final est généré et le crédit capturé mais que la seule livraison
+  WhatsApp échoue, **aucun deuxième débit** n'a lieu sur une reprise —
+  `retryDelivery` réutilise exactement le même fichier final déjà promu,
+  jamais un nouveau rendu ni une nouvelle capture (voir fiche R de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)). **Statut :
+  `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — non encore actif en production.
+* quand l'issue réelle d'un envoi WhatsApp ne peut pas être prouvée après
+  coup (capture bloquée `IN_PROGRESS`, expiration après un envoi
+  potentiellement réussi), le système ne devine jamais et ne renvoie jamais
+  automatiquement : il classe l'issue comme inconnue et exige une
+  **confirmation explicite et distincte de l'utilisateur** avant tout
+  nouvel envoi — jamais la même pression de bouton qui a révélé
+  l'ambiguïté. Voir la sous-section « Suite de revue finale » de la fiche R
+  de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). **Statut :
+  `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`**.
+
 ## Bonus de bienvenue
 
 * exactement cinq crédits, une seule fois, uniquement pour un utilisateur
@@ -150,7 +166,17 @@ l'utilisateur (voir [`../AGENTS.md`](../AGENTS.md) §3 et §16).
 * toute donnée métier confirmée est persistée dans le document réel
   (`kadi_v1_documents` / structure équivalente), jamais seulement conservée
   dans la session WhatsApp temporaire (voir
-  [`KADI_ARCHITECTURE.md`](KADI_ARCHITECTURE.md)).
+  [`KADI_ARCHITECTURE.md`](KADI_ARCHITECTURE.md)) ;
+* le nom de fichier du PDF final livré est unique et basé sur la référence
+  officielle du document (`<type>_<document_number>.pdf`, ex.
+  `facture_FA-20260806190633-A0EAC605.pdf` ; `facture-proforma_...` pour une
+  proforma), jamais un nom générique (`facture.pdf`, `recu.pdf`) qui
+  s'écraserait entre documents successifs du même propriétaire — calculé de
+  façon identique partout où il est utilisé (livraison, reprise de
+  livraison, historique/téléchargement), jamais stocké de façon redondante.
+  Les documents déjà livrés avant l'introduction de cette règle ne sont pas
+  renommés rétroactivement. **Statut : `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`**
+  (voir fiche R de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)).
 
 ## Ce qui n'est pas implémenté et ne doit pas être présenté comme tel
 

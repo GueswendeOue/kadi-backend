@@ -95,6 +95,7 @@ const {
   createKadiV1PreviewRuntimeAdapter,
   createKadiV1WalletRuntimeAdapter,
 } = require("./kadiV1RuntimeAdapters");
+const { createKadiV1DeliveryRetryRuntime } = require("./kadiV1DeliveryRetryRuntime");
 const {
   createKadiV1FlowCommandRuntime,
 } = require("./kadiV1FlowCommandRuntime");
@@ -539,6 +540,9 @@ function createKadiV1ProductionBootstrap({
     const generationRuntime = createKadiV1GenerationRuntimeAdapter({
       generationLifecycleService,
     });
+    const deliveryRetryRuntime = createKadiV1DeliveryRetryRuntime({
+      generationRuntime,
+    });
     const commandRuntime = createKadiV1FlowCommandRuntime({
       onboardingRuntime,
       documentRuntime,
@@ -619,6 +623,7 @@ function createKadiV1ProductionBootstrap({
       flowReplyRuntime: flowReplyComposition.flowReplyRuntime,
       mediaResolver,
       presenter,
+      deliveryRetryRuntime,
     });
     const ports = inspectPorts(components);
     if (!ports.ready) {

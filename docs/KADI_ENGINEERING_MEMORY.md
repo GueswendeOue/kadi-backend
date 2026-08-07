@@ -1351,3 +1351,350 @@ Render** (voir statut en tête de fiche).
   de fusion `35358e5f301e821ac0ad8f6953c118146521878c`) et déployé sur
   Render (`live` à 2026-08-06T14:02:47.395578Z) ; aucun autre système
   distant modifié (Meta, environnement Render).**
+
+## R. Première génération CANARY par le fondateur : livraison WhatsApp échouée après capture, `retryDelivery` inatteignable, noms de fichiers finaux génériques
+
+* **Statut : `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — branche
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0`, correctif écrit,
+  testé localement (1219/1219), **non fusionné, non déployé**. Ne pas
+  revendiquer de correction de production tant qu'un déploiement et une
+  vraie reprise de livraison réussie n'ont pas été observés.
+* **Période :** mission « KADI V1 OWNER CANARY A — CONFIRM_GENERATION
+  FAILURE DIAGNOSIS » (diagnostic en lecture seule, 2026-08-06T19:03–19:08Z)
+  suivie de « KADI V1 — DELIVERY RETRY AND UNIQUE FINAL FILENAMES R0 »
+  (correctif).
+* **Symptôme confirmé :** le tout premier document CANARY généré
+  directement par le fondateur (FACTURE, 10 000 FCFA, taxe 18 %) a
+  intégralement réussi sa navigation `DOCUMENT_OPTIONS` → `SAVE_OPTIONS` →
+  `DOCUMENT_REVIEW` → `DOCUMENT_PREVIEW` → `GENERATION_CONFIRMATION`,
+  confirmé directement par les logs Render (séquence complète
+  `KADI_V1_PRESENTER`/`KADI_V1_WEBHOOK_DECISION`, aucun rejet). Le document
+  a atteint `START_GENERATION` → rendu privé → capture du crédit (une
+  seule fois) → promotion du fichier final → `MARK_GENERATED`, avec
+  identité complète (`issued_at`, `document_number` bien formés). **La
+  livraison WhatsApp du PDF a ensuite échoué** avec
+  `DELIVERY_DESTINATION_MISMATCH`, laissant le document en
+  `RECOVERABLE_FAILURE` (`code: DELIVERY_FAILED`,
+  `resume_state: GENERATED`) — crédit capturé, PDF prêt, jamais reçu par
+  l'utilisateur.
+* **Cause racine confirmée (déclencheur exact) :** le fournisseur de
+  livraison WhatsApp (`kadiV1ProductionInfrastructure.js`) relit
+  `owner_wa_id` en base au moment de la livraison et compare son hachage à
+  la référence de destination enregistrée sur la tentative de livraison. Un
+  recalcul indépendant, effectué après coup avec le même `owner_wa_id`,
+  produit un hachage **identique** à la référence stockée — ce qui exclut
+  une incohérence de données persistante (mauvais numéro stocké, document
+  associé au mauvais propriétaire). L'explication la mieux étayée par les
+  preuves disponibles est un échec transitoire de la lecture de
+  vérification elle-même (réseau/Supabase), que le code traitait alors
+  sous le même code d'erreur qu'une incohérence confirmée — voir le point
+  suivant.
+* **Défaut de granularité confirmé :** `DELIVERY_DESTINATION_MISMATCH`
+  recouvrait indistinctement trois causes différentes dans
+  `kadiV1ProductionInfrastructure.js`'s `deliverDocument` : une erreur de
+  lecture Supabase, un `owner_wa_id` absent/invalide après lecture, et une
+  divergence de hachage réellement confirmée. Impossible, après coup, de
+  distinguer laquelle s'était produite. **Corrigé :** les deux premiers cas
+  retournent désormais `DELIVERY_DESTINATION_LOOKUP_FAILED` ; seule une
+  lecture réussie avec un hachage réellement différent retourne
+  `DELIVERY_DESTINATION_MISMATCH`. Les deux échouent fermé de façon
+  identique (aucune livraison n'a lieu dans un cas comme dans l'autre) ;
+  seul le code enregistré pour le diagnostic diffère.
+* **Défaut confirmé, préexistant à cette mission — `retryDelivery`
+  implémenté mais inatteignable :** `kadiV1GenerationLifecycleService.js`
+  exposait déjà une fonction `retryDelivery`, et
+  `kadiV1HistoryService.js`'s `actionsFor` calculait déjà un libellé
+  d'action `RETRY_DELIVERY` pour exactement cet état (fichier final présent
+  + livraison `RECOVERABLE_FAILURE`) — mais `RETRY_DELIVERY` n'apparaissait
+  nulle part ailleurs dans le code de production : aucune action Flow,
+  aucun routage de commande, aucune correspondance de présentateur ne
+  consommait ce libellé. Un utilisateur réel n'avait strictement aucun
+  moyen de déclencher cette fonction — recherche exhaustive confirmée avant
+  correction, exactement le même schéma « implémenté mais inatteignable »
+  déjà rencontré et corrigé pour `retryFailedGeneration` avant la fusion de
+  la PR #12 (voir fiche P), mais jamais étendu au cas de la livraison.
+* **Correctif retenu :**
+  - `kadiV1GenerationLifecycleService.js`'s `retryDelivery` réécrit :
+    n'accepte plus que `documentId`/`ownerWaId`/`idempotencyKey` du
+    demandeur (jamais de `quoteId`, `deliveryAttemptId`, référence de
+    destination ou montant) ; résout tout côté serveur (devis via
+    `document.generation_quote.quote_id`, tentative de génération,
+    réservation, fichier final correspondant à la version active, tentative
+    de livraison via un nouveau
+    `findDeliveryAttemptByFinalFileId`) ; exige `status=RECOVERABLE_FAILURE`,
+    `recoverable_failure.code=DELIVERY_FAILED`,
+    `recoverable_failure.resume_state=GENERATED`, identité complète,
+    réservation `CAPTURED`, tentative `PROMOTED` — toutes les conditions
+    vérifiées avant toute mutation. Une livraison déjà réussie (rejeu) est
+    traitée de façon idempotente et sûre, indépendamment de l'état courant
+    du document.
+  - Exposé par **un bouton WhatsApp interactif simple** (« Réenvoyer le
+    PDF », `sendButtons` déjà existant dans `whatsappApi.js`) — aucun
+    nouveau Flow Meta créé ni publié, conformément à la préférence de la
+    mission. Intercepté dans `kadiV1WebhookRuntime.js` **avant** la
+    vérification `isNfmReply` et avant le routage `MENU_ACTION` général,
+    donc totalement découplé de `kadiV1ConversationOrchestrator.js` (le
+    système conversationnel, non activé) et de `kadiV1FlowReplyRuntime.js`
+    (qui exige une session Flow qu'un bouton simple n'a jamais).
+  - Protection de concurrence au-delà de la file en mémoire :
+    `kadiV1DeliveryService.js`'s `execute` réclame désormais atomiquement la
+    tentative de livraison (`PENDING`/`RECOVERABLE_FAILURE` → `IN_PROGRESS`,
+    mise à jour conditionnelle avec statut attendu) **avant** tout appel au
+    fournisseur — le perdant d'une course apprend l'échec de sa
+    réclamation sans jamais appeler le fournisseur une seconde fois, fermant
+    une fenêtre de double envoi réelle qui existait déjà dans le code avant
+    cette mission.
+* **Noms de fichiers finaux uniques :** `kadiV1FinalFilename.js` (nouveau,
+  fonction pure) remplace les noms génériques `facture.pdf`/`recu.pdf`
+  (écrasés à chaque nouveau document) par
+  `<type>_<document_number>.pdf` (`facture-proforma_...` pour les
+  proforma), recalculé de façon identique partout où il est utilisé
+  (livraison WhatsApp, reprise de livraison, projection
+  historique/téléchargement `kadiV1HistoryService.js`'s `safeFinalFile`) —
+  jamais stocké de façon redondante, donc jamais susceptible de diverger
+  entre les couches. Les documents déjà livrés avant ce correctif
+  conservent leur nom historique, non renommé rétroactivement.
+* **Commit ou migration :** aucune migration nécessaire (aucun nouveau
+  champ de base de données — le nom de fichier est calculé, jamais
+  stocké ; la concurrence de livraison utilise le mécanisme de révision
+  déjà existant sur `kadi_v1_delivery_attempts`). Code écrit sur la branche
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0`, non encore fusionné.
+* **Preuve de validation :** `tests/kadiV1FinalFilename.test.js` (matrice
+  complète des noms canoniques), `tests/kadiV1DeliveryProvider.test.js`
+  (distinction lookup-failed/mismatch, nom de fichier livré),
+  `tests/kadiV1DeliveryRetryRuntime.test.js`,
+  `tests/kadiV1DeliveryRetryEligibility.test.js` (chaque rejet
+  d'éligibilité, idempotence sur rejeu, concurrence réelle via
+  `Promise.all` prouvant une seule livraison effective, chemin de
+  production complet via le vrai `kadiV1WebhookRuntime.js`), plus les
+  suites existantes mises à jour pour la nouvelle exigence `sendButtons` du
+  présentateur et le nouveau port `deliveryRetryRuntime`
+  (`kadiV1GenerationLifecycle`, `kadiV1ReleaseRecoveryE2E`,
+  `kadiV1WebhookRuntime`, `kadiV1ProductionPresenter`,
+  `kadiV1ProductionComposition`, `kadiV1ProductionMediaResolver`,
+  `kadiV1ProductionBootstrap`, `kadiV1RuntimeAdapters`,
+  `kadiV1HistorySearch`, `kadiV1DraftExposureGuards`,
+  `kadiV1OnboardingProfileCompletion`, `kadiV1PreviewGeneration`). Suite
+  complète : 1219/1219, `git diff --check` propre.
+* **Prévention :** quand une fonction de reprise existe dans un service
+  métier, vérifier systématiquement qu'elle est **atteignable par une
+  action réelle** avant de la considérer comme un filet de sécurité — un
+  libellé d'action calculé dans une projection (ici `RETRY_DELIVERY` dans
+  `kadiV1HistoryService.js`) n'est qu'une donnée descriptive tant qu'aucun
+  routage réel ne la consomme. Quand un code d'erreur recouvre à la fois
+  « je n'ai pas pu vérifier » et « j'ai vérifié et c'est différent »,
+  scinder les deux : un incident réel a directement rendu cette ambiguïté
+  visible et coûteuse à diagnostiquer.
+* **Non inclus dans cette correction, planifié séparément :**
+  `GUIDED_ENTRY_BUTTON_NOT_IMPLEMENTED` — observé pendant ce même
+  diagnostic (envoyer « Créer une facture » ouvre une demande de texte
+  libre sans bouton de parcours guidé), sans lien avec l'échec de
+  livraison, non corrigé dans cette mission ; appartient à une future
+  mission hybride guidé/conversationnel.
+
+### Suite de revue finale : reprise depuis l'historique et sécurité de l'issue de livraison (2026-08-06)
+
+* **Statut : `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`** — même branche, un
+  second commit, toujours non fusionné, non déployé, migrations écrites
+  mais **non appliquées à distance**.
+* **Trois constats confirmés par la revue adversariale indépendante de la
+  R0 ci-dessus, tous corrigés dans ce suivi :**
+  1. **Le document CANARY réel du fondateur (`FA-20260806190633-A0EAC605`)
+     restait inatteignable même après la R0** : le libellé `RETRY_DELIVERY`
+     calculé par `kadiV1HistoryService.js` n'était consommé par aucun
+     présentateur/webhook en dehors du tout premier échec — rouvrir le
+     document depuis l'historique affichait encore le texte générique
+     « Le document est ouvert. ». **Corrigé :** `kadiV1ProductionPresenter.js`'s
+     `presentFlowReply` détecte désormais `action === "OPEN_DOCUMENT"` et,
+     quand `summary.actions` contient `RETRY_DELIVERY`, affiche le bon
+     bouton au lieu du texte générique.
+  2. **Une tentative de livraison peut rester bloquée en `IN_PROGRESS`
+     indéfiniment** si l'appel fournisseur a eu lieu (ou était sur le point
+     d'avoir lieu) mais que l'écriture de finalisation échoue ou que le
+     processus s'interrompt — prouvé de façon empirique par une sonde de
+     diagnostic locale, hors dépôt, avant tout correctif.
+  3. **Une expiration après un envoi WhatsApp potentiellement réussi**
+     pouvait mener à un renvoi externe incontrôlé, faute d'idempotence
+     côté fournisseur pour connaître l'issue réelle.
+* **Défaut de schéma supplémentaire découvert pendant le diagnostic en
+  lecture seule (avant tout correctif de code) :** la contrainte `check`
+  de `kadi_v1_delivery_attempts.status` (migration
+  `20260803022133_add_kadi_v1_generation_lifecycle.sql`) n'autorisait que
+  `'PENDING'`, `'DELIVERED'`, `'RECOVERABLE_FAILURE'` — **`'IN_PROGRESS'`
+  n'y figurait pas**, alors que le mécanisme de capture atomique de la R0
+  l'écrit déjà. Contre la base de test en mémoire cela passait silencieusement ;
+  contre la vraie base Postgres, chaque capture aurait échoué avec
+  `check_violation` (23514) avant même d'atteindre le fournisseur. Aucune
+  colonne d'horodatage de capture (`claimed_at`) n'existait non plus.
+  **Corrigé sans invention d'un minuteur en mémoire :** `claim()` dans
+  `kadiV1DeliveryService.js` réutilise désormais la colonne déjà existante
+  `last_attempt_at`, en l'écrivant au moment même de la capture (et non
+  plus seulement à la finalisation) — un horodatage réel, persisté,
+  utilisable par plusieurs instances et survivant à un redémarrage.
+* **Deux migrations forward-only écrites, non appliquées à distance,
+  autorisation séparée requise avant tout déploiement de cette PR :**
+  - `supabase/migrations/20260806020000_add_kadi_v1_delivery_attempt_in_progress_status.sql`
+    — élargit la contrainte `status` pour autoriser `'IN_PROGRESS'`.
+  - `supabase/migrations/20260806030000_add_kadi_v1_delivery_outcome_to_history_bundle.sql`
+    — `create or replace function public.kadi_v1_owned_history_bundle` pour
+    exposer `last_error_code` dans l'objet `delivery` (déjà réservé
+    `service_role` uniquement, portée inchangée), nécessaire pour
+    distinguer un échec confirmé d'une issue inconnue depuis l'historique.
+* **Modèle à trois issues introduit, sans nouvelle valeur d'énumération
+  `status` pour la partie « issue inconnue »** : `CONFIRMED_FAILURE` et
+  `OUTCOME_UNKNOWN` réutilisent tous deux `status = 'RECOVERABLE_FAILURE'`
+  côté base ; seul `last_error_code = 'DELIVERY_OUTCOME_UNKNOWN'` distingue
+  la seconde — évite d'élargir encore la contrainte `status`. Le
+  fournisseur WhatsApp actuel (`kadiV1ProductionInfrastructure.js`'s
+  `getDeliveryStatus`) ne renvoie honnêtement que `UNKNOWN` en toute
+  circonstance : aucune preuve de succès/échec n'est aujourd'hui
+  disponible après coup. La réconciliation consulte quand même ce point de
+  vérité en premier (pour honorer sans changement de code une future
+  capacité réelle du fournisseur), mais ne conclut **jamais** à un succès
+  confirmé sans confirmation positive — en pratique, aujourd'hui, toute
+  reconciliation d'une capture expirée aboutit à `OUTCOME_UNKNOWN`, jamais
+  à un renvoi silencieux.
+* **Renvoi d'une issue inconnue : confirmation explicite à deux temps,
+  jamais automatique.** `kadiV1GenerationLifecycleService.js`'s
+  `runRetryDelivery` accepte désormais un paramètre `confirmed` : sur une
+  tentative `RECOVERABLE_FAILURE`/`DELIVERY_OUTCOME_UNKNOWN`, une première
+  pression sur le bouton renvoie
+  `DELIVERY_OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED` sans jamais appeler le
+  fournisseur ; seule une seconde pression, sur un bouton distinct
+  (`RESEND_UNKNOWN_DELIVERY:<id>`, jamais le même identifiant que
+  `RETRY_DELIVERY:<id>`), déclenche réellement l'envoi. `Annuler`
+  (`CANCEL_UNKNOWN_DELIVERY:<id>`) n'appelle jamais le runtime de reprise
+  de livraison — aucun état n'est modifié.
+* **Écritures de finalisation bornées et rejouables :**
+  `kadiV1DeliveryService.js`'s `execute()` retente désormais l'écriture de
+  finalisation (celle qui suit l'appel fournisseur) jusqu'à
+  `FINALIZE_MAX_ATTEMPTS` fois (horloge injectable, aucun `setTimeout` réel
+  dans les tests). Si toutes les tentatives échouent, la ligne reste
+  délibérément à `IN_PROGRESS` et la fonction retourne
+  `DELIVERY_FINALIZE_UNRESOLVED` — jamais un succès ou un échec confirmé
+  deviné. Seule la réconciliation de capture expirée pourra la résoudre
+  plus tard, et seulement vers `OUTCOME_UNKNOWN`.
+* **Limite résiduelle documentée, non corrigée dans cette mission :**
+  `deliverFinal` (le tout premier échec, pas la reprise) retourne toujours
+  littéralement `DELIVERY_RECOVERABLE_FAILURE` au webhook, sans distinguer
+  un échec confirmé d'une issue de finalisation non résolue. Une pression
+  immédiate sur « Réenvoyer le PDF » juste après ce premier échec peut donc
+  temporairement recevoir le message générique « réessayez dans un
+  instant » plutôt que l'offre à deux boutons, le temps que la capture
+  devienne éligible à réconciliation. Aucun risque de sécurité (jamais de
+  double envoi, jamais de perte de document) — seulement une offre
+  initiale moins précise dans cette fenêtre étroite.
+* **Commit ou migration :** deux migrations forward-only écrites (voir
+  ci-dessus), non appliquées à distance. Second commit sur la même branche
+  `fix/kadi-v1-delivery-retry-and-final-filenames-r0`.
+* **Preuve de validation :** nouveaux fichiers
+  `tests/kadiV1DeliveryStaleReconciliation.test.js` (réconciliation de
+  capture expirée, retries de finalisation, horodatage de capture),
+  extensions de `tests/kadiV1DeliveryRetryEligibility.test.js` (capture
+  expirée bout en bout via le vrai service, confirmation à deux temps,
+  épuisement des retries de finalisation, reprise réelle depuis
+  l'historique), `tests/kadiV1HistorySearch.test.js` (classification
+  `CONFIRMED_FAILURE`/`OUTCOME_UNKNOWN`/`IN_PROGRESS`, jamais le code brut
+  exposé), `tests/kadiV1ProductionPresenter.test.js` et
+  `tests/kadiV1WebhookRuntime.test.js` (nouveaux boutons, dispatch
+  `OPEN_DOCUMENT`).
+* **Défaut confirmé par la propre revue adversariale fraîche de cette
+  suite, corrigé avant commit :** deux angles du même problème structurel
+  ont été trouvés — (1) `finalizeWithRetries` dans
+  `kadiV1DeliveryService.js` ne distinguait pas « l'écriture a réellement
+  échoué » de « l'écriture a réellement abouti côté serveur mais
+  l'accusé de réception a été perdu » (panne réseau réelle, pas seulement
+  hypothétique) : comme toutes les tentatives de la même boucle
+  réutilisent le même `expectedStatus: "IN_PROGRESS"`, une réussite
+  silencieuse à la première tentative faisait échouer toutes les
+  suivantes sur ce même contrôle de concurrence, et la fonction retournait
+  à tort `DELIVERY_FINALIZE_UNRESOLVED` alors que la ligne était déjà
+  réellement réglée. **Corrigé :** après épuisement des tentatives,
+  `finalizeWithRetries` relit l'état réel de la ligne ; si elle a déjà
+  quitté `IN_PROGRESS`, c'est la véritable issue déjà réglée, jamais un
+  « non résolu » deviné à tort. (2) `finishAlreadyDelivered` dans
+  `kadiV1GenerationLifecycleService.js` ne savait guérir
+  `document.status` que depuis `RECOVERABLE_FAILURE` (via `RESUME` puis
+  `MARK_DELIVERED`), jamais depuis `GENERATED` — or un document reste
+  exactement à `GENERATED` si le tout premier appel de livraison plante
+  avant que `deliverFinal` n'ait pu enregistrer un échec, laissant la
+  tentative de livraison elle-même authentiquement `DELIVERED` mais le
+  document bloqué indéfiniment. **Corrigé :** `finishAlreadyDelivered`
+  guérit désormais aussi depuis `GENERATED` (transition `MARK_DELIVERED`
+  directe, sans `RESUME`, exactement comme le chemin normal de
+  `deliverFinal`). Nouveaux tests couvrant les deux cas dans
+  `tests/kadiV1DeliveryStaleReconciliation.test.js` (perte d'accusé de
+  réception, sur les deux branches succès/échec) et
+  `tests/kadiV1DeliveryRetryEligibility.test.js` (guérison depuis
+  `GENERATED` via un scénario de plantage simulé bout en bout). Aucun
+  risque de double envoi ni de double débit trouvé dans les deux cas —
+  uniquement une incohérence d'état permanente et silencieuse, dans un
+  déclencheur étroit mais réel.
+* **Prévention :** vérifier qu'un état intermédiaire ajouté côté
+  application (ici `IN_PROGRESS`) est réellement accepté par la contrainte
+  de base de données correspondante avant de le considérer opérationnel —
+  un test unitaire contre un dépôt en mémoire ne le garantit pas. Quand
+  l'issue réelle d'une opération externe ne peut pas être prouvée après
+  coup, ne jamais deviner : introduire une classification explicite «
+  inconnue » et exiger une confirmation humaine distincte avant tout effet
+  de bord supplémentaire. Pour une boucle de retry qui réutilise le même
+  `expectedStatus` à chaque tentative, prévoir explicitement le cas où une
+  tentative antérieure de la même boucle a réussi sans que l'appelant le
+  sache (relecture de l'état réel après épuisement, jamais un simple
+  abandon) ; et quand une fonction de guérison ne couvre qu'un seul état
+  de départ, vérifier explicitement tous les états réellement atteignables
+  à ce point du code, pas seulement le plus fréquent.
+
+### Migrations appliquées et derniers écarts LOW fermés (2026-08-07)
+
+* **Migrations appliquées et vérifiées à distance**, sous autorisation
+  explicite et séparée du fondateur, sur le projet Supabase
+  `cmhargmwkyskbobmkrcj` :
+  - `20260806020000_add_kadi_v1_delivery_attempt_in_progress_status` puis
+    `20260806030000_add_kadi_v1_delivery_outcome_to_history_bundle`,
+    appliquées dans cet ordre via un seul `supabase db push --linked`,
+    fenêtre `2026-08-07T00:04:03Z`–`2026-08-07T00:04:40Z`, les deux
+    confirmées en succès, sortie CLI `0`, aucun avertissement PostgreSQL.
+  - Vérifié en lecture seule avant et après application : la contrainte
+    `kadi_v1_delivery_attempts_status_check` autorise désormais exactement
+    `PENDING`/`IN_PROGRESS`/`DELIVERED`/`RECOVERABLE_FAILURE` ; la fonction
+    `kadi_v1_owned_history_bundle` conserve strictement la même signature,
+    le même propriétaire (`postgres`), les mêmes droits
+    (`REVOKE ALL ... FROM PUBLIC` / `GRANT ALL ... TO service_role`), et
+    n'a changé qu'une seule ligne (ajout de `last_error_code` dans l'objet
+    `delivery`). Compteur de lignes de `kadi_v1_delivery_attempts` par
+    statut identique avant/après (5 lignes : 4 `DELIVERED`,
+    1 `RECOVERABLE_FAILURE` — le document CANARY du fondateur) : aucune
+    donnée applicative modifiée par la migration elle-même.
+  - `supabase migration list --linked` post-application : les 27
+    migrations locales et distantes concordent exactement, aucune
+    migration en attente, aucune divergence.
+  - Le backend actuellement déployé (`ac01557b...`) reste inchangé et sain
+    (`/health` 200 avant et après) — cette mission n'a déployé aucun
+    nouveau code, seulement migré le schéma.
+  - **La migration de la base ne constitue pas une reprise de livraison** :
+    le document CANARY du fondateur (`FA-20260806190633-A0EAC605`) reste
+    `RECOVERABLE_FAILURE`, non récupéré, tant que la PR n'est ni fusionnée
+    ni déployée.
+* **Dernier écart LOW de la revue finale précédente fermé :** aucun test
+  n'exerçait auparavant la chaîne complète « recherche d'historique →
+  `OPEN_DOCUMENT` → `kadiV1HistoryService.js` → `kadiV1FlowCommandRuntime.js`
+  → `kadiV1FlowReplyRuntime.js` → `kadiV1ProductionPresenter.js` → bouton
+  webhook réel → `kadiV1DeliveryRetryRuntime.js` → adaptateur → `retryDelivery` »
+  à travers la vraie `kadiV1ProductionComposition.js` — seuls les liens
+  individuels étaient testés isolément. Nouveau fichier
+  `tests/kadiV1PR14ReleaseVerificationE2E.test.js` : construit une
+  composition de production réelle (session, historique, commande, reply,
+  présentateur, webhook, tous réels ; seules les frontières d'I/O externes
+  — API WhatsApp, fournisseur de livraison, moteur de rendu PDF — sont
+  remplacées), avec un `document_id`/horloge choisis pour reproduire
+  exactement le numéro du document CANARY du fondateur
+  (`FA-20260806190633-A0EAC605`, via la génération déterministe de
+  `kadiV1DocumentDomain.js`). Couvre le scénario d'échec confirmé (bouton
+  unique « Réenvoyer le PDF », zéro nouvelle réservation/capture/rendu/
+  artefact, même `final_file_id`, même numéro de document, nom de fichier
+  `facture_FA-20260806190633-A0EAC605.pdf` exact) et le scénario d'issue
+  inconnue (l'ouverture depuis l'historique n'appelle jamais le
+  fournisseur, offre à deux boutons, seule la confirmation explicite
+  atteint `retryDelivery` avec `confirmed:true`, l'annulation ne mute
+  rien). Le câblage réel s'est révélé correct, sans défaut détecté.

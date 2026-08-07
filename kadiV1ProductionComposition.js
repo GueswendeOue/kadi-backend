@@ -21,7 +21,13 @@ const REQUIRED_PORTS = Object.freeze({
     "presentConversation",
     "presentFlowReply",
     "presentRecoverableError",
+    "presentDeliveryFailureWithRetry",
+    "presentDeliveryOutcomeUnknownWithRetry",
+    "presentDeliveryRetryCancelled",
+    "presentDeliveryInProgress",
+    "presentDeliveryRetryOutcome",
   ]),
+  deliveryRetryRuntime: Object.freeze(["handle"]),
 });
 
 const CURRENT_PRODUCTION_CAPABILITIES = Object.freeze({
@@ -29,6 +35,7 @@ const CURRENT_PRODUCTION_CAPABILITIES = Object.freeze({
   flowReplyRuntime: false,
   mediaResolver: false,
   presenter: false,
+  deliveryRetryRuntime: false,
   persistentConversationSessionRepository: true,
 });
 
@@ -290,6 +297,7 @@ function createKadiV1ProductionComposition({
     flowReplyRuntime: resolvedComponents.flowReplyRuntime,
     mediaResolver: resolvedComponents.mediaResolver,
     presenter: resolvedComponents.presenter,
+    deliveryRetryRuntime: resolvedComponents.deliveryRetryRuntime,
     logger,
   });
 
@@ -311,6 +319,7 @@ function createKadiV1ProductionComposition({
       flowReplyRuntime: resolvedComponents.flowReplyRuntime,
       mediaResolver: resolvedComponents.mediaResolver,
       presenter: resolvedComponents.presenter,
+      deliveryRetryRuntime: resolvedComponents.deliveryRetryRuntime,
     }),
   });
 }

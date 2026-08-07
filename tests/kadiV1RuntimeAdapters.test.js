@@ -238,12 +238,52 @@ test("preview adapter persists, renders, counts and quotes in the required order
 
 test("generation adapter confirms only with immutable document version and quote — routed through confirmOrRetryGeneration, the single production entrypoint for both normal confirmation and render-failure recovery", async () => {
   let received;
-  const adapter = createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: { confirmOrRetryGeneration: async (command) => { received = command; return { ok: true, value: { delivered: true } }; } } });
+  const adapter = createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: {
+      confirmOrRetryGeneration: async (command) => { received = command; return { ok: true, value: { delivered: true } }; },
+      retryDelivery: async () => ({ ok: true, value: { delivered: true } }),
+    },
+  });
   const result = await adapter.confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 4, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1" });
   assert.equal(result.ok, true);
   assert.equal(received.documentVersion, 4);
   assert.equal(received.quoteId, "quote:1");
   assert.match(received.idempotencyKey, /^generation_confirm:/);
+});
+
+test("generation adapter's retryDelivery only forwards ownerWaId/documentId — never trusts any other client-supplied field", async () => {
+  let received;
+  const adapter = createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: {
+      confirmOrRetryGeneration: async () => ({ ok: true, value: {} }),
+      retryDelivery: async (command) => { received = command; return { ok: true, value: { document: { status: "DELIVERED" } } }; },
+    },
+  });
+  const result = await adapter.retryDelivery({
+    ownerWaId: OWNER, documentId: "document:1", idempotencyKey: "webhook:delivery:1",
+    quoteId: "quote:attacker-supplied", deliveryAttemptId: "delivery:attacker-supplied", amount: 0,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(Object.keys(received).sort(), ["confirmed", "documentId", "idempotencyKey", "ownerWaId"]);
+  assert.equal(received.confirmed, false);
+  assert.equal(received.ownerWaId, OWNER);
+  assert.equal(received.documentId, "document:1");
+  assert.match(received.idempotencyKey, /^delivery_retry:/);
+});
+
+test("generation adapter's retryDelivery rejects malformed owner/document input before ever reaching the lifecycle service", async () => {
+  let called = false;
+  const adapter = createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: {
+      confirmOrRetryGeneration: async () => ({ ok: true, value: {} }),
+      retryDelivery: async () => { called = true; return { ok: true, value: {} }; },
+    },
+  });
+  const badOwner = await adapter.retryDelivery({ ownerWaId: "not-a-number", documentId: "document:1", idempotencyKey: "k" });
+  const badDocument = await adapter.retryDelivery({ ownerWaId: OWNER, documentId: "", idempotencyKey: "k" });
+  assert.equal(badOwner.ok, false);
+  assert.equal(badDocument.ok, false);
+  assert.equal(called, false);
 });
 
 test("interpretation adapter maps the real brain contract without exposing providers", async () => {
