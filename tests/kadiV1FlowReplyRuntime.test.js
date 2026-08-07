@@ -382,6 +382,54 @@ test("oversized and excessively deep payloads fail closed", () => {
   assert.equal(tooDeep.error, "KADI_V1_FLOW_REPLY_PAYLOAD_TOO_DEEP");
 });
 
+// HISTORY-CONTRACT-001 (same class of defect as CLIENT-001/EDIT-CONTENT-001/
+// OPTIONS-001): kadi_history_search_v1.json is one combined form whose
+// single Footer always submits query/document_type/date_from/date_to/
+// document_id together, regardless of which action radio button (SEARCH/
+// OPEN_DOCUMENT) was chosen. Before this fix, SEARCH rejected the real
+// shape because of the extra document_id field, and OPEN_DOCUMENT rejected
+// it because of the extra query/document_type/date_from/date_to fields —
+// both real actions failed with KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN on every
+// genuine submission.
+
+test("HISTORY-CONTRACT-001: SEARCH accepts the real full combined-form shape, document_id included but irrelevant", () => {
+  const result = validateActionPayload("HISTORY_SEARCH", "SEARCH", {
+    query: "", document_type: "", date_from: "", date_to: "", document_id: "",
+  });
+  assert.equal(result.ok, true, result.error);
+});
+
+test("HISTORY-CONTRACT-001: OPEN_DOCUMENT accepts the real full combined-form shape, stale query/type/dates included but irrelevant", () => {
+  const result = validateActionPayload("HISTORY_SEARCH", "OPEN_DOCUMENT", {
+    query: "Moussa", document_type: "FACTURE", date_from: "2026-01-01", date_to: "2026-08-01", document_id: "doc:1",
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.document_id, "doc:1");
+});
+
+test("HISTORY_SEARCH still rejects a field outside the real Flow contract for either action", () => {
+  const search = validateActionPayload("HISTORY_SEARCH", "SEARCH", { query: "x", not_a_real_field: "y" });
+  assert.deepEqual(search, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  const open = validateActionPayload("HISTORY_SEARCH", "OPEN_DOCUMENT", { document_id: "doc:1", not_a_real_field: "y" });
+  assert.deepEqual(open, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+test("Flow/backend parity: submitting every field the real kadi_history_search_v1.json contract declares — exactly as Meta really submits a Flow form, blank fields included — is accepted for both real declared actions", () => {
+  const historySearchFlow = require("../flows/v1_draft/kadi_history_search_v1.json");
+  const screen = historySearchFlow.screens[0];
+  const footerPayload = screen.layout.children.find((child) => child.type === "Form")
+    .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+  const submittedFields = Object.keys(footerPayload.data);
+  assert.ok(submittedFields.includes("document_id"), "HISTORY_SEARCH must still declare document_id — this test must keep reproducing the real contract, not a hand-picked subset");
+  const declaredActionIds = screen.data.history_actions.__example__.map((entry) => entry.id);
+  assert.deepEqual(declaredActionIds.sort(), ["OPEN_DOCUMENT", "SEARCH"].sort());
+  for (const action of declaredActionIds) {
+    const realSubmission = Object.fromEntries(submittedFields.map((field) => [field, ""]));
+    const checked = validateActionPayload(screen.id, action, realSubmission);
+    assert.equal(checked.ok, true, `HISTORY_SEARCH's real full submission shape must be accepted for declared action "${action}" (got ${checked.error})`);
+  }
+});
+
 // --- SAVE_OPTIONS tax rate: dual-field transition window (percent + legacy basis points) ---
 
 test("old published Flow payload (tax_rate_basis_points only) is still accepted and persists unchanged", () => {
