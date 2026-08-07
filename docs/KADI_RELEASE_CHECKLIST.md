@@ -386,17 +386,35 @@ applicatif). Aucune mutation Meta requise.
 4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM trouvé
    (passe de simplification appliquée : code défensif non exercé par aucun
    appelant réel retiré de l'adaptateur d'historique).
-5. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
-6. **[EN ATTENTE]** Fusion dans `main`.
-7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-8. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
+5. **[FAIT]** Revue adversariale indépendante de la PR #18 — a signalé une
+   suite au défaut HISTORY-CONTRACT-001 (MEDIUM/bloquant de fusion) :
+   `date_to` transmis tel quel, une date calendaire brute (`"2026-04-01"`)
+   analysée comme minuit exact par les deux dépôts d'historique (mémoire et
+   RPC Supabase, vérifiée en lecture seule) — une recherche « Au : 1er
+   avril » excluait silencieusement tout document mis à jour plus tard ce
+   jour-là. Corrigé sur la même branche : `kadiV1HistoryService.js`'s
+   `normalizeFilters` étend désormais une valeur `to` au format
+   `YYYY-MM-DD` jusqu'à la fin de cette journée calendaire, seule frontière
+   de normalisation traversée par les deux dépôts ; fuseau Burkina Faso
+   (UTC+0 fixe) déjà documenté ailleurs, aucune politique inventée ; un
+   horodatage ISO complet explicite reste intégralement préservé. Aucune
+   mutation ni migration Supabase — voir fiche Y.1 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Tests
+   ciblés (115/115 sur les fichiers concernés) puis suite complète
+   (1367/1367), `git diff --check` propre. Aucun autre défaut HIGH/MEDIUM
+   trouvé sur le diff complet mis à jour.
+6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #18
+   mise à jour (post-`date_to`).
+7. **[EN ATTENTE]** Fusion dans `main`.
+8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+9. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
    l'historique via le Flow `HISTORY_SEARCH` réel, observée en conditions
-   réelles (validation téléphone), y compris un filtrage par date et le
-   parcours de reprise de livraison déjà construit (fiche R) toujours
-   atteignable depuis un document ouvert.
-9. **[EN ATTENTE]** T3 (`RECHARGE-CONTRACT-001`) — prochaine mission de
-   correction dédiée, non commencée.
-10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+   réelles (validation téléphone), y compris un filtrage par date incluant
+   réellement le jour de fin, et le parcours de reprise de livraison déjà
+   construit (fiche R) toujours atteignable depuis un document ouvert.
+10. **[EN ATTENTE]** T3 (`RECHARGE-CONTRACT-001`) — prochaine mission de
+    correction dédiée, non commencée.
+11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
 
 ## Déploiement Render

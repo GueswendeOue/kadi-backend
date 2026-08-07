@@ -508,6 +508,25 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
   complet, la preuve et le suivi requis (T3 encore à corriger,
   `FLOW-PARITY-GATE` global toujours un suivi de backlog distinct).
+* **Mise à jour (2026-08-07) : HISTORY-CONTRACT-001 suite (`date_to`)
+  corrigée avant fusion, même branche, PR #18 toujours
+  `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une revue adversariale
+  indépendante de la PR #18 a signalé un défaut MEDIUM/bloquant de fusion :
+  le vrai champ `date_to` du Flow soumet une date calendaire brute
+  (`"2026-04-01"`), analysée par les deux dépôts d'historique (mémoire et
+  RPC Supabase `kadi_v1_search_owned_documents`, vérifiée en lecture seule)
+  comme un horodatage exact à minuit — une recherche « Au : 1er avril »
+  excluait donc silencieusement tout document mis à jour plus tard dans la
+  même journée. **Corrigé :** `kadiV1HistoryService.js`'s `normalizeFilters`
+  étend désormais une valeur `to` au format `YYYY-MM-DD` jusqu'à la toute
+  fin de cette journée calendaire (`23:59:59.999Z`) avant de la transmettre
+  au dépôt — le fuseau horaire Burkina Faso (UTC+0 fixe, déjà la convention
+  documentée ailleurs dans le dépôt) est réutilisé, aucune nouvelle
+  politique inventée. Un horodatage ISO complet explicite reste
+  intégralement préservé, jamais réinterprété. **Aucune mutation ni
+  migration Supabase.** **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche
+  Y.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

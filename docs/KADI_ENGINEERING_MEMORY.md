@@ -2775,3 +2775,118 @@ construit chaque forme réelle séparément, que le champ pertinent est bien
 lu à l'endroit où l'appelant le place réellement — une condition qui
 vérifie le mauvais chemin ne produit ni erreur ni avertissement, elle
 échoue simplement en silence.
+
+### Y.1 — HISTORY-CONTRACT-001, suite : `date_to` excluait silencieusement le jour de fin d'une recherche par date
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-history-contract-r0`, PR #18, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #18 (mission
+  « KADI V1 — T2 HISTORY-CONTRACT-001 INDEPENDENT REVIEW FIX R1 »), constat
+  MEDIUM/bloquant de fusion.
+
+### Constat, reproduit avant tout correctif
+
+Le vrai champ Flow `date_to` (libellé « Au ») soumet une date calendaire
+brute (`"2026-04-01"`), jamais un horodatage complet. Les deux
+implémentations du dépôt d'historique comparent `to` comme une borne
+supérieure **inclusive** contre un vrai horodatage
+(`issued_at`/`updated_at`) avec `<=` :
+
+* Dépôt de référence en mémoire (`kadiV1HistoryRepository.js`) :
+  `new Date(document.issued_at || document.updated_at) > new Date(filters.to)` → exclu.
+* RPC Supabase en production, vérifiée en lecture seule dans
+  `supabase/migrations/20260803022258_add_kadi_v1_history_search.sql`,
+  jamais modifiée :
+  `coalesce(d.issued_at, d.updated_at) <= (p_filters->>'to')::timestamptz`.
+
+Une date brute analysée comme horodatage correspond exactement à minuit ce
+jour-là. **Conséquence : `date_to: "2026-04-01"` excluait silencieusement
+tout document du reste de cette journée** — reproduit directement avant
+correctif avec trois documents (31 mars 23h, 1er avril 10h, 2 avril 0h) et
+une recherche `from`/`to` = 1er avril/1er avril : résultat vide, alors que
+le document du 1er avril 10h aurait dû apparaître.
+
+### Sémantique canonique déterminée avant correction
+
+`from` ne nécessite **aucun** correctif : une date brute s'analyse déjà
+comme minuit ce jour-là, exactement la borne inférieure inclusive qu'une
+plage calendaire attend. Seul `to` doit être étendu à la toute fin de la
+même journée calendaire.
+
+**Fuseau horaire — aucune nouvelle politique inventée :** le Burkina Faso
+(Africa/Ouagadougou) est à UTC+0 fixe, sans heure d'été — déjà la
+convention produit documentée ailleurs dans le dépôt : `index.js`
+(« Burkina = UTC »), `kadiReengagementWorker.js` (« Burkina = UTC+0 »), et
+`issued_at_timezone: "Africa/Ouagadougou"` enregistré aux côtés
+d'horodatages UTC dans `kadiInvoiceFlowCompletion.js`/
+`kadiInvoiceFlowEndpoint.js`. Traiter une date calendaire brute comme un
+jour calendaire UTC réutilise cette convention déjà établie, sans en
+inventer une nouvelle.
+
+Une date déjà accompagnée d'une composante horaire (un horodatage ISO
+complet, déjà une partie existante du contrat du service — voir
+`tests/kadiV1HistorySearch.test.js`) reste **intégralement inchangée** :
+jamais réinterprétée comme une date calendaire.
+
+### Correctif — la plus petite correction sûre, aucune migration Supabase
+
+Une seule frontière de normalisation, dans `kadiV1HistoryService.js`'s
+`normalizeFilters` (le point unique par lequel passent les deux
+implémentations de dépôt) : une valeur `to` correspondant exactement au
+format `YYYY-MM-DD` est étendue vers `${to}T23:59:59.999Z` avant d'être
+transmise au dépôt. Le dépôt en mémoire n'a besoin d'aucune modification
+propre (il reçoit déjà la valeur étendue) ; le dépôt Supabase transmet la
+valeur telle quelle au RPC, qui la caste en `timestamptz` — un horodatage
+explicitement suffixé `Z` est interprété sans ambiguïté par PostgreSQL
+quel que soit le fuseau horaire de session, donc compatible avec le `<=`
+existant sans aucune modification SQL. **Aucune mutation ni migration
+Supabase effectuée ni requise.**
+
+La vérification de plage inversée (`from > to`) utilise désormais la
+valeur `to` **étendue** pour la comparaison — nécessaire pour qu'une plage
+sur un seul jour (`from === to`) ou un `from` explicite tardif dans la
+journée avec un `to` calendaire du même jour ne soit jamais rejetée à tort
+comme inversée.
+
+### Preuve
+
+* Reproduction directe avant correctif (script isolé contre
+  `kadiV1HistoryService.js`/`kadiV1HistoryRepository.js`, résultat vide),
+  confirmée corrigée après (le document du 1er avril 10h apparaît).
+* `tests/kadiV1HistorySearch.test.js` : nouveaux scénarios — plage sur un
+  seul jour calendaire (inclut le document du jour de fin, exclut le
+  lendemain) ; `from` seul ; `to` seul ; plage mars→avril déjà existante
+  toujours correcte avec le jour de fin désormais réellement inclusif ;
+  horodatage ISO complet explicite préservé exactement, jamais
+  réinterprété ; date invalide toujours rejetée après la normalisation ;
+  plage réellement inversée toujours rejetée, plage sur un seul jour
+  jamais confondue avec une plage inversée ; valeur transmise au RPC
+  Supabase vérifiée être l'horodatage de fin de journée étendu (lecture
+  seule, aucune mutation).
+* `tests/kadiV1HistorySearchPresentationE2E.test.js` : nouveau scénario de
+  composition de production réelle utilisant la vraie forme combinée à
+  cinq champs — recherche `date_from`/`date_to` = même jour calendaire,
+  document du jour de fin inclus, document du lendemain exclu.
+* Focused : 115/115 (fichiers concernés). Suite complète : 1367/1367.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucune mutation ni migration Supabase ; aucune mutation Meta ; recherche
+par texte/type de document inchangée et testée ; `OPEN_DOCUMENT`
+inchangé et testé ; isolation propriétaire inchangée et testée ; date
+invalide et plage réellement inversée toujours rejetées ; horodatage ISO
+complet explicite jamais réinterprété comme une date calendaire.
+
+### Prévention
+
+Quand un filtre de plage inclusif (`<=`) compare une date fournie par
+l'utilisateur sous forme calendaire (« Au : 1er avril ») à un horodatage
+réel, vérifier explicitement ce qu'une comparaison exacte de date brute
+signifie réellement — une date calendaire n'est jamais un instant précis,
+c'est une journée entière. Toujours normaliser à la frontière unique par
+laquelle passent toutes les implémentations concernées (ici le service,
+en amont des deux dépôts), jamais dans chaque implémentation séparément ;
+et toujours vérifier la convention de fuseau horaire déjà établie dans le
+dépôt avant d'en choisir une, plutôt que d'en inventer une nouvelle.
