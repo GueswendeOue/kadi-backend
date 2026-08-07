@@ -113,7 +113,16 @@ function createKadiV1FlowCommandRuntime({
       return call(recharge, "checkPayment", { ...base, paymentReference: data.payment_reference }, "KADI_V1_PAYMENT_CHECK_FAILED");
     }
     if (command.action === "CANCEL" && command.flowKey === "RECHARGE") {
-      return call(recharge, "cancel", base, "KADI_V1_RECHARGE_CANCEL_FAILED");
+      // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): the real
+      // RECHARGE Flow carries no recharge_session_id of its own — cancel()
+      // must be bound to the trusted server-side moment this exact Flow
+      // session was opened (sessionOpenedAt, set only by
+      // kadiV1FlowReplyRuntime.js from the session record, never
+      // client-supplied), so a stale or replayed CANCEL submission can
+      // never affect a recharge session created after that session was
+      // opened. See kadiV1ProductionInfrastructure.js's cancel().
+      if (!Number.isFinite(Date.parse(command.sessionOpenedAt || ""))) return fail("KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID");
+      return call(recharge, "cancel", { ...base, sessionOpenedAt: command.sessionOpenedAt }, "KADI_V1_RECHARGE_CANCEL_FAILED");
     }
 
     const document = validateDocumentContext(command.documentContext);

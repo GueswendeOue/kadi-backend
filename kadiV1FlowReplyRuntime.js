@@ -75,8 +75,24 @@ const ACTION_FIELDS = Object.freeze({
   PREPARE_PDF: Object.freeze([]),
   SAVE_FOR_LATER: Object.freeze([]),
   CONFIRM_GENERATION: Object.freeze(["quote_id"]),
-  SELECT_PACK: Object.freeze(["pack_id"]),
-  CHECK_PAYMENT: Object.freeze(["payment_reference"]),
+  // RECHARGE-CONTRACT-001: kadi_recharge_v1.json is one combined form whose
+  // single Footer always submits pack_id/payment_reference together,
+  // regardless of which action radio button (SELECT_PACK/CHECK_PAYMENT/
+  // CANCEL) was chosen (Meta submits every declared form field on every
+  // submission). payment_reference is meaningless for SELECT_PACK;
+  // pack_id is meaningless for CHECK_PAYMENT — both accepted here so
+  // neither real submission is rejected outright. Both are already
+  // correctly ignored downstream: kadiV1FlowCommandRuntime.js's
+  // SELECT_PACK mapping reads only data.pack_id, its CHECK_PAYMENT mapping
+  // reads only data.payment_reference, and its RECHARGE/CANCEL mapping
+  // passes no data at all to the recharge runtime. SELECT_PACK/
+  // CHECK_PAYMENT are declared only for RECHARGE in FLOW_ACTIONS, so
+  // widening them globally here carries no cross-Flow risk — unlike
+  // CANCEL (see FLOW_ACTION_FIELD_OVERRIDES below), which is shared with
+  // DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION and must stay
+  // untouched for those.
+  SELECT_PACK: Object.freeze(["pack_id", "payment_reference"]),
+  CHECK_PAYMENT: Object.freeze(["pack_id", "payment_reference"]),
   // HISTORY-CONTRACT-001: kadi_history_search_v1.json is one combined form
   // whose single Footer always submits query/document_type/date_from/
   // date_to/document_id together, regardless of which action radio button
@@ -100,6 +116,31 @@ const ACTION_FIELDS = Object.freeze({
   // documentBase, never data) — accepted here so neither origin's real
   // payload is rejected.
   FINISH_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
+});
+
+// RECHARGE-CONTRACT-001: CANCEL is a single action name shared globally by
+// DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION/RECHARGE, and
+// ACTION_FIELDS.CANCEL ([]) must stay correct for all of them — those
+// other three Flows' real JSON contracts submit no data at all (or, for
+// GENERATION_CONFIRMATION, a separate combined-form defect of its own,
+// deliberately left untouched here — see docs/KADI_ENGINEERING_MEMORY.md,
+// recorded for a later T4). Only the real RECHARGE Flow's single combined
+// form also submits pack_id/payment_reference alongside CANCEL (Meta
+// submits every declared field on every submission, regardless of which
+// action was chosen). Blindly widening the global ACTION_FIELDS.CANCEL
+// entry would let every other Flow's CANCEL silently start accepting
+// recharge-only fields too — never validated as intentional, and
+// reopening exactly the failure mode this whole defect class is about.
+// This override is checked first and, when present for the given
+// (flowKey, action) pair, replaces the global ACTION_FIELDS lookup
+// entirely — every other Flow/action combination is completely
+// unaffected. kadiV1FlowCommandRuntime.js's RECHARGE/CANCEL mapping
+// already passes no data to the recharge runtime, so both fields are
+// safely ignored downstream once accepted here.
+const FLOW_ACTION_FIELD_OVERRIDES = Object.freeze({
+  RECHARGE: Object.freeze({
+    CANCEL: Object.freeze(["pack_id", "payment_reference"]),
+  }),
 });
 
 const FORBIDDEN_AUTHORITY_FIELDS = new Set([
@@ -366,7 +407,7 @@ function validateActionPayload(flowKey, action, data) {
   if (encoded > MAX_PAYLOAD_BYTES) return fail("KADI_V1_FLOW_REPLY_PAYLOAD_TOO_LARGE");
   const inspected = inspectPayload(data);
   if (!inspected.ok) return inspected;
-  const allowed = new Set(ACTION_FIELDS[action] || []);
+  const allowed = new Set(FLOW_ACTION_FIELD_OVERRIDES[flowKey]?.[action] || ACTION_FIELDS[action] || []);
   if (Object.keys(data).some((key) => !allowed.has(key))) return fail("KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN");
   if (action === "START") {
     if (typeof data.owner_name !== "string") return fail("KADI_V1_FLOW_REPLY_OWNER_NAME_REQUIRED");
@@ -449,6 +490,39 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
     if (!consumed?.ok) return consumed || fail("KADI_V1_FLOW_REPLY_SESSION_FAILED");
 
     const session = consumed.value;
+
+    // RECHARGE-CONTRACT-001 (R2 independent review, HIGH/P0): an exact
+    // duplicate reply must execute zero second business mutation.
+    // sessionOpenedAt (R1) prevents a stale/replayed CANCEL from ever
+    // affecting a recharge session created after this Flow was opened,
+    // but does not by itself make cancel() idempotent when MULTIPLE
+    // eligible active sessions already existed before the Flow was
+    // opened: cancel() always re-resolves "the newest remaining eligible
+    // session", so a replay after the first cancel already removed one
+    // session from that set would find and cancel a second, different one.
+    // consumed.duplicate === true here is the same authoritative,
+    // persisted signal (kadiV1ConversationSession.js's CONSUMED status +
+    // matching consumed_reply_key, safe across process restarts — never
+    // an in-memory flag) the presenter already relies on to suppress the
+    // user-visible reply; RECHARGE/CANCEL is the one action with no
+    // command-level idempotency key of its own, so it is the one place
+    // that signal must also prevent re-execution here. Scoped narrowly to
+    // (RECHARGE, CANCEL) only — every other Flow/action's existing
+    // duplicate-execution behavior (already covered by each command's own
+    // idempotency key, e.g. SELECT_PACK/CHECK_PAYMENT/document mutations)
+    // is completely unchanged; generalizing this further would need its
+    // own exhaustive proof across every existing Flow, which this
+    // targeted fix does not attempt.
+    if (consumed.duplicate === true && input.flowKey === "RECHARGE" && input.action === "CANCEL") {
+      return ok(Object.freeze({
+        handled: true,
+        action: input.action,
+        flow_key: input.flowKey,
+        duplicate: true,
+        result: null,
+      }));
+    }
+
     const executed = await commands.execute({
       ownerWaId: input.ownerWaId,
       flowKey: input.flowKey,
@@ -462,6 +536,14 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
         document_state: session.document_state,
         return_state: session.return_state,
       }) : null,
+      // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): the
+      // trusted server-side moment this session was opened — never a
+      // client-supplied value. Used only by RECHARGE/CANCEL
+      // (kadiV1FlowCommandRuntime.js) to bound which recharge session a
+      // stale or replayed Flow submission is allowed to affect, since
+      // Meta's RECHARGE form carries no session/recharge identifier of
+      // its own. See kadiV1ProductionInfrastructure.js's cancel().
+      sessionOpenedAt: session.opened_at,
     });
     if (!executed || typeof executed.ok !== "boolean") return fail("KADI_V1_FLOW_COMMAND_RESULT_INVALID");
     if (!executed.ok) return executed;

@@ -333,6 +333,93 @@ test("duplicate webhook reuses the same command idempotency key", async () => {
   assert.deepEqual(second.value.result, { item_id: "item:1" });
 });
 
+// RECHARGE-CONTRACT-001 (R2 independent review, HIGH/P0): an exact
+// duplicate of an already-consumed RECHARGE/CANCEL reply must execute
+// ZERO second business mutation — commands.execute() must never be
+// called at all on the replay, unlike the generic behavior proven above
+// (and reproven below for an unrelated Flow/action) where the command
+// layer's own idempotency key is what makes a second execution safe.
+test("R2: an exact duplicate RECHARGE/CANCEL reply never calls commands.execute a second time", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "RECHARGE", document: null });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const first = await runtime.handle(cancelReply);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.value.duplicate, false);
+  assert.equal(calls, 1);
+
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.ok, true, second.error);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(second.value.result, null, "the short-circuit never replays or invents an old business result");
+  assert.equal(calls, 1, "commands.execute must never be called a second time for an exact RECHARGE/CANCEL duplicate");
+});
+
+// The short-circuit above must be scoped to exactly (RECHARGE, CANCEL) —
+// every other Flow/action's existing generic duplicate-execution
+// behavior (relying on the command layer's own idempotency key, exactly
+// like the pre-existing "duplicate webhook reuses the same command
+// idempotency key" test above) must remain completely unaffected,
+// including CANCEL on every other Flow.
+test("R2: the RECHARGE/CANCEL short-circuit does not affect DOCUMENT_REVIEW/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "DOCUMENT_REVIEW" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "DOCUMENT_REVIEW", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "DOCUMENT_REVIEW/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
+test("R2: the RECHARGE/CANCEL short-circuit does not affect DOCUMENT_PREVIEW/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "DOCUMENT_PREVIEW" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "DOCUMENT_PREVIEW", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "DOCUMENT_PREVIEW/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
+// GENERATION_CONFIRMATION/CANCEL remains T4 (still rejected outright by
+// the field allowlist — see the GENERATION_CONFIRMATION-001 test above)
+// — this only proves the R2 short-circuit itself would not additionally
+// alter its (separately still-broken) duplicate behavior if that field
+// contract were ever fixed later, keeping this fix strictly scoped to
+// (RECHARGE, CANCEL) at the duplicate-execution level too.
+test("R2: the RECHARGE/CANCEL short-circuit does not affect GENERATION_CONFIRMATION/CANCEL — commands.execute is still called on an exact duplicate", async () => {
+  const sessions = makeSessionService();
+  await openSession(sessions, { expectedFlowKey: "GENERATION_CONFIRMATION" });
+  let calls = 0;
+  const runtime = createKadiV1FlowReplyRuntime({
+    sessionService: sessions,
+    commandRuntime: { execute: async () => { calls += 1; return { ok: true, value: { status: "CANCELLED" } }; } },
+  });
+  const cancelReply = reply({ flowKey: "GENERATION_CONFIRMATION", action: "CANCEL", data: {} });
+  await runtime.handle(cancelReply);
+  assert.equal(calls, 1);
+  const second = await runtime.handle(cancelReply);
+  assert.equal(second.value.duplicate, true);
+  assert.equal(calls, 2, "GENERATION_CONFIRMATION/CANCEL must keep the pre-existing generic behavior — commands.execute is still called on a duplicate");
+});
+
 test("recoverable command failure can be retried through consumed-session replay", async () => {
   const sessions = makeSessionService();
   await openSession(sessions);
@@ -581,5 +668,88 @@ test("Flow/backend parity: submitting every field the real kadi_document_options
     for (const field of submittedFields) realSubmission[field] = "";
     const checked = validateActionPayload(flow.screens[0].id, "SAVE_OPTIONS", realSubmission);
     assert.equal(checked.ok, true, `${flow.screens[0].id}'s real full submission shape must be accepted at this layer (got ${checked.error})`);
+  }
+});
+
+// RECHARGE-CONTRACT-001 (same class of defect as CLIENT-001/
+// EDIT-CONTENT-001/OPTIONS-001/HISTORY-CONTRACT-001): kadi_recharge_v1.json
+// is one combined form whose single Footer always submits pack_id/
+// payment_reference together, regardless of which action (SELECT_PACK/
+// CHECK_PAYMENT/CANCEL) was chosen. Before this fix, every real RECHARGE
+// submission of any action failed with KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN.
+
+test("RECHARGE-CONTRACT-001: SELECT_PACK accepts the real combined-form shape, a blank or stale payment_reference included but irrelevant", () => {
+  const blank = validateActionPayload("RECHARGE", "SELECT_PACK", { pack_id: "PACK_1000", payment_reference: "" });
+  assert.equal(blank.ok, true, blank.error);
+  const stale = validateActionPayload("RECHARGE", "SELECT_PACK", { pack_id: "PACK_1000", payment_reference: "REF-FROM-A-PRIOR-CHECK" });
+  assert.equal(stale.ok, true, stale.error);
+  assert.equal(stale.value.pack_id, "PACK_1000");
+});
+
+test("RECHARGE-CONTRACT-001: CHECK_PAYMENT accepts the real combined-form shape, a blank or stale pack_id included but irrelevant", () => {
+  const blank = validateActionPayload("RECHARGE", "CHECK_PAYMENT", { pack_id: "", payment_reference: "REF-1" });
+  assert.equal(blank.ok, true, blank.error);
+  const stale = validateActionPayload("RECHARGE", "CHECK_PAYMENT", { pack_id: "PACK_2000", payment_reference: "REF-1" });
+  assert.equal(stale.ok, true, stale.error);
+  assert.equal(stale.value.payment_reference, "REF-1");
+});
+
+test("RECHARGE-CONTRACT-001: RECHARGE/CANCEL accepts the real combined-form shape, both incidental fields included", () => {
+  const result = validateActionPayload("RECHARGE", "CANCEL", { pack_id: "PACK_1000", payment_reference: "REF-1" });
+  assert.equal(result.ok, true, result.error);
+  const blank = validateActionPayload("RECHARGE", "CANCEL", { pack_id: "", payment_reference: "" });
+  assert.equal(blank.ok, true, blank.error);
+});
+
+test("RECHARGE-CONTRACT-001: an unrelated field outside the real Flow contract is still rejected for every RECHARGE action, and a client-supplied credits/amount field is fail-closed as a forbidden authority field", () => {
+  assert.deepEqual(validateActionPayload("RECHARGE", "SELECT_PACK", { pack_id: "PACK_1000", credits: 999 }), { ok: false, error: "KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN" });
+  assert.deepEqual(validateActionPayload("RECHARGE", "SELECT_PACK", { pack_id: "PACK_1000", amount: 1 }), { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  assert.deepEqual(validateActionPayload("RECHARGE", "CHECK_PAYMENT", { payment_reference: "REF-1", not_a_real_field: "x" }), { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+  assert.deepEqual(validateActionPayload("RECHARGE", "CANCEL", { pack_id: "", payment_reference: "", not_a_real_field: "x" }), { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+// Flow-aware CANCEL isolation: CANCEL is one action name shared globally by
+// DOCUMENT_REVIEW/DOCUMENT_PREVIEW/GENERATION_CONFIRMATION/RECHARGE. The
+// RECHARGE-only override that accepts pack_id/payment_reference for
+// RECHARGE/CANCEL must never leak into any other Flow's CANCEL.
+test("RECHARGE-CONTRACT-001: the RECHARGE/CANCEL field override never leaks into unrelated Flows' own CANCEL action", () => {
+  const reviewEmpty = validateActionPayload("DOCUMENT_REVIEW", "CANCEL", {});
+  assert.equal(reviewEmpty.ok, true, reviewEmpty.error);
+  const reviewWithRechargeFields = validateActionPayload("DOCUMENT_REVIEW", "CANCEL", { pack_id: "PACK_1000", payment_reference: "REF-1" });
+  assert.deepEqual(reviewWithRechargeFields, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+
+  const previewEmpty = validateActionPayload("DOCUMENT_PREVIEW", "CANCEL", {});
+  assert.equal(previewEmpty.ok, true, previewEmpty.error);
+  const previewWithRechargeFields = validateActionPayload("DOCUMENT_PREVIEW", "CANCEL", { pack_id: "PACK_1000", payment_reference: "REF-1" });
+  assert.deepEqual(previewWithRechargeFields, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+// GENERATION_CONFIRMATION-001 (T4 candidate, NOT fixed in this mission):
+// kadi_generation_confirmation_v1.json's single Footer always submits
+// quote_id, regardless of whether the chosen action is CONFIRM_GENERATION
+// or CANCEL — but ACTION_FIELDS.CANCEL is [], so a real
+// GENERATION_CONFIRMATION/CANCEL submission fails with
+// KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN today, same defect class as
+// RECHARGE-CONTRACT-001. Recorded here only to document current, still
+// broken behavior — deliberately left unfixed, per the explicit T3 scope
+// boundary (see docs/KADI_ENGINEERING_MEMORY.md for the T4 backlog entry).
+test("GENERATION_CONFIRMATION-001 (recorded, not fixed in T3): the real GENERATION_CONFIRMATION/CANCEL submission still fails — left broken on purpose, out of T3 scope", () => {
+  const result = validateActionPayload("GENERATION_CONFIRMATION", "CANCEL", { quote_id: "quote:1" });
+  assert.deepEqual(result, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+test("Flow/backend parity: submitting every field the real kadi_recharge_v1.json contract declares — exactly as Meta really submits a Flow form, blank fields included — is accepted for all three real declared actions", () => {
+  const rechargeFlow = require("../flows/v1_draft/kadi_recharge_v1.json");
+  const screen = rechargeFlow.screens[0];
+  const footerPayload = screen.layout.children.find((child) => child.type === "Form")
+    .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+  const submittedFields = Object.keys(footerPayload.data);
+  assert.ok(submittedFields.includes("pack_id") && submittedFields.includes("payment_reference"), "kadi_recharge_v1.json must still declare pack_id and payment_reference — this test must keep reproducing the real contract, not a hand-picked subset");
+  const declaredActionIds = screen.data.recharge_actions.__example__.map((entry) => entry.id);
+  assert.deepEqual(declaredActionIds.sort(), ["CANCEL", "CHECK_PAYMENT", "SELECT_PACK"].sort());
+  for (const action of declaredActionIds) {
+    const realSubmission = Object.fromEntries(submittedFields.map((field) => [field, ""]));
+    const checked = validateActionPayload(screen.id, action, realSubmission);
+    assert.equal(checked.ok, true, `RECHARGE's real full submission shape must be accepted for declared action "${action}" (got ${checked.error})`);
   }
 });

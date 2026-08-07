@@ -2890,3 +2890,641 @@ laquelle passent toutes les implémentations concernées (ici le service,
 en amont des deux dépôts), jamais dans chaque implémentation séparément ;
 et toujours vérifier la convention de fuseau horaire déjà établie dans le
 dépôt avant d'en choisir une, plutôt que d'en inventer une nouvelle.
+
+## Z. RECHARGE-CONTRACT-001 — corrigé : le contrat de sélection de pack/vérification de paiement/annulation n'acceptait pas la vraie forme combinée du Flow `RECHARGE`
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-recharge-contract-r0`, créée depuis `main` au commit
+  `07ea815ce016ac4a034498e436db391486b420ff` (PR #18 fusionnée). PR
+  distincte, brouillon, non fusionnée, non déployée.
+* **Origine :** item T3 du backlog produit par l'audit final « FINAL
+  ROADMAP GAP AUDIT R0 » (voir fiche X pour T1/`OPTIONS-001`, fiche Y pour
+  T2/`HISTORY-CONTRACT-001`, tous deux déjà corrigés et fusionnés) :
+  `RECHARGE-CONTRACT-001`, même classe de défaut que `CLIENT-001`/
+  `EDIT-CONTENT-001`/`OPTIONS-001`/`HISTORY-CONTRACT-001`, confirmée cette
+  fois pour l'écran `RECHARGE`.
+
+### Constat, reproduit par exécution réelle
+
+`flows/v1_draft/kadi_recharge_v1.json` est un formulaire combiné unique :
+un seul groupe de boutons radio `action` (`SELECT_PACK`/`CHECK_PAYMENT`/
+`CANCEL`) et un unique pied de page qui soumet toujours ensemble `pack_id`
+et `payment_reference`, quelle que soit l'action choisie. Avant correctif,
+les trois actions réelles échouaient systématiquement avec
+`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN` — reproduit directement pour chacune.
+**Conséquence en production réelle : aucune sélection de pack, aucune
+vérification de paiement et aucune annulation de recharge ne pouvait
+jamais réussir via le vrai Flow Meta.**
+
+### Contrainte architecturale : `CANCEL` est une action globale partagée
+
+`ACTION_FIELDS.CANCEL` (`[]`) est une entrée **unique**, partagée par
+`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`, `GENERATION_CONFIRMATION` et
+`RECHARGE` — `validateActionPayload(flowKey, action, data)` ne consultait
+jusqu'ici que `action`, jamais `flowKey`, pour déterminer la liste blanche
+de champs. Élargir `ACTION_FIELDS.CANCEL` globalement aurait fait accepter
+silencieusement `pack_id`/`payment_reference` à `DOCUMENT_REVIEW`/
+`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION` — jamais validé comme
+intentionnel, et réouvrant exactement la classe de défaut visée par cette
+correction.
+
+**Correctif structurel minimal :** nouvelle table
+`FLOW_ACTION_FIELD_OVERRIDES`, consultée en premier dans
+`validateActionPayload` (`FLOW_ACTION_FIELD_OVERRIDES[flowKey]?.[action] || ACTION_FIELDS[action] || []`)
+— une seule entrée, `RECHARGE.CANCEL`, acceptant `pack_id`/
+`payment_reference`. Aucune autre paire (`flowKey`, `action`) n'est
+affectée. `SELECT_PACK`/`CHECK_PAYMENT` n'ont, eux, aucun risque
+inter-Flow (déclarés uniquement pour `RECHARGE` dans `FLOW_ACTIONS`) et
+sont élargis directement dans la table globale `ACTION_FIELDS`, comme pour
+`OPTIONS-001`/`HISTORY-CONTRACT-001`.
+
+### Traçage complet de la chaîne : aucun défaut de second niveau trouvé
+
+Contrairement à `OPTIONS-001`/`HISTORY-CONTRACT-001`, le traçage complet
+(Flow JSON → `validateActionPayload` → session → `FlowCommandRuntime` →
+`kadiV1ProductionInfrastructure.js`'s `createKadiV1RechargeRuntime` →
+`kadiV1RechargeService.js`/`kadiV1RechargeRepository.js`/fournisseur de
+paiement) n'a révélé **aucun** défaut masqué supplémentaire :
+
+* `kadiV1FlowCommandRuntime.js`'s `SELECT_PACK` ne lit jamais que
+  `data.pack_id` ; `CHECK_PAYMENT` ne lit jamais que
+  `data.payment_reference` ; `RECHARGE`/`CANCEL` ne transmet aucune
+  donnée du tout à l'exécution recharge — les trois ignoraient déjà
+  correctement les champs non pertinents avant ce correctif.
+* `selectPack()` résout le pack exclusivement depuis le catalogue
+  serveur ; `createRechargeSession` rejette explicitement toute
+  soumission contenant `amount`/`currency`/`credits`.
+* `checkPayment()` vérifie déjà `resolved.value.owner_wa_id !== ownerWaId`
+  avant tout accès — isolation propriétaire déjà correcte.
+* `cancel()` dérive déjà exclusivement `ownerWaId` du contexte
+  authentifié (jamais un identifiant de session/paiement fourni par le
+  client) et ne prend même pas `pack_id`/`payment_reference` en
+  paramètre.
+
+Le seul défaut réel était la couche `validateActionPayload` — corrigée
+ici, sans aucune autre modification de fichier de production.
+
+### Constat annexe enregistré, non corrigé (T4)
+
+`kadi_generation_confirmation_v1.json` est **également** un formulaire
+combiné : son unique pied de page soumet toujours `quote_id`, y compris
+pour `CANCEL` — mais `ACTION_FIELDS.CANCEL` reste `[]`, donc une vraie
+soumission `GENERATION_CONFIRMATION`/`CANCEL` échoue encore aujourd'hui
+avec `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`, même classe de défaut.
+**Volontairement non corrigé dans cette mission** (hors périmètre T3
+explicite) — reproduit et consigné par un test dédié qui prouve que ce
+défaut reste inchangé, prêt pour un futur T4.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : reproduction directe des trois
+  échecs `FIELD_FORBIDDEN` ; acceptation avec champ non pertinent vide ou
+  obsolète pour chaque action ; champ inconnu toujours rejeté ; un champ
+  d'autorité financière (`credits`) toujours rejeté
+  (`KADI_V1_FLOW_REPLY_AUTHORITY_FIELD_FORBIDDEN`) ; isolation flow-aware
+  de `CANCEL` prouvée explicitement sur `DOCUMENT_REVIEW` et
+  `DOCUMENT_PREVIEW` (acceptent toujours `{}`, rejettent toujours
+  `pack_id`/`payment_reference`) ; défaut `GENERATION_CONFIRMATION`
+  consigné, non corrigé ; test de parité qui dérive la vraie forme
+  combinée et les trois actions déclarées directement depuis
+  `kadi_recharge_v1.json`.
+* `tests/kadiV1RechargeContractE2E.test.js` (nouveau) : composition de
+  production réelle complète — vrai `createKadiV1RechargeRuntime`
+  (`kadiV1ProductionInfrastructure.js`), vrai `kadiV1RechargeService.js`,
+  vrai dépôt recharge en mémoire, fournisseur de paiement factice
+  (aucun appel réseau réel, aucune mutation Supabase — un faux client
+  Supabase minimal implémente uniquement la requête brute en lecture que
+  `cancel()` émet, synchronisée avec le vrai dépôt en mémoire). Treize
+  scénarios couvrant les seize exigences de la mission : `SELECT_PACK`
+  avec forme combinée réelle (`payment_reference` vide ou obsolète),
+  pack exact du catalogue sélectionné, aucune donnée client injectée
+  (montant/devise/crédits) ; `pack_id` vide échoue proprement ; rejeu
+  `SELECT_PACK` idempotent (session et paiement créés au plus une fois) ;
+  `CHECK_PAYMENT` avec `pack_id` obsolète ignoré, référence vide échoue
+  proprement, isolation propriétaire stricte, rejeu sans double crédit ;
+  `CANCEL` avec les deux champs obsolètes ignorés, aucun changement de
+  crédit ; champ inconnu rejeté ; `DOCUMENT_REVIEW`/`CANCEL` toujours
+  isolé via la chaîne complète ; aucun port document/aperçu/génération
+  jamais touché (preuve structurelle).
+* Focused : 226/226. Suite complète : 1387/1387. `git diff --check` :
+  propre.
+
+### Constat annexe sur le rejeu de `CANCEL`
+
+Contrairement à `SELECT_PACK` (création de session par clé
+d'idempotence) et `CHECK_PAYMENT` (crédit confirmé par empreinte
+d'événement, également par clé d'idempotence), le vrai chemin
+`RECHARGE`/`CANCEL` ne porte aucune clé d'idempotence propre — il
+re-résout à chaque fois « la session `CREATED`/`PAYMENT_PENDING` la plus
+récente du propriétaire ». **Comportement préexistant, non modifié par ce
+correctif** (`cancel()` lui-même n'a subi aucune modification) : un rejeu
+exact échoue proprement (`RECHARGE_SESSION_NOT_FOUND`, plus rien à
+annuler) plutôt que de silencieusement réussir une seconde fois ou de
+corrompre l'état — sûr dans les faits, mais pas signalé `duplicate: true`
+par la couche session. Documenté ici, non traité comme un défaut de cette
+mission (le `RECHARGE-EXACTLY-ONCE-GATE` dédié reste une tâche séparée).
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté pour aucune des trois
+actions (testé explicitement) ; aucun champ financier fourni par le
+client (`amount`/`currency`/`credits`) n'est jamais accepté ; le pack
+sélectionné provient exclusivement du catalogue serveur ; l'isolation
+propriétaire de `CHECK_PAYMENT` et `CANCEL` reste inchangée et testée à
+travers la chaîne complète ; le remplacement flow-aware de `CANCEL` ne
+fuit vers aucun autre Flow (testé explicitement pour
+`DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`) ; aucune génération, aucun rendu,
+aucune mutation de document ne se produit lors d'une sélection, vérification
+ou annulation de recharge (preuve structurelle) ; aucun prix, aucun
+nombre de crédits, aucune version de tarification, aucun calcul de
+portefeuille modifié. Aucune migration Supabase requise ; aucune
+mutation Meta requise ; aucun appel réseau réel vers Orange Money ou tout
+autre fournisseur.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* `GENERATION_CONFIRMATION`/`CANCEL` (T4) — même classe de défaut,
+  reproduit et consigné, non corrigé.
+* Le `FLOW-PARITY-GATE` global (fiche X) reste un suivi de backlog
+  distinct.
+* Le `RECHARGE-EXACTLY-ONCE-GATE` dédié (durcissement financier
+  exactement-une-fois de bout en bout, au-delà de ce que ce correctif de
+  contrat de champs prouve) reste une tâche séparée.
+* La tarification actuelle des packs (`legacy-v1`) est intentionnellement
+  laissée inchangée — la tâche produit « 200 FCFA/crédit » reste future
+  et hors périmètre.
+* La copie du présentateur pour `RECHARGE` (le Flow rouvert après
+  `SELECT_PACK` ne repeuple pas `pack_options`/`balance_summary`, contrairement
+  à `HISTORY_SEARCH`'s `history_options` — les instructions de paiement
+  elles-mêmes sont bien envoyées comme texte réel) est une question UX,
+  pas un défaut de contrat ou de sécurité ; consignée pour une future
+  tâche présentateur/recharge, non traitée ici.
+
+### Prévention
+
+Quand une action partagée par plusieurs Flows (ici `CANCEL`) doit
+accepter un contrat de champs différent pour un seul de ces Flows, ne
+jamais élargir la liste blanche globale de cette action — introduire une
+table de correspondance explicitement indexée par `(flowKey, action)`,
+consultée en priorité, qui ne modifie le comportement que pour la paire
+concernée. Et, comme confirmé ici positivement pour la première fois dans
+cette série : un traçage complet de la chaîne peut légitimement ne
+révéler aucun défaut de second niveau — le correctif de la liste blanche
+suffit alors, et il ne faut pas en chercher un là où il n'y en a pas.
+
+### Z.1 — RECHARGE-CONTRACT-001, suite : `CANCEL` pouvait annuler une recharge appartenant à un contexte Flow différent (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R1 »),
+  constat HIGH/P0, bloquant de fusion.
+
+### Constat, reproduit deux fois avant tout correctif
+
+`kadiV1FlowReplyRuntime.js`'s `handle()` appelle
+`commands.execute(...)` **sans condition**, même quand
+`sessions.consumeReply()` a déjà signalé `consumed.duplicate === true` — le
+présentateur supprime ensuite l'affichage à l'utilisateur, mais la
+commande métier s'exécute quand même une seconde fois. Pour
+`SELECT_PACK`/`CHECK_PAYMENT`, ceci était masqué par leur propre
+idempotence par clé plus bas dans la pile
+(`createRechargeSession`'s `findSessionByIdempotencyKey`,
+`confirmPaymentAndCredit`'s empreinte d'événement). `RECHARGE`/`CANCEL`
+n'avait **aucune** clé d'idempotence de ce type :
+`createKadiV1RechargeRuntime`'s `cancel({ownerWaId} = {})` ne
+déstructurait que `ownerWaId` — la `idempotencyKey` que
+`kadiV1FlowCommandRuntime.js` lui transmettait était silencieusement
+ignorée — et résolvait toujours à nouveau « la session `CREATED`/
+`PAYMENT_PENDING` la plus récente du propriétaire », sans aucune borne.
+Vérifié en lecture seule contre la base réelle : aucune contrainte
+unique n'impose une seule recharge active par propriétaire, et
+`kadi_v1_create_recharge_session` ne l'impose pas non plus — plusieurs
+sessions actives séquentielles sont un état de base valide.
+
+**Reproduction A (rejeu exact différé), prouvée dans la composition de
+production :** `SELECT_PACK` crée la recharge A → un message `CANCEL` C
+annule A avec succès → une nouvelle recharge B est créée pour le même
+propriétaire → le même message C exact est rejoué → la couche session
+identifie correctement le rejeu comme doublon, **mais la commande
+s'exécute quand même** et annule B, la recharge active la plus récente à
+ce moment, au lieu de A.
+
+**Reproduction B (Flow obsolète, première soumission réelle), également
+prouvée :** un Flow `RECHARGE` est ouvert (jamais encore soumis) → une
+recharge B plus récente est créée par un tout autre aller-retour → le
+Flow obsolète toujours valide est soumis pour la première fois avec
+`action=CANCEL` → **ce n'est pas un rejeu** (`duplicate: false`), pourtant
+B pouvait être annulée simplement parce qu'elle était la recharge active
+la plus récente au moment de l'annulation.
+
+### Contrat d'exécution de doublon (constat, non modifié dans ce correctif)
+
+Le signal `consumed.duplicate` de la couche session est déjà autoritaire
+et déjà utilisé pour supprimer l'affichage utilisateur
+(`kadiV1ProductionPresenter.js`'s `presentFlowReply` retourne
+immédiatement sans rien envoyer quand `result.duplicate === true`), mais
+`handle()` ne l'utilise **pas** pour empêcher une seconde exécution de la
+commande métier elle-même. Un raccourci générique dans `handle()` (ne
+jamais appeler `commands.execute(...)` quand `consumed.duplicate ===
+true`) a été envisagé comme le mécanisme préféré, mais explicitement
+**non retenu** ici : aucune preuve exhaustive n'a été établie qu'aucun
+Flow existant ne dépend d'une réexécution après un doublon confirmé par
+`consumeReply`, et introduire un tel changement générique sans cette
+preuve aurait été un risque non maîtrisé pour une mission dont le
+périmètre est `RECHARGE`. La correction ci-dessous est donc
+délibérément la plus petite solution durable, spécifique à `RECHARGE`.
+
+### Contrat de ciblage de `RECHARGE`/`CANCEL` — correctif
+
+Puisque le vrai Flow `RECHARGE` ne porte aucun `recharge_session_id`
+propre, `cancel()` doit nécessairement résoudre « quelle session » depuis
+un contexte plutôt qu'un identifiant explicite fourni par le client
+(jamais `pack_id`/`payment_reference` pour cela — déjà établi en R0).
+**Correctif :** `sessionOpenedAt` — l'instant serveur de confiance
+auquel cette session Flow précise a été ouverte, fourni uniquement par
+`kadiV1FlowReplyRuntime.js` depuis l'enregistrement de session déjà
+authentifié, jamais fourni par le client — borne désormais l'éligibilité
+au niveau de `cancel()` : seule une session de recharge créée à ou avant
+cet instant peut jamais être ciblée
+(`.lte("created_at", sessionOpenedAt)`, ajouté à la requête brute
+existante). Une annulation réellement courante ouvre toujours une
+session fraîche immédiatement avant sa soumission, donc cette borne
+n'exclut jamais une annulation réelle et actuelle — elle exclut
+uniquement les sessions de recharge qui n'existaient pas encore quand ce
+Flow précis a été ouvert. **Aucune nouvelle colonne Supabase requise** :
+`kadi_v1_conversation_sessions.opened_at` et
+`kadi_v1_recharge_sessions.created_at` existent déjà toutes les deux —
+aucune migration, aucune mutation Supabase.
+
+Plomberie : `kadiV1FlowReplyRuntime.js`'s `handle()` transmet désormais
+`sessionOpenedAt: session.opened_at` dans chaque commande (champ neuf,
+inoffensif pour toute action qui ne le lit pas — confirmé par régression
+complète) ; `kadiV1FlowCommandRuntime.js`'s branche `RECHARGE`/`CANCEL`
+valide sa présence (`KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID` sinon)
+et la transmet ; `kadiV1ProductionInfrastructure.js`'s `cancel()` la
+valide à nouveau et l'applique à la requête.
+
+### Sémantique du libellé produit — signalée, non modifiée
+
+Le bouton `CANCEL` du vrai Flow `RECHARGE` porte le libellé « Revenir
+plus tard » — qui suggère une pause reprenable. Le comportement réel
+(`cancelRechargeSession`) place la session en état terminal `CANCELLED` :
+`initiatePayment` exige `status === "CREATED"`, et
+`confirmPaymentEvent`'s vérification de correspondance exige
+`status === "PAYMENT_PENDING"` — une session `CANCELLED` ne peut donc
+plus jamais être créditée, même si l'utilisateur paie réellement après
+avoir appuyé sur ce bouton ; il faudrait recommencer une toute nouvelle
+sélection de pack. **Incohérence entre le libellé et le comportement
+signalée telle quelle, non modifiée dans cette mission** — décision
+produit à trancher séparément (soit un libellé plus honnête, soit un
+véritable état « en pause, reprenable »), hors périmètre de ce correctif
+de sécurité de contrat de champs.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : les deux reproductions
+  ci-dessus, prouvées d'abord contre le code non corrigé, puis remplacées
+  par leurs contreparties de régression fermée après correctif — rejeu
+  différé de C laisse B strictement inchangée (`PAYMENT_PENDING`, solde
+  inchangé), Flow obsolète échoue proprement
+  (`RECHARGE_SESSION_NOT_FOUND`) sans jamais toucher B ; nouveau scénario
+  prouvant qu'une annulation réellement courante continue de fonctionner
+  normalement (la borne ne bloque jamais un cas réel) ; nouveau scénario
+  prouvant que le présentateur n'envoie strictement rien pour une réponse
+  dupliquée ; `DOCUMENT_PREVIEW`/`CANCEL` ajouté à la preuve d'isolation
+  déjà existante pour `DOCUMENT_REVIEW`/`CANCEL`, à travers la chaîne
+  complète.
+* `tests/kadiV1FlowCommandRuntime.test.js` : nouveau scénario prouvant
+  qu'un `sessionOpenedAt` manquant ou invalide échoue explicitement
+  (`KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID`) sans jamais appeler
+  `cancelRecharge` — pas de repli silencieux vers l'ancien comportement
+  non borné.
+* Un correctif d'horloge de la suite de tests était nécessaire pour que
+  ces preuves soient significatives : l'horloge fixe précédemment
+  utilisée par la composition de test rendait tous les horodatages
+  identiques, masquant silencieusement toute borne temporelle — remplacée
+  par une horloge réellement croissante, partagée entre le service de
+  session et le service de recharge.
+* Focused : 240/240 (fichiers concernés). Suite complète : 1393/1393.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`sessionOpenedAt` provient exclusivement de l'enregistrement de session
+déjà authentifié et persisté côté serveur, jamais d'une valeur cliente ;
+aucune nouvelle table ni colonne ; la requête Supabase reste paramétrée
+(aucun risque d'injection) ; aucun autre appelant réel de `cancel()`
+n'existe dans le dépôt en dehors de `kadiV1FlowCommandRuntime.js`
+(vérifié) ; isolation propriétaire, rejet des champs inconnus,
+comportement `SELECT_PACK`/`CHECK_PAYMENT`, et non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé)
+tous confirmés inchangés par la suite complète. Aucune migration ni
+mutation Supabase, Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Le raccourci générique de doublon dans `kadiV1FlowReplyRuntime.js`'s
+  `handle()` reste une option architecturale plus large, non implémentée
+  ici faute de preuve exhaustive de son innocuité pour tous les Flows
+  existants — à évaluer séparément si un besoin similaire réapparaît
+  ailleurs.
+* Le `RECHARGE-EXACTLY-ONCE-GATE` dédié (déjà noté en fiche Z) reste une
+  tâche séparée.
+* Décision produit requise sur la sémantique de « Revenir plus tard »
+  (libellé vs état terminal `CANCELLED`) — signalée, non tranchée ici.
+
+### Prévention
+
+Quand une action métier doit résoudre implicitement « sur quelle entité
+agir » à partir du contexte plutôt que d'un identifiant explicite fourni
+par le client (parce que le vrai contrat Flow n'en porte aucun), vérifier
+systématiquement qu'une borne de fraîcheur/appartenance existe et est
+appliquée — sans quoi un rejeu différé ou un contexte obsolète peut cibler
+une entité totalement différente créée entre-temps. Le signal de doublon
+d'une couche ne suffit pas à lui seul : si la couche métier en dessous
+peut être réexécutée indépendamment de ce signal, elle doit se protéger
+elle-même. Et, quand une correction de sécurité candidate est générique
+(ici : court-circuiter toute commande dupliquée), préférer la solution la
+plus petite et la plus spécifique dont la sûreté est prouvée dans le
+périmètre de la mission, plutôt qu'un changement de comportement large
+non prouvé sur l'ensemble du système.
+
+### Z.2 — RECHARGE-CONTRACT-001, suite : `sessionOpenedAt` seul ne suffisait pas quand plusieurs recharges actives préexistaient (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R2 »),
+  constat HIGH/P0, bloquant de fusion. Le correctif R1 (`sessionOpenedAt`,
+  fiche Z.1) reste correct et inchangé.
+
+### Constat, reproduit avant tout correctif
+
+`sessionOpenedAt` (R1) empêche un `CANCEL` obsolète ou rejoué d'affecter
+une recharge créée **après** l'ouverture de cette session Flow, mais ne
+rend pas `cancel()` idempotent quand **plusieurs** sessions actives
+éligibles existaient déjà **avant** l'ouverture de la session Flow de
+`CANCEL`. Rien dans le code n'impose une seule recharge active par
+propriétaire : `createRechargeSession()` ne déduplique que par clé
+d'idempotence de la commande, et `SELECT_PACK` peut être appelé plusieurs
+fois de suite, créant A puis B, toutes deux `PAYMENT_PENDING`, avant
+qu'un `CANCEL` ne soit jamais soumis.
+
+**Reproduction, prouvée dans la composition de production :** A et B sont
+créées (toutes deux `PAYMENT_PENDING`) → la session Flow C de `CANCEL`
+n'est ouverte qu'ensuite → le premier `CANCEL` annule B (la plus récente
+éligible), A reste `PAYMENT_PENDING` — comportement R1 correct → le même
+message `CANCEL` exact est rejoué → `consumeReply()` identifie
+correctement le doublon, mais **avant le correctif R2**, `handle()`
+exécutait quand même la commande une seconde fois → la recherche se
+résout maintenant sur A (la nouvelle session éligible la plus récente
+puisque B est déjà `CANCELLED`) → A est annulée à tort elle aussi.
+`sessionOpenedAt` ne protège pas contre ce cas car A **et** B ont toutes
+deux été créées avant `C.opened_at`.
+
+### Contrat d'exécution de doublon — décision retenue en R2
+
+Le signal `consumed.duplicate` de `kadiV1ConversationSession.js`'s
+`consumeReply()` est déjà autoritaire et persistant : il ne devient `true`
+que lorsque la session est déjà `CONSUMED` **et** que
+`consumed_reply_key` correspond exactement à la clé d'idempotence
+soumise — un état enregistré en base, jamais un indicateur en mémoire de
+processus, donc valide après un redémarrage. `RECHARGE`/`CANCEL` reste la
+seule action sans clé d'idempotence de commande propre (voir fiche Z.1) ;
+c'est donc la seule où ce signal doit **aussi** empêcher une seconde
+exécution de la commande elle-même, pas seulement supprimer l'affichage.
+
+**Correctif retenu :** un court-circuit strictement borné à la paire
+`(RECHARGE, CANCEL)` dans `kadiV1FlowReplyRuntime.js`'s `handle()` :
+quand `consumed.duplicate === true` **et** `flowKey === "RECHARGE"` **et**
+`action === "CANCEL"`, `commands.execute(...)` n'est **jamais** appelé —
+un résultat `{handled:true, action, flow_key, duplicate:true, result:null}`
+est retourné directement, de la même forme que le chemin normal, donc
+déjà compatible avec `presentFlowReply` (qui court-circuite lui-même dès
+`result.duplicate === true`, avant de jamais lire `result.result`). Un
+raccourci générique pour toute commande dupliquée a été explicitement
+écarté (voir fiche Z.1) faute de preuve exhaustive de son innocuité pour
+les Flows existants ; ce correctif reste donc délibérément scindé et
+spécifique.
+
+`input.flowKey`/`input.action` sont déjà dignes de confiance à cet
+endroit : `validateReplyEnvelope` (appelée juste avant) a déjà vérifié
+`FLOW_ACTIONS[flowKey]?.includes(action)`, et `consumeReply` a déjà
+vérifié que la session chargée a bien `expected_flow_key === flowKey` —
+aucun risque d'usurpation.
+
+### Compromis de conception assumé, documenté
+
+`consumeReply()` marque la session `CONSUMED` **avant** que
+`commands.execute(...)` ne soit appelé, y compris quand ce premier appel
+échoue ensuite (ex. erreur transitoire Supabase). Conséquence assumée :
+un premier `CANCEL` réellement échoué, puis rejoué via un nouveau webhook
+identique, sera désormais lui aussi court-circuité comme doublon — la
+reprise automatique par rejeu de webhook n'est plus possible pour
+`RECHARGE`/`CANCEL` spécifiquement (elle reste inchangée pour toutes les
+autres actions, dont la reprise après échec transitoire reste couverte
+par le test préexistant « recoverable command failure can be retried
+through consumed-session replay »). C'est le compromis explicitement
+demandé par la mission R2 et jugé plus sûr pour une mutation financière
+qu'un rejeu automatique incertain : en cas d'échec réel, l'utilisateur
+doit rouvrir une nouvelle session Flow `RECHARGE` pour retenter
+l'annulation, plutôt que de dépendre d'un rejeu de webhook.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : Test A — deux sessions
+  actives A et B préexistant à l'ouverture de la session Flow, premier
+  `CANCEL` annule B, rejeu exact du même message laisse A **et** B
+  strictement inchangées (aucune seconde mutation) ; Test B — le même
+  scénario, mais après reconstruction complète de la pile runtime
+  (`FlowReplyRuntime`/`FlowCommandRuntime`/runtime recharge/présentateur/
+  composition) autour des **mêmes** dépôts déjà persistés
+  (session, recharge, index propriétaire, fournisseur de paiement),
+  simulant un redémarrage de processus — la protection survit parce
+  qu'elle dérive de l'état de session persisté, jamais d'un indicateur en
+  mémoire. Les deux scénarios R1 existants et le scénario d'annulation
+  réellement courante mis à jour pour refléter le court-circuit (la
+  réponse au rejeu devient désormais `accepted:true, duplicate:true` au
+  lieu d'un échec `RECHARGE_SESSION_NOT_FOUND`).
+* `tests/kadiV1FlowReplyRuntime.test.js` : test unitaire dédié prouvant
+  qu'un rejeu exact de `RECHARGE`/`CANCEL` n'appelle jamais
+  `commands.execute` une seconde fois ; trois tests dédiés prouvant que le
+  court-circuit ne s'applique **pas** à `DOCUMENT_REVIEW`/`CANCEL`,
+  `DOCUMENT_PREVIEW`/`CANCEL` ni `GENERATION_CONFIRMATION`/`CANCEL` — les
+  trois continuent d'appeler `commands.execute` une seconde fois sur un
+  rejeu exact, comportement générique préexistant totalement inchangé.
+* Focused : 248/248 (fichiers concernés). Suite complète : 1399/1399.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`input.flowKey`/`input.action` déjà vérifiés authentiques avant ce point
+(aucun risque d'usurpation) ; le court-circuit ne modifie la forme du
+résultat d'aucune autre paire Flow/action ; `presentFlowReply` gère déjà
+`result.result === null` sur un doublon sans jamais y accéder ; aucune
+nouvelle table, colonne ni migration ; isolation propriétaire, contrat de
+champs combiné, et non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé)
+tous confirmés inchangés par la suite complète. Aucune mutation Supabase,
+Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Repris de la fiche Z.1 : raccourci générique de doublon dans `handle()`
+  toujours non implémenté au-delà de `RECHARGE`/`CANCEL`, décision produit
+  sur « Revenir plus tard », `RECHARGE-EXACTLY-ONCE-GATE` dédié.
+* Le compromis « pas de reprise automatique par rejeu de webhook pour un
+  `CANCEL` réellement échoué » (voir ci-dessus) reste à documenter côté
+  produit si un besoin de reprise fiable pour ce cas précis apparaît plus
+  tard — non traité ici, comportement jugé acceptable et volontaire pour
+  cette mission.
+
+### Prévention
+
+Quand le signal de doublon d'une couche session est utilisé pour empêcher
+la réexécution d'une commande, vérifier explicitement à quel moment la
+session est marquée consommée par rapport à l'exécution de cette
+commande — si la session est marquée consommée avant que la commande
+n'ait fini (succès ou échec), le court-circuit empêchera aussi la reprise
+d'un échec réellement transitoire pour cette action précise ; documenter
+ce compromis plutôt que de le découvrir en production. Et, quand une
+première protection (ici `sessionOpenedAt`) semble suffire, vérifier
+explicitement qu'elle couvre bien **tous** les états de base valides
+possibles avant l'instant de référence choisi — ici, plusieurs entités
+actives simultanées pour un même propriétaire étaient un état valide non
+couvert par une simple borne temporelle.
+
+### Z.3 — RECHARGE-CONTRACT-001, suite : la requête de ciblage pouvait glisser vers une recharge plus ancienne (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée. Les correctifs R1 (`sessionOpenedAt`, fiche Z.1) et R2
+  (court-circuit de doublon, fiche Z.2) restent corrects et inchangés.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R3 »),
+  constat HIGH/P0, bloquant de fusion.
+
+### Constat, reproduit avant tout correctif
+
+La requête de ciblage de R1 filtrait le statut (`IN (CREATED,
+PAYMENT_PENDING)`) **avant** de trier/limiter à la session contextuelle
+la plus récente :
+
+```sql
+owner_wa_id = owner
+  and status in ('CREATED', 'PAYMENT_PENDING')
+  and created_at <= sessionOpenedAt
+order by created_at desc
+limit 1
+```
+
+Si la session qui était réellement la plus récente au moment de
+l'ouverture du Flow change ensuite d'état (créditée, annulée par une
+autre interaction, etc.) **avant** que `CANCEL` ne soit jamais soumis, le
+filtre de statut l'exclut silencieusement et la requête **glisse** vers
+une ligne plus ancienne qui correspond encore au filtre de statut et à
+la borne `created_at` — annulant une recharge dont ce contexte Flow n'a
+jamais parlé, même sur une soumission réellement première (pas un
+rejeu).
+
+**Reproduction, prouvée dans la composition de production :** A et B
+créées (toutes deux `PAYMENT_PENDING`), B plus récente que A → la session
+Flow C de `CANCEL` n'est ouverte qu'après que A et B existent — B est la
+recharge contextuelle la plus récente à cet instant → **avant** de
+soumettre `CANCEL`, B passe à `CREDITED` via un vrai `CHECK_PAYMENT` →
+`CANCEL` est soumis pour la première fois (pas un rejeu) → **avant
+correctif**, la requête exclut B (statut filtré) et glisse vers A, qui
+est annulée à tort. Variante prouvée également avec B déjà `CANCELLED`
+plutôt que `CREDITED`.
+
+### Principe de ciblage retenu
+
+Résoudre la candidate contextuelle **d'abord** :
+
+1. uniquement les sessions créées à ou avant `sessionOpenedAt` (borne de
+   confiance déjà établie en R1) ;
+2. triées par `created_at` décroissant ;
+3. exactement la plus récente, **quel que soit son statut** ;
+4. **ensuite seulement** déterminer si cette session précise est
+   annulable.
+
+Si la session contextuelle la plus récente n'est plus annulable :
+**échec fermé**, jamais de recherche d'une autre recharge plus ancienne.
+
+### Correctif
+
+`createKadiV1RechargeRuntime.cancel()` : la requête brute retire le
+filtre `.in("status", ...)` et sélectionne désormais `status` en plus de
+`recharge_session_id` ; l'éligibilité au statut est vérifiée **après**
+avoir résolu la session contextuelle exacte, contre un ensemble
+`CANCELLABLE_STATUSES` explicite (`CREATED`, `PAYMENT_PENDING`) — si la
+session résolue n'y figure pas, échec immédiat
+(`RECHARGE_SESSION_NOT_CANCELLABLE`), sans jamais retenter une autre
+ligne. **L'ensemble annulable visible par ce runtime reste
+intentionnellement inchangé** : `kadiV1RechargeService.js`'s
+`cancelRechargeSession` accepte déjà aussi `FAILED` en interne (une
+question produit préexistante, distincte), mais ce correctif ne l'étend
+pas au niveau de ce runtime sans autorisation produit explicite — conforme
+à la consigne de la mission de préserver le comportement actuellement
+visible.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : Test A — B créditée via un
+  vrai `CHECK_PAYMENT` avant la première soumission de `CANCEL`, échec
+  fermé (`RECHARGE_SESSION_NOT_CANCELLABLE`), B reste `CREDITED`, A reste
+  `PAYMENT_PENDING`, aucun changement de crédit ; Test B — variante avec B
+  déjà `CANCELLED` par une annulation réelle distincte, même échec fermé,
+  A intacte ; Test C — annulation normale courante avec B toujours active,
+  toujours annulée normalement (aucune régression du cas nominal). Le
+  fournisseur de paiement factice du fichier a été corrigé pour suivre le
+  montant/la devise réels par identifiant de paiement (il renvoyait
+  auparavant toujours ceux de `PACK_1000`, provoquant un
+  `PAYMENT_EVENT_MISMATCH` dès qu'un autre pack était crédité) — défaut de
+  fixture de test, pas de code de production.
+* Régression complète R0+R1+R2 : tous les scénarios existants
+  (`SELECT_PACK`/`CHECK_PAYMENT` inchangés, isolation propriétaire,
+  isolation `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`,
+  rejeu exact R2 avec sa protection après reconstruction complète de la
+  pile) toujours verts sans modification de leur logique.
+* Focused : 251/251 (fichiers concernés). Suite complète : 1402/1402.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`status` n'est jamais journalisé ni exposé à l'utilisateur (utilisé
+uniquement en interne pour la vérification d'éligibilité) ; la
+vérification finale de statut au niveau de `cancelRechargeSession`'s
+`expectedStatuses` reste un filet de sécurité supplémentaire contre toute
+condition de course entre la lecture et l'écriture (préexistant,
+inchangé) ; isolation propriétaire, contrat de champs combiné, protection
+R1 (`sessionOpenedAt`) et protection R2 (court-circuit de doublon) tous
+confirmés inchangés par la suite complète ; non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé).
+Aucune migration ni mutation Supabase, Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Reprises des fiches Z.1/Z.2 : décision produit sur « Revenir plus
+  tard », `RECHARGE-EXACTLY-ONCE-GATE` dédié, raccourci générique de
+  doublon non implémenté au-delà de `RECHARGE`/`CANCEL`.
+* Question produit distincte, non traitée : `cancelRechargeSession`
+  accepte déjà `FAILED` en interne alors que ce runtime ne l'expose pas —
+  à clarifier si un besoin produit d'annuler explicitement une recharge
+  `FAILED` apparaît.
+
+### Prévention
+
+Quand une requête combine un filtre de sélection (ici le statut) avec un
+tri/limite destiné à choisir « le candidat contextuellement pertinent »,
+vérifier explicitement l'ordre d'application : filtrer d'abord peut faire
+glisser silencieusement le résultat vers un candidat différent de celui
+réellement visé par le contexte, si le vrai candidat contextuel ne
+correspond plus au filtre au moment de la requête. Résoudre toujours le
+candidat contextuel en premier (sans filtre de statut), puis appliquer
+la validation de statut comme une décision séparée et fermée sur cette
+cible exacte — jamais comme un filtre qui élargit implicitement la
+recherche à un autre candidat.

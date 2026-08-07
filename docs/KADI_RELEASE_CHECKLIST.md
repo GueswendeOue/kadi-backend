@@ -403,19 +403,129 @@ applicatif). Aucune mutation Meta requise.
    ciblés (115/115 sur les fichiers concernés) puis suite complète
    (1367/1367), `git diff --check` propre. Aucun autre défaut HIGH/MEDIUM
    trouvé sur le diff complet mis à jour.
-6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #18
-   mise à jour (post-`date_to`).
-7. **[EN ATTENTE]** Fusion dans `main`.
-8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-9. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
+6. **[FAIT]** Fusion de la PR #18 dans `main` — commit de fusion
+   `07ea815ce016ac4a034498e436db391486b420ff`. **T2 est donc `CLOSED`/`MERGED`.**
+7. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+8. **[EN ATTENTE]** Une vraie recherche et ouverture de document depuis
    l'historique via le Flow `HISTORY_SEARCH` réel, observée en conditions
    réelles (validation téléphone), y compris un filtrage par date incluant
    réellement le jour de fin, et le parcours de reprise de livraison déjà
    construit (fiche R) toujours atteignable depuis un document ouvert.
-10. **[EN ATTENTE]** T3 (`RECHARGE-CONTRACT-001`) — prochaine mission de
-    correction dédiée, non commencée.
-11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+9. **[FAIT]** T3 (`RECHARGE-CONTRACT-001`) — corrigé, voir section dédiée
+   ci-dessous.
+10. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
+
+## Ordre — `fix/kadi-v1-recharge-contract-r0` (T3/RECHARGE-CONTRACT-001 : contrat de sélection de pack/vérification de paiement/annulation aligné sur la vraie forme combinée du Flow)
+
+Aucune migration Supabase requise pour cette branche (correctif entièrement
+applicatif). Aucune mutation Meta requise. Aucun appel réseau réel vers
+Orange Money ou tout autre fournisseur de paiement.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@07ea815ce016ac4a034498e436db391486b420ff` (PR #18 fusionnée) avant
+   de créer la branche isolée.
+2. **[FAIT]** T3/RECHARGE-CONTRACT-001 reproduit puis corrigé : le vrai
+   Flow combiné `kadi_recharge_v1.json` soumet toujours `pack_id`/
+   `payment_reference` ensemble, quelle que soit l'action
+   (`SELECT_PACK`/`CHECK_PAYMENT`/`CANCEL`) — aucune sélection de pack,
+   vérification de paiement ni annulation ne pouvait jamais réussir via
+   le vrai Flow Meta. `CANCEL` étant une action partagée globalement avec
+   `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`, une
+   nouvelle table flow-aware (`FLOW_ACTION_FIELD_OVERRIDES`) accepte
+   `pack_id`/`payment_reference` uniquement pour `RECHARGE`/`CANCEL`,
+   sans fuite vers les autres Flows (testé explicitement). Traçage
+   complet de la chaîne : aucun défaut de second niveau trouvé — voir
+   fiche Z de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Défaut de la même classe confirmé pour
+   `GENERATION_CONFIRMATION`/`CANCEL`, délibérément **non corrigé**,
+   consigné pour T4.
+3. **[FAIT]** Tests ciblés (226/226 sur les fichiers concernés) puis
+   suite complète (1387/1387), `git diff --check` propre.
+4. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM
+   trouvé.
+5. **[FAIT]** Revue adversariale indépendante de la PR #19 — a signalé un
+   défaut HIGH/P0, bloquant de fusion : `handle()` exécutait toujours la
+   commande métier même après qu'un rejeu exact ait été identifié comme
+   doublon par la couche session, et `RECHARGE`/`CANCEL` n'avait aucune
+   clé d'idempotence propre, résolvant toujours « la recharge active la
+   plus récente », sans borne. Deux scénarios concrets prouvés dans la
+   composition de production : rejeu différé d'un `CANCEL` déjà consommé
+   annulant une recharge plus récente et différente ; Flow `RECHARGE`
+   obsolète jamais soumis annulant une recharge créée après son ouverture.
+   Corrigé sur la même branche : `sessionOpenedAt` (instant serveur de
+   confiance d'ouverture de la session Flow exacte, jamais fourni par le
+   client) borne désormais l'éligibilité de `cancel()` — aucune nouvelle
+   colonne Supabase, `opened_at`/`created_at` existaient déjà toutes les
+   deux. Raccourci générique de doublon dans `handle()` envisagé puis
+   délibérément écarté (preuve exhaustive d'innocuité non établie) — voir
+   fiche Z.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Incohérence de libellé « Revenir plus tard » vs état terminal
+   `CANCELLED` signalée, non tranchée. Tests ciblés (240/240 sur les
+   fichiers concernés) puis suite complète (1393/1393), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet mis à
+   jour.
+6. **[FAIT]** Nouvelle revue adversariale indépendante de la PR #19 — a
+   signalé un second défaut HIGH/P0, bloquant de fusion : `sessionOpenedAt`
+   seul n'empêchait pas un rejeu exact de `CANCEL` d'annuler une seconde
+   recharge active différente quand **plusieurs** recharges actives
+   préexistaient à l'ouverture de la session Flow (aucune contrainte
+   n'impose une seule recharge active par propriétaire). Prouvé
+   concrètement : A et B actives avant l'ouverture de la session Flow,
+   premier `CANCEL` annule B, rejeu exact du même message annulait A à
+   tort. Corrigé sur la même branche : court-circuit strictement limité à
+   `(RECHARGE, CANCEL)` dans `kadiV1FlowReplyRuntime.js`'s `handle()` —
+   sur un doublon exact pour cette paire précise, `commands.execute` n'est
+   plus jamais rappelé, en s'appuyant sur le même état de session persisté
+   (jamais un indicateur en mémoire, valide après redémarrage — prouvé
+   explicitement) déjà utilisé ailleurs. Compromis assumé : un `CANCEL`
+   réellement échoué ne peut plus être repris par simple rejeu de webhook
+   — voir fiche Z.2 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucune
+   autre action ni Flow affecté (prouvé explicitement pour
+   `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`). Tests
+   ciblés (248/248) puis suite complète (1399/1399), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
+   R1 + R2.
+7. **[FAIT]** Troisième revue adversariale indépendante de la PR #19 — a
+   signalé un troisième défaut HIGH/P0, bloquant de fusion : la requête de
+   ciblage de R1 filtrait le statut **avant** de choisir la recharge
+   contextuellement la plus récente — si cette recharge changeait d'état
+   (créditée, annulée ailleurs) avant que `CANCEL` ne soit soumis, la
+   requête glissait silencieusement vers une recharge plus ancienne encore
+   éligible au filtre de statut, l'annulant à tort même sur une
+   soumission réellement première. Prouvé concrètement : B créditée via un
+   vrai `CHECK_PAYMENT`, puis A (plus ancienne) annulée à tort par le
+   `CANCEL` suivant. Corrigé sur la même branche : la session
+   contextuelle la plus récente est résolue d'abord (bornée par
+   `sessionOpenedAt`, sans filtre de statut), son éligibilité vérifiée
+   ensuite séparément, échec fermé immédiat sans jamais rechercher une
+   autre recharge plus ancienne — ensemble de statuts annulables
+   intentionnellement inchangé, sans extension à `FAILED` — voir fiche
+   Z.3 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+   Tests ciblés (251/251) puis suite complète (1402/1402), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
+   R1 + R2 + R3.
+8. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
+   mise à jour (post-résolution-contextuelle R3).
+9. **[EN ATTENTE]** Fusion dans `main`.
+10. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+11. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
+    et annulation via le Flow `RECHARGE` réel, observée en conditions
+    réelles (validation téléphone).
+12. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
+    mission de correction dédiée, non commencée.
+13. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+    backlog distinct, non construit dans cette mission.
+14. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
+    financier exactement-une-fois de bout en bout, tâche séparée future.
+15. **[EN ATTENTE]** Décision produit requise sur la sémantique de
+    « Revenir plus tard » (libellé vs état terminal `CANCELLED`) et sur
+    l'exposition éventuelle de `FAILED` comme statut annulable.
+16. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
+    FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
+    présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
+    repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.
 
 ## Déploiement Render
 

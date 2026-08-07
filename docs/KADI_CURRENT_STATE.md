@@ -527,6 +527,119 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   migration Supabase.** **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche
   Y.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-07) : PR #18 (T2/HISTORY-CONTRACT-001 +
+  `date_to`) fusionnée dans `main`** (commit de fusion
+  `07ea815ce016ac4a034498e436db391486b420ff`) — **T1 et T2 sont donc tous
+  deux `CLOSED`/`MERGED`.** Les entrées ci-dessus restent le compte rendu
+  du contenu du correctif ; seul son statut de fusion a changé. Non
+  encore déployée sur Render à la date de cette mise à jour.
+* **Mise à jour (2026-08-07) : T3/RECHARGE-CONTRACT-001 corrigé, nouvelle
+  branche dédiée `fix/kadi-v1-recharge-contract-r0` créée depuis
+  `main@07ea815ce016ac4a034498e436db391486b420ff`, PR distincte,
+  brouillon, non fusionnée, non déployée.** Même défaut de classe que
+  `CLIENT-001`/`EDIT-CONTENT-001`/`OPTIONS-001`/`HISTORY-CONTRACT-001` : le
+  vrai Flow combiné `kadi_recharge_v1.json` soumet toujours `pack_id`/
+  `payment_reference` ensemble, quelle que soit l'action choisie
+  (`SELECT_PACK`/`CHECK_PAYMENT`/`CANCEL`) — **aucune sélection de pack,
+  aucune vérification de paiement et aucune annulation de recharge ne
+  pouvait jamais réussir via le vrai Flow Meta.** Contrainte
+  architecturale respectée : `CANCEL` est une action partagée
+  globalement par `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/
+  `GENERATION_CONFIRMATION`/`RECHARGE` — une nouvelle table flow-aware
+  (`FLOW_ACTION_FIELD_OVERRIDES`, consultée avant la liste blanche
+  globale) accepte `pack_id`/`payment_reference` uniquement pour
+  `RECHARGE`/`CANCEL`, sans jamais faire fuiter ce contrat vers les
+  autres Flows (testé explicitement). Traçage complet de la chaîne :
+  **aucun défaut de second niveau trouvé** — le reste de la chaîne
+  (résolution du pack depuis le catalogue serveur, isolation
+  propriétaire de `CHECK_PAYMENT`/`CANCEL`, rejet des champs financiers
+  fournis par le client) était déjà correct. Un défaut de la même classe,
+  confirmé pour `GENERATION_CONFIRMATION`/`CANCEL`, est délibérément
+  **non corrigé** et consigné pour un futur T4. **Statut :
+  `IMPLEMENTED_NOT_DEPLOYED`.** Voir fiche Z de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet, la preuve et le suivi requis.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite (annulation
+  inter-session, HIGH/P0) corrigée avant fusion, même branche, PR #19
+  toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une revue
+  adversariale indépendante de la PR #19 a signalé un défaut HIGH/P0,
+  bloquant de fusion : `kadiV1FlowReplyRuntime.js`'s `handle()` exécute
+  toujours la commande métier même quand la couche session a déjà
+  identifié un rejeu exact comme doublon, et `RECHARGE`/`CANCEL`
+  (contrairement à `SELECT_PACK`/`CHECK_PAYMENT`) n'avait aucune clé
+  d'idempotence propre — il résolvait toujours « la recharge active la
+  plus récente du propriétaire », sans aucune borne. **Deux scénarios
+  concrets prouvés dans la composition de production avant correctif :**
+  un rejeu différé d'un message `CANCEL` déjà consommé pouvait annuler une
+  recharge plus récente et totalement différente ; un Flow `RECHARGE`
+  obsolète, jamais encore soumis, pouvait annuler une recharge créée après
+  son ouverture — ni l'un ni l'autre n'est un rejeu classique. **Corrigé :**
+  `sessionOpenedAt` (l'instant serveur de confiance auquel la session Flow
+  exacte a été ouverte, jamais fourni par le client) borne désormais quelle
+  session de recharge `cancel()` peut cibler — seule une session créée à
+  ou avant cet instant est éligible. **Aucune nouvelle colonne Supabase** :
+  `opened_at` et `created_at` existent déjà toutes les deux sur leurs
+  tables respectives. Un raccourci générique de doublon dans `handle()` a
+  été envisagé mais délibérément écarté, faute de preuve exhaustive de son
+  innocuité pour tous les Flows existants — solution la plus petite et
+  spécifique à `RECHARGE` retenue à la place. Incohérence signalée, non
+  tranchée : le libellé « Revenir plus tard » du bouton `CANCEL` suggère
+  une pause reprenable, alors que le comportement réel place la recharge
+  dans un état terminal `CANCELLED` définitivement non créditable — décision
+  produit à prendre séparément. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche Z.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite 2 (rejeu exact
+  avec plusieurs recharges actives préexistantes, HIGH/P0) corrigée avant
+  fusion, même branche, PR #19 toujours `OPEN`/`DRAFT`/non fusionnée/non
+  déployée.** Une nouvelle revue adversariale indépendante a signalé que
+  `sessionOpenedAt` (correctif précédent) empêche bien un `CANCEL`
+  obsolète d'affecter une recharge créée après l'ouverture de la session
+  Flow, mais ne rend pas `cancel()` idempotent quand **plusieurs**
+  recharges actives existaient déjà avant cette ouverture (aucune
+  contrainte n'impose une seule recharge active par propriétaire) : un
+  rejeu exact d'un `CANCEL` déjà consommé, après un premier `CANCEL`
+  ayant annulé la plus récente des deux, pouvait annuler à tort la
+  seconde, plus ancienne. **Prouvé concrètement dans la composition de
+  production avant correctif.** **Corrigé :** un court-circuit strictement
+  limité à la paire `(RECHARGE, CANCEL)` dans
+  `kadiV1FlowReplyRuntime.js`'s `handle()` — quand la couche session
+  signale un doublon exact pour cette paire précise, la commande métier
+  n'est plus jamais réexécutée du tout. Le signal utilisé est le même état
+  de session persisté déjà authentifié ailleurs (jamais un indicateur en
+  mémoire), donc valide après un redémarrage de processus — prouvé
+  explicitement en reconstruisant toute la pile runtime autour des mêmes
+  dépôts persistés. Compromis assumé et documenté : un `CANCEL` réellement
+  échoué (erreur transitoire) ne peut plus être repris automatiquement par
+  un simple rejeu de webhook — l'utilisateur doit rouvrir une nouvelle
+  session Flow. Aucune autre action ni aucun autre Flow affecté (prouvé
+  explicitement pour `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/
+  `GENERATION_CONFIRMATION`). **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir
+  fiche Z.2 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite 3 (glissement
+  de cible d'annulation, HIGH/P0) corrigée avant fusion, même branche, PR
+  #19 toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** Une troisième
+  revue adversariale indépendante a signalé que la requête de ciblage de
+  R1 filtrait le statut (`CREATED`/`PAYMENT_PENDING`) **avant** de choisir
+  la recharge contextuellement la plus récente : si la recharge réellement
+  la plus récente au moment de l'ouverture du Flow changeait ensuite
+  d'état (créditée, annulée ailleurs) avant que `CANCEL` ne soit soumis,
+  la requête glissait silencieusement vers une recharge plus ancienne
+  encore éligible au filtre de statut — annulant une recharge dont ce
+  contexte Flow n'a jamais parlé, même sur une soumission réellement
+  première. **Prouvé concrètement dans la composition de production avant
+  correctif**, avec une recharge B créditée via un vrai `CHECK_PAYMENT`
+  puis une recharge A plus ancienne annulée à tort. **Corrigé :** la
+  session contextuelle la plus récente est désormais résolue d'abord
+  (bornée par `sessionOpenedAt`, sans filtre de statut), puis son
+  éligibilité est vérifiée séparément — en cas d'inéligibilité, échec
+  fermé immédiat, sans jamais rechercher une autre recharge plus
+  ancienne. L'ensemble de statuts annulables reste intentionnellement
+  inchangé (`CREATED`/`PAYMENT_PENDING`), sans extension à `FAILED` sans
+  autorisation produit explicite. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche Z.3 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours
