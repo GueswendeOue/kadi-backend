@@ -8,6 +8,23 @@ const DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU", "DECHARGE"]);
 // GENERATION_CONFIRMATION Flow may ever legitimately be opened for. Never
 // derived from anything client-supplied — see the CANCEL branch below.
 const GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE = "AWAITING_GENERATION_CONFIRMATION";
+// T4.5 (DOCUMENT_CANCEL_STATE_AUTHORITY_GATE): the legitimate document
+// state(s) each Flow's session may ever have been genuinely opened
+// against, traced directly from production routing
+// (kadiV1ProductionPresenter.js's routeDocument and
+// kadiV1ConversationOrchestrator.js's routeForDocument, which agree) —
+// never guessed from the state machine's connectivity alone. Sessions are
+// never auto-revoked when a new Flow opens (kadiV1ConversationSession.js's
+// open() only ever creates a new row; revoke() has no production caller),
+// so more than one OPEN session for the same owner can genuinely coexist,
+// making a stale submission an always-possible, not merely theoretical,
+// scenario. DOCUMENT_REVIEW is routed to from exactly one state
+// (READY_FOR_REVIEW); DOCUMENT_PREVIEW from two (VERIFIED — the normal
+// case after VERIFY — and PREVIEW_READY, a real, durable resting state
+// whenever kadiV1PreviewService.js's persistPreview succeeds but a later
+// step in the same prepare() call, e.g. quote creation, fails first).
+const DOCUMENT_REVIEW_CANCEL_EXPECTED_STATES = Object.freeze(["READY_FOR_REVIEW"]);
+const DOCUMENT_PREVIEW_CANCEL_EXPECTED_STATES = Object.freeze(["VERIFIED", "PREVIEW_READY"]);
 const FLOW_KEYS = Object.freeze([
   "ONBOARDING", "MENU", "DOCUMENT_TYPE", "INVOICE_TYPE", "RECEIPT_DETAILS", "DOCUMENT_CLIENT", "DOCUMENT_CONTENT", "ARTICLE_FORM",
   "DOCUMENT_OPTIONS", "DOCUMENT_REVIEW", "EDIT_CLIENT", "EDIT_CONTENT", "EDIT_OPTIONS",
@@ -158,6 +175,48 @@ function createKadiV1FlowCommandRuntime({
         documentType: document.value.document_type,
         documentState: document.value.document_state,
         expectedState: GENERATION_CONFIRMATION_CANCEL_EXPECTED_STATE,
+      });
+      return call(documents, "cancel", documentBase, "KADI_V1_DOCUMENT_CANCEL_FAILED");
+    }
+    if (command.action === "CANCEL" && (command.flowKey === "DOCUMENT_REVIEW" || command.flowKey === "DOCUMENT_PREVIEW")) {
+      // T4.5 (independent T4 merge review, HIGH/P0): the same stale-session
+      // state-authority gap T4 closed for GENERATION_CONFIRMATION/CANCEL
+      // also existed here — DOCUMENT_REVIEW/CANCEL and DOCUMENT_PREVIEW/
+      // CANCEL both routed through the fully generic document branch
+      // below, which never passed expectedState at all, so a stale
+      // DOCUMENT_REVIEW or DOCUMENT_PREVIEW session could still terminally
+      // CANCEL a document that had since legitimately moved to a later
+      // business phase (VERIFIED, AWAITING_GENERATION_CONFIRMATION,
+      // RECHARGE_REQUIRED, even GENERATION_IN_PROGRESS), since pure state
+      // transitions never bump document.version. Fixed the same way as
+      // GENERATION_CONFIRMATION/CANCEL: fail closed if the trusted
+      // session's own captured document_state is not one of this Flow's
+      // real, routing-traced legitimate states (see
+      // DOCUMENT_REVIEW_CANCEL_EXPECTED_STATES /
+      // DOCUMENT_PREVIEW_CANCEL_EXPECTED_STATES above), then forward that
+      // exact, already-validated state as expectedState — reusing the same
+      // durable, atomic mutation-contract check T4 introduced
+      // (kadiV1RuntimeAdapters.js's cancel(),
+      // kadiV1SharedDocumentPipeline.js's persistStateTransition,
+      // kadiV1DischargePipeline.js's persistTransition), unmodified.
+      // DOCUMENT_PREVIEW has two legitimate states, so expectedState here
+      // is the session's own verified value, not a single hardcoded
+      // constant like GENERATION_CONFIRMATION's.
+      const document = validateDocumentContext(command.documentContext);
+      if (!document.ok) return document;
+      const legitimateStates = command.flowKey === "DOCUMENT_REVIEW"
+        ? DOCUMENT_REVIEW_CANCEL_EXPECTED_STATES
+        : DOCUMENT_PREVIEW_CANCEL_EXPECTED_STATES;
+      if (!legitimateStates.includes(document.value.document_state)) {
+        return fail("KADI_V1_FLOW_COMMAND_DOCUMENT_CANCEL_STATE_INVALID");
+      }
+      const documentBase = Object.freeze({
+        ...base,
+        documentId: document.value.document_id,
+        expectedVersion: document.value.document_version,
+        documentType: document.value.document_type,
+        documentState: document.value.document_state,
+        expectedState: document.value.document_state,
       });
       return call(documents, "cancel", documentBase, "KADI_V1_DOCUMENT_CANCEL_FAILED");
     }
