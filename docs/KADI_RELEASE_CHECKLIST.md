@@ -264,19 +264,47 @@ base de données, aucune contrainte modifiée) — code applicatif uniquement.
    destination, historique, écran de revue, parcours d'édition,
    observabilité restante, sécurité de rejeu/version obsolète,
    invariants de facturation).
-5. **[EN ATTENTE]** Fusion dans `main`.
-6. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-7. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
-   fondateur, sur `FA-20260806190633-A0EAC605` **et** sur
-   `FA-20260807010715-1961CBCC`, observée en conditions réelles — ne pas
-   se contenter des tests locaux pour affirmer que l'un ou l'autre a été
-   récupéré.
+5. **[FAIT]** Fusion dans `main` — commit de fusion
+   `0335d3758f3dc1d4841fd5137c8273d03ee68843`.
+6. **[FAIT]** Déploiement manuel explicite sur Render, commit vérifié
+   exactement `0335d3758f3dc1d4841fd5137c8273d03ee68843` actif.
+7. **[FAIT, résultat négatif]** Une vraie nouvelle tentative de reprise par
+   le propriétaire sur `FA-20260807010715-1961CBCC` a échoué de nouveau
+   avec `DELIVERY_DESTINATION_LOOKUP_FAILED` — cause racine identifiée
+   (colonne physique inexistante, `PostgreSQL 42703`) et corrigée sur une
+   branche dédiée, voir fiche W de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) et la
+   nouvelle section ci-dessous. `FA-20260806190633-A0EAC605` reste non
+   retenté.
 8. **[EN ATTENTE]** Une vraie validation téléphone d'au moins un parcours
    de correction (« Modifier le client », « Modifier les articles »,
    « Modifier les options » depuis la revue, y compris la saisie d'un
-   identifiant fiscal réel) après déploiement, avant de
-   considérer REVIEW-001/INV-001/INV-002 comme confirmés en production —
-   voir la note phone-only de la fiche T.
+   identifiant fiscal réel) — non encore réalisée.
+
+## Ordre — `fix/kadi-v1-delivery-destination-schema-r0` (colonne physique inexistante dans la vérification de destination de livraison)
+
+Aucune migration Supabase requise pour cette branche (correctif
+entièrement applicatif — aucune colonne physique n'est ajoutée ou
+renommée). Aucune mutation Meta requise.
+
+1. **[FAIT]** Cause racine identifiée par reproduction directe en lecture
+   seule contre la vraie base (jamais seulement par lecture de code) :
+   `PostgreSQL 42703`, `kadi_v1_documents.options` n'existe pas.
+2. **[FAIT]** Code écrit, testé localement (suite complète 1327/1327 verte,
+   `git diff --check` propre). Voir fiche W de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+   détail complet du correctif et de sa preuve.
+3. **[FAIT]** Revue adversariale du diff — aucun défaut HIGH/MEDIUM trouvé
+   (pas de nouvelle colonne physique devinée, distinction PROFORMA
+   préservée, vérification propriétaire toujours avant tout contact Meta,
+   pas de fuite inter-propriétaire, `42703` correctement classé permanent,
+   aucun envoi Meta retenté, aucune facturation/rendu/artefact dupliqué).
+4. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+5. **[EN ATTENTE]** Fusion dans `main`.
+6. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+7. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le
+   propriétaire, sur `FA-20260806190633-A0EAC605` **et** sur
+   `FA-20260807010715-1961CBCC`, observée en conditions réelles.
 
 ## Déploiement Render
 

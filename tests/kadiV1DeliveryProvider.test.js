@@ -9,18 +9,25 @@ function digest(value) {
   return crypto.createHash("sha256").update(String(value || "missing"), "utf8").digest("hex");
 }
 
-function fakeSupabase(documentRow, { queryError = false } = {}) {
+// A. OWNER / DESTINATION VERIFICATION fixture — kadi_v1_documents has no
+// "options" column (the confirmed real-production root cause: PostgreSQL
+// 42703 on that exact selection). This fixture asserts the real query
+// shape stays minimal — only "owner_wa_id" — so this exact defect class
+// can never silently return.
+function fakeSupabase(ownerRow, { queryError = false } = {}) {
   return {
     from(table) {
       assert.equal(table, "kadi_v1_documents");
       return {
-        select() {
+        select(columns) {
+          assert.equal(columns, "owner_wa_id", "the owner/destination lookup must select only real physical columns — never the nonexistent \"options\"");
           return {
-            eq() {
+            eq(column) {
+              assert.equal(column, "document_id");
               return {
                 async maybeSingle() {
                   if (queryError) return { data: null, error: { message: "boom" } };
-                  return { data: documentRow, error: null };
+                  return { data: ownerRow, error: null };
                 },
               };
             },
@@ -43,7 +50,8 @@ function scriptedSupabase(outcomes) {
     from(table) {
       assert.equal(table, "kadi_v1_documents");
       return {
-        select() {
+        select(columns) {
+          assert.equal(columns, "owner_wa_id");
           return {
             eq() {
               return {
@@ -60,6 +68,37 @@ function scriptedSupabase(outcomes) {
     },
     async rpc() { return { data: null, error: null }; },
     storage: { from() { return {}; } },
+  };
+}
+
+// B. DELIVERY FILENAME METADATA fixture — the already-authoritative
+// document repository, reused rather than another hand-written raw query.
+// Throws if called before A ever succeeds (shouldNotBeCalled), proving
+// filename resolution never runs ahead of, or instead of, owner
+// verification.
+function unexpectedMethod(name) {
+  return async () => { throw new Error(`documentRepository.${name} must not be called by the delivery provider`); };
+}
+
+function fakeDocumentRepository(hydratedDocument, { shouldNotBeCalled = false, expectedOwnerWaId = null } = {}) {
+  return {
+    async getDocumentById({ documentId, ownerWaId }) {
+      if (shouldNotBeCalled) {
+        throw new Error("documentRepository.getDocumentById must not be called until destination verification (A) has already succeeded");
+      }
+      if (expectedOwnerWaId) {
+        assert.equal(ownerWaId, expectedOwnerWaId, "filename metadata must be resolved using the server-verified owner from step A, never a different or client-supplied value");
+      }
+      assert.ok(documentId, "documentId is required");
+      if (hydratedDocument === null) return { ok: false, error: "DOCUMENT_NOT_FOUND" };
+      return { ok: true, value: hydratedDocument };
+    },
+    createDocument: unexpectedMethod("createDocument"),
+    saveNewVersion: unexpectedMethod("saveNewVersion"),
+    appendDomainEvent: unexpectedMethod("appendDomainEvent"),
+    persistTransition: unexpectedMethod("persistTransition"),
+    findByIdempotencyKey: unexpectedMethod("findByIdempotencyKey"),
+    listVersions: unexpectedMethod("listVersions"),
   };
 }
 
@@ -87,11 +126,19 @@ function fakeWhatsAppApi({ uploadedFilenames = [], sentFilenames = [] } = {}) {
 const OWNER = "22670626055";
 const EXPECTED_DESTINATION = `owner:${digest(OWNER).slice(0, 12)}`;
 
-test("delivers using the canonical reference-based filename, not a generic one", async () => {
+// ==================================================
+// A/F. Successful destination lookup using only real physical columns,
+// FACTURE FINAL filename.
+// ==================================================
+test("A/F: delivers using the canonical reference-based filename, real columns only, no internal DB error surfaced", async () => {
   const uploadedFilenames = [];
   const sentFilenames = [];
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client: fakeSupabase({ owner_wa_id: OWNER, document_type: "FACTURE", options: {}, document_number: "FA-20260806190633-A0EAC605" }),
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository(
+      { document_type: "FACTURE", options: {}, document_number: "FA-20260806190633-A0EAC605" },
+      { expectedOwnerWaId: OWNER },
+    ),
     storage: fakeStorage(),
     whatsappApi: fakeWhatsAppApi({ uploadedFilenames, sentFilenames }),
   });
@@ -100,16 +147,20 @@ test("delivers using the canonical reference-based filename, not a generic one",
     destinationRef: EXPECTED_DESTINATION,
     deliveryAttemptId: "delivery:1",
   });
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, result.error);
   assert.equal(uploadedFilenames[0], "facture_FA-20260806190633-A0EAC605.pdf");
   assert.equal(sentFilenames[0], "facture_FA-20260806190633-A0EAC605.pdf");
   assert.notEqual(uploadedFilenames[0], "facture.pdf");
 });
 
-test("proforma delivery filename differs from a final invoice", async () => {
+// ==================================================
+// G. FACTURE PROFORMA filename — proves invoice_kind survives the fix.
+// ==================================================
+test("G: proforma delivery filename differs from a final invoice", async () => {
   const uploadedFilenames = [];
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client: fakeSupabase({ owner_wa_id: OWNER, document_type: "FACTURE", options: { invoice_kind: "PROFORMA" }, document_number: "FA-20260806190633-A0EAC605" }),
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository({ document_type: "FACTURE", options: { invoice_kind: "PROFORMA" }, document_number: "FA-20260806190633-A0EAC605" }),
     storage: fakeStorage(),
     whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
   });
@@ -118,13 +169,123 @@ test("proforma delivery filename differs from a final invoice", async () => {
     destinationRef: EXPECTED_DESTINATION,
     deliveryAttemptId: "delivery:1",
   });
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, result.error);
   assert.equal(uploadedFilenames[0], "facture-proforma_FA-20260806190633-A0EAC605.pdf");
 });
 
-test("owner/destination lookup that errors is reported distinctly from a genuine mismatch", async () => {
+// ==================================================
+// H/I/J. DEVIS, RECU, DECHARGE canonical filenames.
+// ==================================================
+test("H: DEVIS delivery filename", async () => {
+  const uploadedFilenames = [];
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository({ document_type: "DEVIS", options: {}, document_number: "DV-20260807-0001" }),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(uploadedFilenames[0], "devis_DV-20260807-0001.pdf");
+});
+
+test("I: RECU delivery filename", async () => {
+  const uploadedFilenames = [];
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository({ document_type: "RECU", options: {}, document_number: "RC-20260807-0001" }),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(uploadedFilenames[0], "recu_RC-20260807-0001.pdf");
+});
+
+test("J: DECHARGE delivery filename", async () => {
+  const uploadedFilenames = [];
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository({ document_type: "DECHARGE", options: {}, document_number: "DC-20260807-0001" }),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(uploadedFilenames[0], "decharge_DC-20260807-0001.pdf");
+});
+
+// ==================================================
+// The regression: reproducing the real production schema contract.
+// Before the fix, the raw query selected "owner_wa_id,document_type,
+// options,document_number" — "options" is not a physical column on
+// kadi_v1_documents (confirmed by direct reproduction against the real
+// database: PostgreSQL 42703, HTTP 400, deterministic). This test proves
+// the current, fixed query shape never reproduces that failure, and that
+// Meta is never called when the underlying lookup does fail.
+// ==================================================
+test("regression: the owner/destination lookup never selects a nonexistent column, and a 42703-shaped failure never reaches Meta", async () => {
+  const uploadedFilenames = [];
+  const sentFilenames = [];
+  const client = scriptedSupabase([{ data: null, error: { message: "column kadi_v1_documents.options does not exist", code: "42703" } }]);
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi({ uploadedFilenames, sentFilenames }),
+    sleep: async () => { throw new Error("must never sleep — 42703 is permanent, not transient"); },
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_DESTINATION_LOOKUP_FAILED");
+  assert.equal(client.callCount(), 1, "a 42703 schema error is permanent — read exactly once, never retried");
+  assert.equal(uploadedFilenames.length, 0);
+  assert.equal(sentFilenames.length, 0);
+});
+
+// ==================================================
+// B. 42703 fails fast after exactly one attempt, zero sleeps.
+// ==================================================
+test("B: a 42703 (undefined_column) error exits without exhausting the retry budget, exactly like other permanent-shaped errors", async () => {
+  const schemaError = { data: null, error: { message: "column kadi_v1_documents.options does not exist", code: "42703" } };
+  const client = scriptedSupabase([schemaError]);
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi(),
+    sleep: async () => { throw new Error("must never sleep — a permanent error must not retry at all"); },
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_DESTINATION_LOOKUP_FAILED");
+  assert.equal(client.callCount(), 1);
+});
+
+test("owner/destination lookup that errors (non-42703) is reported distinctly from a genuine mismatch, filename metadata never resolved", async () => {
   const provider = createKadiV1WhatsAppDeliveryProvider({
     client: fakeSupabase(null, { queryError: true }),
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
     storage: fakeStorage(),
     whatsappApi: fakeWhatsAppApi(),
   });
@@ -137,9 +298,13 @@ test("owner/destination lookup that errors is reported distinctly from a genuine
   assert.equal(result.error, "DELIVERY_DESTINATION_LOOKUP_FAILED");
 });
 
-test("owner_wa_id missing from the freshly-read row is a lookup failure, not a confirmed mismatch", async () => {
+// ==================================================
+// E. Malformed/missing owner: fail closed, filename metadata never resolved.
+// ==================================================
+test("E: owner_wa_id missing from the freshly-read row is a lookup failure, not a confirmed mismatch, and filename metadata is never resolved", async () => {
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client: fakeSupabase({ owner_wa_id: null, document_type: "FACTURE", document_number: "FA-1" }),
+    client: fakeSupabase({ owner_wa_id: null }),
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
     storage: fakeStorage(),
     whatsappApi: fakeWhatsAppApi(),
   });
@@ -152,11 +317,18 @@ test("owner_wa_id missing from the freshly-read row is a lookup failure, not a c
   assert.equal(result.error, "DELIVERY_DESTINATION_LOOKUP_FAILED");
 });
 
-test("owner loaded successfully but the destination hash genuinely differs is a confirmed mismatch", async () => {
+// ==================================================
+// D. Genuine mismatch: one resolved lookup, no Meta contact, filename
+// metadata never resolved (no point — delivery is blocked regardless).
+// ==================================================
+test("D: owner loaded successfully but the destination hash genuinely differs is a confirmed mismatch — never retried, filename never resolved", async () => {
+  const client = scriptedSupabase([{ data: { owner_wa_id: "22600000000" }, error: null }]);
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client: fakeSupabase({ owner_wa_id: "22600000000", document_type: "FACTURE", document_number: "FA-1" }),
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
     storage: fakeStorage(),
     whatsappApi: fakeWhatsAppApi(),
+    sleep: async () => { throw new Error("must never sleep — a confirmed mismatch must never retry"); },
   });
   const result = await provider.deliverDocument({
     finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
@@ -165,17 +337,22 @@ test("owner loaded successfully but the destination hash genuinely differs is a 
   });
   assert.equal(result.ok, false);
   assert.equal(result.error, "DELIVERY_DESTINATION_MISMATCH");
+  assert.equal(client.callCount(), 1);
 });
 
-test("B: a transient lookup failure recovers on retry — delivery continues exactly once, using the value from the successful attempt", async () => {
-  const documentRow = { owner_wa_id: OWNER, document_type: "FACTURE", options: {}, document_number: "FA-B-TRANSIENT" };
+// ==================================================
+// C. Transient lookup failure then success.
+// ==================================================
+test("C: a transient lookup failure recovers on retry — delivery continues exactly once, filename metadata resolved only after success", async () => {
   const client = scriptedSupabase([
     { data: null, error: { message: "connection reset", code: "ECONNRESET" } },
-    { data: documentRow, error: null },
+    { data: { owner_wa_id: OWNER }, error: null },
   ]);
   const sleeps = [];
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi(),
+    client,
+    documentRepository: fakeDocumentRepository({ document_type: "FACTURE", options: {}, document_number: "FA-B-TRANSIENT" }, { expectedOwnerWaId: OWNER }),
+    storage: fakeStorage(), whatsappApi: fakeWhatsAppApi(),
     sleep: async (ms) => { sleeps.push(ms); },
   });
   const result = await provider.deliverDocument({
@@ -193,7 +370,9 @@ test("C: every bounded lookup attempt fails transiently — DELIVERY_DESTINATION
   const client = scriptedSupabase([alwaysFails]);
   const uploadedFilenames = [];
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+    storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
     sleep: async () => {},
   });
   const result = await provider.deliverDocument({
@@ -211,7 +390,9 @@ test("C: a permanent-shaped error (permission/schema) exits without exhausting t
   const permanentError = { data: null, error: { message: "permission denied", code: "42501" } };
   const client = scriptedSupabase([permanentError]);
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi(),
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+    storage: fakeStorage(), whatsappApi: fakeWhatsAppApi(),
     sleep: async () => { throw new Error("must never sleep — a permanent error must not retry at all"); },
   });
   const result = await provider.deliverDocument({
@@ -224,28 +405,14 @@ test("C: a permanent-shaped error (permission/schema) exits without exhausting t
   assert.equal(client.callCount(), 1, "a permanent-shaped error is read exactly once, never retried");
 });
 
-test("D: a genuine mismatch (owner loaded successfully, hash truly differs) never retries — a single read is sufficient and conclusive", async () => {
-  const client = scriptedSupabase([{ data: { owner_wa_id: "22600000000", document_type: "FACTURE", document_number: "FA-D-MISMATCH" }, error: null }]);
-  const provider = createKadiV1WhatsAppDeliveryProvider({
-    client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi(),
-    sleep: async () => { throw new Error("must never sleep — a confirmed mismatch must never retry"); },
-  });
-  const result = await provider.deliverDocument({
-    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
-    destinationRef: EXPECTED_DESTINATION,
-    deliveryAttemptId: "delivery:1",
-  });
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "DELIVERY_DESTINATION_MISMATCH");
-  assert.equal(client.callCount(), 1);
-});
-
 test("E: lookup returns no row (no error, no data) at all — remains fail closed as a lookup failure, absence is never treated as a valid destination, even after retrying", async () => {
   const noRow = { data: null, error: null };
   const client = scriptedSupabase([noRow]);
   const uploadedFilenames = [];
   const provider = createKadiV1WhatsAppDeliveryProvider({
-    client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+    client,
+    documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+    storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
     sleep: async () => {},
   });
   const result = await provider.deliverDocument({
@@ -259,11 +426,13 @@ test("E: lookup returns no row (no error, no data) at all — remains fail close
   assert.equal(uploadedFilenames.length, 0);
 });
 
-test("both distinct failure codes fail closed — neither ever proceeds to upload/send", async () => {
+test("both distinct failure codes fail closed — neither ever proceeds to upload/send, and filename metadata is never resolved", async () => {
   const uploadedFilenames = [];
-  for (const client of [fakeSupabase(null, { queryError: true }), fakeSupabase({ owner_wa_id: "22600000000", document_type: "FACTURE", document_number: "FA-1" })]) {
+  for (const client of [fakeSupabase(null, { queryError: true }), fakeSupabase({ owner_wa_id: "22600000000" })]) {
     const provider = createKadiV1WhatsAppDeliveryProvider({
-      client, storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+      client,
+      documentRepository: fakeDocumentRepository(null, { shouldNotBeCalled: true }),
+      storage: fakeStorage(), whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
     });
     await provider.deliverDocument({
       finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
@@ -271,5 +440,28 @@ test("both distinct failure codes fail closed — neither ever proceeds to uploa
       deliveryAttemptId: "delivery:1",
     });
   }
+  assert.equal(uploadedFilenames.length, 0);
+});
+
+// ==================================================
+// Filename metadata resolution failure (the repository call itself fails
+// after owner verification already succeeded) still fails closed — never
+// falls back to a generic/guessed filename.
+// ==================================================
+test("if filename metadata cannot be resolved after a successful destination verification, delivery still fails closed, never with a guessed filename", async () => {
+  const uploadedFilenames = [];
+  const provider = createKadiV1WhatsAppDeliveryProvider({
+    client: fakeSupabase({ owner_wa_id: OWNER }),
+    documentRepository: fakeDocumentRepository(null),
+    storage: fakeStorage(),
+    whatsappApi: fakeWhatsAppApi({ uploadedFilenames }),
+  });
+  const result = await provider.deliverDocument({
+    finalFile: { document_id: "document:abc", storage_ref: "private-final:x" },
+    destinationRef: EXPECTED_DESTINATION,
+    deliveryAttemptId: "delivery:1",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "DELIVERY_DOCUMENT_METADATA_UNAVAILABLE");
   assert.equal(uploadedFilenames.length, 0);
 });
