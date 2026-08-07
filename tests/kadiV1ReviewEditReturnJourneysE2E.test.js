@@ -582,3 +582,42 @@ test("N. DECHARGE's initial SAVE_DETAILS journey remains completely unaffected b
   assert.equal(document.discharge.receiver, "Fatou");
   assert.equal(Object.hasOwn(document, "options"), false, "a discharge document has no shared FACTURE/DEVIS-style options bag at all");
 });
+
+// EDIT_OPTIONS-001 (independent review finding on the OPTIONS-001 fix,
+// MEDIUM/merge blocker): unlike EDIT_CLIENT/EDIT_CONTENT, the real
+// EDIT_OPTIONS Flow never prefills notes/payment_terms with the document's
+// current values — its single combined form always submits them blank when
+// the owner leaves them untouched. A correction that only changes tax must
+// never silently erase a previously-persisted note or payment term.
+test("O. Invoice option correction that only changes tax, via the real full EDIT_OPTIONS Flow shape, preserves previously persisted notes and payment_terms", async () => {
+  const f = await buildComposition();
+  let document = await buildFactureAtReview(f);
+
+  await send(f, { document, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  let reopened = await loadDocument(f, document.document_id);
+  await send(f, {
+    document: reopened, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: 1800, discount_amount: "", notes: "Merci pour votre confiance", payment_terms: "Paiement sous 30 jours", validity_days: "", payment_method: "", reference: "" },
+  });
+  const withNotes = await loadDocument(f, document.document_id);
+  assert.equal(withNotes.notes, "Merci pour votre confiance");
+  assert.equal(withNotes.payment_terms, "Paiement sous 30 jours");
+
+  await send(f, { document: withNotes, flowKey: "DOCUMENT_REVIEW", action: "EDIT_OPTIONS", data: {} });
+  reopened = await loadDocument(f, document.document_id);
+  // The real EDIT_OPTIONS combined-form submission for "I just want to fix
+  // the tax rate": every other field, including notes/payment_terms (never
+  // prefilled by the real Flow), comes back blank exactly as Meta sends it.
+  await send(f, {
+    document: reopened, flowKey: "EDIT_OPTIONS", action: "SAVE_OPTIONS",
+    data: { tax_rate_basis_points: 2000, discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  });
+  const after = await loadDocument(f, document.document_id);
+  assert.equal(after.tax_rate_basis_points, 2000, "the actually-changed tax rate must still update");
+  assert.equal(after.notes, "Merci pour votre confiance", "an untouched, never-prefilled note must survive a tax-only correction");
+  assert.equal(after.payment_terms, "Paiement sous 30 jours", "an untouched, never-prefilled payment term must survive a tax-only correction");
+
+  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_REVIEW);
+  assert.match(lastFlowData(f).review_summary, /Merci pour votre confiance/, "the refreshed review must still show the preserved note");
+  assert.match(lastFlowData(f).review_summary, /Paiement sous 30 jours/, "the refreshed review must still show the preserved payment terms");
+});

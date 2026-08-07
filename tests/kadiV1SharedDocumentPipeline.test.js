@@ -363,6 +363,73 @@ test("OPTIONS-001: a real Flow submission with every optional field left blank s
   assert.equal(result.ok, true, result.error);
   assert.equal(result.value.discount, before.discount);
   assert.equal(result.value.taxes, before.taxes);
+  assert.equal(result.value.version, before.version, "a genuine no-op must never bump the document version");
+});
+
+// EDIT_OPTIONS-001 (independent review finding on the OPTIONS-001 fix,
+// MEDIUM/merge blocker): unlike ARTICLE_FORM/EDIT_CLIENT, the real
+// EDIT_OPTIONS Flow never prefills notes/payment_terms with the document's
+// current values — its single combined form always submits them blank when
+// the owner leaves them untouched. Before this fix, normalizeOptions still
+// copied that blank straight into the persisted patch, which
+// kadiV1SharedDocumentPipeline.js's setOptions shallow-merges onto the
+// document — so a correction that only touched tax could silently erase a
+// real, previously-saved note/payment term.
+
+test("EDIT_OPTIONS-001: a real correction that only changes tax preserves previously persisted notes and payment_terms untouched", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const withNotes = await f.pipeline.setOptions(command(document, "setOptions", "seed-notes", {
+    options: { notes: "Merci pour votre confiance", payment_terms: "Paiement sous 30 jours" },
+  }));
+  assert.equal(withNotes.ok, true, withNotes.error);
+  document = withNotes.value;
+  assert.equal(document.notes, "Merci pour votre confiance");
+  assert.equal(document.payment_terms, "Paiement sous 30 jours");
+
+  // The real EDIT_OPTIONS combined-form submission: only tax was actually
+  // typed by the owner, every other field (including notes/payment_terms,
+  // which the Flow never prefilled) comes back blank.
+  const taxOnly = await f.pipeline.setOptions(command(document, "setOptions", "tax-only-correction", {
+    options: { tax_rate_basis_points: 1800, discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  }));
+  assert.equal(taxOnly.ok, true, taxOnly.error);
+  document = taxOnly.value;
+  assert.equal(document.tax_rate_basis_points, 1800, "the actually-changed field must still update");
+  assert.equal(document.notes, "Merci pour votre confiance", "an untouched, never-prefilled note must survive a correction to an unrelated field");
+  assert.equal(document.payment_terms, "Paiement sous 30 jours", "an untouched, never-prefilled payment term must survive a correction to an unrelated field");
+
+  const reloaded = await f.repository.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(reloaded.value.notes, "Merci pour votre confiance", "retrievable on a fresh read, not merely present on the in-memory return value");
+  assert.equal(reloaded.value.payment_terms, "Paiement sous 30 jours");
+});
+
+test("EDIT_OPTIONS-001: explicitly supplied non-blank notes/payment_terms still update normally", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  document = (await f.pipeline.setOptions(command(document, "setOptions", "seed-notes-2", {
+    options: { notes: "Ancienne note", payment_terms: "Ancienne condition" },
+  }))).value;
+
+  const corrected = await f.pipeline.setOptions(command(document, "setOptions", "explicit-update", {
+    options: { notes: "Nouvelle note", payment_terms: "Nouvelle condition" },
+  }));
+  assert.equal(corrected.ok, true, corrected.error);
+  assert.equal(corrected.value.notes, "Nouvelle note", "an explicitly resubmitted non-blank value must genuinely overwrite the old one");
+  assert.equal(corrected.value.payment_terms, "Nouvelle condition");
+});
+
+test("EDIT_OPTIONS-001: the initial DOCUMENT_OPTIONS submission with blank notes/payment_terms still works and leaves notes/payment_terms exactly as they were", async () => {
+  const f = fixture();
+  let document = await fillLineDocument(f);
+  const before = { notes: document.notes, payment_terms: document.payment_terms };
+  const result = await f.pipeline.setOptions(command(document, "setOptions", "initial-blank-notes", {
+    options: { tax_rate_basis_points: 1800, discount_amount: "", notes: "", payment_terms: "", validity_days: "", payment_method: "", reference: "" },
+  }));
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.tax_rate_basis_points, 1800, "the actually-supplied field must still update");
+  assert.equal(result.value.notes, before.notes, "a blank note on first submission must never overwrite whatever the field already was");
+  assert.equal(result.value.payment_terms, before.payment_terms);
 });
 
 test("RECU keeps payer, beneficiary and payment facts without artificial items", async () => {
