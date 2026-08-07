@@ -250,8 +250,20 @@ base de données, aucune contrainte modifiée) — code applicatif uniquement.
    [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucune
    mutation de Flow Meta requise. BILL-001 reste explicitement hors
    périmètre, `PLAUSIBLE`/`NOT_REPRODUCED`, non touché.
-4. **[EN ATTENTE]** Revue adversariale indépendante de la PR (diff cumulé,
-   y compris les correctifs REVIEW-001/INV-001/INV-002 et CLIENT-001).
+4. **[FAIT]** Revue finale de fusion (« merge-gate ») de l'intégralité de
+   la PR #15, comparant `main@aacf76211552800054983c726a1211f22ed29aeb` à
+   la tête de branche. Un balayage borné de cohérence Flow/backend a
+   révélé et corrigé EDIT-CONTENT-001 (formulaire combiné d'édition
+   d'articles rejeté pour trois de ses quatre actions réelles — rendu
+   actif pour la première fois par le propre correctif INV-002 de cette
+   PR) et un défaut d'intégration observateur/`emit()` distinct (filtrage
+   de sécurité inopérant en conditions réelles, sans fuite effective) —
+   voir fiche V de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucun autre
+   défaut HIGH/MEDIUM trouvé sur le reste du balayage (recherche de
+   destination, historique, écran de revue, parcours d'édition,
+   observabilité restante, sécurité de rejeu/version obsolète,
+   invariants de facturation).
 5. **[EN ATTENTE]** Fusion dans `main`.
 6. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
 7. **[EN ATTENTE]** Une vraie nouvelle tentative de reprise par le

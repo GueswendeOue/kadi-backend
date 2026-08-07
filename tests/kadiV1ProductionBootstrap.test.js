@@ -283,28 +283,80 @@ test("bootstrap inspector uses the same real factory", () => {
   assert.equal(report.readiness.state, "READY");
 });
 
+// The observer's real and only caller, kadiV1GenerationLifecycleService.js's
+// emit(), invokes it with a SINGLE merged, frozen object
+// (`observer(Object.freeze({ event, ...details }))`) — never two separate
+// arguments. A prior version of this observer expected (event, details) as
+// two arguments, which the merge-gate review caught: called the real way,
+// `event` received the whole merged object and `details` silently defaulted
+// to {}, making the allowlist filter a permanent no-op. Every test below
+// calls the observer exactly the way its one real caller does.
 test("generation lifecycle observer forwards only the closed-set safe fields (reason_code, duplicate) to the logger, stripping anything else", () => {
   const calls = [];
   const observer = createKadiV1GenerationLifecycleObserver({ log: (event, details) => calls.push([event, details]) });
-  observer("delivery_retry_failed", { reason_code: "DELIVERY_DESTINATION_LOOKUP_FAILED", owner_wa_id: "22670000000", document_id: "document:secret", destination_hash: "abc123" });
+  observer({ event: "delivery_retry_failed", reason_code: "DELIVERY_DESTINATION_LOOKUP_FAILED", owner_wa_id: "22670000000", document_id: "document:secret", destination_hash: "abc123" });
   assert.deepEqual(calls, [["delivery_retry_failed", { reason_code: "DELIVERY_DESTINATION_LOOKUP_FAILED" }]]);
 });
 
 test("generation lifecycle observer passes duplicate:true/false through untouched", () => {
   const calls = [];
   const observer = createKadiV1GenerationLifecycleObserver({ log: (event, details) => calls.push([event, details]) });
-  observer("delivery_retry_succeeded", { duplicate: true });
+  observer({ event: "delivery_retry_succeeded", duplicate: true });
   assert.deepEqual(calls, [["delivery_retry_succeeded", { duplicate: true }]]);
 });
 
 test("generation lifecycle observer accepts an event with no details at all, and never throws even if the logger itself throws", () => {
   const observer = createKadiV1GenerationLifecycleObserver({ log: () => { throw new Error("logger down"); } });
-  assert.doesNotThrow(() => observer("delivery_retry_started"));
+  assert.doesNotThrow(() => observer({ event: "delivery_retry_started" }));
 });
 
 test("production bootstrap wires a real observer into the generation lifecycle service — no longer the silent no-op default", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "kadiV1ProductionBootstrap.js"), "utf8");
   assert.match(source, /createGenerationLifecycleService\(\{[\s\S]{0,400}observer:\s*createKadiV1GenerationLifecycleObserver\(logger\)/);
+});
+
+// Integration proof: the observer wired together with the REAL emit()
+// implementation from kadiV1GenerationLifecycleService.js — not each piece
+// tested in isolation against its own assumed contract. This is exactly
+// the gap that let the two-argument/one-argument mismatch above ship
+// undetected the first time.
+test("the real emit() and the real observer agree on their call contract end to end — only reason_code/duplicate ever reach the logger", async () => {
+  const { createGenerationLifecycleService } = require("../kadiV1GenerationLifecycleService");
+  const { createInMemoryV1DocumentRepository } = require("../kadiV1DocumentRepository");
+  const { createInMemoryV1PreviewRepository } = require("../kadiV1PreviewRepository");
+  const { createInMemoryGenerationLifecycleRepository } = require("../kadiV1GenerationLifecycleRepository");
+  const { createDocumentDomain } = require("../kadiV1DocumentDomain");
+  const { createWalletReservationService } = require("../kadiV1WalletReservationService");
+  const { createFinalGenerationService, createInMemoryFinalFileStorage } = require("../kadiV1FinalGenerationService");
+  const { createDeliveryService } = require("../kadiV1DeliveryService");
+  const calls = [];
+  const observer = createKadiV1GenerationLifecycleObserver({ log: (event, details) => calls.push([event, details]) });
+  const clock = () => new Date().toISOString();
+  const generationRepository = createInMemoryGenerationLifecycleRepository({ balances: {} });
+  const service = createGenerationLifecycleService({
+    documentRepository: createInMemoryV1DocumentRepository(),
+    previewRepository: createInMemoryV1PreviewRepository(),
+    generationRepository,
+    quoteService: { validateGenerationQuote: async () => ({ ok: false, error: "NOT_FOUND" }) },
+    walletReservationService: createWalletReservationService({ repository: generationRepository, clock }),
+    finalGenerationService: createFinalGenerationService({ repository: generationRepository, storage: createInMemoryFinalFileStorage(), renderer: { render: async () => ({ ok: false, error: "NOT_USED" }) }, clock }),
+    deliveryService: createDeliveryService({ repository: generationRepository, provider: { deliverDocument: async () => ({ ok: false, error: "NOT_USED" }), getDeliveryStatus: async () => ({ ok: true, value: null }) }, clock }),
+    domain: createDocumentDomain(),
+    clock,
+    observer,
+  });
+  // A document that does not exist is enough: runRetryDelivery's very
+  // first line unconditionally emits "delivery_retry_requested" before
+  // ever touching the repository — a real emit() call through the real
+  // observer, exactly the integration the mismatch above evaded.
+  await service.retryDelivery({ ownerWaId: "22670000000", documentId: "document:missing", idempotencyKey: "retry:contract-check" });
+  assert.ok(calls.length > 0, "the real code path must emit at least one lifecycle event for this to be a real integration check");
+  for (const [event, details] of calls) {
+    assert.equal(typeof event, "string", "event must be the plain event name string, never the whole merged payload object");
+    for (const key of Object.keys(details)) {
+      assert.ok(["reason_code", "duplicate"].includes(key), `logger received an unexpected field "${key}" — the allowlist filter did not actually run`);
+    }
+  }
 });
 
 test("index mounts the production bootstrap instead of the incomplete composition", () => {

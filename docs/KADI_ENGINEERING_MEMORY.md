@@ -2047,3 +2047,95 @@ normaliser une fois, à la frontière de validation Flow→domaine déjà
 établie pour ce genre de cas (voir aussi fiche P) — jamais laisser
 persister deux représentations contradictoires, et toujours faire échouer
 explicitement un conflit plutôt que d'en choisir une silencieusement.
+
+## V. Revue finale de fusion de la PR #15 : deux défauts confirmés et corrigés avant fusion
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, PR #15, toujours non
+  fusionnée, non déployée.
+* **Contexte :** revue finale de fusion (« merge-gate ») de l'intégralité
+  de la PR #15, comparant `main@aacf76211552800054983c726a1211f22ed29aeb`
+  à la tête de branche. Un balayage borné de cohérence entre chaque
+  contrat Flow réellement touché ou dépendant de la PR et la politique
+  backend correspondante (même méthode que celle qui a révélé CLIENT-001)
+  a révélé un second défaut de la même famille ; une revue croisée de
+  l'observabilité a révélé un défaut d'intégration distinct.
+
+### V.1 — EDIT-CONTENT-001 : le formulaire combiné d'édition d'articles était rejeté pour trois de ses quatre actions réelles
+
+* **Constat :** `flows/v1_draft/kadi_edit_content_v1.json` est un formulaire
+  unique combiné pour les quatre actions `EDIT_CONTENT`
+  (`ADD_CONTENT`/`UPDATE_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT`) — son
+  unique bouton de pied de page soumet toujours
+  `item_id`/`description`/`quantity`/`unit`/`unit_custom`/`unit_price`
+  ensemble, quelle que soit l'action choisie (Meta soumet tous les champs
+  déclarés du formulaire à chaque soumission). Avant correctif, seule la
+  liste blanche d'`UPDATE_CONTENT` acceptait déjà l'ensemble exact de ces
+  champs ; les trois autres rejetaient la vraie soumission avec
+  `KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN` : `ADD_CONTENT` et `FINISH_CONTENT`
+  sur `item_id`, `REMOVE_CONTENT` et `FINISH_CONTENT` sur le groupe
+  `description`/`quantity`/`unit`/`unit_custom`/`unit_price`. **Ce défaut
+  préexistait mais était resté invisible/sans conséquence pratique tant
+  que INV-002 (fiche T) n'avait pas rendu `EDIT_CONTENT` réellement
+  atteignable** (avant ce correctif, l'écran n'avait ni données réelles ni
+  action de fin) — le propre correctif de cette PR pour INV-002 rendait ce
+  défaut actif pour la première fois, sans que les tests de composition de
+  production existants (qui reproduisaient une forme de soumission
+  incomplète, à l'image de l'erreur initiale sur `tax_id`) ne le
+  détectent.
+* **Correctif :** `ACTION_FIELDS.ADD_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT`
+  élargis pour accepter la vraie forme combinée du formulaire ;
+  `item_id`, non pertinent pour un nouvel article, est retiré une seule
+  fois par une nouvelle fonction `normalizeAddContentItemId`, à la même
+  frontière de normalisation Flow→domaine que `resolveUnitCustom` et
+  `normalizeClientTaxIdentifier` — jamais transmis au domaine, qui ne le
+  reconnaît pas. `ARTICLE_FORM`'s propre `ADD_CONTENT` (sans `item_id`)
+  reste inchangé.
+* **Preuve :** `tests/kadiV1FlowReplyRuntime.test.js`, quatre scénarios
+  directs (`ADD_CONTENT`/`REMOVE_CONTENT`/`FINISH_CONTENT` avec la vraie
+  forme complète, `ARTICLE_FORM` non affecté) plus un test de parité qui
+  dérive les quatre actions déclarées et le vrai jeu de champs soumis
+  directement depuis `kadi_edit_content_v1.json`. `tests/kadiV1ReviewEditReturnJourneysE2E.test.js`
+  (scénarios C et J) corrigés pour soumettre la vraie forme complète —
+  fermé sur la même composition de production qui aurait dû le détecter.
+
+### V.2 — L'observateur de cycle de vie ne filtrait jamais rien en conditions réelles
+
+* **Constat :** `kadiV1GenerationLifecycleService.js`'s vrai `emit()`
+  appelle l'observateur avec **un seul objet fusionné**
+  (`observer(Object.freeze({ event, ...details }))`) — le contrat
+  préexistant déjà utilisé ailleurs (`kadiV1GenerationLifecycle.test.js`,
+  `kadiV1Recharge.test.js` : `observer: (event) => ...`). Le nouvel
+  observateur introduit par la fiche R/S attendait à tort **deux**
+  arguments séparés (`(event, details)`). Appelé de la vraie façon,
+  `event` recevait l'objet fusionné entier et `details` restait toujours
+  `{}` par défaut — la liste blanche de filtrage
+  (`SAFE_LIFECYCLE_OBSERVER_KEYS`) ne s'exécutait donc jamais réellement,
+  bien qu'elle passe ses propres tests unitaires (qui appelaient
+  l'observateur isolément avec la forme à deux arguments qu'il attendait
+  lui-même, sans jamais l'exercer avec le vrai `emit()`). **Aucune fuite
+  réelle n'en a résulté** : chaque site d'appel réel d'`emit()` ne passe
+  aujourd'hui que `reason_code`/`duplicate`, jamais un champ sensible —
+  mais la garantie de défense en profondeur elle-même était inopérante,
+  et un futur `emit()` portant un champ non prévu aurait atteint le
+  logger sans filtrage.
+* **Correctif :** l'observateur accepte désormais l'objet fusionné unique
+  réel, en extrait `event` puis filtre le reste selon la même liste
+  blanche.
+* **Preuve :** `tests/kadiV1ProductionBootstrap.test.js` — les trois tests
+  existants adaptés à la vraie forme d'appel, plus un nouveau test
+  d'intégration qui construit le vrai `kadiV1GenerationLifecycleService`
+  avec le vrai observateur ensemble (pas chacun isolément contre sa propre
+  hypothèse de contrat) et vérifie qu'un événement réellement émis
+  n'atteint le logger qu'avec des champs de la liste blanche.
+
+### Prévention (les deux)
+
+Un composant testé isolément contre sa propre hypothèse de contrat ne
+prouve rien sur son intégration réelle avec l'unique appelant qui compte —
+toujours ajouter au moins un test qui construit les deux côtés réels
+ensemble. Et, comme pour CLIENT-001 : quand un écran Flow combine
+plusieurs actions dans un seul formulaire, vérifier explicitement que la
+vraie forme de soumission (tous les champs déclarés, à chaque fois) est
+acceptée pour **chacune** des actions qu'il peut soumettre, pas seulement
+celle testée en premier.

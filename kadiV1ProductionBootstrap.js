@@ -254,7 +254,18 @@ function createProviderAdapters({ env, adapters = null } = {}) {
 // needing to boot the full production bootstrap.
 const SAFE_LIFECYCLE_OBSERVER_KEYS = Object.freeze(["reason_code", "duplicate"]);
 function createKadiV1GenerationLifecycleObserver(logger) {
-  return function generationLifecycleObserver(event, details = {}) {
+  // kadiV1GenerationLifecycleService.js's real emit() — the only real
+  // caller — invokes the observer with a single merged, frozen object
+  // (`observer(Object.freeze({ event, ...details }))`), matching the
+  // pre-existing observer contract already relied on elsewhere
+  // (kadiV1GenerationLifecycle.test.js, kadiV1Recharge.test.js both use
+  // `observer: (event) => ...` with the event's own name accessible as
+  // `event.event`). A two-argument `(event, details)` signature here
+  // would silently receive the whole merged object as `event` and an
+  // always-empty `details`, making the allowlist filter below a dead
+  // no-op — confirmed by merge-gate review before this fix existed.
+  return function generationLifecycleObserver(payload) {
+    const { event, ...details } = payload && typeof payload === "object" ? payload : {};
     const safeDetails = {};
     for (const key of SAFE_LIFECYCLE_OBSERVER_KEYS) {
       if (Object.hasOwn(details, key)) safeDetails[key] = details[key];

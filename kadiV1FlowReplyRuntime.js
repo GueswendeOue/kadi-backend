@@ -51,9 +51,20 @@ const ACTION_FIELDS = Object.freeze({
   // currently submits "ifu" itself (see CLIENT-001 in
   // docs/KADI_ENGINEERING_MEMORY.md).
   SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id", "ifu"]),
-  ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
+  // kadi_edit_content_v1.json is a single combined form shared by all four
+  // EDIT_CONTENT actions — its one Footer always submits item_id/
+  // description/quantity/unit/unit_custom/unit_price together, regardless
+  // of which action radio button was chosen (Meta submits every declared
+  // form field on every submission). ARTICLE_FORM's own ADD_CONTENT never
+  // submits item_id (a brand-new item has none yet) — accepted here only
+  // so it can be safely stripped by normalizeAddContentItemId() below,
+  // never persisted. REMOVE_CONTENT only ever reads item_id downstream
+  // (kadiV1FlowCommandRuntime.js); the other fields it now accepts are
+  // simply unused, exactly like SAVE_OPTIONS already always receives
+  // fields the user didn't touch.
+  ADD_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
-  REMOVE_CONTENT: Object.freeze(["item_id"]),
+  REMOVE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   SAVE_OPTIONS: Object.freeze(["tax_rate_percent", "tax_rate_basis_points", "discount_amount", "notes", "payment_terms", "validity_days", "payment_method", "reference"]),
   VERIFY: Object.freeze([]),
   EDIT_CLIENT: Object.freeze([]),
@@ -69,7 +80,14 @@ const ACTION_FIELDS = Object.freeze({
   SEARCH: Object.freeze(["query", "document_type", "date_from", "date_to"]),
   OPEN_DOCUMENT: Object.freeze(["document_id"]),
   SAVE_DETAILS: Object.freeze(["giver", "recipient", "transferred_content_type", "amount", "description", "quantity", "reason", "observations"]),
-  FINISH_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_price"]),
+  // FINISH_CONTENT is reachable from two shapes: DOCUMENT_CONTENT submits
+  // no data at all, EDIT_CONTENT's combined form always submits all six
+  // fields (see the ADD_CONTENT/REMOVE_CONTENT comment above). None of
+  // them are read for FINISH_CONTENT downstream
+  // (kadiV1FlowCommandRuntime.js's FINISH_CONTENT mapping passes only
+  // documentBase, never data) — accepted here so neither origin's real
+  // payload is rejected.
+  FINISH_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
 });
 
 const FORBIDDEN_AUTHORITY_FIELDS = new Set([
@@ -141,6 +159,21 @@ function normalizeDischargeNumbers(action, data) {
       delete normalized.quantity;
     }
   }
+  return ok(normalized);
+}
+
+// kadi_edit_content_v1.json's single combined form always submits item_id
+// alongside every action, including ADD_CONTENT — but a brand-new item has
+// no id yet, and kadiV1SharedDocumentPolicies.js's normalizeLineInput has
+// its own closed field allowlist that does not recognize item_id at all
+// (it would fail DOCUMENT_CONTENT_FIELD_UNKNOWN downstream even though
+// this function's own allowlist above now accepts the field). Stripped
+// here, the same Flow/backend boundary used for every other field-name
+// mismatch already handled in this file — never forwarded to the domain.
+function normalizeAddContentItemId(action, data) {
+  if (action !== "ADD_CONTENT" || !Object.hasOwn(data, "item_id")) return ok(data);
+  const normalized = { ...data };
+  delete normalized.item_id;
   return ok(normalized);
 }
 
@@ -371,7 +404,9 @@ function validateActionPayload(flowKey, action, data) {
   if (!taxRateNormalized.ok) return taxRateNormalized;
   const unitResolved = resolveUnitCustom(action, taxRateNormalized.value);
   if (!unitResolved.ok) return unitResolved;
-  const clientTaxIdentifierNormalized = normalizeClientTaxIdentifier(action, unitResolved.value);
+  const addContentItemIdResolved = normalizeAddContentItemId(action, unitResolved.value);
+  if (!addContentItemIdResolved.ok) return addContentItemIdResolved;
+  const clientTaxIdentifierNormalized = normalizeClientTaxIdentifier(action, addContentItemIdResolved.value);
   if (!clientTaxIdentifierNormalized.ok) return clientTaxIdentifierNormalized;
   return ok(Object.freeze(structuredClone(clientTaxIdentifierNormalized.value)));
 }

@@ -239,7 +239,11 @@ test("C. Invoice item correction: EDIT_CONTENT -> add/update/remove loop stays i
   let current = await loadDocument(f, before.document_id);
   assert.deepEqual(lastFlowData(f).item_options.map((entry) => entry.id), current.items.map((item) => item.item_id), "real current items offered, never the fake example id");
 
-  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "ADD_CONTENT", data: { description: "Fer à béton", quantity: 5, unit: "unité", unit_custom: "", unit_price: 3000 } });
+  // EDIT-CONTENT-001: kadi_edit_content_v1.json's single combined form
+  // always submits item_id/description/quantity/unit/unit_custom/unit_price
+  // together regardless of the chosen action — every data block below
+  // reproduces that real shape faithfully, not a hand-picked subset.
+  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "ADD_CONTENT", data: { item_id: "", description: "Fer à béton", quantity: 5, unit: "unité", unit_custom: "", unit_price: 3000 } });
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.EDIT_CONTENT, "adding another item from the edit screen must stay in EDIT_CONTENT, not bounce to DOCUMENT_CONTENT");
   current = await loadDocument(f, before.document_id);
   assert.equal(current.items.length, 2);
@@ -250,11 +254,11 @@ test("C. Invoice item correction: EDIT_CONTENT -> add/update/remove loop stays i
   assert.equal(current.items.find((item) => item.item_id === cimentItemId).description, "Ciment (corrigé)");
 
   const ferItemId = current.items.find((item) => item.description === "Fer à béton").item_id;
-  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "REMOVE_CONTENT", data: { item_id: ferItemId } });
+  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "REMOVE_CONTENT", data: { item_id: ferItemId, description: "", quantity: "", unit: "", unit_custom: "", unit_price: "" } });
   current = await loadDocument(f, before.document_id);
   assert.equal(current.items.length, 1);
 
-  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "FINISH_CONTENT", data: {} });
+  await send(f, { document: current, flowKey: "EDIT_CONTENT", action: "FINISH_CONTENT", data: { item_id: "", description: "", quantity: "", unit: "", unit_custom: "", unit_price: "" } });
   const after = await loadDocument(f, before.document_id);
   assert.equal(after.client.name, before.client.name, "client untouched by content correction");
   assert.equal(after.tax_rate_basis_points, before.tax_rate_basis_points, "options untouched by content correction");
@@ -434,12 +438,12 @@ test("J. Replayed FINISH_CONTENT reply (same wamid) is idempotent — no duplica
   const before = await buildFactureAtReview(f);
   await send(f, { document: before, flowKey: "DOCUMENT_REVIEW", action: "EDIT_CONTENT", data: {} });
   const reopened = await loadDocument(f, before.document_id);
-  await send(f, { document: reopened, flowKey: "EDIT_CONTENT", action: "ADD_CONTENT", data: { description: "Peinture", quantity: 1, unit: "unité", unit_custom: "", unit_price: 8000 } });
+  await send(f, { document: reopened, flowKey: "EDIT_CONTENT", action: "ADD_CONTENT", data: { item_id: "", description: "Peinture", quantity: 1, unit: "unité", unit_custom: "", unit_price: 8000 } });
   const withNewItem = await loadDocument(f, before.document_id);
   assert.equal(withNewItem.items.length, 2);
 
   const sessionId = await openSession(f, { document: withNewItem, expectedFlowKey: "EDIT_CONTENT" });
-  const message = nfmReply({ sessionId, flowKey: "EDIT_CONTENT", action: "FINISH_CONTENT", data: {} });
+  const message = nfmReply({ sessionId, flowKey: "EDIT_CONTENT", action: "FINISH_CONTENT", data: { item_id: "", description: "", quantity: "", unit: "", unit_custom: "", unit_price: "" } });
 
   const first = await f.composition.webhookHandler({ messages: [message] });
   assert.equal(first.results[0].accepted, true);

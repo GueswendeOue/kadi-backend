@@ -380,6 +380,24 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   aucune mutation de Flow Meta requise. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
   Voir fiche U de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
   pour le détail complet et la preuve (tests de parité Flow/backend inclus).
+* **Mise à jour (2026-08-07) : revue finale de fusion de la PR #15, deux
+  défauts confirmés et corrigés avant fusion, même branche, PR #15 toujours
+  `OPEN`/`DRAFT`/non fusionnée/non déployée.** Un balayage borné de
+  cohérence Flow/backend (même méthode que CLIENT-001) a révélé
+  **EDIT-CONTENT-001** : le formulaire combiné `kadi_edit_content_v1.json`
+  soumet toujours les mêmes six champs quelle que soit l'action choisie,
+  mais trois des quatre actions réelles (`ADD_CONTENT`, `REMOVE_CONTENT`,
+  `FINISH_CONTENT`) rejetaient cette vraie forme — rendu actif pour la
+  première fois par le propre correctif INV-002 de cette PR, qui a rendu
+  `EDIT_CONTENT` réellement atteignable. Une revue croisée de
+  l'observabilité a révélé un second défaut, distinct : l'observateur de
+  cycle de vie (fiche S/T) attendait deux arguments séparés alors que le
+  vrai `emit()` en passe un seul fusionné — la liste blanche de filtrage
+  ne s'exécutait donc jamais en conditions réelles (aucune fuite
+  effective : chaque site d'appel réel ne passait déjà que des champs
+  sûrs, mais la garantie elle-même était inopérante). Les deux corrigés
+  sur la même branche. Voir fiche V de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
 * **BILL-001, rappel — toujours `PLAUSIBLE`, `NOT_REPRODUCED`, hors
   périmètre de ce lot :** le solde affiché (« Mon solde ») ne semble pas
   déduire les crédits retenus par une réservation restée `RESERVED` sans
