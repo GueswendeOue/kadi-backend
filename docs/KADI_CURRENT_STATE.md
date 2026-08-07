@@ -589,6 +589,34 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   produit à prendre séparément. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
   Voir fiche Z.1 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
   pour le détail complet et la preuve.
+* **Mise à jour (2026-08-07) : RECHARGE-CONTRACT-001 suite 2 (rejeu exact
+  avec plusieurs recharges actives préexistantes, HIGH/P0) corrigée avant
+  fusion, même branche, PR #19 toujours `OPEN`/`DRAFT`/non fusionnée/non
+  déployée.** Une nouvelle revue adversariale indépendante a signalé que
+  `sessionOpenedAt` (correctif précédent) empêche bien un `CANCEL`
+  obsolète d'affecter une recharge créée après l'ouverture de la session
+  Flow, mais ne rend pas `cancel()` idempotent quand **plusieurs**
+  recharges actives existaient déjà avant cette ouverture (aucune
+  contrainte n'impose une seule recharge active par propriétaire) : un
+  rejeu exact d'un `CANCEL` déjà consommé, après un premier `CANCEL`
+  ayant annulé la plus récente des deux, pouvait annuler à tort la
+  seconde, plus ancienne. **Prouvé concrètement dans la composition de
+  production avant correctif.** **Corrigé :** un court-circuit strictement
+  limité à la paire `(RECHARGE, CANCEL)` dans
+  `kadiV1FlowReplyRuntime.js`'s `handle()` — quand la couche session
+  signale un doublon exact pour cette paire précise, la commande métier
+  n'est plus jamais réexécutée du tout. Le signal utilisé est le même état
+  de session persisté déjà authentifié ailleurs (jamais un indicateur en
+  mémoire), donc valide après un redémarrage de processus — prouvé
+  explicitement en reconstruisant toute la pile runtime autour des mêmes
+  dépôts persistés. Compromis assumé et documenté : un `CANCEL` réellement
+  échoué (erreur transitoire) ne peut plus être repris automatiquement par
+  un simple rejeu de webhook — l'utilisateur doit rouvrir une nouvelle
+  session Flow. Aucune autre action ni aucun autre Flow affecté (prouvé
+  explicitement pour `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/
+  `GENERATION_CONFIRMATION`). **Statut : `IMPLEMENTED_NOT_DEPLOYED`.** Voir
+  fiche Z.2 de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
 * **Validation téléphone requise après déploiement éventuel :** comme pour
   tout correctif de cette branche, la validation manuelle sur téléphone
   reste requise après un déploiement réel avant de considérer un parcours

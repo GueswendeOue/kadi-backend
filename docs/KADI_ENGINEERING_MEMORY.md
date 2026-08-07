@@ -3250,3 +3250,149 @@ elle-même. Et, quand une correction de sécurité candidate est générique
 plus petite et la plus spécifique dont la sûreté est prouvée dans le
 périmètre de la mission, plutôt qu'un changement de comportement large
 non prouvé sur l'ensemble du système.
+
+### Z.2 — RECHARGE-CONTRACT-001, suite : `sessionOpenedAt` seul ne suffisait pas quand plusieurs recharges actives préexistaient (HIGH/P0)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-recharge-contract-r0`, PR #19, toujours non fusionnée, non
+  déployée.
+* **Origine :** revue adversariale indépendante de la PR #19 (mission
+  « KADI V1 — T3 RECHARGE-CONTRACT-001 INDEPENDENT REVIEW FIX R2 »),
+  constat HIGH/P0, bloquant de fusion. Le correctif R1 (`sessionOpenedAt`,
+  fiche Z.1) reste correct et inchangé.
+
+### Constat, reproduit avant tout correctif
+
+`sessionOpenedAt` (R1) empêche un `CANCEL` obsolète ou rejoué d'affecter
+une recharge créée **après** l'ouverture de cette session Flow, mais ne
+rend pas `cancel()` idempotent quand **plusieurs** sessions actives
+éligibles existaient déjà **avant** l'ouverture de la session Flow de
+`CANCEL`. Rien dans le code n'impose une seule recharge active par
+propriétaire : `createRechargeSession()` ne déduplique que par clé
+d'idempotence de la commande, et `SELECT_PACK` peut être appelé plusieurs
+fois de suite, créant A puis B, toutes deux `PAYMENT_PENDING`, avant
+qu'un `CANCEL` ne soit jamais soumis.
+
+**Reproduction, prouvée dans la composition de production :** A et B sont
+créées (toutes deux `PAYMENT_PENDING`) → la session Flow C de `CANCEL`
+n'est ouverte qu'ensuite → le premier `CANCEL` annule B (la plus récente
+éligible), A reste `PAYMENT_PENDING` — comportement R1 correct → le même
+message `CANCEL` exact est rejoué → `consumeReply()` identifie
+correctement le doublon, mais **avant le correctif R2**, `handle()`
+exécutait quand même la commande une seconde fois → la recherche se
+résout maintenant sur A (la nouvelle session éligible la plus récente
+puisque B est déjà `CANCELLED`) → A est annulée à tort elle aussi.
+`sessionOpenedAt` ne protège pas contre ce cas car A **et** B ont toutes
+deux été créées avant `C.opened_at`.
+
+### Contrat d'exécution de doublon — décision retenue en R2
+
+Le signal `consumed.duplicate` de `kadiV1ConversationSession.js`'s
+`consumeReply()` est déjà autoritaire et persistant : il ne devient `true`
+que lorsque la session est déjà `CONSUMED` **et** que
+`consumed_reply_key` correspond exactement à la clé d'idempotence
+soumise — un état enregistré en base, jamais un indicateur en mémoire de
+processus, donc valide après un redémarrage. `RECHARGE`/`CANCEL` reste la
+seule action sans clé d'idempotence de commande propre (voir fiche Z.1) ;
+c'est donc la seule où ce signal doit **aussi** empêcher une seconde
+exécution de la commande elle-même, pas seulement supprimer l'affichage.
+
+**Correctif retenu :** un court-circuit strictement borné à la paire
+`(RECHARGE, CANCEL)` dans `kadiV1FlowReplyRuntime.js`'s `handle()` :
+quand `consumed.duplicate === true` **et** `flowKey === "RECHARGE"` **et**
+`action === "CANCEL"`, `commands.execute(...)` n'est **jamais** appelé —
+un résultat `{handled:true, action, flow_key, duplicate:true, result:null}`
+est retourné directement, de la même forme que le chemin normal, donc
+déjà compatible avec `presentFlowReply` (qui court-circuite lui-même dès
+`result.duplicate === true`, avant de jamais lire `result.result`). Un
+raccourci générique pour toute commande dupliquée a été explicitement
+écarté (voir fiche Z.1) faute de preuve exhaustive de son innocuité pour
+les Flows existants ; ce correctif reste donc délibérément scindé et
+spécifique.
+
+`input.flowKey`/`input.action` sont déjà dignes de confiance à cet
+endroit : `validateReplyEnvelope` (appelée juste avant) a déjà vérifié
+`FLOW_ACTIONS[flowKey]?.includes(action)`, et `consumeReply` a déjà
+vérifié que la session chargée a bien `expected_flow_key === flowKey` —
+aucun risque d'usurpation.
+
+### Compromis de conception assumé, documenté
+
+`consumeReply()` marque la session `CONSUMED` **avant** que
+`commands.execute(...)` ne soit appelé, y compris quand ce premier appel
+échoue ensuite (ex. erreur transitoire Supabase). Conséquence assumée :
+un premier `CANCEL` réellement échoué, puis rejoué via un nouveau webhook
+identique, sera désormais lui aussi court-circuité comme doublon — la
+reprise automatique par rejeu de webhook n'est plus possible pour
+`RECHARGE`/`CANCEL` spécifiquement (elle reste inchangée pour toutes les
+autres actions, dont la reprise après échec transitoire reste couverte
+par le test préexistant « recoverable command failure can be retried
+through consumed-session replay »). C'est le compromis explicitement
+demandé par la mission R2 et jugé plus sûr pour une mutation financière
+qu'un rejeu automatique incertain : en cas d'échec réel, l'utilisateur
+doit rouvrir une nouvelle session Flow `RECHARGE` pour retenter
+l'annulation, plutôt que de dépendre d'un rejeu de webhook.
+
+### Preuve
+
+* `tests/kadiV1RechargeContractE2E.test.js` : Test A — deux sessions
+  actives A et B préexistant à l'ouverture de la session Flow, premier
+  `CANCEL` annule B, rejeu exact du même message laisse A **et** B
+  strictement inchangées (aucune seconde mutation) ; Test B — le même
+  scénario, mais après reconstruction complète de la pile runtime
+  (`FlowReplyRuntime`/`FlowCommandRuntime`/runtime recharge/présentateur/
+  composition) autour des **mêmes** dépôts déjà persistés
+  (session, recharge, index propriétaire, fournisseur de paiement),
+  simulant un redémarrage de processus — la protection survit parce
+  qu'elle dérive de l'état de session persisté, jamais d'un indicateur en
+  mémoire. Les deux scénarios R1 existants et le scénario d'annulation
+  réellement courante mis à jour pour refléter le court-circuit (la
+  réponse au rejeu devient désormais `accepted:true, duplicate:true` au
+  lieu d'un échec `RECHARGE_SESSION_NOT_FOUND`).
+* `tests/kadiV1FlowReplyRuntime.test.js` : test unitaire dédié prouvant
+  qu'un rejeu exact de `RECHARGE`/`CANCEL` n'appelle jamais
+  `commands.execute` une seconde fois ; trois tests dédiés prouvant que le
+  court-circuit ne s'applique **pas** à `DOCUMENT_REVIEW`/`CANCEL`,
+  `DOCUMENT_PREVIEW`/`CANCEL` ni `GENERATION_CONFIRMATION`/`CANCEL` — les
+  trois continuent d'appeler `commands.execute` une seconde fois sur un
+  rejeu exact, comportement générique préexistant totalement inchangé.
+* Focused : 248/248 (fichiers concernés). Suite complète : 1399/1399.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`input.flowKey`/`input.action` déjà vérifiés authentiques avant ce point
+(aucun risque d'usurpation) ; le court-circuit ne modifie la forme du
+résultat d'aucune autre paire Flow/action ; `presentFlowReply` gère déjà
+`result.result === null` sur un doublon sans jamais y accéder ; aucune
+nouvelle table, colonne ni migration ; isolation propriétaire, contrat de
+champs combiné, et non-régression T4
+(`GENERATION_CONFIRMATION`/`CANCEL` toujours volontairement non corrigé)
+tous confirmés inchangés par la suite complète. Aucune mutation Supabase,
+Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* Repris de la fiche Z.1 : raccourci générique de doublon dans `handle()`
+  toujours non implémenté au-delà de `RECHARGE`/`CANCEL`, décision produit
+  sur « Revenir plus tard », `RECHARGE-EXACTLY-ONCE-GATE` dédié.
+* Le compromis « pas de reprise automatique par rejeu de webhook pour un
+  `CANCEL` réellement échoué » (voir ci-dessus) reste à documenter côté
+  produit si un besoin de reprise fiable pour ce cas précis apparaît plus
+  tard — non traité ici, comportement jugé acceptable et volontaire pour
+  cette mission.
+
+### Prévention
+
+Quand le signal de doublon d'une couche session est utilisé pour empêcher
+la réexécution d'une commande, vérifier explicitement à quel moment la
+session est marquée consommée par rapport à l'exécution de cette
+commande — si la session est marquée consommée avant que la commande
+n'ait fini (succès ou échec), le court-circuit empêchera aussi la reprise
+d'un échec réellement transitoire pour cette action précise ; documenter
+ce compromis plutôt que de le découvrir en production. Et, quand une
+première protection (ici `sessionOpenedAt`) semble suffire, vérifier
+explicitement qu'elle couvre bien **tous** les états de base valides
+possibles avant l'instant de référence choisi — ici, plusieurs entités
+actives simultanées pour un même propriétaire étaient un état valide non
+couvert par une simple borne temporelle.

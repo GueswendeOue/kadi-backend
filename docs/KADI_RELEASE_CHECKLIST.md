@@ -465,22 +465,44 @@ Orange Money ou tout autre fournisseur de paiement.
    fichiers concernés) puis suite complète (1393/1393), `git diff --check`
    propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet mis à
    jour.
-6. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
-   mise à jour (post-`sessionOpenedAt`).
-7. **[EN ATTENTE]** Fusion dans `main`.
-8. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
-9. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
-   et annulation via le Flow `RECHARGE` réel, observée en conditions
-   réelles (validation téléphone).
-10. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
+6. **[FAIT]** Nouvelle revue adversariale indépendante de la PR #19 — a
+   signalé un second défaut HIGH/P0, bloquant de fusion : `sessionOpenedAt`
+   seul n'empêchait pas un rejeu exact de `CANCEL` d'annuler une seconde
+   recharge active différente quand **plusieurs** recharges actives
+   préexistaient à l'ouverture de la session Flow (aucune contrainte
+   n'impose une seule recharge active par propriétaire). Prouvé
+   concrètement : A et B actives avant l'ouverture de la session Flow,
+   premier `CANCEL` annule B, rejeu exact du même message annulait A à
+   tort. Corrigé sur la même branche : court-circuit strictement limité à
+   `(RECHARGE, CANCEL)` dans `kadiV1FlowReplyRuntime.js`'s `handle()` —
+   sur un doublon exact pour cette paire précise, `commands.execute` n'est
+   plus jamais rappelé, en s'appuyant sur le même état de session persisté
+   (jamais un indicateur en mémoire, valide après redémarrage — prouvé
+   explicitement) déjà utilisé ailleurs. Compromis assumé : un `CANCEL`
+   réellement échoué ne peut plus être repris par simple rejeu de webhook
+   — voir fiche Z.2 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md). Aucune
+   autre action ni Flow affecté (prouvé explicitement pour
+   `DOCUMENT_REVIEW`/`DOCUMENT_PREVIEW`/`GENERATION_CONFIRMATION`). Tests
+   ciblés (248/248) puis suite complète (1399/1399), `git diff --check`
+   propre. Aucun autre défaut HIGH/MEDIUM trouvé sur le diff complet R0 +
+   R1 + R2.
+7. **[EN ATTENTE]** Nouvelle revue adversariale indépendante de la PR #19
+   mise à jour (post-court-circuit R2).
+8. **[EN ATTENTE]** Fusion dans `main`.
+9. **[EN ATTENTE]** Déploiement manuel explicite sur Render.
+10. **[EN ATTENTE]** Une vraie sélection de pack, vérification de paiement
+    et annulation via le Flow `RECHARGE` réel, observée en conditions
+    réelles (validation téléphone).
+11. **[EN ATTENTE]** T4 (`GENERATION_CONFIRMATION`/`CANCEL`) — prochaine
     mission de correction dédiée, non commencée.
-11. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
+12. **[EN ATTENTE]** `FLOW-PARITY-GATE` global — toujours un suivi de
     backlog distinct, non construit dans cette mission.
-12. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
+13. **[EN ATTENTE]** `RECHARGE-EXACTLY-ONCE-GATE` dédié — durcissement
     financier exactement-une-fois de bout en bout, tâche séparée future.
-13. **[EN ATTENTE]** Décision produit requise sur la sémantique de
+14. **[EN ATTENTE]** Décision produit requise sur la sémantique de
     « Revenir plus tard » (libellé vs état terminal `CANCELLED`).
-14. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
+15. **[EN ATTENTE]** Suivi produit non bloquant : tarification 200
     FCFA/crédit (hors périmètre, packs `legacy-v1` inchangés) ; UX du
     présentateur `RECHARGE` (le Flow rouvert après `SELECT_PACK` ne
     repeuple pas `pack_options`/`balance_summary`) — voir fiche Z.
