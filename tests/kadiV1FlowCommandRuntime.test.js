@@ -173,6 +173,80 @@ test("discharge details are routed to the dedicated document adapter", async () 
   assert.equal(calls[0].payload.documentType, "DECHARGE");
 });
 
+// T4.5 (DOCUMENT_CANCEL_STATE_AUTHORITY_GATE, independent T4 merge
+// review, HIGH/P0): DOCUMENT_REVIEW/CANCEL and DOCUMENT_PREVIEW/CANCEL
+// both previously routed through the fully generic document branch, which
+// never passed expectedState — the exact same gap T4 closed for
+// GENERATION_CONFIRMATION/CANCEL. DOCUMENT_REVIEW has exactly one
+// legitimate state (READY_FOR_REVIEW); DOCUMENT_PREVIEW has two (VERIFIED,
+// PREVIEW_READY) — both traced from real production routing
+// (kadiV1ProductionPresenter.js's routeDocument).
+test("DOCUMENT_REVIEW/CANCEL passes expectedState=READY_FOR_REVIEW, the trusted session's own state", async () => {
+  const calls = [];
+  await makeRuntime(calls).execute(command({
+    flowKey: "DOCUMENT_REVIEW", action: "CANCEL", data: {},
+    documentContext: { ...command().documentContext, document_state: "READY_FOR_REVIEW" },
+  }));
+  assert.equal(calls[0].name, "cancelDocument");
+  assert.equal(calls[0].payload.expectedState, "READY_FOR_REVIEW");
+});
+
+test("DOCUMENT_REVIEW/CANCEL fails closed when the trusted session state is not READY_FOR_REVIEW, never calling cancelDocument", async () => {
+  const calls = [];
+  for (const staleState of ["VERIFIED", "AWAITING_GENERATION_CONFIRMATION", "RECHARGE_REQUIRED", "GENERATION_IN_PROGRESS", "CANCELLED"]) {
+    const result = await makeRuntime(calls).execute(command({
+      flowKey: "DOCUMENT_REVIEW", action: "CANCEL", data: {},
+      documentContext: { ...command().documentContext, document_state: staleState },
+    }));
+    assert.deepEqual(result, { ok: false, error: "KADI_V1_FLOW_COMMAND_DOCUMENT_CANCEL_STATE_INVALID" });
+  }
+  assert.deepEqual(calls, [], "cancelDocument must never be called for a non-READY_FOR_REVIEW session state");
+});
+
+test("DOCUMENT_PREVIEW/CANCEL passes expectedState=VERIFIED or PREVIEW_READY, the trusted session's own state, never a hardcoded single constant", async () => {
+  const calls = [];
+  await makeRuntime(calls).execute(command({
+    flowKey: "DOCUMENT_PREVIEW", action: "CANCEL", data: {},
+    documentContext: { ...command().documentContext, document_state: "VERIFIED" },
+  }));
+  assert.equal(calls[0].payload.expectedState, "VERIFIED");
+
+  await makeRuntime(calls).execute(command({
+    flowKey: "DOCUMENT_PREVIEW", action: "CANCEL", data: {},
+    documentContext: { ...command().documentContext, document_state: "PREVIEW_READY" },
+  }));
+  assert.equal(calls[1].payload.expectedState, "PREVIEW_READY");
+});
+
+test("DOCUMENT_PREVIEW/CANCEL fails closed when the trusted session state is neither VERIFIED nor PREVIEW_READY, never calling cancelDocument", async () => {
+  const calls = [];
+  for (const staleState of ["READY_FOR_REVIEW", "COST_CALCULATED", "AWAITING_GENERATION_CONFIRMATION", "RECHARGE_REQUIRED", "GENERATION_IN_PROGRESS"]) {
+    const result = await makeRuntime(calls).execute(command({
+      flowKey: "DOCUMENT_PREVIEW", action: "CANCEL", data: {},
+      documentContext: { ...command().documentContext, document_state: staleState },
+    }));
+    assert.deepEqual(result, { ok: false, error: "KADI_V1_FLOW_COMMAND_DOCUMENT_CANCEL_STATE_INVALID" });
+  }
+  assert.deepEqual(calls, [], "cancelDocument must never be called for an illegitimate DOCUMENT_PREVIEW session state");
+});
+
+test("non-CANCEL DOCUMENT_REVIEW/DOCUMENT_PREVIEW actions never carry expectedState in their payload", async () => {
+  const calls = [];
+  await makeRuntime(calls).execute(command({
+    flowKey: "DOCUMENT_REVIEW", action: "VERIFY", data: {},
+    documentContext: { ...command().documentContext, document_state: "READY_FOR_REVIEW" },
+  }));
+  assert.equal(calls[0].name, "verify");
+  assert.equal(Object.hasOwn(calls[0].payload, "expectedState"), false);
+
+  await makeRuntime(calls).execute(command({
+    flowKey: "DOCUMENT_PREVIEW", action: "PREPARE_PDF", data: {},
+    documentContext: { ...command().documentContext, document_state: "VERIFIED" },
+  }));
+  assert.equal(calls[1].name, "preparePreview");
+  assert.equal(Object.hasOwn(calls[1].payload, "expectedState"), false);
+});
+
 test("adapter exceptions become closed recoverable failures", async () => {
   const bad = createKadiV1FlowCommandRuntime({
     onboardingRuntime: { continueOnboarding: async () => ({ ok: true, value: null }) },
