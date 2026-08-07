@@ -782,6 +782,23 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   (1498/1498), `git diff --check` propre. Voir fiche AA.3 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-07) : T6 R1 (documentation uniquement) — revue
+  adversariale indépendante de la PR #22.** Code R0 confirmé correct,
+  aucun changement de code. Un défaut MEDIUM corrigé dans
+  `docs/KADI_RELEASE_CHECKLIST.md` : l'ordre de déploiement décrit devait
+  appliquer **la migration Supabase en premier** (elle préserve `balance`,
+  rétrocompatible avec le code Render actuellement déployé), la vérifier
+  en lecture seule, puis seulement ensuite déployer le nouveau code
+  Render — jamais l'inverse, sous peine de casser `BALANCE` en
+  production si la migration n'était pas encore appliquée ou échouait
+  après le déploiement. Toujours **`IMPLEMENTED_NOT_DEPLOYED`, aucune
+  migration appliquée à Supabase de production.** Constat backlog séparé
+  enregistré, non corrigé ici : `RECHARGE_RESUME_AVAILABLE_BALANCE_001`
+  (MEDIUM/P1 avant RC — `kadiV1RechargeService.js`'s
+  `resumePendingGeneration` reste basé sur le solde brut, préexistant,
+  hors périmètre T6). Voir fiche AA.3 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet.
 
 ## Blocages connus
 

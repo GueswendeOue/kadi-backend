@@ -738,18 +738,51 @@ Meta/Render/WhatsApp requise.
    complète (1498/1498), `git diff --check` propre.
 6. **[FAIT]** Revue adversariale du diff complet — aucun défaut HIGH/MEDIUM
    trouvé.
-7. **[EN ATTENTE]** Revue adversariale indépendante de la PR.
+7. **[FAIT]** Revue adversariale indépendante de la PR #22 — le code R0
+   confirmé correct (modèle d'autorité, `balance` legacy préservé,
+   `getAvailableBalance()` additif, formateur partagé, échec fermé sur
+   instantané malformé) ; **un défaut MEDIUM signalé sur l'ordre de
+   déploiement décrit ci-dessous (items 9-11)**, corrigé en R1
+   (documentation uniquement, aucun code de production/test/SQL modifié).
+   Voir fiche AA.3 de
+   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
 8. **[EN ATTENTE]** Fusion dans `main`.
-9. **[EN ATTENTE]** Déploiement manuel explicite sur Render, puis
-   application de la migration
-   `20260807_add_kadi_v1_available_wallet_balance.sql` à Supabase de
-   production (hors périmètre de cette mission — non exécutée ici).
+9. **[EN ATTENTE]** **Ordre de déploiement obligatoire — la migration
+   d'abord, jamais Render d'abord :**
+   1. Appliquer **d'abord** la migration Supabase
+      `20260807_add_kadi_v1_available_wallet_balance.sql` (elle remplace
+      `kadi_v1_get_wallet_balance` en place et préserve le champ `balance`
+      existant — rétrocompatible avec le code Render actuellement
+      déployé, qui ne lit encore que ce champ).
+   2. Vérifier en lecture seule, avant tout déploiement Render, que la
+      RPC expose désormais : `balance` (toujours présent), `total_credits`,
+      `reserved_credits`, `available_credits`, l'invariant
+      `total_credits - reserved_credits = available_credits`, et que les
+      privilèges restent strictement `service_role`.
+   3. Garder l'ancien code Render en production pendant cette
+      vérification — le champ `balance` legacy continue de fonctionner
+      sans changement.
+   4. **Seulement après** succès de la vérification de la migration :
+      déployer le nouveau commit `main` sur Render.
+   5. Vérifier `/health`.
+   6. Effectuer des tests `BALANCE` contrôlés en conditions réelles (voir
+      item 10 ci-dessous).
+   Si l'application ou la vérification de la migration échoue : **ne pas
+   déployer le nouveau code Render** — le nouveau code exige
+   `total_credits`/`reserved_credits`/`available_credits` et échouerait
+   fermé (`BALANCE` indisponible) tant que la migration n'est pas
+   appliquée avec succès. Hors périmètre de cette mission — aucune
+   migration ni déploiement exécuté ici.
 10. **[EN ATTENTE]** Une vraie consultation de solde ("Mon solde" et
     "Quel est mon solde ?"), observée en conditions réelles (validation
-    téléphone), avec au moins un cas où des crédits sont réellement
-    retenus par une génération en cours.
+    téléphone) après l'ordre de déploiement ci-dessus, avec si possible
+    un cas où des crédits sont réellement retenus par une génération en
+    cours.
 11. **[EN ATTENTE]** T5 — prochaine mission de correction dédiée, non
     commencée.
+12. **[EN ATTENTE]** Suivi backlog séparé, non corrigé dans T6 —
+    `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) : voir
+    fiche AA.3 pour le détail complet.
 
 ## Déploiement Render
 

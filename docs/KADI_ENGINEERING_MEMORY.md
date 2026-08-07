@@ -4248,12 +4248,92 @@ jamais journalisé ou affiché. `kadiV1RechargeService.js`'s
 Contrats T3/T4/T4.5 confirmés inchangés. Aucune migration ni mutation
 Supabase, Meta, Render ou WhatsApp réelle.
 
+### R1 — revue adversariale indépendante (documentation uniquement) : ordre de déploiement, backlog séparé, précision de formulation
+
+* **Statut R1 : documentation uniquement — aucun code de production, de
+  test ou SQL modifié.** `git diff` entre le head R0
+  (`a6440b9b3f576c366c39f9fadf37c7b42146103d`) et R1 ne contient que des
+  fichiers `docs/`.
+* **Origine :** revue adversariale indépendante de la PR #22, mission
+  « KADI V1 — T6 AVAILABLE BALANCE INDEPENDENT REVIEW FIX R1 ». Le code
+  R0 lui-même est confirmé correct (modèle d'autorité, `balance` legacy
+  préservé, `getAvailableBalance()` additif, formateur partagé, échec
+  fermé sur instantané malformé) — **aucun changement de code requis**.
+
+**Constat MEDIUM — ordre de déploiement dangereux dans la documentation.**
+`docs/KADI_RELEASE_CHECKLIST.md` décrivait auparavant, conceptuellement,
+l'ordre : (1) déployer Render, (2) puis appliquer la migration. Cet
+ordre est dangereux : le nouveau code applicatif (`getAvailableBalance()`,
+tracé jusqu'à `WalletRuntimeAdapter`/`BalanceReader`) exige
+`total_credits`/`reserved_credits`/`available_credits` dans la réponse
+de la RPC ; avant l'application de la migration, la RPC de production ne
+retourne encore que `balance`. Déployer le nouveau code Render avant la
+migration ferait donc échouer fermé le parcours `BALANCE` jusqu'à
+l'application réussie de la migration — et si la migration échouait
+après le déploiement Render, `BALANCE` resterait cassé en production.
+
+**Contrat de déploiement sûr corrigé** (`docs/KADI_RELEASE_CHECKLIST.md`,
+section T6, item 9) : (1) appliquer d'abord la migration Supabase
+`20260807_add_kadi_v1_available_wallet_balance.sql` ; (2) vérifier en
+lecture seule que `balance` reste présent, que `total_credits`/
+`reserved_credits`/`available_credits` sont désormais exposés, que
+l'invariant `total_credits - reserved_credits = available_credits` tient,
+et que les privilèges restent `service_role` uniquement — pendant cette
+vérification, l'ancien code Render reste en production, sans rupture,
+car il ne lit encore que `balance` ; (3) seulement après succès de cette
+vérification, déployer le nouveau commit `main` sur Render ; (4) vérifier
+`/health` ; (5) effectuer des tests `BALANCE` contrôlés en conditions
+réelles (menu, langage naturel, puis si possible un cas à crédits
+réellement retenus). En cas d'échec d'application ou de vérification de
+la migration : ne pas déployer le nouveau code Render.
+
+**Preuve de rétrocompatibilité :** la migration
+(`migrations/20260807_add_kadi_v1_available_wallet_balance.sql`) fait un
+`create or replace function` sur le même nom/signature et retourne
+explicitement `'balance', v_balance` en plus des nouveaux champs — le
+code Render actuellement déployé (`kadiV1SupabaseRechargeRepository.js`'s
+`getBalance()` d'avant T6, qui ne lit que `row.balance`) continue de
+fonctionner à l'identique immédiatement après l'application de la
+migration, avant même qu'un nouveau déploiement Render n'ait lieu. C'est
+précisément ce qui rend l'ordre « migration d'abord » sûr.
+
+**Constat backlog séparé, non corrigé dans T6 —
+`RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) :**
+`kadiV1RechargeService.js`'s `resumePendingGeneration` utilise
+`store.getBalance({ownerWaId})` (délibérément le solde brut) et vérifie
+`balance.value >= quote.value.total_credits`. Une autre retenue
+`RESERVED` vivante peut donc rendre cette pré-vérification optimiste :
+exemple, solde brut = 10, autres retenues `RESERVED` = 3 (disponible réel
+= 7), coût du devis de reprise = 8 — la pré-vérification actuelle voit
+`10 >= 8` et peut faire sortir le document de `RECHARGE_REQUIRED` avant
+que la vraie réservation de génération n'échoue ensuite avec
+`INSUFFICIENT_CREDITS`. Préexistant, et délibérément **hors périmètre de
+T6** (la mission interdisait explicitement de modifier la sémantique du
+cycle de vie recharge). **Ne pas corriger dans la PR #22.** À traiter
+dans une mission bornée séparée, backlog pré-RC / intégrité recharge.
+
+**Précision de formulation « lecture seule ».** Inspection de production
+indépendante confirmée : `kadi_v1_get_wallet_balance` appelle
+`kadi_resolve_profile_v2`, qui peut mettre à jour des métadonnées/alias
+de profil et créer un portefeuille/profil manquant — un comportement
+**préexistant à T6**, non introduit par cette mission. L'invariant exact
+de T6 n'est donc pas « `BALANCE` n'effectue littéralement aucune écriture
+base de données dans tous les scénarios de résolution de profil possibles »,
+mais : **`BALANCE` cause zéro mutation FINANCIÈRE** — aucun débit, aucun
+crédit, aucune création/capture/libération de réservation, aucune
+mutation de recharge, aucune mutation de document/génération/livraison.
+`kadi_resolve_profile_v2` lui-même n'est pas modifié par cette mission et
+reste hors périmètre.
+
 ### Suivi requis (hors périmètre de cette correction)
 
-* Application de la migration à Supabase de production — hors périmètre,
-  nécessite une autorisation et une mission de déploiement distinctes.
+* Application de la migration à Supabase de production, **dans l'ordre
+  sûr ci-dessus (migration d'abord)** — hors périmètre, nécessite une
+  autorisation et une mission de déploiement distinctes.
 * Validation téléphone réelle requise après un déploiement éventuel, avec
   au moins un cas de crédits réellement retenus.
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC) — voir
+  ci-dessus, mission bornée séparée requise.
 * T5 — prochaine mission de correction dédiée, non commencée.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
 
