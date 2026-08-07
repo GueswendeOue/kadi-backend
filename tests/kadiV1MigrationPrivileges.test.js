@@ -41,7 +41,10 @@ const expected = {
                                                        "kadi_v1_get_owned_document_history_bundle(text, text)",
                                                        "kadi_v1_search_owned_documents(text, jsonb, timestamptz, text, integer, text)",
                                                        "kadi_v1_remember_history_duplicate(text, text, text, text)"
-                                                   ]
+                                                   ],
+    "20260807_add_kadi_v1_available_wallet_balance.sql":  [
+                                                               "kadi_v1_get_wallet_balance(text)"
+                                                           ]
 };
 
 function walk(directory, results = []) {

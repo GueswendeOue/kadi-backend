@@ -200,7 +200,7 @@ test("the composed orchestrator reads profile and wallet only when handling a re
             calls.push(["balance", command]);
             return {
               ok: true,
-              value: { credits: 7 },
+              value: { total_credits: 7, reserved_credits: 0, available_credits: 7 },
             };
           },
         },
@@ -219,7 +219,7 @@ test("the composed orchestrator reads profile and wallet only when handling a re
 
   assert.equal(
     response.canonical_text,
-    "Votre solde est de 7 crédits."
+    "Vous avez 7 crédits disponibles."
   );
   assert.equal(response.business_action, "SHOW_BALANCE");
   assert.deepEqual(

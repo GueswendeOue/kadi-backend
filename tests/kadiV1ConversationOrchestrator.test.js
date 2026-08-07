@@ -54,7 +54,12 @@ function makeHarness(overrides = {}) {
       search: async (command) => { calls.push(["history", command]); return result(overrides.history || { documents: [] }); },
     },
     walletRuntime: {
-      getBalance: async (command) => { calls.push(["balance", command]); return result({ credits: overrides.credits ?? 5 }); },
+      getBalance: async (command) => {
+        calls.push(["balance", command]);
+        const available = overrides.availableCredits ?? 5;
+        const reserved = overrides.reservedCredits ?? 0;
+        return result({ total_credits: available + reserved, reserved_credits: reserved, available_credits: available });
+      },
     },
     voicePolicy: {
       evaluate: async (command) => { calls.push(["voice", command]); return result(overrides.voice || { mode: "TEXT_ONLY", reason: "SHORT" }); },
@@ -112,10 +117,29 @@ test("natural invoice request starts a draft without forcing a modality menu", a
 });
 
 test("balance is read from the wallet authority", async () => {
-  const { orchestrator, calls } = makeHarness({ credits: 7 });
+  const { orchestrator, calls } = makeHarness({ availableCredits: 7 });
   const response = await orchestrator.handle(input({ text: "Quel est mon solde ?" }));
-  assert.equal(response.canonical_text, "Votre solde est de 7 crédits.");
+  assert.equal(response.canonical_text, "Vous avez 7 crédits disponibles.");
   assert.equal(calls.some(([name]) => name === "balance"), true);
+});
+
+// T6/BALANCE-001: available credits, not the raw wallet balance, is the
+// number the user sees — and a short second sentence appears only when a
+// generation genuinely holds some of it.
+test("balance reports available credits and mentions reserved credits when some are held", async () => {
+  const { orchestrator } = makeHarness({ availableCredits: 7, reservedCredits: 3 });
+  const response = await orchestrator.handle(input({ text: "Quel est mon solde ?" }));
+  assert.equal(response.canonical_text, "Vous avez 7 crédits disponibles.\n3 crédits sont temporairement réservés pour une génération en cours.");
+});
+
+test("balance reports zero available credits with correct singular/plural", async () => {
+  const { orchestrator: zeroOrchestrator } = makeHarness({ availableCredits: 0 });
+  const zeroResponse = await zeroOrchestrator.handle(input({ text: "Quel est mon solde ?" }));
+  assert.equal(zeroResponse.canonical_text, "Vous avez 0 crédit disponible.");
+
+  const { orchestrator: oneOrchestrator } = makeHarness({ availableCredits: 1 });
+  const oneResponse = await oneOrchestrator.handle(input({ text: "Quel est mon solde ?" }));
+  assert.equal(oneResponse.canonical_text, "Vous avez 1 crédit disponible.");
 });
 
 test("history results remain owner-scoped and open logical selection", async () => {
@@ -263,7 +287,7 @@ test("recoverable provider failure preserves the user's information", async () =
     interpretationRuntime: { interpret: async () => ({ ok: false, error: "PROVIDER_DOWN" }) },
     documentRuntime: { start: async () => result({}), apply: async () => result({}), cancel: async () => result({}), removeContent: async () => result({}), changeDocumentType: async () => result({}) },
     historyRuntime: { search: async () => result({ documents: [] }) },
-    walletRuntime: { getBalance: async () => result({ credits: 0 }) },
+    walletRuntime: { getBalance: async () => result({ total_credits: 0, reserved_credits: 0, available_credits: 0 }) },
   });
   const response = await broken.handle(input({ text: "Ajoute le ciment" }));
   assert.equal(response.business_action, "INTERPRETATION_RECOVERABLE_FAILURE");
