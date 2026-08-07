@@ -177,34 +177,45 @@ complète et la confirmation que la fenêtre est refermée depuis
 
 ## Ordre — `fix/kadi-v1-delivery-retry-and-final-filenames-r0` (reprise de livraison et noms de fichiers finaux)
 
-**Mise à jour (2026-08-06, suite de revue finale) :** contrairement à la
-version initiale de cette section, **deux migrations Supabase forward-only
-sont désormais requises**, écrites sur la branche mais **non appliquées à
-distance** — voir la sous-section « Suite de revue finale » de la fiche R
-de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
-complet :
+**Mise à jour (2026-08-07) : les deux migrations Supabase forward-only sont
+désormais appliquées et vérifiées à distance** sur le projet
+`cmhargmwkyskbobmkrcj`, sous autorisation explicite et séparée du
+fondateur — voir la sous-section « Suite de revue finale » de la fiche R de
+[`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+complet, y compris la fenêtre d'application exacte :
 
 * `supabase/migrations/20260806020000_add_kadi_v1_delivery_attempt_in_progress_status.sql`
-  — élargit la contrainte `status` de `kadi_v1_delivery_attempts` pour
-  autoriser `'IN_PROGRESS'` ; **sans elle, la capture atomique déjà écrite
-  échoue avec `check_violation` (23514) contre la vraie base Postgres.**
+  — **APPLIQUÉE**. Élargit la contrainte `status` de
+  `kadi_v1_delivery_attempts` pour autoriser `'IN_PROGRESS'` (en plus des
+  trois valeurs déjà acceptées, toutes préservées) ; sans elle, la capture
+  atomique déjà écrite aurait échoué avec `check_violation` (23514) contre
+  la vraie base Postgres.
 * `supabase/migrations/20260806030000_add_kadi_v1_delivery_outcome_to_history_bundle.sql`
-  — expose `last_error_code` dans l'objet `delivery` du paquet historique
-  (fonction déjà réservée `service_role`, portée inchangée).
+  — **APPLIQUÉE**. Expose `last_error_code` dans l'objet `delivery` du
+  paquet historique (même signature de fonction, mêmes droits
+  `service_role` uniquement, aucun autre champ modifié).
 
-L'ordre habituel migration-avant-fusion (voir la section
-`fix/kadi-v1-pdf-final-state-and-tax-rate-r0` ci-dessus) s'applique donc ici
-aussi : les deux migrations doivent être appliquées et vérifiées **avant**
-la fusion et le déploiement de cette PR.
+Chacune apparaît exactement une fois dans l'historique distant ; aucune
+ligne d'aucune table applicative n'a changé du fait de ces migrations
+(vérifié en lecture seule avant/après : mêmes compteurs par statut sur
+`kadi_v1_delivery_attempts`). L'ancien backend (toujours celui déployé,
+commit `ac01557b...`) reste compatible avec la base migrée : il n'écrit
+jamais `'IN_PROGRESS'` et ne lit jamais `last_error_code`, donc la valeur
+et le champ ajoutés sont de purs no-ops pour lui — l'élargissement de
+contrainte et l'ajout de champ JSON sont additifs par construction. À
+l'inverse, un nouveau backend déployé **avant** application de ces
+migrations aurait échoué (`check_violation` sur toute capture, et une
+classification d'issue dégradée en historique) — ce risque est maintenant
+écarté puisque la base est déjà migrée.
 
 1. **[FAIT]** Code écrit, revu, testé localement.
-2. **[EN ATTENTE]** Revue adversariale indépendante de la PR (au moins deux
-   passes déjà effectuées dans le cadre de cette mission ; une revue
-   externe reste recommandée avant fusion).
-3. **[EN ATTENTE]** Application des deux migrations ci-dessus à distance,
-   autorisation explicite requise séparément — vérifier `supabase
-   migration list` et le corps de la fonction/contrainte en lecture seule
-   après application.
+2. **[FAIT]** Revue adversariale indépendante de la PR — plusieurs passes
+   effectuées dans le cadre de cette mission, y compris une revue finale
+   dédiée à l'application des migrations.
+3. **[FAIT]** Application des deux migrations ci-dessus à distance
+   (2026-08-07T00:04:03Z–2026-08-07T00:04:40Z), vérifiée en lecture seule
+   avant et après (contrainte, signature/corps de fonction, droits,
+   compteurs de lignes).
 4. **[EN ATTENTE]** Fusion dans `main`.
 5. **[EN ATTENTE]** Déploiement manuel explicite sur Render (ce service
    n'auto-déploie pas — voir
@@ -213,9 +224,12 @@ la fusion et le déploiement de cette PR.
 6. **[EN ATTENTE]** Vérification du démarrage et de l'absence d'erreur.
 7. **[EN ATTENTE]** Une vraie reprise de livraison (bouton « Réenvoyer le
    PDF », depuis le premier échec **et** depuis l'historique) observée en
-   conditions réelles avant de considérer ce correctif comme validé —
-   **ne pas se contenter des tests locaux pour affirmer que le document
-   CANARY resté sans livraison a été récupéré.**
+   conditions réelles avant de considérer ce correctif comme validé — **la
+   migration de la base ne constitue pas, à elle seule, une reprise de
+   livraison ; le document CANARY du fondateur
+   (`FA-20260806190633-A0EAC605`) reste non récupéré tant que la fusion et
+   le déploiement n'ont pas eu lieu. Ne pas se contenter des tests locaux
+   pour affirmer qu'il a été récupéré.**
 
 ## Déploiement Render
 

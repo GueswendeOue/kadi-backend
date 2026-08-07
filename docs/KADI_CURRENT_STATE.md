@@ -305,12 +305,33 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   externe incontrôlé. Voir la sous-section « Suite de revue finale » de la
   fiche R dans
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
-  complet, y compris **deux migrations forward-only écrites mais non
-  appliquées à distance** (élargissement de la contrainte `status` de
+  complet, y compris les deux migrations forward-only écrites pour ces
+  correctifs (élargissement de la contrainte `status` de
   `kadi_v1_delivery_attempts` pour `IN_PROGRESS`, exposition de
-  `last_error_code` dans le paquet historique) — nécessaires avant tout
-  déploiement de cette PR, car sans elles la capture atomique `IN_PROGRESS`
-  échoue contre la vraie base Postgres.
+  `last_error_code` dans le paquet historique).
+* **Migrations appliquées (2026-08-07), statut `IMPLEMENTED_REVIEWED_NOT_DEPLOYED`
+  toujours inchangé — la migration de la base n'est pas un déploiement :**
+  les deux migrations ci-dessus ont été **appliquées et vérifiées** à
+  distance sur le projet Supabase `cmhargmwkyskbobmkrcj`
+  (2026-08-07T00:04:03Z–2026-08-07T00:04:40Z), sous autorisation explicite
+  et séparée du fondateur. Chacune apparaît exactement une fois dans
+  l'historique distant ; aucune ligne d'aucune table applicative n'a
+  changé (vérifié en lecture seule avant/après). L'ancien backend
+  actuellement déployé (`ac01557b...`) reste pleinement compatible avec la
+  base migrée — il n'écrit jamais `IN_PROGRESS` et ne lit jamais
+  `last_error_code`, donc les deux changements sont additifs et sans effet
+  pour lui. Le risque inverse (nouveau backend déployé avant migration de
+  la base) est désormais écarté puisque la base est migrée en premier,
+  dans le bon ordre. Une couverture de test bout en bout traversant la
+  vraie `kadiV1ProductionComposition.js` (historique → ouverture de
+  document → présentateur → bouton webhook réel → reprise de livraison,
+  pour un échec confirmé et pour une issue inconnue) a également été
+  ajoutée, fermant le dernier écart de test identifié par la revue
+  précédente. **PR #14 reste `DRAFT`, non fusionnée, non déployée. Le
+  document CANARY du fondateur (`FA-20260806190633-A0EAC605`) reste non
+  récupéré** — la migration de la base ne constitue en rien une reprise de
+  livraison réelle ; celle-ci exige la fusion, un déploiement Render manuel
+  explicite, puis une vraie reprise observée en conditions réelles.
 
 ## Blocages connus
 

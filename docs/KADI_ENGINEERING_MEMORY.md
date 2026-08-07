@@ -1644,3 +1644,57 @@ Render** (voir statut en tête de fiche).
   abandon) ; et quand une fonction de guérison ne couvre qu'un seul état
   de départ, vérifier explicitement tous les états réellement atteignables
   à ce point du code, pas seulement le plus fréquent.
+
+### Migrations appliquées et derniers écarts LOW fermés (2026-08-07)
+
+* **Migrations appliquées et vérifiées à distance**, sous autorisation
+  explicite et séparée du fondateur, sur le projet Supabase
+  `cmhargmwkyskbobmkrcj` :
+  - `20260806020000_add_kadi_v1_delivery_attempt_in_progress_status` puis
+    `20260806030000_add_kadi_v1_delivery_outcome_to_history_bundle`,
+    appliquées dans cet ordre via un seul `supabase db push --linked`,
+    fenêtre `2026-08-07T00:04:03Z`–`2026-08-07T00:04:40Z`, les deux
+    confirmées en succès, sortie CLI `0`, aucun avertissement PostgreSQL.
+  - Vérifié en lecture seule avant et après application : la contrainte
+    `kadi_v1_delivery_attempts_status_check` autorise désormais exactement
+    `PENDING`/`IN_PROGRESS`/`DELIVERED`/`RECOVERABLE_FAILURE` ; la fonction
+    `kadi_v1_owned_history_bundle` conserve strictement la même signature,
+    le même propriétaire (`postgres`), les mêmes droits
+    (`REVOKE ALL ... FROM PUBLIC` / `GRANT ALL ... TO service_role`), et
+    n'a changé qu'une seule ligne (ajout de `last_error_code` dans l'objet
+    `delivery`). Compteur de lignes de `kadi_v1_delivery_attempts` par
+    statut identique avant/après (5 lignes : 4 `DELIVERED`,
+    1 `RECOVERABLE_FAILURE` — le document CANARY du fondateur) : aucune
+    donnée applicative modifiée par la migration elle-même.
+  - `supabase migration list --linked` post-application : les 27
+    migrations locales et distantes concordent exactement, aucune
+    migration en attente, aucune divergence.
+  - Le backend actuellement déployé (`ac01557b...`) reste inchangé et sain
+    (`/health` 200 avant et après) — cette mission n'a déployé aucun
+    nouveau code, seulement migré le schéma.
+  - **La migration de la base ne constitue pas une reprise de livraison** :
+    le document CANARY du fondateur (`FA-20260806190633-A0EAC605`) reste
+    `RECOVERABLE_FAILURE`, non récupéré, tant que la PR n'est ni fusionnée
+    ni déployée.
+* **Dernier écart LOW de la revue finale précédente fermé :** aucun test
+  n'exerçait auparavant la chaîne complète « recherche d'historique →
+  `OPEN_DOCUMENT` → `kadiV1HistoryService.js` → `kadiV1FlowCommandRuntime.js`
+  → `kadiV1FlowReplyRuntime.js` → `kadiV1ProductionPresenter.js` → bouton
+  webhook réel → `kadiV1DeliveryRetryRuntime.js` → adaptateur → `retryDelivery` »
+  à travers la vraie `kadiV1ProductionComposition.js` — seuls les liens
+  individuels étaient testés isolément. Nouveau fichier
+  `tests/kadiV1PR14ReleaseVerificationE2E.test.js` : construit une
+  composition de production réelle (session, historique, commande, reply,
+  présentateur, webhook, tous réels ; seules les frontières d'I/O externes
+  — API WhatsApp, fournisseur de livraison, moteur de rendu PDF — sont
+  remplacées), avec un `document_id`/horloge choisis pour reproduire
+  exactement le numéro du document CANARY du fondateur
+  (`FA-20260806190633-A0EAC605`, via la génération déterministe de
+  `kadiV1DocumentDomain.js`). Couvre le scénario d'échec confirmé (bouton
+  unique « Réenvoyer le PDF », zéro nouvelle réservation/capture/rendu/
+  artefact, même `final_file_id`, même numéro de document, nom de fichier
+  `facture_FA-20260806190633-A0EAC605.pdf` exact) et le scénario d'issue
+  inconnue (l'ouverture depuis l'historique n'appelle jamais le
+  fournisseur, offre à deux boutons, seule la confirmation explicite
+  atteint `retryDelivery` avec `confirmed:true`, l'annulation ne mute
+  rien). Le câblage réel s'est révélé correct, sans défaut détecté.
