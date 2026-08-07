@@ -508,6 +508,13 @@ function createKadiV1ProductionBootstrap({
     });
     const deliveryProvider = createKadiV1WhatsAppDeliveryProvider({
       client: supabase,
+      // Reuses the same documentRepository instance already constructed
+      // above for filename metadata (document_type/options.invoice_kind/
+      // document_number) — the authoritative hydration path, never a
+      // second hand-written raw query. Owner/destination verification
+      // itself stays a separate, minimal raw read (see
+      // kadiV1ProductionInfrastructure.js).
+      documentRepository,
       storage: privateStorage,
       whatsappApi,
     });

@@ -2139,3 +2139,149 @@ plusieurs actions dans un seul formulaire, vérifier explicitement que la
 vraie forme de soumission (tous les champs déclarés, à chaque fois) est
 acceptée pour **chacune** des actions qu'il peut soumettre, pas seulement
 celle testée en premier.
+
+## W. Cause racine confirmée et corrigée : `DELIVERY_DESTINATION_LOOKUP_FAILED` en production réelle était une colonne physique inexistante (PostgreSQL 42703)
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — nouvelle branche dédiée
+  `fix/kadi-v1-delivery-destination-schema-r0`, créée depuis `main` au
+  commit `0335d3758f3dc1d4841fd5137c8273d03ee68843` (celui-là même déployé
+  en production). PR distincte, brouillon, non fusionnée, non déployée.
+
+### Défaut de production observé
+
+Après le déploiement de la PR #15, une vraie tentative de reprise du
+propriétaire sur `FA-20260807010715-1961CBCC` a de nouveau échoué avec
+`DELIVERY_DESTINATION_LOOKUP_FAILED` — le budget de retries borné introduit
+par la PR #15 (fiche S.1) s'est bien exécuté (`attempt_count` incrémenté)
+mais n'a rien résolu.
+
+### Cause racine sous-jacente, prouvée par reproduction directe (pas seulement par lecture de code)
+
+`lookupDestinationOwner()` (`kadiV1ProductionInfrastructure.js`) exécutait :
+
+```js
+supabase.from("kadi_v1_documents")
+  .select("owner_wa_id,document_type,options,document_number")
+  .eq("document_id", documentId)
+  .maybeSingle()
+```
+
+Reproduit en lecture seule, avec le même client `@supabase/supabase-js` et
+les mêmes identifiants (service-role) que la production, contre la vraie
+base : **`PostgreSQL 42703` — `column kadi_v1_documents.options does not
+exist`** (HTTP 400). Confirmé par une lecture `select("*")` de la même
+ligne : les colonnes physiques réelles sont `active_version, cancelled_at,
+created_at, currency, document_id, document_number, document_type,
+generated_file, generation_cost, generation_quote, issued_at,
+issuer_profile_id, legacy_id, legacy_source, metadata, owner_wa_id,
+preview, recoverable_failure, status, updated_at` — **`options` n'existe
+pas**. `owner_wa_id`/`document_type`/`document_number` existent bien ;
+seul `options` était inventé.
+
+### Pourquoi le correctif borné de la PR #15 (fiche S.1) ne pouvait pas résoudre ceci
+
+`42703` n'était pas dans `PERMANENT_LOOKUP_ERROR_CODES` — la classification
+par défaut (« tout code inconnu est probablement transitoire ») traitait
+donc cette erreur, pourtant déterministe à 100 % (une requête mal formée
+échoue identiquement à chaque tentative, indépendamment du réseau), comme
+si elle pouvait réussir au prochain essai. Le budget de 3 tentatives était
+donc intégralement épuisé, en pure perte, avant l'échec final.
+
+### D'où vient réellement `invoice_kind` (source authentique déterminée avant tout correctif, jamais supposée)
+
+`document.options` (utilisé pour construire le nom de fichier canonique)
+n'est **jamais** une colonne physique de `kadi_v1_documents` — c'est un
+champ du domaine JS, reconstruit à l'hydratation. La vraie architecture
+(confirmée en lisant `kadiV1SupabaseDocumentRepository.js`'s
+`getDocumentById`, déjà correcte et déjà utilisée partout ailleurs dans le
+code) : `kadi_v1_documents` (colonnes physiques scalaires) est joint à
+`kadi_v1_document_versions.snapshot` (JSONB, l'objet document complet —
+`client`, `items`, `options`, `receipt`, `discharge`, etc.) via
+`restoreDocumentSnapshot`. La colonne `metadata` de `kadi_v1_documents`
+n'a **aucun rapport** avec `options` — elle sert uniquement au suivi de
+migration/provenance (`source`, `schema_version`, `legacy_status`,
+`migration_batch`, `correlation_ref`, `reason_code`, `attempt` — liste
+fermée dans `kadiV1DocumentRepository.js`'s `METADATA_KEYS`).
+
+### Correctif — séparation architecturale stricte, comme exigé
+
+* **A. Vérification propriétaire/destination** (`lookupDestinationOwner`) :
+  requête brute minimale, `select("owner_wa_id")` uniquement — la seule
+  colonne physique réellement nécessaire pour cette étape. Reste
+  volontairement une requête brute (et non un appel au repository complet)
+  car `getDocumentById` exige de connaître déjà `owner_wa_id` pour scoper
+  sa lecture (une protection de sécurité correcte pour tout autre
+  appelant) — or c'est précisément ce que cette étape découvre, à partir
+  du seul `document_id`, avant tout contact Meta.
+* **B. Métadonnées de nom de fichier** (`resolveDeliveryFilenameMetadata`,
+  nouvelle fonction) : appelée strictement **après** que A a réussi, avec
+  le `owner_wa_id` désormais authentifié par A — réutilise le
+  `documentRepository` déjà authentique et déjà testé partout ailleurs,
+  plutôt qu'une deuxième requête brute inventée (exactement l'erreur qui a
+  causé le défaut en A). `createKadiV1WhatsAppDeliveryProvider` reçoit
+  désormais `documentRepository` en dépendance ;
+  `kadiV1ProductionBootstrap.js` lui passe la **même instance** déjà
+  construite pour le reste de la composition — aucune construction
+  redondante.
+* **`42703` ajouté à `PERMANENT_LOOKUP_ERROR_CODES`** : échoue désormais
+  immédiatement (une seule lecture, zéro sommeil) plutôt que d'épuiser le
+  budget de retries en pure perte.
+* Aucune mutation Meta, aucune migration Supabase requise — correctif
+  entièrement applicatif.
+
+### Preuve
+
+* `tests/kadiV1DeliveryProvider.test.js` — réécrit intégralement : chaque
+  test distingue désormais explicitement A (vérification, requête brute
+  minimale asserted) de B (métadonnées, via un faux `documentRepository`
+  qui lève une exception s'il est appelé avant que A n'ait réussi — preuve
+  structurelle de l'ordre, pas seulement une affirmation). Matrice complète
+  : lecture réussie, `42703` échoue en une tentative sans sommeil,
+  transitoire puis succès, incohérence confirmée, propriétaire
+  manquant/malformé, les cinq noms de fichiers canoniques (FACTURE
+  FINAL/PROFORMA, DEVIS, RECU, DECHARGE), échec de résolution des
+  métadonnées après vérification réussie (échec fermé, jamais un nom de
+  fichier deviné).
+* `tests/kadiV1DeliveryDestinationSchemaE2E.test.js` (nouveau) — seule
+  composition de production de ce dépôt à utiliser le **vrai**
+  `createKadiV1WhatsAppDeliveryProvider` (tous les autres tests de reprise
+  de livraison simulent entièrement l'interface du provider, ce qui
+  explique pourquoi ce défaut n'avait jamais été détecté par un test).
+  Scénario complet : document `RECOVERABLE_FAILURE` → `RETRY_DELIVERY` →
+  vraie vérification de destination (schéma corrigé) → vrai fournisseur de
+  livraison atteint exactement une fois → `DELIVERED`, même fichier final,
+  aucune nouvelle réservation/capture/rendu. Plus un cas PROFORMA dédié et
+  un cas DEVIS/RECU/DECHARGE, prouvant que `invoice_kind` et les autres
+  métadonnées survivent au correctif via le chemin d'hydratation
+  authentique.
+* Suite complète : 1327/1327. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucun contact Meta avant succès de la vérification A (structurellement
+prouvé — B ne peut jamais s'exécuter avant A dans le code, et les tests le
+démontrent en faisant lever une exception à B si appelée trop tôt) ; aucun
+retry autour de l'envoi Meta lui-même (inchangé) ; aucune incohérence de
+destination réellement confirmée n'est jamais retentée ; `owner_wa_id`
+utilisé pour B provient exclusivement du résultat vérifié de A, jamais
+d'une valeur cliente ; même document, même fichier final, même
+`document_number`/`issued_at` ; aucun nouveau rendu, aucune nouvelle
+réservation, aucune nouvelle capture sur une reprise (prouvé par la
+composition de production, pas seulement affirmé) ; non-propriétaire
+toujours bloqué ; incohérence de destination toujours bloquée ; portail
+CANARY inchangé.
+
+### Prévention
+
+Une requête brute écrite à la main contre une base réelle doit toujours
+être vérifiée contre le vrai schéma physique avant d'être fusionnée — ne
+jamais supposer qu'un nom de champ du modèle de domaine JS correspond à
+une colonne SQL du même nom. Quand une lecture combine plusieurs
+responsabilités (ici : vérification de sécurité **et** métadonnées
+d'affichage), les séparer clairement et laisser chacune utiliser la source
+la plus sûre/authentique pour son propre besoin, plutôt qu'une seule
+requête raccourcie inventée pour couvrir les deux à la fois. Et,
+structurellement : un test qui simule entièrement l'interface d'un
+composant ne peut jamais détecter un défaut interne à ce composant — au
+moins un test de composition doit utiliser l'implémentation réelle de
+chaque composant critique, pas seulement son interface simulée.

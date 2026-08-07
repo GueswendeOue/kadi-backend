@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const { canonicalFinalFilename } = require("./kadiV1FinalFilename");
+const { assertV1DocumentRepository } = require("./kadiV1DocumentRepository");
 
 const OWNER_PATTERN = /^\d{8,20}$/;
 const ID_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
@@ -26,6 +27,10 @@ const DESTINATION_LOOKUP_RETRY_DELAY_MS = 75;
 const PERMANENT_LOOKUP_ERROR_CODES = new Set([
   "42501", // insufficient_privilege
   "42P01", // undefined_table
+  "42703", // undefined_column — a selected column does not exist on the
+  // table; deterministic and query-shape-caused, never resolved by retrying
+  // the identical query (see docs/KADI_ENGINEERING_MEMORY.md, the
+  // DELIVERY_DESTINATION_LOOKUP_FAILED root-cause fiche).
   "PGRST301", // JWT/auth
   "PGRST202", // schema cache / function or column not found
 ]);
@@ -717,12 +722,14 @@ function createKadiV1RechargeRuntime({
 
 function createKadiV1WhatsAppDeliveryProvider({
   client,
+  documentRepository,
   storage,
   whatsappApi,
   destinationLookupMaxAttempts = DESTINATION_LOOKUP_MAX_ATTEMPTS,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   const supabase = assertSupabaseClient(client);
+  const documents = assertV1DocumentRepository(documentRepository);
   if (typeof storage?.readFinal !== "function") {
     throw new TypeError("KADI_V1_FINAL_STORAGE_REQUIRED");
   }
@@ -732,9 +739,21 @@ function createKadiV1WhatsAppDeliveryProvider({
     }
   }
 
-  // Bounded retry around the destination-owner read only — never around the
-  // Meta send itself, and never used to second-guess a genuine mismatch
-  // once one has actually been observed. A permanent-shaped error (see
+  // A. OWNER / DESTINATION VERIFICATION ONLY. Minimal, hand-written raw
+  // query — deliberately not going through the full document repository,
+  // because that repository's own getDocumentById() requires an
+  // already-known owner_wa_id to scope its read (a security filter, correct
+  // for every other caller) and discovering the real owner from the
+  // document_id alone, authoritatively, before Meta is ever contacted, is
+  // this function's entire purpose. Selects only owner_wa_id — a real
+  // physical column on kadi_v1_documents. Previously also selected
+  // "options", which is not a physical column at all (the confirmed root
+  // cause of the real DELIVERY_DESTINATION_LOOKUP_FAILED production
+  // incident — PostgreSQL 42703, deterministic on every attempt, not fixed
+  // by any amount of retrying — see docs/KADI_ENGINEERING_MEMORY.md).
+  // Bounded retry around this one read only — never around the Meta send
+  // itself, and never used to second-guess a genuine mismatch once one has
+  // actually been observed. A permanent-shaped error (see
   // isTransientLookupError) exits immediately rather than exhausting the
   // full budget on a read that cannot possibly succeed.
   async function lookupDestinationOwner(documentId) {
@@ -742,7 +761,7 @@ function createKadiV1WhatsAppDeliveryProvider({
     for (let attempt = 0; attempt < destinationLookupMaxAttempts; attempt += 1) {
       result = await supabase
         .from("kadi_v1_documents")
-        .select("owner_wa_id,document_type,options,document_number")
+        .select("owner_wa_id")
         .eq("document_id", documentId)
         .maybeSingle();
       if (!result?.error && result?.data) return ok(result.data);
@@ -750,6 +769,24 @@ function createKadiV1WhatsAppDeliveryProvider({
       if (attempt < destinationLookupMaxAttempts - 1) await sleep(DESTINATION_LOOKUP_RETRY_DELAY_MS);
     }
     return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
+  }
+
+  // B. DELIVERY FILENAME METADATA ONLY. Called strictly after A has already
+  // verified the destination — ownerWaId here is the server-verified value
+  // from that step, never client-supplied. Reuses the existing, already-
+  // authoritative document repository (the same hydration path used
+  // everywhere else in the codebase: kadi_v1_documents joined with the
+  // real snapshot in kadi_v1_document_versions) instead of another
+  // hand-written raw query — exactly the kind of raw, schema-guessing query
+  // that caused the root-cause bug in A.
+  async function resolveDeliveryFilenameMetadata({ documentId, ownerWaId }) {
+    const hydrated = await documents.getDocumentById({ documentId, ownerWaId });
+    if (!hydrated.ok) return fail("DELIVERY_DOCUMENT_METADATA_UNAVAILABLE");
+    return ok({
+      document_type: hydrated.value.document_type,
+      invoice_kind: hydrated.value.options?.invoice_kind ?? null,
+      document_number: hydrated.value.document_number,
+    });
   }
 
   return Object.freeze({
@@ -779,10 +816,12 @@ function createKadiV1WhatsAppDeliveryProvider({
       // same successful read would return the exact same row).
       if (!expectedDestination) return fail("DELIVERY_DESTINATION_LOOKUP_FAILED");
       if (expectedDestination !== destinationRef) return fail("DELIVERY_DESTINATION_MISMATCH");
+      const metadata = await resolveDeliveryFilenameMetadata({ documentId: finalFile.document_id, ownerWaId });
+      if (!metadata.ok) return metadata;
       const deliveryFilename = canonicalFinalFilename({
-        document_type: document.value.document_type,
-        invoice_kind: document.value.options?.invoice_kind ?? null,
-        document_number: document.value.document_number,
+        document_type: metadata.value.document_type,
+        invoice_kind: metadata.value.invoice_kind,
+        document_number: metadata.value.document_number,
       });
       if (!deliveryFilename) return fail("DELIVERY_FILENAME_UNRESOLVED");
       const bytes = await storage.readFinal(finalFile.storage_ref);

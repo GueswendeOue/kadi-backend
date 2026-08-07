@@ -398,6 +398,26 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   sûrs, mais la garantie elle-même était inopérante). Les deux corrigés
   sur la même branche. Voir fiche V de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md).
+* **Mise à jour (2026-08-07) : PR #15 fusionnée et déployée
+  (`0335d3758f3dc1d4841fd5137c8273d03ee68843`), puis une vraie tentative de
+  reprise par le propriétaire a de nouveau échoué avec
+  `DELIVERY_DESTINATION_LOOKUP_FAILED` — cause racine sous-jacente
+  identifiée par reproduction directe (pas seulement lecture de code) :
+  `PostgreSQL 42703`, `lookupDestinationOwner()` sélectionnait une colonne
+  `options` qui n'existe pas physiquement sur `kadi_v1_documents`. Corrigé
+  sur une nouvelle branche dédiée
+  `fix/kadi-v1-delivery-destination-schema-r0`, PR distincte, brouillon, non
+  fusionnée, non déployée. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Correctif : requête de vérification propriétaire/destination réduite aux
+  seules colonnes physiques réelles ; métadonnées de nom de fichier
+  (`document_type`/`options.invoice_kind`/`document_number`) désormais
+  résolues via le `documentRepository` déjà authentique, après
+  vérification réussie ; `42703` classé comme erreur permanente (échec
+  immédiat, plus de budget de retries gaspillé). Voir fiche W de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le détail
+  complet et la preuve (composition de production utilisant pour la
+  première fois le vrai fournisseur de livraison, pas une interface
+  simulée).
 * **BILL-001, rappel — toujours `PLAUSIBLE`, `NOT_REPRODUCED`, hors
   périmètre de ce lot :** le solde affiché (« Mon solde ») ne semble pas
   déduire les crédits retenus par une réservation restée `RESERVED` sans
