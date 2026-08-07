@@ -1898,24 +1898,25 @@ Render** (voir statut en tête de fiche).
   qui n'accepte pas ces actions), et route `FINISH_CONTENT` originaire de
   `EDIT_CONTENT` vers `DOCUMENT_REVIEW` rafraîchi.
 
-### T.4 — Défaut distinct découvert incidemment, non corrigé (hors périmètre de cette mission)
+### T.4 — Défaut distinct découvert incidemment, non corrigé dans cette mission
 
-* **CLIENT-001 (non corrigé, à traiter séparément) :** en construisant les
-  tests de composition de production pour T.2, `SAVE_CLIENT` a échoué avec
-  `DOCUMENT_CLIENT_FIELD_UNKNOWN` dès qu'un champ `tax_id` était soumis —
-  or `flows/v1_draft/kadi_document_client_v1.json` **et**
-  `flows/v1_draft/kadi_edit_client_v1.json` soumettent tous deux
+* **CLIENT-001 — CONFIRMED → `FIXED_ON_BRANCH` (voir fiche U ci-dessous) :**
+  en construisant les tests de composition de production pour T.2,
+  `SAVE_CLIENT` a échoué avec `DOCUMENT_CLIENT_FIELD_UNKNOWN` dès qu'un
+  champ `tax_id` était soumis — or `flows/v1_draft/kadi_document_client_v1.json`
+  **et** `flows/v1_draft/kadi_edit_client_v1.json` soumettent tous deux
   systématiquement un champ `tax_id` (Meta soumet tous les champs déclarés
   du formulaire, y compris vides). `CLIENT_FIELDS`
-  (`kadiV1SharedDocumentPolicies.js`) n'autorise que
+  (`kadiV1SharedDocumentPolicies.js`) n'autorisait que
   `name`/`phone`/`address`/`email`/`ifu`/`rccm` — jamais `tax_id`. En l'état
-  actuel du code, **toute soumission réelle de `SAVE_CLIENT` échouerait**,
-  que ce soit à la création initiale ou en correction. Confirmé par
-  exécution réelle (pas seulement lecture) : les tests de ce correctif ont
-  dû volontairement omettre `tax_id` de leurs données soumises pour
-  pouvoir exercer T.2/T.3, ce qui documente le défaut sans le corriger.
+  du code à cette date, **toute soumission réelle de `SAVE_CLIENT` aurait
+  échoué**, que ce soit à la création initiale ou en correction. Confirmé
+  par exécution réelle (pas seulement lecture) : les tests de ce correctif
+  ont dû volontairement omettre `tax_id` de leurs données soumises pour
+  pouvoir exercer T.2/T.3, ce qui documentait le défaut sans le corriger.
   Strictement hors périmètre de cette mission (limitée à REVIEW-001/
-  INV-001/INV-002/DOC-001) — nécessite sa propre mission de correction.
+  INV-001/INV-002/DOC-001) au moment de la fiche T — corrigé dans une
+  mission dédiée immédiatement suivante, voir fiche U.
 
 ### Preuve
 
@@ -1944,3 +1945,105 @@ sur une réponse rejouée, aucune mutation supplémentaire) ; une réponse
 d'édition obsolète (version de document dépassée par une autre mutation
 entre-temps) est rejetée, jamais appliquée silencieusement ; l'annulation
 explicite reste inchangée et reste la seule voie d'annulation normale.
+
+## U. CLIENT-001 — corrigé : `tax_id` du Flow n'était jamais reconnu comme l'`ifu` canonique du domaine
+
+* **Statut : `IMPLEMENTED_NOT_DEPLOYED`** — même branche
+  `fix/kadi-v1-destination-lookup-and-history-r0`, PR #15, toujours non
+  fusionnée, non déployée.
+* **Constat, reproduit par exécution réelle (pas seulement par lecture) :**
+  voir T.4 ci-dessus.
+
+### Contrat canonique déterminé avant toute correction
+
+Recherche exhaustive de `tax_id`/`ifu`/`rccm` dans tout le dépôt (contrats
+Flow, schéma document, politiques, aperçu, rendu PDF, persistance,
+documentation, tests) :
+
+* `ifu` est le nom canonique reconnu par **toutes** les couches V1 qui
+  connaissent ce concept : `CLIENT_FIELDS`
+  (`kadiV1SharedDocumentPolicies.js`) et le contrat du cerveau
+  conversationnel (`kadiV1BrainContracts.js`) n'utilisent tous deux que
+  `ifu`, jamais `tax_id`.
+* `tax_id` n'apparaît **nulle part ailleurs** dans le dépôt comme concept
+  distinct persisté — ni dans le domaine, ni dans la projection d'aperçu,
+  ni dans un quelconque rendu, ni dans l'ancien système pré-V1 (qui utilise
+  lui aussi `ifu`, avec un champ Flow historique nommé différemment,
+  `client_ifu`).
+* Le champ Flow `tax_id` porte le libellé **« Identifiant fiscal »** — la
+  traduction française exacte de ce que signifie IFU (Identifiant Financier
+  Unique) au Burkina Faso.
+* `rccm` (registre du commerce, un concept distinct — pas un identifiant
+  fiscal) reste accepté par la politique mais n'est soumis par **aucun**
+  écran Flow V1 réel actuellement ; aucune incohérence ne s'ensuit, donc
+  aucun correctif n'était nécessaire pour `rccm`.
+* **Conclusion (option A du choix proposé par la mission) : `tax_id` est
+  l'alias du Flow pour le champ canonique `ifu` du domaine.** Ni une
+  option B (champ distinct supporté), ni C (champ obsolète à ne plus
+  soumettre — les deux Flows réels le soumettent toujours), ni un autre
+  mapping.
+
+### Correctif
+
+Nouvelle fonction `normalizeClientTaxIdentifier(action, data)` dans
+`kadiV1FlowReplyRuntime.js`, insérée dans la même séquence de
+normalisation Flow→domaine que celle déjà utilisée pour
+`tax_rate_percent`/`tax_rate_basis_points` (fiche P) : appelée uniquement
+pour `SAVE_CLIENT`, elle retire `tax_id` du payload et, s'il contient une
+valeur non vide après nettoyage, la fusionne dans `ifu`. `ifu` ajouté à
+`ACTION_FIELDS.SAVE_CLIENT` (uniquement pour permettre la détection de
+conflit ci-dessous — aucun des deux Flows réels ne soumet `ifu`
+directement aujourd'hui). Si `tax_id` et `ifu` sont tous deux soumis avec
+des valeurs non vides et **différentes**, la soumission échoue
+explicitement (`KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT`) plutôt
+que de choisir silencieusement l'une des deux. Un `tax_id` vide (le cas
+normal, la grande majorité des soumissions réelles) ne laisse aucune trace
+(`tax_id` ni `ifu` dans le document persisté). Aucune autre validation de
+champ n'est affaiblie : la liste fermée de champs connus
+(`KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN`) reste strictement appliquée.
+
+### Preuve
+
+* `tests/kadiV1FlowReplyRuntime.test.js` : scénarios A à D de la mission
+  (soumission initiale réelle avec `tax_id` vide, soumission d'édition
+  réelle avec `tax_id` vide, valeur légitime normalisée vers `ifu`, valeurs
+  identiques sans conflit, valeurs contradictoires rejetées, champ inconnu
+  toujours rejeté), plus un test de parité qui reconstruit la vraie forme
+  de soumission des deux Flows réels (`kadi_document_client_v1.json`,
+  `kadi_edit_client_v1.json`) directement depuis leurs fichiers JSON, pour
+  empêcher toute dérive future entre ce que le Flow soumet et ce que la
+  politique accepte.
+* `tests/kadiV1ReviewEditReturnJourneysE2E.test.js` : les données
+  `SAVE_CLIENT` de tous les scénarios ont été restaurées à la vraie forme
+  de soumission (avec `tax_id`, plus une valeur légitime réelle dans le
+  scénario A) — CLIENT-001 est donc fermé sur la même composition de
+  production qui a servi à le découvrir, pas seulement par un test isolé.
+  Onze scénarios toujours verts après correctif, y compris la persistance
+  effective de `document.client.ifu` et l'absence de toute clé `tax_id`
+  résiduelle.
+* Suite complète après correctif : voir section Tests de la mission
+  courante dans `docs/KADI_RELEASE_CHECKLIST.md`.
+
+### Sécurité re-vérifiée
+
+Aucun champ arbitraire non déclaré n'est accepté (le test D le confirme
+explicitement) ; aucune donnée n'est perdue silencieusement (un `tax_id`
+non vide est toujours soit fusionné dans `ifu`, soit rejeté par conflit,
+jamais simplement abandonné) ; le comportement est identique pour la
+création initiale et la correction ; aucun champ soumis par le client ne
+contrôle le routage (le routage reste piloté uniquement par `action` et le
+`flow_key` d'origine vérifié par la session, comme pour les correctifs de
+la fiche T) ; aucune réservation de crédit, capture, rendu ou fichier
+final pendant un `SAVE_CLIENT`. Aucune migration Supabase requise ; aucune
+mutation Meta requise (le contrat Flow existant, `tax_id` inclus, reste
+valide tel quel).
+
+### Prévention
+
+Quand une même donnée métier a deux noms différents entre la couche Flow
+(pilotée par ce que Meta a historiquement publié comme libellé/nom de
+champ) et la couche domaine (pilotée par le vocabulaire métier canonique),
+normaliser une fois, à la frontière de validation Flow→domaine déjà
+établie pour ce genre de cas (voir aussi fiche P) — jamais laisser
+persister deux représentations contradictoires, et toujours faire échouer
+explicitement un conflit plutôt que d'en choisir une silencieusement.

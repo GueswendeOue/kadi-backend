@@ -45,7 +45,12 @@ const ACTION_FIELDS = Object.freeze({
   SELECT_DOCUMENT_TYPE: Object.freeze(["document_type"]),
   SAVE_INVOICE_TYPE: Object.freeze(["invoice_kind"]),
   SAVE_RECEIPT_DETAILS: Object.freeze(["payer", "amount", "reason", "payment_method", "reference", "receipt_format"]),
-  SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id"]),
+  // "ifu" is accepted alongside "tax_id" only so a conflicting pair (both
+  // present, both non-blank, disagreeing) can be detected and rejected by
+  // normalizeClientTaxIdentifier() below — neither real client Flow
+  // currently submits "ifu" itself (see CLIENT-001 in
+  // docs/KADI_ENGINEERING_MEMORY.md).
+  SAVE_CLIENT: Object.freeze(["name", "phone", "email", "address", "tax_id", "ifu"]),
   ADD_CONTENT: Object.freeze(["description", "quantity", "unit", "unit_custom", "unit_price"]),
   UPDATE_CONTENT: Object.freeze(["item_id", "description", "quantity", "unit", "unit_custom", "unit_price"]),
   REMOVE_CONTENT: Object.freeze(["item_id"]),
@@ -149,6 +154,32 @@ function resolveUnitCustom(action, data) {
   const cleaned = raw.trim().replace(/\s+/g, " ");
   if (cleaned.length < 1 || cleaned.length > 50) return fail("KADI_V1_FLOW_REPLY_UNIT_CUSTOM_INVALID");
   normalized.unit = cleaned;
+  return ok(normalized);
+}
+
+// CLIENT-001: both real client Flows (kadi_document_client_v1.json,
+// kadi_edit_client_v1.json) submit a field named "tax_id", labelled
+// "Identifiant fiscal" — the French term for exactly what IFU
+// (Identifiant Financier Unique) means. The document domain's own
+// CLIENT_FIELDS (kadiV1SharedDocumentPolicies.js) and the Brain contract
+// (kadiV1BrainContracts.js) both only ever recognize "ifu" — "tax_id" is
+// not a distinct, separately-persisted concept anywhere else in the
+// codebase. tax_id is therefore a Flow-layer alias for ifu, normalized
+// once here, at the same boundary as every other Flow/backend field-name
+// mismatch already handled in this function — never persisted as a
+// second, contradictory representation of the same identifier.
+function normalizeClientTaxIdentifier(action, data) {
+  if (action !== "SAVE_CLIENT") return ok(data);
+  if (!Object.hasOwn(data, "tax_id")) return ok(data);
+  const normalized = { ...data };
+  const submittedTaxId = typeof normalized.tax_id === "string" ? normalized.tax_id.trim() : "";
+  delete normalized.tax_id;
+  if (!submittedTaxId) return ok(normalized);
+  const existingIfu = typeof normalized.ifu === "string" ? normalized.ifu.trim() : "";
+  if (existingIfu && existingIfu !== submittedTaxId) {
+    return fail("KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT");
+  }
+  normalized.ifu = submittedTaxId;
   return ok(normalized);
 }
 
@@ -340,7 +371,9 @@ function validateActionPayload(flowKey, action, data) {
   if (!taxRateNormalized.ok) return taxRateNormalized;
   const unitResolved = resolveUnitCustom(action, taxRateNormalized.value);
   if (!unitResolved.ok) return unitResolved;
-  return ok(Object.freeze(structuredClone(unitResolved.value)));
+  const clientTaxIdentifierNormalized = normalizeClientTaxIdentifier(action, unitResolved.value);
+  if (!clientTaxIdentifierNormalized.ok) return clientTaxIdentifierNormalized;
+  return ok(Object.freeze(structuredClone(clientTaxIdentifierNormalized.value)));
 }
 
 function validateReplyEnvelope(input) {

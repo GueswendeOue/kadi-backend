@@ -123,6 +123,83 @@ test("EDIT_CONTENT now accepts FINISH_CONTENT so a content correction can signal
   assert.equal(checked.ok, true);
 });
 
+// CLIENT-001: both real client Flows (kadi_document_client_v1.json,
+// kadi_edit_client_v1.json) submit a "tax_id" field labelled "Identifiant
+// fiscal" on every real submission — Meta submits every declared field,
+// even blank ones. The document domain only ever recognizes "ifu" for the
+// same concept. Before this fix, any real SAVE_CLIENT reply — initial or
+// edited — failed with DOCUMENT_CLIENT_FIELD_UNKNOWN.
+
+test("A. SAVE_CLIENT from the real initial DOCUMENT_CLIENT payload shape (tax_id present but blank) is accepted, and no tax_id/ifu key survives when blank", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Awa Traoré", phone: "", email: "", address: "", tax_id: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+  assert.equal(Object.hasOwn(checked.value, "ifu"), false);
+});
+
+test("B. SAVE_CLIENT from the real EDIT_CLIENT payload shape (tax_id present but blank) is accepted the same way as the initial screen", () => {
+  const checked = validateActionPayload("EDIT_CLIENT", "SAVE_CLIENT", {
+    name: "Awa Traoré (corrigée)", phone: "", email: "", address: "", tax_id: "",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+});
+
+test("C. a legitimate tax_id value is normalized once to the canonical ifu field, never persisted as a second, contradictory representation", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", phone: "", email: "", address: "", tax_id: "  00123456A  ",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(checked.value.ifu, "00123456A");
+  assert.equal(Object.hasOwn(checked.value, "tax_id"), false);
+});
+
+test("C2: tax_id and ifu both supplied with the same value normalize cleanly, no conflict", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", tax_id: "00123456A", ifu: "00123456A",
+  });
+  assert.equal(checked.ok, true, checked.error);
+  assert.equal(checked.value.ifu, "00123456A");
+});
+
+test("C3: tax_id and ifu supplied with conflicting non-empty values fail safely instead of silently choosing one", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", tax_id: "00123456A", ifu: "99999999Z",
+  });
+  assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_CLIENT_TAX_IDENTIFIER_CONFLICT" });
+});
+
+test("D. an arbitrary unknown client field remains rejected exactly as before — the fix does not weaken the allowlist", () => {
+  const checked = validateActionPayload("DOCUMENT_CLIENT", "SAVE_CLIENT", {
+    name: "Boutique Awa", not_a_real_field: "x",
+  });
+  assert.deepEqual(checked, { ok: false, error: "KADI_V1_FLOW_REPLY_FIELD_FORBIDDEN" });
+});
+
+// Flow/backend field-parity guard: every field either real client Flow
+// contract actually submits must have an explicit backend policy, so a
+// future Flow change can never silently reintroduce CLIENT-001's class of
+// defect.
+test("Flow/backend parity: submitting every field the real kadi_document_client_v1.json and kadi_edit_client_v1.json contracts declare — exactly as Meta really submits a Flow form, blank fields included — is accepted by SAVE_CLIENT's backend policy", () => {
+  const documentClientFlow = require("../flows/v1_draft/kadi_document_client_v1.json");
+  const editClientFlow = require("../flows/v1_draft/kadi_edit_client_v1.json");
+  for (const flow of [documentClientFlow, editClientFlow]) {
+    const payload = flow.screens[0].layout.children.find((child) => child.type === "Form")
+      .children.find((child) => child.type === "Footer")["on-click-action"].payload;
+    const submittedFields = Object.keys(payload.data);
+    assert.ok(submittedFields.includes("tax_id"), `${flow.screens[0].id} must still declare tax_id — this test must keep reproducing the real contract, not a hand-picked subset`);
+    const realSubmission = { name: "Boutique Awa" };
+    for (const field of submittedFields) {
+      if (field === "name") continue;
+      realSubmission[field] = "";
+    }
+    const checked = validateActionPayload(flow.screens[0].id, "SAVE_CLIENT", realSubmission);
+    assert.equal(checked.ok, true, `${flow.screens[0].id}'s real full submission shape must be accepted (got ${checked.error})`);
+  }
+});
+
 test("owner mismatch is absorbed before command execution", async () => {
   const sessions = makeSessionService();
   await openSession(sessions);

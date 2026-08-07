@@ -170,7 +170,7 @@ async function buildFactureAtReview(f, ownerWaId = OWNER) {
   await send(f, { document, flowKey: "INVOICE_TYPE", action: "SAVE_INVOICE_TYPE", data: { invoice_kind: "FINAL" }, ownerWaId });
   document = await loadDocument(f, document.document_id, ownerWaId);
 
-  await send(f, { document, flowKey: "DOCUMENT_CLIENT", action: "SAVE_CLIENT", data: { name: "Awa Traoré", phone: "", email: "", address: "" }, ownerWaId });
+  await send(f, { document, flowKey: "DOCUMENT_CLIENT", action: "SAVE_CLIENT", data: { name: "Awa Traoré", phone: "", email: "", address: "", tax_id: "00123456A" }, ownerWaId });
   document = await loadDocument(f, document.document_id, ownerWaId);
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.ARTICLE_FORM, "initial SAVE_CLIENT must still reach ARTICLE_FORM");
 
@@ -194,6 +194,11 @@ test("A. Invoice initial journey: SAVE_CLIENT reaches ARTICLE_FORM, real state p
   assert.equal(document.client.name, "Awa Traoré");
   assert.equal(document.items.length, 1);
   assert.equal(document.items[0].description, "Ciment");
+  // CLIENT-001: the real Flow submission always includes tax_id — this
+  // must normalize to the domain's canonical `ifu` field, never be
+  // rejected and never persist as a second, contradictory representation.
+  assert.equal(document.client.ifu, "00123456A");
+  assert.equal(Object.hasOwn(document.client, "tax_id"), false);
 });
 
 test("B. Invoice client correction: EDIT_CLIENT -> real beginEdit Flow opened -> SAVE_CLIENT -> same document, refreshed DOCUMENT_REVIEW with the corrected client, articles and options untouched", async () => {
@@ -209,7 +214,7 @@ test("B. Invoice client correction: EDIT_CLIENT -> real beginEdit Flow opened ->
 
   await send(f, {
     document: afterBeginEdit, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT",
-    data: { name: "Awa Traoré (corrigée)", phone: "", email: "", address: "" },
+    data: { name: "Awa Traoré (corrigée)", phone: "", email: "", address: "", tax_id: "" },
   });
   const after = await loadDocument(f, before.document_id);
   assert.equal(after.document_id, before.document_id, "same document_id, never a new document");
@@ -291,7 +296,7 @@ test("E. Quotation (DEVIS) client correction reaches the exact same refreshed re
   assert.equal(document.document_type, "DEVIS");
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_CLIENT, "DEVIS skips INVOICE_TYPE, unlike FACTURE");
 
-  await send(f, { document, flowKey: "DOCUMENT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client Devis", phone: "", email: "", address: "" } });
+  await send(f, { document, flowKey: "DOCUMENT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client Devis", phone: "", email: "", address: "", tax_id: "" } });
   document = await loadDocument(f, document.document_id);
   await send(f, { document, flowKey: "ARTICLE_FORM", action: "ADD_CONTENT", data: { description: "Étude", quantity: 1, unit: "forfait", unit_custom: "", unit_price: 50000 } });
   document = await loadDocument(f, document.document_id);
@@ -303,7 +308,7 @@ test("E. Quotation (DEVIS) client correction reaches the exact same refreshed re
 
   await send(f, { document, flowKey: "DOCUMENT_REVIEW", action: "EDIT_CLIENT", data: {} });
   const reopened = await loadDocument(f, document.document_id);
-  await send(f, { document: reopened, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client Devis (corrigé)", phone: "", email: "", address: "" } });
+  await send(f, { document: reopened, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data: { name: "Client Devis (corrigé)", phone: "", email: "", address: "", tax_id: "" } });
   assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.DOCUMENT_REVIEW);
   assert.match(lastFlowData(f).review_summary, /Client Devis \(corrigé\)/);
   assert.match(lastFlowData(f).review_summary, /Facture proforma|Devis/i);
@@ -409,7 +414,7 @@ test("I. Replayed SAVE_CLIENT reply (same wamid) is idempotent — no duplicate 
   const reopened = await loadDocument(f, before.document_id);
 
   const sessionId = await openSession(f, { document: reopened, expectedFlowKey: "EDIT_CLIENT" });
-  const data = { name: "Awa Traoré (corrigée)", phone: "", email: "", address: "" };
+  const data = { name: "Awa Traoré (corrigée)", phone: "", email: "", address: "", tax_id: "" };
   const message = nfmReply({ sessionId, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data });
 
   const first = await f.composition.webhookHandler({ messages: [message] });
@@ -465,7 +470,7 @@ test("K. A stale edit response against a document already mutated by something e
   const mutated = await loadDocument(f, before.document_id);
   assert.notEqual(mutated.version, before.version, "the document must genuinely have moved on");
 
-  const staleMessage = nfmReply({ sessionId: staleSessionId, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data: { name: "Ne doit pas s’appliquer", phone: "", email: "", address: "" } });
+  const staleMessage = nfmReply({ sessionId: staleSessionId, flowKey: "EDIT_CLIENT", action: "SAVE_CLIENT", data: { name: "Ne doit pas s’appliquer", phone: "", email: "", address: "", tax_id: "" } });
   const staleResult = await f.composition.webhookHandler({ messages: [staleMessage] });
   assert.equal(staleResult.results[0].accepted, false, "a stale document_version must be rejected, not silently applied");
 

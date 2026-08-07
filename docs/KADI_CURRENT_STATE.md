@@ -362,15 +362,24 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   fiche T de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour
   le détail complet. **Statut de ce lot de correctifs :
   `IMPLEMENTED_NOT_DEPLOYED`.**
-* **Défaut distinct découvert incidemment, non corrigé, hors périmètre :**
-  **CLIENT-001** — `SAVE_CLIENT` échoue systématiquement
-  (`DOCUMENT_CLIENT_FIELD_UNKNOWN`) dès qu'un champ `tax_id` est soumis, ce
-  que font les deux Flows client réels (`kadi_document_client_v1.json` et
-  `kadi_edit_client_v1.json`) à chaque soumission — `CLIENT_FIELDS`
-  (`kadiV1SharedDocumentPolicies.js`) n'accepte que `ifu`/`rccm`, jamais
-  `tax_id`. Confirmé par exécution réelle des tests de composition de
-  production. Nécessite sa propre mission de correction ; voir fiche T,
-  section T.4.
+* **Mise à jour (2026-08-07) : CLIENT-001 corrigé, même branche, PR #15
+  toujours `OPEN`/`DRAFT`/non fusionnée/non déployée.** `SAVE_CLIENT`
+  échouait systématiquement (`DOCUMENT_CLIENT_FIELD_UNKNOWN`) dès qu'un
+  champ `tax_id` était soumis, ce que font les deux Flows client réels
+  (`kadi_document_client_v1.json` et `kadi_edit_client_v1.json`) à chaque
+  soumission — `CLIENT_FIELDS` (`kadiV1SharedDocumentPolicies.js`) n'acceptait
+  que `ifu`/`rccm`, jamais `tax_id`. **Contrat canonique déterminé avant
+  correction :** `tax_id` (libellé Flow « Identifiant fiscal ») est un alias
+  du Flow pour le champ domaine canonique `ifu` — confirmé par recherche
+  exhaustive (`ifu` est le seul nom reconnu par `CLIENT_FIELDS` **et** par
+  le contrat du cerveau conversationnel `kadiV1BrainContracts.js` ;
+  `tax_id` n'existe nulle part ailleurs comme concept distinct). **Correctif
+  :** normalisation `tax_id` → `ifu` une seule fois, à la frontière
+  Flow→domaine (`kadiV1FlowReplyRuntime.js`), avec échec explicite en cas
+  de valeurs contradictoires non vides (jamais un choix silencieux) ;
+  aucune mutation de Flow Meta requise. **Statut : `IMPLEMENTED_NOT_DEPLOYED`.**
+  Voir fiche U de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve (tests de parité Flow/backend inclus).
 * **BILL-001, rappel — toujours `PLAUSIBLE`, `NOT_REPRODUCED`, hors
   périmètre de ce lot :** le solde affiché (« Mon solde ») ne semble pas
   déduire les crédits retenus par une réservation restée `RESERVED` sans
