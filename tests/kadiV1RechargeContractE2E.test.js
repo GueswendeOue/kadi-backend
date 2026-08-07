@@ -70,20 +70,30 @@ function createFakeRechargeSupabaseClient({ rechargeRepository, sessionIdsByOwne
         select: () => ({
           eq: (_col, ownerWaId) => ({
             in: (_col2, statuses) => ({
-              order: () => ({
-                limit: () => ({
-                  async maybeSingle() {
-                    const ids = sessionIdsByOwner.get(ownerWaId) || [];
-                    const sessions = [];
-                    for (const id of ids) {
-                      const loaded = await rechargeRepository.getRechargeSession({ rechargeSessionId: id });
-                      if (loaded.ok && loaded.value.owner_wa_id === ownerWaId && statuses.includes(loaded.value.status)) {
-                        sessions.push(loaded.value);
+              // RECHARGE-CONTRACT-001 R1: mirrors the real
+              // .lte("created_at", sessionOpenedAt) bound added to
+              // createKadiV1RechargeRuntime.cancel() — only a recharge
+              // session created at or before the trusted Flow session's
+              // own opened_at is ever eligible.
+              lte: (_col3, upperBound) => ({
+                order: () => ({
+                  limit: () => ({
+                    async maybeSingle() {
+                      const ids = sessionIdsByOwner.get(ownerWaId) || [];
+                      const sessions = [];
+                      for (const id of ids) {
+                        const loaded = await rechargeRepository.getRechargeSession({ rechargeSessionId: id });
+                        if (
+                          loaded.ok && loaded.value.owner_wa_id === ownerWaId && statuses.includes(loaded.value.status) &&
+                          loaded.value.created_at <= upperBound
+                        ) {
+                          sessions.push(loaded.value);
+                        }
                       }
-                    }
-                    sessions.sort((a, b) => b.created_at.localeCompare(a.created_at));
-                    return { data: sessions[0] ? { recharge_session_id: sessions[0].recharge_session_id } : null, error: null };
-                  },
+                      sessions.sort((a, b) => b.created_at.localeCompare(a.created_at));
+                      return { data: sessions[0] ? { recharge_session_id: sessions[0].recharge_session_id } : null, error: null };
+                    },
+                  }),
                 }),
               }),
             }),
@@ -137,7 +147,22 @@ function fakePaymentProvider({ confirmOnVerify = true } = {}) {
   };
 }
 
+// RECHARGE-CONTRACT-001 R1: a genuinely advancing clock, shared between the
+// conversation session service (session.opened_at) and the recharge
+// service (recharge session created_at), is required to make "created
+// before/after this session was opened" meaningfully distinguishable —
+// a fixed clock would make every timestamp identical and silently defeat
+// the cross-session CANCEL binding this fixture exists to prove.
+function createAdvancingClock(startIso) {
+  let tick = 0;
+  return () => {
+    tick += 1;
+    return new Date(Date.parse(startIso) + tick * 1000).toISOString();
+  };
+}
+
 async function buildComposition({ balance = 0, provider = fakePaymentProvider() } = {}) {
+  const sharedClock = createAdvancingClock(NOW);
   const domain = createDocumentDomain({ clock: () => NOW });
   const documents = createInMemoryV1DocumentRepository();
   const packCatalog = createRechargePackCatalog({ packs: [PACK_1000, PACK_2000] });
@@ -167,7 +192,7 @@ async function buildComposition({ balance = 0, provider = fakePaymentProvider() 
     documentRepository: documents,
     quoteService: { getGenerationQuote: async () => { throw new Error("UNEXPECTED_CALL:getGenerationQuote"); } },
     generationLifecycleService: { confirmGeneration: async () => { throw new Error("UNEXPECTED_CALL:confirmGeneration"); } },
-    clock: () => NOW,
+    clock: sharedClock,
   });
 
   const client = createFakeRechargeSupabaseClient({ rechargeRepository, sessionIdsByOwner });
@@ -188,7 +213,7 @@ async function buildComposition({ balance = 0, provider = fakePaymentProvider() 
     historyRuntime: stubPort(["search", "open"]),
     walletRuntime: stubPort(["getBalance"]),
   });
-  const sessionService = createConversationSessionService({ repository: createMemoryConversationSessionRepository(), clock: () => NOW });
+  const sessionService = createConversationSessionService({ repository: createMemoryConversationSessionRepository(), clock: sharedClock });
   const flowReplyRuntime = createKadiV1FlowReplyRuntime({ sessionService, commandRuntime });
 
   const sent = { texts: [], flows: [] };
@@ -456,6 +481,22 @@ test("15. DOCUMENT_REVIEW/CANCEL through the full webhook chain still rejects pa
   assert.equal(result.results[0].accepted, false, "DOCUMENT_REVIEW/CANCEL must never accept RECHARGE-only fields");
 });
 
+test("5b. DOCUMENT_PREVIEW/CANCEL through the full webhook chain still rejects pack_id/payment_reference — the RECHARGE-only override never leaks", async () => {
+  const f = await buildComposition();
+  const sessionId = await f.sessionService.open({ ownerWaId: OWNER, expectedFlowKey: "DOCUMENT_PREVIEW", idempotencyKey: nextKey("preview-cancel-session") });
+  assert.equal(sessionId.ok, true, sessionId.error);
+  const message = {
+    id: "wamid:preview-cancel", from: OWNER, type: "interactive",
+    interactive: { type: "nfm_reply", nfm_reply: { response_json: JSON.stringify({
+      session_id: sessionId.value.session_id, flow_key: "DOCUMENT_PREVIEW", action: "CANCEL",
+      data: { pack_id: "PACK_1000", payment_reference: "REF-1" }, flow_token: sessionId.value.session_id,
+    }) } },
+  };
+  const result = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(result.handled, true);
+  assert.equal(result.results[0].accepted, false, "DOCUMENT_PREVIEW/CANCEL must never accept RECHARGE-only fields");
+});
+
 // 16. No render/generation/document mutation caused by merely selecting,
 // checking or cancelling — structurally proven: documentRuntime,
 // previewRuntime, generationRuntime and historyRuntime are all
@@ -470,4 +511,125 @@ test("16. Selecting, checking or cancelling a recharge never touches document/pr
   // documentRuntime/previewRuntime/generationRuntime/historyRuntime ports
   // in buildComposition() is itself the proof.
   assert.ok(true);
+});
+
+// --- R1 independent review: HIGH/P0 cross-session CANCEL safety ---
+//
+// kadiV1FlowReplyRuntime.js's handle() calls commands.execute(...)
+// unconditionally, even when sessions.consumeReply() already reported
+// consumed.duplicate === true — the presenter merely suppresses the
+// user-visible reply afterward, but the business command still ran a
+// second time. For SELECT_PACK/CHECK_PAYMENT this was masked by their own
+// idempotency-key-based dedup deeper in the stack (createRechargeSession's
+// findSessionByIdempotencyKey, confirmPaymentAndCredit's event
+// fingerprint). RECHARGE/CANCEL had no such command-level idempotency key:
+// createKadiV1RechargeRuntime's cancel({ownerWaId} = {}) used to
+// destructure only ownerWaId — the idempotencyKey FlowCommandRuntime
+// passed it was silently discarded — and always re-resolved "the owner's
+// current newest CREATED/PAYMENT_PENDING session" fresh from storage. A
+// delayed exact replay of an already-consumed CANCEL message, or a
+// first-time submission of an old still-valid RECHARGE Flow, could
+// therefore cancel a completely different, newer recharge session than
+// the one that Flow context was ever about.
+//
+// Fix: sessionOpenedAt (the trusted server-side moment the exact Flow
+// session was opened, set only by kadiV1FlowReplyRuntime.js from the
+// session record, never client-supplied) now bounds which recharge
+// session cancel() may ever target — only one created at or before that
+// moment. No new Supabase column: kadi_v1_conversation_sessions.opened_at
+// and kadi_v1_recharge_sessions.created_at both already exist.
+
+test("R1 HIGH/P0: a delayed exact replay of an already-consumed CANCEL message never affects a newer, unrelated recharge session", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  // 1. SELECT_PACK creates recharge A.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("cross-session-replay-select-a") });
+  const sessionA = await latestSession(f);
+  assert.equal(sessionA.status, "PAYMENT_PENDING");
+
+  // 2. CANCEL message C cancels A successfully — same session/message
+  // reused verbatim in step 4 below.
+  const cancelSessionId = await openSession(f, { idempotencyKey: nextKey("cross-session-replay-cancel-session") });
+  const cancelMessage = nfmReply({ sessionId: cancelSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const first = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  assert.equal(first.results[0].duplicate, false);
+  const afterFirstCancel = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionA.recharge_session_id });
+  assert.equal(afterFirstCancel.value.status, "CANCELLED");
+
+  // 3. Create a NEW recharge B for the same owner, created strictly after
+  // the CANCEL session (step 2) was opened — now the owner's newest
+  // active (CREATED/PAYMENT_PENDING) session.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" }, idempotencyKey: nextKey("cross-session-replay-select-b") });
+  const sessionB = await latestSession(f);
+  assert.notEqual(sessionB.recharge_session_id, sessionA.recharge_session_id);
+  assert.equal(sessionB.status, "PAYMENT_PENDING");
+
+  // 4. Replay the EXACT original CANCEL message C — same wamid, same Flow
+  // session, same consumed reply idempotency key.
+  const replay = await f.composition.webhookHandler({ messages: [cancelMessage] });
+  assert.equal(replay.results[0].accepted, false, "the replay must fail closed — B was created after this Flow session was opened, so nothing eligible remains to cancel");
+  assert.equal(replay.results[0].reason, "RECHARGE_SESSION_NOT_FOUND");
+
+  const sessionBAfterReplay = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(sessionBAfterReplay.value.status, "PAYMENT_PENDING", "B must remain exactly as it was — a replay of a message that was only ever about A must never touch B");
+  const balanceAfter = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
+  assert.equal(balanceAfter.value, 0, "no credit change from any of this");
+});
+
+test("R1 HIGH/P0: a stale, never-yet-submitted RECHARGE Flow cannot cancel a recharge created after that Flow was opened", async () => {
+  const f = await buildComposition({ balance: 0 });
+
+  // 1. A RECHARGE Flow/session is opened (not yet submitted).
+  const staleSessionId = await openSession(f, { idempotencyKey: nextKey("stale-flow-session") });
+
+  // 2. Time/user actions cause a later recharge B to become the newest
+  // active session — the owner selects a pack through a completely
+  // separate, later Flow round-trip, created strictly after the stale
+  // session above was opened.
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("stale-flow-select-b") });
+  const sessionB = await latestSession(f);
+  assert.equal(sessionB.status, "PAYMENT_PENDING");
+
+  // 3. The older still-valid RECHARGE Flow is submitted for the first time
+  // with action=CANCEL — this is a genuinely first-time submission of the
+  // stale session, not a replay of anything.
+  const staleMessage = nfmReply({ sessionId: staleSessionId, action: "CANCEL", data: { pack_id: "", payment_reference: "" } });
+  const result = await f.composition.webhookHandler({ messages: [staleMessage] });
+  assert.notEqual(result.results[0].duplicate, true, "this is a first-time submission of the stale session, not a replay");
+  assert.equal(result.results[0].accepted, false, "the stale Flow must fail closed — B did not exist when this Flow session was opened, so it is never an eligible cancel target");
+  assert.equal(result.results[0].reason, "RECHARGE_SESSION_NOT_FOUND");
+
+  const sessionBAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
+  assert.equal(sessionBAfter.value.status, "PAYMENT_PENDING", "B must remain untouched by a Flow context that predates its existence");
+});
+
+test("R1: a genuinely current CANCEL (opened after the active recharge exists) still succeeds normally — the binding never blocks a real cancellation", async () => {
+  const f = await buildComposition({ balance: 0 });
+  await send(f, { action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" }, idempotencyKey: nextKey("current-cancel-select") });
+  const session = await latestSession(f);
+
+  await send(f, { action: "CANCEL", data: { pack_id: "", payment_reference: "" }, idempotencyKey: nextKey("current-cancel-session") });
+
+  const after = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: session.recharge_session_id });
+  assert.equal(after.value.status, "CANCELLED", "a CANCEL Flow opened after the active recharge already existed must still cancel it normally");
+});
+
+test("10. The presenter sends nothing at all for a duplicate SELECT_PACK reply (kadiV1ProductionPresenter.js's presentFlowReply short-circuits on result.duplicate === true)", async () => {
+  const f = await buildComposition();
+  const sessionId = await openSession(f, { idempotencyKey: nextKey("presenter-silent-session") });
+  const message = nfmReply({ sessionId, action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
+
+  const first = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  assert.equal(first.results[0].duplicate, false);
+  const textsAfterFirst = f.sent.texts.length;
+  const flowsAfterFirst = f.sent.flows.length;
+  assert.ok(textsAfterFirst > 0, "the first, real reply must send real payment instructions");
+
+  const second = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(second.results[0].accepted, true, second.results[0].reason);
+  assert.equal(second.results[0].duplicate, true);
+  assert.equal(f.sent.texts.length, textsAfterFirst, "a duplicate reply must never send a second text message");
+  assert.equal(f.sent.flows.length, flowsAfterFirst, "a duplicate reply must never send a second Flow");
 });
