@@ -5295,14 +5295,15 @@ message d'erreur brut ni le nom du modèle vers l'utilisateur.
 ## AE. T12/IMAGE-PDF-VISION-GATE-001 — mise sous autorité du vocal visuel entrant (IMAGE/PDF) et preuve de câblage Gemini
 
 * **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
-  `IMPLEMENTED_NOT_MERGED`** — branche isolée
+  `CLOSED / MERGED`** — branche isolée
   `fix/kadi-v1-image-pdf-vision-gate-t12`, créée depuis
   `main@b20c8ed7970cdbbc9226f602885af05b8c399471` — vérifié exactement
   égal au head réel de `main` avant tout branchement (PR #25/T11 déjà
-  fusionnée à ce commit). PR brouillon ouverte, non fusionnée, non
-  déployée. Aucune migration appliquée à distance, aucune mutation
-  Supabase/Meta/Render/WhatsApp réelle, aucun appel Gemini réel. Ne pas
-  marquer T12 `CLOSED` avant fusion.
+  fusionnée à ce commit). Aucune migration appliquée à distance, aucune
+  mutation Supabase/Meta/Render/WhatsApp réelle, aucun appel Gemini réel.
+  **Fusionné dans `main` via PR #26 (verdict R1
+  `KADI_V1_T12_IMAGE_PDF_GEMINI_R1_REVIEW_CLEAN`), au commit
+  `506cb2373ac1107cf303a18d3c05a00e25f029a5`.** T12 est désormais `CLOSED`.
 * **Origine :** mission « KADI V1 — T12 IMAGE/PDF VISION GATE + GEMINI
   PROVEN-WIRED ».
 
@@ -5530,7 +5531,8 @@ technique vers l'utilisateur.
 ### Suivi requis (hors périmètre de cette mission)
 
 * `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
-  AA.3) — toujours dormant, toujours non corrigé.
+  AA.3) — corrigé sur une branche isolée séparée, voir AF ci-dessous ;
+  toujours non fusionné au moment de la rédaction de cette section.
 * Application de la migration T6 (AA.3) et de la migration T10 R1
   (`kadi_topups_v1_recharge_reference_unique`) à Supabase de production —
   toujours hors périmètre, toujours en attente.
@@ -5650,3 +5652,151 @@ le bogue auto-détecté (`!activeDocument`). Focused : 487/487. Suite
 complète : 1634/1634. `git diff --check` : propre. Revue adversariale
 du diff complet R0+R1 : un bogue réel auto-détecté et corrigé avant
 commit (voir ci-dessus), aucun défaut HIGH/MEDIUM restant.
+
+## AF. P1/RECHARGE_RESUME_AVAILABLE_BALANCE_001 — corrigé : la reprise automatique de génération utilisait le solde brut, jamais le solde disponible T6
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — branche isolée
+  `fix/kadi-v1-recharge-resume-available-balance-p1`, créée depuis
+  `main@506cb2373ac1107cf303a18d3c05a00e25f029a5` — vérifié exactement
+  égal au head réel de `main`/`origin/main` avant tout branchement (PR
+  #26/T12 déjà fusionnée à ce commit, voir AE ci-dessus). PR brouillon
+  ouverte, non fusionnée, non déployée. Aucune migration appliquée à
+  distance, aucune mutation Meta/WhatsApp/Orange Money réelle, aucun
+  changement de tarification. `resumePolicy` de production reste
+  `REQUIRE_CONFIRMATION` (`kadiV1ProductionBootstrap.js`), inchangé —
+  `AUTO_RESUME_IF_VALID` n'est pas activé par cette mission et reste
+  dormant en production. Ne pas marquer ce défaut `CLOSED` avant fusion.
+* **Origine :** mission « KADI V1 — P1 RECHARGE_RESUME_AVAILABLE_BALANCE_001 »,
+  fermant le défaut documenté en AA.3 et référencé comme suivi requis
+  dans AB à AE.
+
+### Défaut confirmé : la pré-vérification de reprise automatique lisait le solde brut, pas le solde disponible
+
+`kadiV1RechargeService.js`'s `resumePendingGeneration()` appelait
+`store.getBalance({ownerWaId})` — le solde brut du portefeuille — et
+validait `balance.value >= quote.value.total_credits`. T6 (AA.3) avait
+déjà établi que le montant réellement dépensable est
+`available_credits = total_credits - reserved_credits` : une retenue
+`RESERVED` vivante d'une autre génération réduit ce qui est
+véritablement disponible sans jamais apparaître dans le solde brut.
+Exemple : solde brut = 10, retenue vivante d'une autre génération = 3
+(disponible réel = 7), coût du devis de reprise = 8 — l'ancienne
+pré-vérification voyait `10 >= 8` et considérait la reprise éligible,
+alors que la vraie autorité financière en aval
+(`generationLifecycleService.confirmGeneration` →
+`walletReservationService.reserveCredits`,
+`kadiV1WalletReservationService.js`/`kadiV1GenerationLifecycleService.js`)
+rejette ensuite avec `INSUFFICIENT_CREDITS`.
+
+**Reproduction pré-correctif** (script jetable utilisant le vrai
+`createRechargeService` + le vrai `createInMemoryRechargeRepository`,
+avec `resumePolicy: "AUTO_RESUME_IF_VALID"`, solde brut 0 crédité à 10
+via un pack de recharge réellement confirmé, une retenue vivante
+simulée de 3) : la pré-vérification laissait passer la reprise,
+`generationLifecycleService.confirmGeneration` était appelé une fois
+(rejeté `INSUFFICIENT_CREDITS` par la fausse autorité en aval fidèle au
+contrat réel), le document transitionnait hors de `RECHARGE_REQUIRED`
+avant l'échec, `resume_link.generation_started` passait `true` de façon
+permanente et `resume_status` restait `FAILED` — un rejeu ultérieur de
+`resumePendingGeneration` contournait alors la pré-vérification
+(`generation_started` déjà vrai) et rappelait directement l'autorité en
+aval, obtenant systématiquement le même échec tant que la retenue
+concurrente n'était pas libérée. Aucune corruption financière (zéro
+double débit, zéro double réservation) mais un état illisible pour
+l'utilisateur — le rechargement payé restait bloqué sur un chemin
+d'échec récurrent au lieu d'être correctement refusé dès la
+pré-vérification.
+
+### Correctif — une seule autorité financière, réutilisée telle quelle
+
+`resumePendingGeneration()` appelle désormais
+`store.getAvailableBalance({ownerWaId})` — exactement le même contrat
+T6 (`{total_credits, reserved_credits, available_credits}`), déjà une
+méthode obligatoire de `assertRechargeRepository`
+(`kadiV1RechargeRepository.js`), déjà implémentée aussi bien par
+`createInMemoryRechargeRepository` que par
+`kadiV1SupabaseRechargeRepository.js` (qui appelle la MÊME RPC
+`kadi_v1_get_wallet_balance` que `getBalance()`, donc **aucune nouvelle
+migration n'est nécessaire pour ce correctif** — seule la migration T6
+déjà en attente, AA.3, reste requise avant activation en production).
+`store.getBalance()` lui-même n'est ni modifié ni supprimé — il reste
+disponible tel quel pour ses autres appelants existants, conformément à
+l'instruction explicite de ne jamais le changer globalement pour ce
+correctif. La forme du résultat est re-validée indépendamment
+(`Number.isSafeInteger` sur les trois champs, tous `>= 0`,
+`total_credits - reserved_credits === available_credits`) plutôt que
+supposée correcte : un solde malformé ou impossible échoue fermé avec
+un nouveau motif interne dédié, `BALANCE_INVALID`, distinct de
+`BALANCE_INSUFFICIENT` (solde valide mais insuffisant). Une
+pré-vérification échouée ne fait plus jamais sortir le document de
+`RECHARGE_REQUIRED`, ne met plus jamais `generation_started` à `true`,
+et n'appelle plus jamais l'autorité financière en aval pour un montant
+qui n'était jamais réellement disponible.
+
+**Ceci reste une pré-vérification, pas une seconde autorité
+financière** : la réservation atomique réelle
+(`walletReservationService.reserveCredits`,
+`kadiV1GenerationLifecycleRepository.js`) demeure la seule autorité
+finale. Un scénario de course déterministe (sans `sleep`) — la
+pré-vérification voit `available = 8 = coût`, puis une autre réservation
+consomme 1 crédit supplémentaire avant l'appel réel — prouve que
+l'autorité finale rejette toujours correctement en aval
+(`INSUFFICIENT_CREDITS`, zéro débit, zéro génération dupliquée) ; un
+rejeu immédiat après cet échec reproduit la même erreur de façon
+cohérente tant que le conflit sous-jacent persiste (comportement
+préexistant du mécanisme `generation_started`, non introduit ni
+aggravé par ce correctif — un rejeu après résolution réelle du conflit
+réussit normalement, prouvant que la reprise n'est jamais bloquée de
+façon permanente).
+
+### Preuve
+
+* 10 scénarios obligatoires
+  (`tests/kadiV1RechargeResumeAvailableBalance.test.js`) : solde brut
+  suffisant mais disponible insuffisant → pas de reprise automatique ;
+  cas limite disponible = coût exact → reprise éligible ; invariant de
+  solde malformé (retenue > total) → échec fermé `BALANCE_INVALID` ;
+  valeurs financières négatives/impossibles → échec fermé ; course après
+  une pré-vérification correcte → l'autorité finale rejette
+  proprement, zéro corruption, rejeu cohérent, reprise réussie une fois
+  le conflit résolu ; reprise automatique réussie → exactement un
+  démarrage de génération ; rejeu exact de la confirmation de paiement
+  et de `resumePendingGeneration` après un échec de solde → exactement
+  une fois, jamais de résurrection d'un échec en succès ;
+  `REQUIRE_CONFIRMATION` (politique de production actuelle) strictement
+  inchangé — crédité une seule fois, aucune génération automatique,
+  `automatic:false`/`CONFIRMATION_REQUIRED` ; isolation propriétaire.
+* Focused (recharge, solde disponible T6, cycle de vie de génération,
+  fournisseur Orange Money réel, contrat recharge, présentateur
+  recharge, migration d'unicité T10, Brain, multimodal conversationnel,
+  fournisseurs Gemini vocal/vision, gates T11/T12, runtime webhook,
+  pipelines document partagé/décharge, orchestrateur conversationnel) :
+  442/442. Suite complète : 1644/1644. `git diff --check` : propre.
+* Revue adversariale du diff complet (seul fichier de production modifié :
+  `kadiV1RechargeService.js`, 26 lignes ajoutées/4 supprimées) : aucun
+  autre appelant de `resumePendingGeneration` ou de `resumePolicy`
+  n'existe hors de `kadiV1RechargeService.js` lui-même et du bootstrap de
+  production (confirmé par grep exhaustif) ; aucun défaut HIGH/MEDIUM
+  restant.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau Meta/WhatsApp/Orange Money réel dans les tests.
+Aucune migration Supabase appliquée à distance. Aucun débit de crédit
+en dehors d'une confirmation de paiement réellement vérifiée. Aucune
+donnée sensible journalisée par ce correctif (le nouveau motif interne
+`BALANCE_INVALID` ne contient aucune valeur financière brute, aucun
+identifiant de propriétaire).
+
+### Suivi requis (hors périmètre de cette mission)
+
+* Application de la migration T6 (AA.3) à Supabase de production —
+  toujours hors périmètre, toujours en attente ; ce correctif ne change
+  rien à cette dépendance (aucune nouvelle migration écrite ni requise).
+* Application de la migration T10 R1
+  (`kadi_topups_v1_recharge_reference_unique`) à Supabase de production —
+  toujours hors périmètre, toujours en attente.
+* Activation éventuelle de `AUTO_RESUME_IF_VALID` en production —
+  décision produit séparée, explicitement hors périmètre de cette
+  mission ; `REQUIRE_CONFIRMATION` reste la politique active.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

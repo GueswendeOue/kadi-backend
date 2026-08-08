@@ -796,8 +796,10 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   enregistré, non corrigé ici : `RECHARGE_RESUME_AVAILABLE_BALANCE_001`
   (MEDIUM/P1 avant RC — `kadiV1RechargeService.js`'s
   `resumePendingGeneration` reste basé sur le solde brut, préexistant,
-  hors périmètre T6). Voir fiche AA.3 de
-  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  hors périmètre T6 ; corrigé depuis sur une branche isolée séparée,
+  voir la mise à jour P1 plus bas dans ce document et la fiche AF de
+  `KADI_ENGINEERING_MEMORY.md`, toujours non fusionné). Voir fiche AA.3
+  de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet.
 * **Mise à jour (2026-08-07) : T5/RECHARGE_PRESENTER_001 corrigé,
   branche isolée `fix/kadi-v1-recharge-presenter-t5` créée depuis
@@ -1153,11 +1155,60 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   modifiés au R1 (`kadiV1SharedDocumentPipeline.js`,
   `kadiV1DischargePipeline.js`, `kadiV1ConversationOrchestrator.js`).
   **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
-  `IMPLEMENTED_NOT_MERGED`.** Ne pas marquer T12 `CLOSED` avant fusion.
-  Tests ciblés (487/487) puis suite complète (1634/1634),
-  `git diff --check` propre. Voir fiche AE de
+  `CLOSED / MERGED`.** Fusionné dans `main` via PR #26 (verdict R1
+  `KADI_V1_T12_IMAGE_PDF_GEMINI_R1_REVIEW_CLEAN`), commit
+  `506cb2373ac1107cf303a18d3c05a00e25f029a5`. Tests ciblés (487/487)
+  puis suite complète (1634/1634), `git diff --check` propre. Voir
+  fiche AE de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
+
+* **Mise à jour (2026-08-12) : P1/RECHARGE_RESUME_AVAILABLE_BALANCE_001 —
+  la reprise automatique de génération après recharge utilisait le solde
+  brut du portefeuille, jamais le solde disponible T6.** Branche isolée
+  `fix/kadi-v1-recharge-resume-available-balance-p1` créée depuis
+  `main@506cb2373ac1107cf303a18d3c05a00e25f029a5` — vérifié exactement
+  égal au head réel de `main`/`origin/main` avant tout branchement (PR
+  #26/T12 déjà fusionnée à ce commit). PR brouillon ouverte, **non
+  fusionnée, non déployée. Aucune migration appliquée à distance, aucune
+  mutation Meta/WhatsApp/Orange Money réelle, aucun changement de
+  tarification.** `resumePolicy` de production reste
+  `REQUIRE_CONFIRMATION` (`kadiV1ProductionBootstrap.js`), inchangé —
+  `AUTO_RESUME_IF_VALID` n'est pas activé par cette mission.
+
+  **Défaut confirmé puis corrigé** : `kadiV1RechargeService.js`'s
+  `resumePendingGeneration()` (chemin `AUTO_RESUME_IF_VALID`, dormant en
+  production) appelait `store.getBalance({ownerWaId})` — le solde brut
+  — et validait `balance.value >= quote.value.total_credits`. T6 avait
+  déjà établi que le montant réellement dépensable est
+  `available_credits = total_credits - reserved_credits` : une retenue
+  `RESERVED` vivante d'une autre génération réduisait le disponible réel
+  sans jamais apparaître dans le solde brut (ex. brut=10, retenue=3,
+  disponible réel=7, coût=8 — l'ancienne pré-vérification voyait `10>=8`
+  et laissait passer, puis l'autorité financière réelle en aval
+  rejetait `INSUFFICIENT_CREDITS` après que le document avait déjà
+  transitionné et `resume_link.generation_started` était déjà passé à
+  `true` de façon permanente). Reproduit avant correctif via le vrai
+  `createRechargeService` + le vrai `createInMemoryRechargeRepository`.
+  Corrigé en appelant `store.getAvailableBalance({ownerWaId})` — le même
+  contrat T6 déjà obligatoire du dépôt, déjà backé côté Supabase par la
+  MÊME RPC que `getBalance()` (**aucune nouvelle migration requise**) —
+  avec re-validation indépendante de la forme du solde (échec fermé,
+  nouveau motif `BALANCE_INVALID`, distinct de `BALANCE_INSUFFICIENT`).
+  `store.getBalance()` lui-même reste inchangé pour ses autres
+  appelants. Un scénario de course déterministe (sans `sleep`) prouve
+  que l'autorité finale réelle (réservation atomique du portefeuille)
+  reste la seule autorité financière et rejette toujours correctement
+  en aval même après une pré-vérification correcte — zéro corruption,
+  rejeu cohérent, reprise réussie une fois le conflit résolu.
+
+  10 scénarios obligatoires
+  (`tests/kadiV1RechargeResumeAvailableBalance.test.js`). Tests ciblés
+  (442/442) puis suite complète (1644/1644), `git diff --check` propre.
+  Un seul fichier de production modifié
+  (`kadiV1RechargeService.js`). Voir fiche AF de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
-  détail complet et la preuve.
+  détail complet et la preuve. **Statut : `IMPLEMENTED_NOT_MERGED`.** Ne
+  pas marquer ce défaut `CLOSED` avant fusion.
 
 ## Blocages connus
 
