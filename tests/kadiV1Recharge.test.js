@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createDocumentDomain, DOCUMENT_EVENTS } = require("../kadiV1DocumentDomain");
@@ -34,6 +35,18 @@ function paymentResult(overrides = {}) {
     metadata: { fixture: true },
     ...overrides,
   };
+}
+
+// AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001: resumePendingGeneration derives
+// a per-round idempotencyKey for confirmGeneration from
+// (generation_confirmation_id, resume link revision) — the same default
+// makeId() formula kadiV1RechargeService.js itself uses — rather than the
+// bare generation_confirmation_id, so a genuinely distinct re-arm round
+// (after a real downstream INSUFFICIENT_CREDITS race) never reuses an
+// already-consumed idempotency key. revision=1 is the resume link's value
+// on its very first read (createRechargeSession seeds it at 1).
+function resumeRoundKey(generationConfirmationId, revision) {
+  return `resume:${crypto.createHash("sha256").update(`${generationConfirmationId}:${revision}`).digest("hex").slice(0, 32)}`;
 }
 
 async function documentInRecharge({ documents, domain }) {
@@ -110,6 +123,7 @@ async function fixture({
   const generationCalls = [];
   const generationLifecycleService = {
     async confirmGeneration(command) { generationCalls.push(command); return typeof generationResult === "function" ? generationResult(command) : generationResult; },
+    async getGenerationStatus() { return { ok: false, error: "GENERATION_ATTEMPT_NOT_FOUND" }; },
   };
   const events = [];
   const service = createRechargeService({
@@ -323,7 +337,7 @@ test("automatic resume uses the unchanged quote and original confirmation exactl
   const result = await f.service.confirmPaymentEvent({ rechargeSessionId: initiated.recharge_session_id, rawEvent: f.confirmedEvent(initiated) });
   assert.equal(result.ok, true, result.resume_error);
   assert.equal(f.generationCalls.length, 1);
-  assert.deepEqual(f.generationCalls[0], { documentId: QUOTE.document_id, ownerWaId: OWNER, documentVersion: 1, quoteId: QUOTE.quote_id, idempotencyKey: "confirm:recharge" });
+  assert.deepEqual(f.generationCalls[0], { documentId: QUOTE.document_id, ownerWaId: OWNER, documentVersion: 1, quoteId: QUOTE.quote_id, idempotencyKey: resumeRoundKey("confirm:recharge", 1) });
   assert.equal(f.repository.inspect().sessions[0].status, "RESUMED");
   assert.equal(f.repository.inspect().ledger.length, 1);
 });

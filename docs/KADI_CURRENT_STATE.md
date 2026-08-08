@@ -796,8 +796,10 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   enregistré, non corrigé ici : `RECHARGE_RESUME_AVAILABLE_BALANCE_001`
   (MEDIUM/P1 avant RC — `kadiV1RechargeService.js`'s
   `resumePendingGeneration` reste basé sur le solde brut, préexistant,
-  hors périmètre T6). Voir fiche AA.3 de
-  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  hors périmètre T6 ; corrigé depuis sur une branche isolée séparée,
+  voir la mise à jour P1 plus bas dans ce document et la fiche AF de
+  `KADI_ENGINEERING_MEMORY.md`, toujours non fusionné). Voir fiche AA.3
+  de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet.
 * **Mise à jour (2026-08-07) : T5/RECHARGE_PRESENTER_001 corrigé,
   branche isolée `fix/kadi-v1-recharge-presenter-t5` créée depuis
@@ -1153,11 +1155,147 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   modifiés au R1 (`kadiV1SharedDocumentPipeline.js`,
   `kadiV1DischargePipeline.js`, `kadiV1ConversationOrchestrator.js`).
   **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
-  `IMPLEMENTED_NOT_MERGED`.** Ne pas marquer T12 `CLOSED` avant fusion.
-  Tests ciblés (487/487) puis suite complète (1634/1634),
-  `git diff --check` propre. Voir fiche AE de
+  `CLOSED / MERGED`.** Fusionné dans `main` via PR #26 (verdict R1
+  `KADI_V1_T12_IMAGE_PDF_GEMINI_R1_REVIEW_CLEAN`), commit
+  `506cb2373ac1107cf303a18d3c05a00e25f029a5`. Tests ciblés (487/487)
+  puis suite complète (1634/1634), `git diff --check` propre. Voir
+  fiche AE de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve.
+
+* **Mise à jour (2026-08-12) : P1/RECHARGE_RESUME_AVAILABLE_BALANCE_001 —
+  la reprise automatique de génération après recharge utilisait le solde
+  brut du portefeuille, jamais le solde disponible T6.** Branche isolée
+  `fix/kadi-v1-recharge-resume-available-balance-p1` créée depuis
+  `main@506cb2373ac1107cf303a18d3c05a00e25f029a5` — vérifié exactement
+  égal au head réel de `main`/`origin/main` avant tout branchement (PR
+  #26/T12 déjà fusionnée à ce commit). PR brouillon ouverte, **non
+  fusionnée, non déployée. Aucune migration appliquée à distance, aucune
+  mutation Meta/WhatsApp/Orange Money réelle, aucun changement de
+  tarification.** `resumePolicy` de production reste
+  `REQUIRE_CONFIRMATION` (`kadiV1ProductionBootstrap.js`), inchangé —
+  `AUTO_RESUME_IF_VALID` n'est pas activé par cette mission.
+
+  **Défaut confirmé puis corrigé** : `kadiV1RechargeService.js`'s
+  `resumePendingGeneration()` (chemin `AUTO_RESUME_IF_VALID`, dormant en
+  production) appelait `store.getBalance({ownerWaId})` — le solde brut
+  — et validait `balance.value >= quote.value.total_credits`. T6 avait
+  déjà établi que le montant réellement dépensable est
+  `available_credits = total_credits - reserved_credits` : une retenue
+  `RESERVED` vivante d'une autre génération réduisait le disponible réel
+  sans jamais apparaître dans le solde brut (ex. brut=10, retenue=3,
+  disponible réel=7, coût=8 — l'ancienne pré-vérification voyait `10>=8`
+  et laissait passer, puis l'autorité financière réelle en aval
+  rejetait `INSUFFICIENT_CREDITS` après que le document avait déjà
+  transitionné et `resume_link.generation_started` était déjà passé à
+  `true` de façon permanente). Reproduit avant correctif via le vrai
+  `createRechargeService` + le vrai `createInMemoryRechargeRepository`.
+  Corrigé en appelant `store.getAvailableBalance({ownerWaId})` — le même
+  contrat T6 déjà obligatoire du dépôt, déjà backé côté Supabase par la
+  MÊME RPC que `getBalance()` (**aucune nouvelle migration requise**) —
+  avec re-validation indépendante de la forme du solde (échec fermé,
+  nouveau motif `BALANCE_INVALID`, distinct de `BALANCE_INSUFFICIENT`).
+  `store.getBalance()` lui-même reste inchangé pour ses autres
+  appelants. Un scénario de course déterministe (sans `sleep`) prouve
+  que l'autorité finale réelle (réservation atomique du portefeuille)
+  reste la seule autorité financière et rejette toujours correctement
+  en aval même après une pré-vérification correcte — zéro corruption.
+
+  10 scénarios obligatoires
+  (`tests/kadiV1RechargeResumeAvailableBalance.test.js`). Voir fiche AF de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
-  détail complet et la preuve.
+  détail complet.
+
+  **Mise à jour R1 (revue indépendante) — AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001,
+  corrigé :** le test de course de R0 utilisait un
+  `generationLifecycleService` factice et ne reproduisait donc jamais la
+  vraie machine à états `kadiV1GenerationLifecycleService.js`. Avec la
+  vraie composition (`createGenerationLifecycleService`,
+  `createWalletReservationService`, `createDocumentDomain`, vrais dépôts
+  en mémoire, vrai pipeline aperçu/devis) : une course réelle
+  post-pré-vérification fait légitimement rebondir le document
+  `AWAITING_GENERATION_CONFIRMATION` → `RECHARGE_REQUIRED` via le propre
+  événement `REQUIRE_RECHARGE` de `kadiV1GenerationLifecycleService.js` —
+  or `generation_started` restait `true` pour toujours, donc une reprise
+  ultérieure sautait la pré-vérification et rappelait `confirmGeneration`
+  directement, obtenant pour toujours `GENERATION_CONFIRMATION_STATE_INVALID`,
+  **même après libération de la réservation concurrente**. Reproduit
+  avant correctif via `git stash` sur cette composition réelle.
+  Corrigé : `resumePendingGeneration()` relit désormais le statut ACTUEL
+  du document à chaque appel (jamais seulement `generation_started`) —
+  `RECHARGE_REQUIRED` (ré)arme avec une clé d'idempotence par tentative
+  déterministe dérivée de `link.value.revision` (compteur déjà persisté,
+  **aucune nouvelle migration**) ; `AWAITING_GENERATION_CONFIRMATION`
+  appelle directement `confirmGeneration` (inchangé) ; tout autre statut
+  échoue fermé (`RECHARGE_RESUME_DOCUMENT_STATE_INVALID`), fermant au
+  passage un défaut latent connexe où une tentative figée aurait pu être
+  faussement rapportée comme réussie. `resumePendingGeneration()` public
+  est désormais sérialisé par session (comme `confirmPaymentEvent`).
+  7 scénarios de composition réelle
+  (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`) : course
+  primaire, deux courses consécutives, appels simultanés, rejeu exact,
+  `REQUIRE_CONFIRMATION` inchangé, isolation propriétaire via
+  `resumePendingGeneration()` lui-même, document déjà progressé échoue
+  fermé. Tests ciblés (193/193) puis suite complète (1651/1651),
+  `git diff --check` propre. Voir fiche AG de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet.
+
+  **Mise à jour R2 (revue indépendante) — AUTO_RESUME_CRASH_RECONCILIATION_001,
+  corrigé :** une panne de processus entre deux écritures de bookkeeping
+  propres à `resumePendingGeneration` n'était pas couverte par R1.
+  Reproduit avant correctif via composition réelle (`git stash`) :
+  **fenêtre A** (panne après le commit réel de `RECHARGE_CONFIRMED`,
+  avant l'écriture `STARTED` du lien) — avec crédits suffisants, la
+  génération réussissait réellement et `session.status` devenait
+  `RESUMED`, mais `link.resume_status` restait bloqué à
+  `WAITING_FOR_CREDIT` pour toujours (écriture silencieusement ignorée,
+  bookkeeping incohérent) ; avec crédits réellement insuffisants après
+  redémarrage, une NOUVELLE reprise restait bloquée en permanence même
+  après libération de la réservation concurrente (`link.revision`
+  n'ayant jamais avancé, la clé de tentative recalculée heurtait le
+  cache d'idempotence déjà consommé — cul-de-sac confirmé). **Fenêtre B**
+  (la vraie génération atteint `DELIVERED`, panne avant la finalisation
+  du bookkeeping) — le rechargement payé et le document réellement livré
+  restaient définitivement disjoints, `resumePendingGeneration()`
+  retournant `RECHARGE_RESUME_DOCUMENT_STATE_INVALID` pour toujours.
+
+  Corrigé : `resumePendingGeneration()` réconcilie désormais le lien vers
+  `STARTED` (même identité de tentative, dérivée d'une révision non
+  encore incrémentée par la panne) avant d'appeler l'autorité en aval
+  quand le document est déjà armé mais le lien ne l'est pas encore
+  (CASE A) ; une nouvelle `reconcileCompletedGeneration()` reconnaît une
+  complétion authentique via le vrai
+  `generationLifecycleService.getGenerationStatus()` (owner/document_id/
+  document_version/quote_id EXACTS, `attempt.status === "PROMOTED"`,
+  `reservation.status === "CAPTURED"`, **et `document.status === "DELIVERED"`
+  explicitement** — jamais une génération capturée/promue mais dont la
+  livraison n'a pas encore résolu, pour rester cohérent avec ce que le
+  chemin normal sans panne rapporte lui-même comme succès) sans jamais
+  régénérer (CASE B/C) ; tout le reste échoue fermé comme avant, laissé
+  aux contrats de récupération déjà existants de `GenerationLifecycleService`
+  (CASE D). L'identité de tentative critique pour l'idempotence
+  (`resumeRoundKey`) est désormais une fonction dédiée, indépendante de
+  l'`idFactory` injectable (dont le contrat ne garantissait pas le
+  déterminisme entre redémarrages) — aucune nouvelle migration. Les
+  écritures de bookkeeping (`RESUMED`, `FAILED`) sont désormais vérifiées
+  plutôt que silencieusement ignorées.
+
+  5 nouveaux scénarios de composition réelle
+  (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`, 12 au total
+  avec R1) : panne avant `STARTED` avec crédits suffisants ; même fenêtre
+  puis `INSUFFICIENT_CREDITS` réel — retryable sans cul-de-sac ; vraie
+  livraison, panne avant finalisation — reconnue sans régénérer ; panne
+  après `STARTED` avant tout appel à `confirmGeneration` — identité
+  réutilisée ; panne après capture/promotion mais avant résolution de la
+  livraison — jamais faussement réconcilié comme réussi. Tests ciblés
+  (250/250) puis suite complète (1656/1656), `git diff --check` propre.
+  Trois fichiers de production modifiés au total R0+R1+R2 : le vrai
+  correctif dans `kadiV1RechargeService.js`, plus deux corrections de
+  commentaires obsolètes (comportement inchangé) dans
+  `kadiV1RechargeRepository.js` et `kadiV1SupabaseRechargeRepository.js`.
+  Voir fiche AH de [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md)
+  pour le détail complet et la preuve. **Statut : `IMPLEMENTED_NOT_MERGED`.**
+  Ne pas marquer ces défauts `CLOSED` avant fusion.
 
 ## Blocages connus
 

@@ -90,11 +90,13 @@ function createSupabaseRechargeRepository(client) {
   }
 
   // T6/BALANCE-001: additive method, never replacing getBalance() above —
-  // kadiV1RechargeService.js's resumePendingGeneration still calls
-  // getBalance() for its raw-number check and must not be affected. Reads
-  // the SAME single RPC call (kadi_v1_get_wallet_balance), which now also
-  // returns total_credits/reserved_credits/available_credits computed
-  // atomically alongside balance (see
+  // getBalance() remains available for its other callers.
+  // RECHARGE_RESUME_AVAILABLE_BALANCE_001 (R0) switched
+  // kadiV1RechargeService.js's resumePendingGeneration precheck from
+  // getBalance() to THIS method. Reads the SAME single RPC call
+  // (kadi_v1_get_wallet_balance), which also returns
+  // total_credits/reserved_credits/available_credits computed atomically
+  // alongside balance (see
   // migrations/20260807_add_kadi_v1_available_wallet_balance.sql) — one
   // database round trip, never two separate application-side reads that
   // could observe a torn snapshot across a concurrent reserve/capture.
