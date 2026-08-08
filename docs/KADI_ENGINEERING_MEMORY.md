@@ -5800,3 +5800,153 @@ identifiant de propriétaire).
   décision produit séparée, explicitement hors périmètre de cette
   mission ; `REQUIRE_CONFIRMATION` reste la politique active.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AG. R1 (revue indépendante) de AF — AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001 : la reprise automatique restait bloquée définitivement après une course réelle post-pré-vérification
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — même branche isolée
+  `fix/kadi-v1-recharge-resume-available-balance-p1`, même PR #27
+  brouillon, toujours non fusionnée, non déployée. Garde intact le
+  correctif R0 (fiche AF) : `getAvailableBalance()` reste l'autorité de
+  pré-vérification. Aucune migration appliquée à distance, aucune
+  mutation Meta/WhatsApp/Orange Money réelle, aucun changement de
+  tarification. `AUTO_RESUME_IF_VALID` toujours non activé en
+  production.
+* **Origine :** mission « KADI V1 — RECHARGE_RESUME_AVAILABLE_BALANCE_001
+  INDEPENDENT REVIEW FIX R1 », constat indépendant que le propre test de
+  course de R0 utilisait un `generationLifecycleService` factice et ne
+  reproduisait donc jamais la vraie machine à états
+  `kadiV1GenerationLifecycleService.js`.
+
+### Défaut confirmé, reproduit avec une composition 100 % réelle
+
+Séquence réelle : (1) pré-vérification correcte (disponible = coût) ;
+(2) `RechargeService` transitionne réellement le document
+`RECHARGE_REQUIRED` → `AWAITING_GENERATION_CONFIRMATION`
+(`RECHARGE_CONFIRMED`) et marque le lien de reprise `STARTED` ; (3) une
+réservation concurrente réelle atterrit ; (4) le vrai
+`walletReservationService.reserveCredits()` rejette
+`INSUFFICIENT_CREDITS` ; (5) le vrai `kadiV1GenerationLifecycleService.js`
+transitionne alors LUI-MÊME le document `AWAITING_GENERATION_CONFIRMATION`
+→ `RECHARGE_REQUIRED` via son propre événement `REQUIRE_RECHARGE` — un
+état que `confirmGeneration` ne peut plus jamais légitimement accepter
+(`validateConfirmation` exige `AWAITING_GENERATION_CONFIRMATION`) ; (6)
+`resumePendingGeneration` enregistre `resume_status: FAILED` mais laisse
+`generation_started: true` de façon permanente ; (7) une reprise
+ultérieure, voyant `generation_started === true`, sautait la
+pré-vérification et rappelait `confirmGeneration` directement ; (8) le
+vrai `runConfirmation` rejette alors systématiquement
+`GENERATION_CONFIRMATION_STATE_INVALID` — **pour toujours, y compris
+après libération de la réservation concurrente**, puisque la réservation
+du portefeuille n'est plus jamais retentée.
+
+**Reproduction pré-correctif confirmée** (composition 100 % réelle :
+`createRechargeService`, `createGenerationLifecycleService`,
+`createWalletReservationService`, `createDocumentDomain`, vrais dépôts en
+mémoire document/recharge/cycle de vie de génération, vrai pipeline
+aperçu/rendu/devis via le vrai `createKadiV1PreviewRuntimeAdapter` de
+production — seuls le rendu PDF, le stockage et le fournisseur de
+paiement sont factices ; obtenue via `git stash` de
+`kadiV1RechargeService.js` sur cette exacte fixture) : après libération
+de la réservation concurrente, `resumePendingGeneration()` retourne
+`{ok:false, error:"GENERATION_RESUME_FAILED"}`, le lien de reprise porte
+`last_error_code: "GENERATION_CONFIRMATION_STATE_INVALID"`, zéro nouvelle
+tentative de réservation, document bloqué `RECHARGE_REQUIRED` en
+permanence — le rechargement payé reste crédité mais le document ne peut
+plus jamais être généré automatiquement.
+
+### Correctif — le statut réel du document décide, jamais `generation_started` seul
+
+`resumePendingGeneration()` relit désormais le statut ACTUEL du document
+à chaque appel plutôt que de se fier uniquement à `generation_started` :
+
+* `RECHARGE_REQUIRED` → (ré)arme le document (pré-vérification +
+  `RECHARGE_CONFIRMED`), avec une clé d'idempotence par tentative
+  déterministe, dérivée de `(generation_confirmation_id,
+  link.value.revision)` via la même fonction `makeId()` par défaut déjà
+  utilisée ailleurs dans ce fichier — `revision` est déjà un compteur
+  persisté, monotone, obligatoire du lien de reprise (colonne existante,
+  **aucune nouvelle migration**). Réutiliser la clé de la toute première
+  tentative pour un ré-armement authentiquement distinct aurait heurté le
+  cache d'idempotence du dépôt document et renvoyé silencieusement un
+  « doublon » sans réellement re-transitionner le document — prouvé par
+  script direct avant de choisir cette conception. La même clé par
+  tentative namespace aussi l'`idempotencyKey` propre de
+  `confirmGeneration`, ce qui maintient fraîches les sous-clés internes
+  `${clé}:reserve`/`${clé}:recharge` de `kadiV1GenerationLifecycleService.js`
+  — une SECONDE course consécutive ne peut donc plus heurter la clé
+  `REQUIRE_RECHARGE` déjà consommée par la première et échouer
+  silencieusement à re-transitionner le document une seconde fois
+  (prouvé par le test « deux courses consécutives » ci-dessous).
+* `AWAITING_GENERATION_CONFIRMATION` (déjà armé) → appelle directement
+  `confirmGeneration`, comportement inchangé.
+* Tout autre statut (`GENERATION_IN_PROGRESS`, `RECOVERABLE_FAILURE`,
+  etc. — atteint par exemple par une génération réellement interrompue en
+  plein vol) → échoue fermé avec un nouveau motif interne dédié,
+  `RECHARGE_RESUME_DOCUMENT_STATE_INVALID`, sans jamais appeler
+  l'autorité en aval. **Défaut latent connexe découvert et fermé par le
+  même changement** : l'ancien code aurait, dans ce cas précis, sauté
+  directement à `confirmGeneration`, dont le déduplicateur
+  `findByQuoteId` aurait retourné le statut d'une tentative FIGÉE et
+  NON LIÉE comme si cette reprise venait de réussir — `resumePendingGeneration`
+  aurait alors marqué à tort `resume_status: RESUMED` alors que le
+  document ne serait jamais livré. Non signalé séparément comme un
+  ticket distinct (découvert par lecture de code pendant cette mission,
+  jamais observé en production), mais fermé par le même changement et
+  couvert par un test dédié.
+
+`generation_started` reste un champ persisté inchangé (piste d'audit
+« une reprise a été authentiquement tentée »), jamais retiré ni changé
+de sémantique de stockage — seul son rôle de PORTE conditionnelle est
+retiré, remplacé par la lecture fraîche du statut document, conformément
+à l'instruction explicite de ne pas simplement déplacer ce drapeau sans
+preuve de concurrence/rejeu.
+
+`resumePendingGeneration()` public est désormais sérialisé par
+`rechargeSessionId` via le `serial()` déjà existant du fichier (même
+clé, même file d'attente que `initiatePayment`/`confirmPaymentEvent`) —
+`confirmPaymentEvent` appelle directement le corps interne non-sérialisé
+(`runResumePendingGeneration`) pour éviter un auto-blocage (il détient
+déjà le même créneau `serial()`).
+
+### Preuve
+
+* **Fichier réel de composition** (nouveau,
+  `tests/kadiV1RechargeResumeRealLifecycleRace.test.js`, 7 scénarios) :
+  course primaire (pré-vérification correcte, rejet réel en aval, reprise
+  réussie après libération, exactement une tentative de génération) ;
+  deux courses consécutives (chacune bloque authentiquement le document,
+  aucune corruption cumulée, aucun crédit dupliqué) ; appels
+  `resumePendingGeneration` simultanés (une seule réservation, une seule
+  tentative) ; rejeu exact de `confirmPaymentEvent` (webhook dupliqué
+  concurrent, un seul crédit, une seule tentative) ;
+  `REQUIRE_CONFIRMATION` (politique de production actuelle) inchangé à
+  travers la même composition réelle ; isolation propriétaire via
+  `resumePendingGeneration()` lui-même (jamais seulement
+  `repository.getAvailableBalance()` isolément) ; document déjà progressé
+  à `GENERATION_IN_PROGRESS` échoue fermé, zéro appel à l'autorité en
+  aval, zéro état de session mal étiqueté.
+* Tests ciblés (recharge, solde disponible T6/E2E, cycle de vie de
+  génération, fournisseur Orange Money réel, contrat/présentateur
+  recharge, migration d'unicité T10) : 193/193. Suite complète :
+  1651/1651. `git diff --check` : propre.
+* Revue adversariale du diff complet R0+R1 (seul fichier de production
+  modifié : `kadiV1RechargeService.js`) : aucun autre appelant de
+  `resumePendingGeneration`/`resumePolicy` hors de ce fichier et du
+  bootstrap de production (confirmé par grep exhaustif) ; aucun défaut
+  HIGH/MEDIUM restant.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau Meta/WhatsApp/Orange Money réel dans les tests.
+Aucune migration Supabase appliquée à distance. Le nouveau motif interne
+`RECHARGE_RESUME_DOCUMENT_STATE_INVALID` ne contient aucune valeur
+financière brute, aucun identifiant de propriétaire.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* Application des migrations T6 et T10 R1 à Supabase de production —
+  toujours hors périmètre, toujours en attente.
+* Activation éventuelle de `AUTO_RESUME_IF_VALID` en production —
+  toujours une décision produit séparée ; `REQUIRE_CONFIRMATION` reste
+  la politique active.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

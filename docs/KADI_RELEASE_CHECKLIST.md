@@ -1257,9 +1257,57 @@ reste `REQUIRE_CONFIRMATION`.
    de `resumePendingGeneration`/`resumePolicy` hors de
    `kadiV1RechargeService.js` et du bootstrap de production (confirmé
    par grep exhaustif) ; aucun défaut HIGH/MEDIUM restant.
-10. **[EN ATTENTE]** Fusion dans `main`. Ne pas marquer
-    `RECHARGE_RESUME_AVAILABLE_BALANCE_001` `CLOSED` avant fusion.
-11. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
+
+### R1 (revue indépendante) — AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001
+
+10. **[FAIT]** Constat indépendant : le test de course de R0 utilisait un
+    `generationLifecycleService` factice, ne reproduisant jamais la vraie
+    machine à états `kadiV1GenerationLifecycleService.js`.
+11. **[FAIT]** Défaut confirmé et reproduit avant correctif via une
+    composition 100 % réelle (`createGenerationLifecycleService`,
+    `createWalletReservationService`, `createDocumentDomain`, vrais
+    dépôts en mémoire, vrai pipeline aperçu/devis via le vrai
+    `createKadiV1PreviewRuntimeAdapter` — obtenu via `git stash` de
+    `kadiV1RechargeService.js`) : une course réelle post-pré-vérification
+    fait rebondir le document `AWAITING_GENERATION_CONFIRMATION` →
+    `RECHARGE_REQUIRED` via le propre `REQUIRE_RECHARGE` de
+    `kadiV1GenerationLifecycleService.js` ; `generation_started` restant
+    `true` pour toujours, une reprise ultérieure sautait la
+    pré-vérification et obtenait pour toujours
+    `GENERATION_CONFIRMATION_STATE_INVALID`, même après libération de la
+    réservation concurrente.
+12. **[FAIT]** Correctif : `resumePendingGeneration()` relit le statut
+    ACTUEL du document à chaque appel — `RECHARGE_REQUIRED` (ré)arme avec
+    une clé d'idempotence par tentative déterministe dérivée de
+    `link.value.revision` (compteur déjà persisté du lien de reprise,
+    **aucune nouvelle migration**) ; `AWAITING_GENERATION_CONFIRMATION`
+    appelle directement `confirmGeneration` (inchangé) ; tout autre
+    statut échoue fermé (`RECHARGE_RESUME_DOCUMENT_STATE_INVALID`).
+    `resumePendingGeneration()` public désormais sérialisé par session
+    (`confirmPaymentEvent` appelle le corps interne non-sérialisé pour
+    éviter un auto-blocage).
+13. **[FAIT]** Défaut latent connexe fermé au passage : sans ce
+    changement, un document déjà progressé (ex. `GENERATION_IN_PROGRESS`
+    après une interruption en plein vol) aurait fait sauter l'ancien code
+    directement à `confirmGeneration`, dont le déduplicateur aurait
+    renvoyé le statut d'une tentative figée comme si la reprise venait de
+    réussir — non signalé séparément, découvert par lecture de code,
+    couvert par un test dédié.
+14. **[FAIT]** 7 scénarios de composition réelle
+    (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`) : course
+    primaire, deux courses consécutives, appels `resumePendingGeneration`
+    simultanés, rejeu exact de `confirmPaymentEvent`, `REQUIRE_CONFIRMATION`
+    inchangé, isolation propriétaire via `resumePendingGeneration()`
+    lui-même, document déjà progressé échoue fermé.
+15. **[FAIT]** Tests ciblés (193/193) puis suite complète (1651/1651),
+    `git diff --check` propre.
+16. **[FAIT]** Revue adversariale du diff complet R0+R1 — un seul fichier
+    de production modifié au total (`kadiV1RechargeService.js`) ; aucun
+    défaut HIGH/MEDIUM restant.
+17. **[EN ATTENTE]** Fusion dans `main`. Ne pas marquer
+    `RECHARGE_RESUME_AVAILABLE_BALANCE_001` ni
+    `AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001` `CLOSED` avant fusion.
+18. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
     à cette correction, mais les dépendances déjà en attente (migration
     T6, migration T10 R1) restent applicables en premier si ce
     déploiement les compose. Après déploiement : `resumePolicy` reste

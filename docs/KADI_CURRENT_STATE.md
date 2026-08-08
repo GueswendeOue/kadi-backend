@@ -1198,14 +1198,46 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   appelants. Un scénario de course déterministe (sans `sleep`) prouve
   que l'autorité finale réelle (réservation atomique du portefeuille)
   reste la seule autorité financière et rejette toujours correctement
-  en aval même après une pré-vérification correcte — zéro corruption,
-  rejeu cohérent, reprise réussie une fois le conflit résolu.
+  en aval même après une pré-vérification correcte — zéro corruption.
 
   10 scénarios obligatoires
-  (`tests/kadiV1RechargeResumeAvailableBalance.test.js`). Tests ciblés
-  (442/442) puis suite complète (1644/1644), `git diff --check` propre.
-  Un seul fichier de production modifié
-  (`kadiV1RechargeService.js`). Voir fiche AF de
+  (`tests/kadiV1RechargeResumeAvailableBalance.test.js`). Voir fiche AF de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet.
+
+  **Mise à jour R1 (revue indépendante) — AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001,
+  corrigé :** le test de course de R0 utilisait un
+  `generationLifecycleService` factice et ne reproduisait donc jamais la
+  vraie machine à états `kadiV1GenerationLifecycleService.js`. Avec la
+  vraie composition (`createGenerationLifecycleService`,
+  `createWalletReservationService`, `createDocumentDomain`, vrais dépôts
+  en mémoire, vrai pipeline aperçu/devis) : une course réelle
+  post-pré-vérification fait légitimement rebondir le document
+  `AWAITING_GENERATION_CONFIRMATION` → `RECHARGE_REQUIRED` via le propre
+  événement `REQUIRE_RECHARGE` de `kadiV1GenerationLifecycleService.js` —
+  or `generation_started` restait `true` pour toujours, donc une reprise
+  ultérieure sautait la pré-vérification et rappelait `confirmGeneration`
+  directement, obtenant pour toujours `GENERATION_CONFIRMATION_STATE_INVALID`,
+  **même après libération de la réservation concurrente**. Reproduit
+  avant correctif via `git stash` sur cette composition réelle.
+  Corrigé : `resumePendingGeneration()` relit désormais le statut ACTUEL
+  du document à chaque appel (jamais seulement `generation_started`) —
+  `RECHARGE_REQUIRED` (ré)arme avec une clé d'idempotence par tentative
+  déterministe dérivée de `link.value.revision` (compteur déjà persisté,
+  **aucune nouvelle migration**) ; `AWAITING_GENERATION_CONFIRMATION`
+  appelle directement `confirmGeneration` (inchangé) ; tout autre statut
+  échoue fermé (`RECHARGE_RESUME_DOCUMENT_STATE_INVALID`), fermant au
+  passage un défaut latent connexe où une tentative figée aurait pu être
+  faussement rapportée comme réussie. `resumePendingGeneration()` public
+  est désormais sérialisé par session (comme `confirmPaymentEvent`).
+  7 scénarios de composition réelle
+  (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`) : course
+  primaire, deux courses consécutives, appels simultanés, rejeu exact,
+  `REQUIRE_CONFIRMATION` inchangé, isolation propriétaire via
+  `resumePendingGeneration()` lui-même, document déjà progressé échoue
+  fermé. Tests ciblés (193/193) puis suite complète (1651/1651),
+  `git diff --check` propre. Un seul fichier de production modifié au
+  total R0+R1 (`kadiV1RechargeService.js`). Voir fiche AG de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve. **Statut : `IMPLEMENTED_NOT_MERGED`.** Ne
   pas marquer ce défaut `CLOSED` avant fusion.
