@@ -15,7 +15,11 @@ const {
 function enabledConfig(overrides = {}) {
   return {
     enabled: true,
-    features: { webhook: true },
+    // transcription: true by default so this file's existing audio
+    // dispatch coverage keeps exercising the resolver path unchanged;
+    // the T11 disabled-gate matrix (tests below) explicitly overrides
+    // this to false/true per scenario.
+    features: { webhook: true, transcription: true },
     rollout: { mode: "FULL", valid: true, canaryOwnerCount: 0, canaryWaIds: [] },
     ...overrides,
   };
@@ -275,6 +279,45 @@ test("text message maps to canonical conversation input and is presented once", 
   assert.match(input.correlationId, /^meta:[a-f0-9]{16}$/);
   assert.match(input.idempotencyKey, /^conversation:[a-f0-9]{16}$/);
   assert.equal(calls.filter(([name]) => name === "present_conversation").length, 1);
+});
+
+// T11 (inbound voice transcription gate) — config.features.transcription
+// is the sole inbound-voice authority, independent of config.features.voice
+// (the separate, OUTBOUND-only authority). Unit-level coverage of the exact
+// webhook-runtime boundary, complementing the heavier real-pipeline E2E
+// coverage in tests/kadiV1InboundVoiceTranscriptionGate.test.js.
+test("T11 flag matrix A: transcription=false, voice=false — audio rejected before the media resolver, never falls through", async () => {
+  const { runtime, calls } = harness({ runtime: { config: enabledConfig({ features: { webhook: true, transcription: false, voice: false } }) } });
+  const result = await runtime.handleIncomingValue({ messages: [{ id: "m.a", from: "22670000000", type: "audio", audio: { id: "media-a" } }] });
+  assert.equal(result.results[0].handled, true);
+  assert.equal(result.results[0].accepted, false);
+  assert.equal(result.results[0].reason, "KADI_V1_TRANSCRIPTION_DISABLED");
+  assert.equal(calls.filter(([name]) => name === "audio").length, 0);
+  assert.equal(calls.filter(([name]) => name === "conversation").length, 0);
+});
+
+test("T11 flag matrix B: transcription=false, voice=true — still rejected, voice never overrides the inbound gate", async () => {
+  const { runtime, calls } = harness({ runtime: { config: enabledConfig({ features: { webhook: true, transcription: false, voice: true } }) } });
+  const result = await runtime.handleIncomingValue({ messages: [{ id: "m.b", from: "22670000000", type: "audio", audio: { id: "media-b" } }] });
+  assert.equal(result.results[0].accepted, false);
+  assert.equal(result.results[0].reason, "KADI_V1_TRANSCRIPTION_DISABLED");
+  assert.equal(calls.filter(([name]) => name === "audio").length, 0);
+});
+
+test("T11 flag matrix C: transcription=true, voice=false — audio accepted and reaches the orchestrator as TRANSCRIPTION", async () => {
+  const { runtime, calls } = harness({ runtime: { config: enabledConfig({ features: { webhook: true, transcription: true, voice: false } }) } });
+  const result = await runtime.handleIncomingValue({ messages: [{ id: "m.c", from: "22670000000", type: "audio", audio: { id: "media-c" } }] });
+  assert.equal(result.results[0].accepted, true);
+  assert.equal(calls.filter(([name]) => name === "audio").length, 1);
+  const input = calls.find(([name]) => name === "conversation")[1];
+  assert.equal(input.inputType, "TRANSCRIPTION");
+});
+
+test("T11 flag matrix D: transcription=true, voice=true — audio still accepted normally (voice=true implies nothing about outbound availability, out of T11's scope)", async () => {
+  const { runtime, calls } = harness({ runtime: { config: enabledConfig({ features: { webhook: true, transcription: true, voice: true } }) } });
+  const result = await runtime.handleIncomingValue({ messages: [{ id: "m.d", from: "22670000000", type: "audio", audio: { id: "media-d" } }] });
+  assert.equal(result.results[0].accepted, true);
+  assert.equal(calls.filter(([name]) => name === "audio").length, 1);
 });
 
 test("audio, image and PDF inputs use their dedicated resolvers", async () => {

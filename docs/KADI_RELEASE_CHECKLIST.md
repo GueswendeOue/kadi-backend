@@ -1011,7 +1011,8 @@ deux non appliqués/non déployés par cette mission.
     `git diff --check` propre.
 15. **[FAIT]** Revue adversariale du diff complet R0+R1 — aucun défaut
     HIGH/MEDIUM restant.
-16. **[EN ATTENTE]** Fusion dans `main`.
+16. **[FAIT]** Fusion dans `main` — PR #24, `main@381cf0e1b33b62c83257ada7e5c0a2837f49b834`.
+    T10/ORANGE-MONEY-TEST-001 (R0+R1) est désormais `CLOSED/MERGED`.
 17. **[EN ATTENTE]** Déploiement — **ordre obligatoire** : (1) appliquer
     `kadi_topups_v1_recharge_reference_unique` en premier ; (2) vérifier
     en lecture seule (index présent avec le prédicat exact, doublons
@@ -1021,6 +1022,57 @@ deux non appliqués/non déployés par cette mission.
     l'est pas. La migration T6 (item 9 de la section précédente) reste
     également en attente — composer les deux dépendances de migration
     dans un déploiement ordonné sûr si elles sont livrées ensemble.
+
+## Ordre — `fix/kadi-v1-inbound-voice-transcription-gate-t11` (T11/INBOUND-VOICE-TRANSCRIPTION-GATE-001 : mise sous autorité du vocal entrant WhatsApp)
+
+Aucune migration requise par T11. Aucune mutation Meta/Render/WhatsApp/
+Supabase/OpenAI réelle.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@381cf0e1b33b62c83257ada7e5c0a2837f49b834` (PR #24/T10 R0+R1
+   fusionnée) avant de créer la branche isolée.
+2. **[FAIT]** Terminologie verrouillée : vocal ENTRANT =
+   `config.features.transcription` (`KADI_V1_TRANSCRIPTION_ENABLED`) ;
+   vocal SORTANT = `config.features.voice` (`KADI_V1_VOICE_ENABLED`),
+   hors périmètre de T11.
+3. **[FAIT]** Défaut confirmé et reproduit avant correctif (script
+   jetable + `git stash` temporaire du fichier corrigé) : un message
+   audio synthétique déclenchait `mediaResolver.resolveAudio()` malgré
+   `KADI_V1_TRANSCRIPTION_ENABLED=false`, à travers le vrai
+   `createKadiV1WebhookRuntime`.
+4. **[FAIT]** Correctif : gate ajouté dans `kadiV1WebhookRuntime.js`,
+   strictement avant `mediaResolver.resolveAudio()`, rejetant fermé sur
+   `config.features.transcription !== true` avec la raison stable
+   `KADI_V1_TRANSCRIPTION_DISABLED` — `config.features.voice` jamais
+   consulté. Seul fichier de production modifié (+25/−2 lignes).
+5. **[FAIT]** Matrice d'indépendance des indicateurs prouvée : A
+   (transcription=false, voice=false) et B (transcription=false,
+   voice=true) rejettent tous deux avant tout appel Meta/OpenAI ; C
+   (transcription=true, voice=false) et D (transcription=true,
+   voice=true) acceptent tous deux normalement.
+6. **[FAIT]** Contrat audio préservé : OGG/WAV acceptés, MIME non
+   supporté/incohérent, média vide/invalide, taille/durée hors limites,
+   échec du fournisseur STT, transcript vide/surdimensionné tous
+   fail-closed ; `providerAvailability: async () => false` inchangé
+   (vérifié par test structurel).
+7. **[FAIT]** Rejeu exact du même `wamid` audio : une seule mutation
+   métier (idempotencyKey stable, aucune seconde couche
+   d'idempotence inventée). Isolation propriétaire et isolation de
+   rollout (propriétaire hors CANARY) prouvées.
+8. **[FAIT]** TEXTE et `MENU_ACTION` inchangés quand la transcription
+   est désactivée.
+9. **[FAIT]** Tests ciblés (149/149) puis suite complète (1583/1583),
+   `git diff --check` propre.
+10. **[FAIT]** Revue adversariale du diff complet — aucun défaut
+    HIGH/MEDIUM restant.
+11. **[EN ATTENTE]** Fusion dans `main`.
+12. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
+    à T11, mais les dépendances déjà en attente (migration T6, migration
+    T10 R1 `kadi_topups_v1_recharge_reference_unique`) restent
+    applicables en premier si ce déploiement les compose. Après
+    déploiement : `KADI_V1_TRANSCRIPTION_ENABLED` reste à sa valeur
+    actuelle tant qu'une mission distincte n'autorise pas explicitement
+    son activation en production.
 
 ## Déploiement Render
 
