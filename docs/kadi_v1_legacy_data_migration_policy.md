@@ -6,6 +6,26 @@ Cette politique définit comment préparer les données existantes à l'architec
 
 Les schémas distants, RPC, contraintes, RLS, volumes et qualités de données restent `UNKNOWN_REQUIRES_RUNTIME_CHECK` tant qu'un audit autorisé n'en a pas produit une preuve anonymisée. Les modules du dépôt montrent plusieurs générations de stockage (`business_profiles`, `kadi_wallets`, `kadi_documents`, `kadi_topups` et sessions facture), mais ne suffisent pas à décrire la base réelle.
 
+**Exception confirmée (T10 R1, 2026-08-09) : `kadi_topups`.** Une
+inspection en lecture seule autorisée a levé `UNKNOWN_REQUIRES_RUNTIME_CHECK`
+pour le contrat de colonnes de cette seule table : `id uuid`, `wa_id
+text`, `reference text`, `amount_fcfa integer`, `credits integer`,
+`includes_stamp boolean`, `status text`, `proof_text text`,
+`proof_image_url text`, `payment_method text`, `created_at
+timestamptz`, `updated_at timestamptz`, `approved_at timestamptz`,
+`rejection_reason text` — RLS activé. Fait confirmé et significatif :
+**`reference` n'a aucune contrainte d'unicité** — seule la clé primaire
+`id` l'est. L'inspection a trouvé, en forme agrégée/anonymisée
+uniquement, exactement un groupe de références dupliquées préexistant
+(2 lignes, toutes deux legacy/non-V1, toutes deux `pending`) ; **sa
+valeur réelle n'est consignée nulle part dans ce dépôt** et ces lignes
+n'ont été ni modifiées ni supprimées. Voir la fiche AC de
+`docs/KADI_ENGINEERING_MEMORY.md` pour le détail complet. Cette
+exception ne s'étend à aucune autre table : RPC, RLS détaillée, volumes
+et qualité de données au-delà de ce contrat de colonnes/unicité
+restent `UNKNOWN_REQUIRES_RUNTIME_CHECK` pour `kadi_topups` comme pour
+toutes les autres tables listées ci-dessous.
+
 ## Invariants obligatoires
 
 * Aucun utilisateur historique ne reçoit automatiquement cinq nouveaux crédits.

@@ -934,11 +934,16 @@ déploiement Render incluant T5).
     n'importe quel contexte RECHARGE), observée en conditions réelles
     après déploiement.
 
-## Ordre — `fix/kadi-v1-orange-money-real-provider-t10` (T10/ORANGE-MONEY-TEST-001 : couverture de composition de production du vrai fournisseur Orange Money)
+## Ordre — `fix/kadi-v1-orange-money-real-provider-t10` (T10/ORANGE-MONEY-TEST-001 : couverture de composition de production du vrai fournisseur Orange Money, PR #24)
 
-Mission de test/preuve uniquement — aucun code de production modifié,
-aucune migration requise, aucune mutation Meta/Render/WhatsApp/Supabase
-réelle.
+R0 était une mission de test/preuve uniquement, sans code de production
+modifié. **R1 (revue indépendante) a trouvé et corrigé un défaut
+MEDIUM/P1 réel** (`ORANGE_TOPUP_REFERENCE_CONCURRENCY_001`) après une
+inspection en lecture seule autorisée du schéma Supabase réel — cette
+PR contient désormais une migration et un correctif de production, tous
+deux non appliqués/non déployés par cette mission.
+
+### R0 — preuve de composition (aucun code de production modifié)
 
 1. **[FAIT]** Baseline confirmée exactement à
    `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d` (PR #23/T5 R0+R1+R2
@@ -946,15 +951,14 @@ réelle.
 2. **[FAIT]** T7 confirmé `CLOSED BY T1 / PR #17` — aucun nouveau code de
    production requis, preuve déjà présente
    (`tests/kadiV1SharedDocumentPipeline.test.js`, fiche X).
-3. **[FAIT]** Contrat de schéma de `kadi_topups` tracé strictement depuis
-   le code réel du fournisseur (aucun fichier de migration n'existe pour
-   cette table historique pré-V1 — son schéma distant exact reste
-   `UNKNOWN_REQUIRES_RUNTIME_CHECK` selon
-   `docs/kadi_v1_legacy_data_migration_policy.md`) ; `kadi_v1_recharge_sessions`
-   confirmé conforme à sa migration V1. Aucune divergence
-   fournisseur/schéma trouvée.
+3. **[FAIT]** Contrat de schéma de `kadi_topups` tracé depuis le code
+   réel du fournisseur (aucun fichier de migration n'existe pour cette
+   table historique pré-V1) ; `kadi_v1_recharge_sessions` confirmé
+   conforme à sa migration V1. Aucune divergence fournisseur/schéma
+   trouvée à ce stade — le schéma distant exact restait
+   `UNKNOWN_REQUIRES_RUNTIME_CHECK` (levé en R1, voir ci-dessous).
 4. **[FAIT]** Nouveau fichier
-   `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (15 scénarios)
+   `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (15 scénarios R0)
    exerçant le vrai `createManualOrangeMoneyPaymentProvider` (jamais
    mocké) à travers `kadiV1RechargeService.js`/
    `createKadiV1RechargeRuntime` réels — seul un client Supabase factice
@@ -970,12 +974,53 @@ réelle.
    confirmées à travers le vrai chemin fournisseur.
 8. **[FAIT]** Tests ciblés (169/169) puis suite complète (1542/1542),
    `git diff --check` propre.
-9. **[FAIT]** Revue adversariale du diff complet — aucun défaut
-   HIGH/MEDIUM restant.
-10. **[EN ATTENTE]** Fusion dans `main`.
-11. **[EN ATTENTE]** Aucun déploiement requis par cette mission
-    (aucun code de production modifié) — le déploiement futur de PR #23
-    (T5) reste soumis à l'ordre de déploiement T6 déjà établi ci-dessus.
+
+### R1 — inspection lecture seule + correctif ORANGE_TOPUP_REFERENCE_CONCURRENCY_001 (MEDIUM/P1)
+
+9. **[FAIT]** Inspection en lecture seule autorisée du schéma Supabase
+   réel : contrat de colonnes de `kadi_topups` confirmé ; `reference`
+   n'a aucune contrainte d'unicité (seule `id` l'est) ; exactement un
+   groupe de références dupliquées legacy préexistant (2 lignes,
+   non-V1, jamais consigné nulle part dans ce dépôt) ; zéro doublon
+   dans l'espace de noms `recharge:%`.
+10. **[FAIT]** Défaut reproduit de façon déterministe (sans `sleep`,
+    barrière de rendez-vous) : deux `createPaymentRequest()` concurrents
+    pour la même référence créaient deux lignes physiques, rendant
+    `getPaymentStatus()` incapable de résoudre une ligne unique.
+11. **[FAIT]** Migration forward-only écrite (paire
+    `migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql`
+    /
+    `supabase/migrations/20260809030000_add_kadi_v1_topups_recharge_reference_unique.sql`,
+    byte-identiques, testées) : index unique **partiel**,
+    `WHERE reference LIKE 'recharge:%'` — jamais `UNIQUE(reference)`
+    global. **Non appliquée à distance.**
+12. **[FAIT]** `createManualOrangeMoneyPaymentProvider()`'s
+    `createPaymentRequest()` corrigé : récupération `23505` avec
+    vérification de compatibilité (`wa_id`/`amount_fcfa`/`credits`/
+    `payment_method`) avant d'adopter une ligne existante — appliquée de
+    façon uniforme au chemin normal et au chemin de récupération ;
+    échec fermé (`PAYMENT_REQUEST_EXISTING_MISMATCH`) sur toute
+    incompatibilité.
+13. **[FAIT]** Preuve post-correctif : une seule ligne physique après la
+    course, identité de paiement convergente, crédit/ledger exactement
+    une fois ; non-régression sur le doublon legacy (jamais rejeté,
+    fusionné ni altéré) ; idempotence séquentielle ; quatre scénarios de
+    ligne incompatible échouent tous fermé. 9 scénarios R1 ajoutés (24
+    au total dans le fichier).
+14. **[FAIT]** Tests ciblés (33/33) puis suite complète (1558/1558),
+    `git diff --check` propre.
+15. **[FAIT]** Revue adversariale du diff complet R0+R1 — aucun défaut
+    HIGH/MEDIUM restant.
+16. **[EN ATTENTE]** Fusion dans `main`.
+17. **[EN ATTENTE]** Déploiement — **ordre obligatoire** : (1) appliquer
+    `kadi_topups_v1_recharge_reference_unique` en premier ; (2) vérifier
+    en lecture seule (index présent avec le prédicat exact, doublons
+    legacy intacts, zéro doublon `recharge:%`) ; (3) alors seulement
+    déployer le backend portant ce correctif. Un backend ancien après la
+    migration reste sûr ; un nouveau backend avant la migration ne
+    l'est pas. La migration T6 (item 9 de la section précédente) reste
+    également en attente — composer les deux dépendances de migration
+    dans un déploiement ordonné sûr si elles sont livrées ensemble.
 
 ## Déploiement Render
 
