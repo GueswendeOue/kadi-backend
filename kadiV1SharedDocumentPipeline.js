@@ -477,14 +477,29 @@ function createSharedDocumentPipeline({
     const patch = Object.keys(mapped.value.patch).length > 0
       ? mapped.value.patch
       : { notes: loaded.value.notes };
+    // T12 R1 (independent review, MEDIUM/P1): RESERVED_BRAIN_FIELDS
+    // (total_read/date_read/document_number_read) are observational OCR
+    // evidence only — normalizeStructuredExtraction (kadiV1GeminiVisionProvider.js)
+    // forces them UNCERTAIN unconditionally, and brainPatch above never
+    // resolves them (they can never reach `resolved`, by design — the
+    // backend already owns those exact values: total is always
+    // recalculated from saved items above, document_number/issued_at are
+    // assigned at generation time). Left unfiltered, a photographed
+    // document could therefore never leave missing_fields/uncertainties
+    // and would be permanently blocked from READY_FOR_REVIEW even once
+    // every backend-owned value (client, items, recalculated total) is
+    // correct — filtered from the PERSISTED/blocking set only; still
+    // never confirmed, still never copied into an authoritative field.
+    const persistedMissingFields = validated.value.missing_fields.filter((field) => !RESERVED_BRAIN_FIELDS.has(field));
+    const persistedUncertainties = validated.value.uncertainties.filter((entry) => !RESERVED_BRAIN_FIELDS.has(entry.field));
     const persisted = await persistModifiedLoaded(loaded.value, command, "BRAIN_EXTRACTION_APPLIED", patch, mapped.value.resolved, {
-      missingFields: validated.value.missing_fields,
-      uncertainties: validated.value.uncertainties,
+      missingFields: persistedMissingFields,
+      uncertainties: persistedUncertainties,
     });
     if (!persisted.ok) return persisted;
     return ok(persisted.value, {
       duplicate: persisted.duplicate === true,
-      question: validated.value.uncertainties.length > 0 || persisted.value.missing_fields.length > 0
+      question: persistedUncertainties.length > 0 || persisted.value.missing_fields.length > 0
         ? validated.value.user_facing_message_draft || null
         : null,
       ready_for_review: false,
