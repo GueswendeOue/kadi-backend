@@ -556,6 +556,18 @@ function createKadiV1FlowReplyRuntime({ sessionService, commandRuntime } = {}) {
       // Meta's RECHARGE form carries no session/recharge identifier of
       // its own. See kadiV1ProductionInfrastructure.js's cancel().
       sessionOpenedAt: session.opened_at,
+      // R2/MEDIUM (independent review): the authoritative, session-layer
+      // exact-replay signal — the SAME (sessionId, idempotencyKey) pair
+      // already consumed once before, never inferred from a downstream
+      // error code and never client-supplied. Currently threaded through
+      // only for kadiV1GenerationRuntimeAdapter.js's confirm(): a stale
+      // CONFIRM_GENERATION whose lifecycle re-validation fails with
+      // GENERATION_CONFIRMATION_STATE_INVALID may only be classified as a
+      // safe replay of an already-applied RECHARGE_REQUIRED transition
+      // when this is true — never merely because the document happens to
+      // be RECHARGE_REQUIRED now, which could equally mean an unrelated,
+      // later confirmation attempt moved it there.
+      exactReplay: consumed.duplicate === true,
     });
     if (!executed || typeof executed.ok !== "boolean") return fail("KADI_V1_FLOW_COMMAND_RESULT_INVALID");
     if (!executed.ok) return executed;

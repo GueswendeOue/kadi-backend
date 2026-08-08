@@ -473,38 +473,37 @@ const DISCHARGE_REVIEW_ACTIONS = Object.freeze([
   { id: "CANCEL", title: "Annuler" },
 ]);
 
-// T5/RECHARGE_PRESENTER_001: RECHARGE/CANCEL is a real terminal
-// cancellation of the targeted recharge session (kadiV1RechargeService.js's
-// cancelRechargeSession — CANCELLED is a genuine terminal status in
-// RECHARGE_STATUSES, no non-terminal "saved for later" state exists in the
-// domain), so the Flow's real JSON example label "Revenir plus tard" is
-// misleading. Always explicitly supplied here (never left to the Flow
-// JSON's own __example__ — see safeFlowData()) so this corrected label
-// actually reaches the user.
-//
-// R1/HIGH (independent review): the real RECHARGE Flow carries no
-// recharge_session_id of its own, so cancel() has always had to resolve
-// "which session" from owner + sessionOpenedAt context alone (see
-// kadiV1ProductionInfrastructure.js's cancel()) — scoped to the OWNER,
-// never to a particular document or Flow-opening context. Offering
-// CANCEL before any recharge session is actually bound to THIS reopened
-// screen (the initial, document-driven RECHARGE_REQUIRED context —
-// reached via the immediate INSUFFICIENT_CREDITS route, a history
-// reopen, or the conversational direct opening) would let a CANCEL
-// submitted from that context resolve to and cancel a completely
-// unrelated older recharge for the same owner. Only SELECT_PACK/
-// CHECK_PAYMENT are offered until a real recharge session exists for
-// this exact screen (see buildRechargePresentationData's boundToSession
-// parameter). See also kadiV1FlowCommandRuntime.js's server-side defense
-// in depth, which never relies on this list alone.
-const RECHARGE_ACTIONS_INITIAL = Object.freeze([
+// R2/HIGH (independent review): the real RECHARGE Flow carries no
+// recharge_session_id of its own, so rechargeRuntime.cancel() has always
+// had to resolve "which session" from owner + sessionOpenedAt context
+// alone (see kadiV1ProductionInfrastructure.js's cancel()) — scoped to
+// the OWNER, never to a particular document or Flow-opening context. R1
+// tried offering CANCEL only once a recharge session appeared "bound" to
+// the reopened screen (after SELECT_PACK/CHECK_PAYMENT), but the direct
+// conversational RECHARGE opening
+// (kadiV1ConversationOrchestrator.js's "RECHARGE" intent branch) proved
+// that even a supposedly-unbound session (no document, nothing selected
+// yet) could still have a forged CANCEL resolve to and cancel a
+// completely unrelated older recharge for the same owner — R1's
+// documentContext-based server defense had no signal to act on there.
+// Proving a client-submitted CANCEL genuinely targets a specific
+// recharge session would require a durable, persisted
+// recharge_session_id in the conversation session model, which does not
+// exist today (kadiV1ConversationSession.js has no such field) and is
+// out of scope for a schema/migration change here. R2 therefore removes
+// terminal CANCEL from the RECHARGE Flow entirely, in every context —
+// only SELECT_PACK/CHECK_PAYMENT are ever offered. Abandoning a recharge
+// no longer terminally cancels it through the Flow; the user can simply
+// close the Flow and start a new recharge later.
+// kadiV1FlowCommandRuntime.js also rejects RECHARGE/CANCEL
+// unconditionally, server-side, so a forged/replayed submission or a
+// stale cached Meta screen still offering the old CANCEL button remains
+// harmless. The lower-level target-selection primitive this disables
+// (rechargeRuntime.cancel(), kadiV1ProductionInfrastructure.js) is
+// intentionally left completely unchanged.
+const RECHARGE_ACTIONS = Object.freeze([
   Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
   Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
-]);
-const RECHARGE_ACTIONS_BOUND = Object.freeze([
-  Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
-  Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
-  Object.freeze({ id: "CANCEL", title: "Annuler cette recharge" }),
 ]);
 const RECHARGE_BALANCE_UNAVAILABLE_TEXT = "Solde indisponible pour le moment.";
 // R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
@@ -770,19 +769,17 @@ function canonicalReplyText(action, value, flowKey = null) {
     return "Votre document est prêt et a été envoyé.";
   }
 
-  // T5/RECHARGE_PRESENTER_001: RECHARGE/CANCEL performs a real terminal
-  // cancellation (see RECHARGE_ACTIONS_BOUND above), so it must never read
-  // as the generic "L’opération est annulée." shown for every other
-  // CANCEL flow. flowKey is the trusted, session-verified screen the
-  // reply was actually submitted from (kadiV1FlowReplyRuntime.js's
-  // handle() — consumeReply() already rejected any mismatch before this
-  // point), never a client-supplied value — so this can never be spoofed
-  // by a payload claiming to be from RECHARGE. Every other CANCEL flow
-  // (DOCUMENT_REVIEW, DOCUMENT_PREVIEW, GENERATION_CONFIRMATION) is
-  // completely unaffected — this checks flowKey, not just action.
-  if (action === "CANCEL" && flowKey === "RECHARGE") {
-    return "La recharge est annulée. Vous pourrez en démarrer une nouvelle plus tard.";
-  }
+  // R2/HIGH (independent review): RECHARGE/CANCEL is now rejected
+  // unconditionally, server-side, by kadiV1FlowCommandRuntime.js before
+  // this presenter is ever reached with a successful result — this
+  // branch (T5/R1's "La recharge est annulée..." copy) is therefore
+  // unreachable and intentionally removed rather than left as misleading
+  // dead code. A rejected CANCEL is presented through the normal
+  // recoverable-error path (kadiV1WebhookRuntime.js's recover()), never
+  // through canonicalReplyText. Every other CANCEL flow (DOCUMENT_REVIEW,
+  // DOCUMENT_PREVIEW, GENERATION_CONFIRMATION) is unaffected and keeps
+  // its own generic "L’opération est annulée." from the static table
+  // below.
 
   // R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
   // via CONFIRM_GENERATION is a handled business outcome, never a
@@ -1182,21 +1179,11 @@ function createKadiV1ProductionPresenter({
       }));
   }
 
-  // R1/HIGH (independent review): boundToSession is true only when this
-  // exact RECHARGE reopen was triggered by SELECT_PACK or a pending
-  // CHECK_PAYMENT — the two production calls that just created or are
-  // actively tracking a real, server-side recharge session for THIS
-  // screen (neither ever returns a document — see
-  // kadiV1ProductionInfrastructure.js's selectPack()/checkPayment()).
-  // Every other RECHARGE-opening context (the initial document-driven
-  // RECHARGE_REQUIRED route, a history reopen, the conversational direct
-  // opening) is unbound — no recharge session exists for this screen yet
-  // — and must never offer terminal CANCEL, which could otherwise resolve
-  // to and cancel a completely unrelated older recharge for the same
-  // owner (cancel() only ever resolves by owner + time, never by a
-  // client-supplied session id — see
-  // kadiV1ProductionInfrastructure.js's cancel()).
-  async function buildRechargePresentationData(ownerWaId, { boundToSession = false } = {}) {
+  // R2/HIGH (independent review): recharge_actions is now always the
+  // same SELECT_PACK/CHECK_PAYMENT-only list in every RECHARGE-opening
+  // context — see RECHARGE_ACTIONS above for why terminal CANCEL was
+  // removed entirely rather than kept "bound" to some contexts only.
+  async function buildRechargePresentationData(ownerWaId) {
     const [balance_summary, pack_options] = await Promise.all([
       resolveRechargeBalanceSummary(ownerWaId),
       Promise.resolve(resolveRechargePackOptions()),
@@ -1204,7 +1191,7 @@ function createKadiV1ProductionPresenter({
     return Object.freeze({
       balance_summary,
       pack_options: Object.freeze(pack_options),
-      recharge_actions: boundToSession ? RECHARGE_ACTIONS_BOUND : RECHARGE_ACTIONS_INITIAL,
+      recharge_actions: RECHARGE_ACTIONS,
     });
   }
 
@@ -1468,16 +1455,8 @@ function createKadiV1ProductionPresenter({
       const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
         ? await resolveIssuerProfileForPreview(document)
         : null;
-      // R1/HIGH: only SELECT_PACK/CHECK_PAYMENT just created or are
-      // actively tracking a real, server-side recharge session bound to
-      // THIS exact reopened screen — every other originating action
-      // (CONFIRM_GENERATION's immediate RECHARGE_REQUIRED route,
-      // OPEN_DOCUMENT from history, CANCEL never reopens RECHARGE at all)
-      // is an unbound, initial context. See buildRechargePresentationData.
       const recharge = flowKey === "RECHARGE"
-        ? await buildRechargePresentationData(ownerWaId, {
-            boundToSession: result.action === "SELECT_PACK" || result.action === "CHECK_PAYMENT",
-          })
+        ? await buildRechargePresentationData(ownerWaId)
         : null;
       flow = await openAndSendFlow({
         ownerWaId,
