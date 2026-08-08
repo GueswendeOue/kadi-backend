@@ -1,0 +1,50 @@
+-- fix/kadi-v1-orange-money-real-provider-t10 (R1, independent review) —
+-- ORANGE_TOPUP_REFERENCE_CONCURRENCY_001.
+--
+-- An authorized read-only runtime inspection of the real Supabase project
+-- confirmed public.kadi_topups (a legacy, pre-V1 table with no earlier
+-- migration file in this repository) has no unique constraint on
+-- `reference` — only the primary key on `id` is unique. Two concurrent
+-- kadiV1ProductionInfrastructure.js's createManualOrangeMoneyPaymentProvider
+-- createPaymentRequest() calls for the exact same V1 merchant_reference can
+-- therefore both observe "no existing topup" before either INSERT
+-- completes, and both inserts can succeed — after which a later
+-- .eq("reference", reference).maybeSingle() read can no longer resolve a
+-- single row, breaking getPaymentStatus()/verifyPaymentEvent().
+--
+-- The same read-only inspection also found exactly one pre-existing
+-- duplicated-reference group (2 rows, both legacy/non-V1 — neither uses
+-- the `recharge:` reference namespace, both still `pending`), and zero
+-- rows currently using the `recharge:` namespace. A table-wide
+-- unique(reference) constraint would therefore fail immediately against
+-- that legacy pair and require cleaning up historical data this mission
+-- has no authorization to touch (see
+-- docs/kadi_v1_legacy_data_migration_policy.md — legacy payment rows are
+-- never deduplicated or mutated without a separately authorized,
+-- reconciled migration).
+--
+-- Fix: a partial unique index, scoped only to Kadi V1's own reference
+-- namespace. kadiV1RechargeService.js's createRechargeSession() always
+-- derives merchant_reference as sessionId = makeId("recharge", ...) —
+-- literally `recharge:<hash>` — the "recharge" kind string and prefix are
+-- hardcoded, never parameterized, confirmed by direct code reading (the
+-- only makeId("recharge", ...) call site in that file). No other producer
+-- in this codebase ever writes a `recharge:`-prefixed kadi_topups.reference.
+-- The predicate `reference like 'recharge:%'` therefore protects every
+-- current and future V1 recharge row while leaving every legacy/non-V1
+-- reference — including the existing legacy duplicate pair — completely
+-- untouched: a partial index only enforces uniqueness among rows that
+-- match its own predicate.
+--
+-- Forward-only, additive-only: no table is created or dropped, no column
+-- is added, removed or renamed, no row is read, written or deleted, no
+-- RLS policy or grant is touched. `if not exists` makes this safe to
+-- re-run. This migration is NOT applied to the remote Supabase project by
+-- this mission — see docs/KADI_RELEASE_CHECKLIST.md's T10 section for the
+-- required migration-first deployment order (this index must exist before
+-- any backend carrying kadiV1ProductionInfrastructure.js's R1 23505
+-- recovery logic is deployed).
+
+create unique index if not exists kadi_topups_v1_recharge_reference_unique
+  on public.kadi_topups (reference)
+  where reference like 'recharge:%';
