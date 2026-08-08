@@ -926,12 +926,56 @@ déploiement Render incluant T5).
     `git diff --check` propre.
 24. **[FAIT]** Revue adversariale du diff complet R0+R1+R2 — aucun défaut
     HIGH/MEDIUM restant.
-25. **[EN ATTENTE]** Fusion dans `main`.
+25. **[FAIT]** Fusion dans `main` — PR #23 fusionnée à
+    `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d`.
 26. **[EN ATTENTE]** Déploiement Render — même ordre que ci-dessus (item
     9), migration T6 d'abord si pas déjà appliquée.
 27. **[EN ATTENTE]** Une vraie tentative de CANCEL refusée (depuis
     n'importe quel contexte RECHARGE), observée en conditions réelles
     après déploiement.
+
+## Ordre — `fix/kadi-v1-orange-money-real-provider-t10` (T10/ORANGE-MONEY-TEST-001 : couverture de composition de production du vrai fournisseur Orange Money)
+
+Mission de test/preuve uniquement — aucun code de production modifié,
+aucune migration requise, aucune mutation Meta/Render/WhatsApp/Supabase
+réelle.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d` (PR #23/T5 R0+R1+R2
+   fusionnée) avant de créer la branche isolée.
+2. **[FAIT]** T7 confirmé `CLOSED BY T1 / PR #17` — aucun nouveau code de
+   production requis, preuve déjà présente
+   (`tests/kadiV1SharedDocumentPipeline.test.js`, fiche X).
+3. **[FAIT]** Contrat de schéma de `kadi_topups` tracé strictement depuis
+   le code réel du fournisseur (aucun fichier de migration n'existe pour
+   cette table historique pré-V1 — son schéma distant exact reste
+   `UNKNOWN_REQUIRES_RUNTIME_CHECK` selon
+   `docs/kadi_v1_legacy_data_migration_policy.md`) ; `kadi_v1_recharge_sessions`
+   confirmé conforme à sa migration V1. Aucune divergence
+   fournisseur/schéma trouvée.
+4. **[FAIT]** Nouveau fichier
+   `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (15 scénarios)
+   exerçant le vrai `createManualOrangeMoneyPaymentProvider` (jamais
+   mocké) à travers `kadiV1RechargeService.js`/
+   `createKadiV1RechargeRuntime` réels — seul un client Supabase factice
+   minimal (les deux tables réellement interrogées) simule l'I/O externe.
+5. **[FAIT]** Porte exactement-une-fois prouvée sous trois angles (rejeu
+   webhook exact, rejeu d'événement de paiement frais, redémarrage
+   simulé) — aucun scénario ne produit de second crédit.
+6. **[FAIT]** Montant falsifié, devise non-XOF, référence inconnue,
+   isolation propriétaire et recharges multiples en attente tous
+   échouent fermé, crédit zéro.
+7. **[FAIT]** Continuité T5 (packs/solde authoritative, RECHARGE/CANCEL
+   toujours non exposé) et parité T6 (solde disponible canonique)
+   confirmées à travers le vrai chemin fournisseur.
+8. **[FAIT]** Tests ciblés (169/169) puis suite complète (1542/1542),
+   `git diff --check` propre.
+9. **[FAIT]** Revue adversariale du diff complet — aucun défaut
+   HIGH/MEDIUM restant.
+10. **[EN ATTENTE]** Fusion dans `main`.
+11. **[EN ATTENTE]** Aucun déploiement requis par cette mission
+    (aucun code de production modifié) — le déploiement futur de PR #23
+    (T5) reste soumis à l'ordre de déploiement T6 déjà établi ci-dessus.
 
 ## Déploiement Render
 

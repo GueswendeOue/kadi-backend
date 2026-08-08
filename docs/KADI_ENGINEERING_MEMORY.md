@@ -4861,3 +4861,127 @@ Meta, Render ou WhatsApp réelle.
 * Application de la migration T6 à Supabase de production, dans l'ordre
   sûr établi en AA.3 (migration d'abord) — toujours hors périmètre.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AC. T10/ORANGE-MONEY-TEST-001 — mission de preuve : couverture de composition de production du vrai fournisseur Orange Money
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — nouvelle branche isolée
+  `fix/kadi-v1-orange-money-real-provider-t10`, créée depuis
+  `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d` (PR #23/T5 R0+R1+R2
+  déjà fusionnée), PR brouillon ouverte, non fusionnée, non déployée.
+  Aucune migration touchée, aucune mutation Supabase/Meta/Render/
+  WhatsApp réelle. **Mission purement test/preuve — aucun code de
+  production modifié.**
+* **Origine :** mission « KADI V1 — T10 ORANGE-MONEY-TEST-001 REAL
+  PROVIDER PRODUCTION-COMPOSITION COVERAGE ».
+
+### Constat de départ (T7)
+
+T7 confirmé `CLOSED BY T1 / PR #17`, sans nouveau code de production.
+`kadiV1SharedDocumentPolicies.js` mappe déjà le champ plat
+`validity_days` (soumis par le vrai Flow `DOCUMENT_OPTIONS`) vers
+`document.options.validity_days` ; le test existant
+`tests/kadiV1SharedDocumentPipeline.test.js`'s « OPTIONS-001: DEVIS
+validity_days submitted as the real flat field genuinely persists and is
+retrievable afterward » (fiche X, T1/PR #17) prouve déjà la persistance
+et la relecture sur un dépôt frais.
+
+### Écart T10 : aucun test de composition de production n'exerçait le vrai fournisseur
+
+`createManualOrangeMoneyPaymentProvider()`
+(`kadiV1ProductionInfrastructure.js`) existe depuis T3, mais **tous**
+les fichiers de test RECHARGE existants (T3, T5 R0/R1/R2) substituaient
+systématiquement un `fakePaymentProvider()` synthétique à sa place —
+aucune preuve de composition de production n'exerçait jamais le vrai
+`createPaymentRequest`/`getPaymentStatus`/`verifyPaymentEvent`. C'est le
+gate d'acceptation manquant que T10 ferme.
+
+### Contrat de schéma tracé (pas de divergence trouvée)
+
+Le vrai fournisseur touche exactement deux tables :
+
+* **`kadi_v1_recharge_sessions`** — une vraie table V1 migrée
+  (`migrations/20260802_add_kadi_v1_recharge.sql`). Lecture seule :
+  `select("owner_wa_id,pack_snapshot").eq("merchant_reference", X)`.
+  Colonnes confirmées présentes dans la migration
+  (`owner_wa_id text not null`, `pack_snapshot jsonb not null`,
+  `merchant_reference text not null unique`) — **aucune divergence**.
+* **`kadi_topups`** — une table **historique, pré-V1, sans fichier de
+  migration dans ce dépôt**. `docs/kadi_v1_legacy_data_migration_policy.md`
+  marque explicitement son schéma distant exact comme
+  `UNKNOWN_REQUIRES_RUNTIME_CHECK` (« Les schémas distants... restent
+  `UNKNOWN_REQUIRES_RUNTIME_CHECK` tant qu'un audit autorisé n'en a pas
+  produit une preuve anonymisée »). Le contrat de colonnes utilisé ici
+  est donc établi **strictement à partir du code réel** :
+  `createManualOrangeMoneyPaymentProvider()`'s propres lectures/écritures
+  (`reference`, `amount_fcfa`, `credits`, `payment_method`,
+  `includes_stamp`, `status`, `proof_text`, `proof_image_url`,
+  `created_at`, `updated_at`, `approved_at`, `wa_id`) et
+  `kadiPaymentsRepo.js`'s usage corroborant (`id`, `wa_id`, `status`,
+  `created_at`). **Aucune incohérence fournisseur/schéma trouvée** — la
+  nature « legacy sans migration » de cette table est documentée comme
+  contexte, pas comme un défaut à corriger dans cette mission.
+
+### Modèle d'autorité de test
+
+RÉEL, jamais mocké : `createManualOrangeMoneyPaymentProvider`,
+`createRechargeService`, `createKadiV1RechargeRuntime`,
+`FlowCommandRuntime`/`FlowReplyRuntime`, le vrai catalogue de packs
+(`createRechargePackCatalog`), le vrai dépôt de recharge en mémoire
+(`createInMemoryRechargeRepository`, y compris sa méthode
+`getAvailableBalance()` déjà intégrée — réutilisée directement comme
+autorité T6, jamais un second calcul de solde). FAUX uniquement : le
+client Supabase minimal que le vrai fournisseur interroge (les deux
+tables ci-dessus), plus un client Supabase séparé et volontairement
+inatteignable pour `rechargeRuntime.cancel()` (jamais appelé — RECHARGE/
+CANCEL reste rejeté inconditionnellement, T5 R2). Un assistant de test
+dédié (`approveTopup`) simule l'action humaine hors-bande du personnel
+Orange Money (mutation directe du statut du topup factice) — jamais un
+chemin de code V1.
+
+### Preuve
+
+* `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (nouveau, 15
+  scénarios) : SELECT_PACK avec pack XOF actif crée réellement une ligne
+  `kadi_topups` via le vrai fournisseur, référence marchande/paiement
+  stable ; pack invalide/inconnu échoue fermé avant toute mutation
+  financière, vrai fournisseur jamais appelé ; `createPaymentRequest` du
+  vrai fournisseur rejette directement référence invalide, montant non
+  positif/non entier et devise non-XOF ; CHECK_PAYMENT en attente ne
+  crédite rien ; topup confirmé crédite exactement une fois le bon
+  montant ; **porte exactement-une-fois** prouvée sous trois angles
+  différents — rejeu exact du même webhook (court-circuit de doublon au
+  niveau session), soumission fraîche d'un nouveau webhook pour un
+  paiement déjà crédité (dédoublonnage par empreinte d'événement du
+  service de recharge), et reconstruction complète du runtime autour des
+  mêmes dépôts persistés (redémarrage simulé) — aucun scénario ne produit
+  un second crédit ; montant falsifié, devise non-XOF (échoue dès
+  SELECT_PACK, ce chemin ne peut jamais atteindre un état crédité) et
+  référence inconnue échouent tous fermé avec crédit zéro ; isolation
+  propriétaire ; recharges multiples en attente (le paiement de l'une ne
+  crédite jamais l'autre) ; continuité de présentation T5 (packs/solde
+  authoritative, RECHARGE/CANCEL toujours non exposé) et parité de solde
+  T6 (modèle de solde disponible canonique) confirmées à travers le vrai
+  chemin fournisseur.
+* Focused (fichiers concernés) : 169/169. Suite complète : 1542/1542.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau, aucun appel API Orange Money réel, aucune mutation
+Supabase/Meta/Render/WhatsApp réelle nulle part dans le fichier de test.
+`ownerWaId` reste la seule source de portée pour la vérification de
+paiement. Aucun secret, token ou identifiant sensible journalisé.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant sous `resumePolicy: "REQUIRE_CONFIRMATION"`,
+  toujours non corrigé.
+* Application de la migration T6 à Supabase de production, dans l'ordre
+  sûr établi en AA.3 (migration d'abord) — toujours hors périmètre.
+* Un audit runtime autorisé du schéma distant réel de `kadi_topups`
+  reste nécessaire pour lever officiellement son statut
+  `UNKNOWN_REQUIRES_RUNTIME_CHECK` (voir
+  `docs/kadi_v1_legacy_data_migration_policy.md`) — hors périmètre de
+  cette mission de test.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

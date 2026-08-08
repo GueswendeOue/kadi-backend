@@ -897,6 +897,60 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   (1527/1527), `git diff --check` propre. Voir fiche AB.2 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-09) : PR #23 fusionnée dans `main`.**
+  `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d`. **T5/RECHARGE_PRESENTER_001
+  (R0+R1+R2) est désormais `CLOSED/MERGED`** — solde et catalogue de
+  packs authoritative dans RECHARGE, routage immédiat
+  `INSUFFICIENT_CREDITS` → RECHARGE, CANCEL terminal retiré du Flow
+  RECHARGE dans tous les contextes, modèle d'autorité de rejeu resserré.
+  Le déploiement Render de ce commit n'est pas vérifiable depuis cet
+  environnement — ne pas déduire qu'il a été déployé, ni qu'il ne l'a pas
+  été.
+* **Mise à jour (2026-08-09) : T7 confirmé `CLOSED BY T1 / PR #17`.**
+  Aucun nouveau code de production requis. Preuve déjà présente :
+  `kadiV1SharedDocumentPolicies.js` mappe le champ plat `validity_days`
+  (soumis par le vrai Flow `DOCUMENT_OPTIONS`) vers
+  `document.options.validity_days` ; le test
+  `tests/kadiV1SharedDocumentPipeline.test.js`'s « OPTIONS-001: DEVIS
+  validity_days submitted as the real flat field genuinely persists and
+  is retrievable afterward » (fiche X de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md), T1/PR #17)
+  prouve la persistance et la relecture sur un dépôt frais.
+* **Mise à jour (2026-08-09) : T10/ORANGE-MONEY-TEST-001 — couverture de
+  composition de production du VRAI fournisseur Orange Money, branche
+  isolée `fix/kadi-v1-orange-money-real-provider-t10` créée depuis
+  `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d`, PR brouillon ouverte,
+  **non fusionnée, non déployée. Aucune migration touchée, aucune
+  mutation Supabase/Meta/Render/WhatsApp réelle.** Mission de preuve
+  pure : `createManualOrangeMoneyPaymentProvider()`
+  (`kadiV1ProductionInfrastructure.js`) existait déjà et n'a pas été
+  modifié. Nouveau fichier
+  `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (15 scénarios) exerce
+  ce vrai fournisseur — `createPaymentRequest`/`getPaymentStatus`/
+  `verifyPaymentEvent` jamais mockés — à travers `kadiV1RechargeService.js`/
+  `createKadiV1RechargeRuntime` réels, avec un seul point de simulation
+  externe : un client Supabase factice minimal implémentant exactement
+  les deux tables que le vrai fournisseur interroge
+  (`kadi_v1_recharge_sessions`, une vraie table V1 migrée, et
+  `kadi_topups`, une table historique pré-V1 sans fichier de migration
+  dans ce dépôt — son schéma exact distant reste
+  `UNKNOWN_REQUIRES_RUNTIME_CHECK` selon
+  `docs/kadi_v1_legacy_data_migration_policy.md` ; le contrat de colonnes
+  utilisé ici est établi strictement à partir du code réel du fournisseur
+  et de `kadiPaymentsRepo.js`, aucune divergence trouvée). Preuve du
+  crédit exactement une fois : rejeu du même webhook WhatsApp, rejeu d'un
+  événement de paiement frais pour un paiement déjà crédité, et
+  reconstruction complète du runtime (redémarrage simulé) — aucun ne
+  produit de second crédit. Solde erroné, devise non-XOF, référence
+  inconnue, isolation propriétaire et recharges multiples en attente tous
+  échouent fermé, crédit zéro. Continuité T5 (packs/solde authoritative,
+  CANCEL toujours non exposé) et parité T6 (solde disponible canonique)
+  confirmées à travers le vrai chemin fournisseur. **Statut :
+  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (169/169) puis suite complète
+  (1542/1542), `git diff --check` propre. Aucun code de production
+  modifié — mission de test uniquement. Voir fiche AC de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 
