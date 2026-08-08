@@ -9,6 +9,13 @@ const ID_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 const MAX_RESPONSE_JSON_BYTES = 16 * 1024;
 const MAX_TEXT_LENGTH = 4000;
 const RECOVERABLE_TEXT = "Je n’ai pas pu terminer cette étape. Réessayez dans un instant.";
+// T11: config.features.transcription is the sole inbound-voice authority
+// (kadiV1RuntimeConfig.js) — distinct from config.features.voice, which
+// only ever governs an optional OUTBOUND voice response and must never be
+// consulted here. This text is shown before any Meta media lookup,
+// download, or OpenAI call is ever made for this message.
+const TRANSCRIPTION_DISABLED_REASON = "KADI_V1_TRANSCRIPTION_DISABLED";
+const TRANSCRIPTION_DISABLED_TEXT = "Les messages vocaux ne sont pas encore activés ici. Vous pouvez m’écrire les informations.";
 // Every one of these codes comes from kadiV1FinalGenerationService.js's
 // generatePrivate — a render/private-storage failure strictly before
 // capture, always accompanied by a released reservation and zero debit
@@ -217,7 +224,9 @@ function createKadiV1WebhookRuntime({
         return { handled: true, accepted: false, reason };
       } catch { /* fall through to the generic presentation below */ }
     }
-    const canonicalText = GENERATION_RETRY_REASONS.has(reason) ? GENERATION_RETRY_TEXT : RECOVERABLE_TEXT;
+    const canonicalText = reason === TRANSCRIPTION_DISABLED_REASON
+      ? TRANSCRIPTION_DISABLED_TEXT
+      : GENERATION_RETRY_REASONS.has(reason) ? GENERATION_RETRY_TEXT : RECOVERABLE_TEXT;
     try {
       await output.presentRecoverableError({ ownerWaId, messageId: message?.id || null, canonicalText, reason });
     } catch { /* one failed presentation must not expose the message to legacy routing */ }
@@ -329,6 +338,18 @@ function createKadiV1WebhookRuntime({
       return { handled: true, accepted: true, duplicate: result.value?.duplicate === true };
     }
 
+    // T11 (inbound voice transcription gate): the earliest safe
+    // application boundary, strictly before
+    // mediaResolver.resolveAudio() is ever reached, so a disabled owner
+    // triggers ZERO Meta media lookup, ZERO Meta media download, ZERO
+    // temporary audio ingestion and ZERO OpenAI transcription call.
+    // config.features.voice (the separate, OUTBOUND voice response
+    // authority) is never consulted here — an operator enabling voice
+    // replies must never silently re-open inbound audio processing.
+    if (message?.type === "audio" && config.features.transcription !== true) {
+      return recover(ownerWaId, message, TRANSCRIPTION_DISABLED_REASON);
+    }
+
     let mapped;
     try { mapped = await mapMetaMessageToConversationInput({ ownerWaId, message, value, mediaResolver: media }); }
     catch { mapped = fail("KADI_V1_WEBHOOK_INPUT_RESOLUTION_FAILED"); }
@@ -370,6 +391,8 @@ module.exports = {
   MAX_RESPONSE_JSON_BYTES,
   RECOVERABLE_TEXT,
   GENERATION_RETRY_TEXT,
+  TRANSCRIPTION_DISABLED_REASON,
+  TRANSCRIPTION_DISABLED_TEXT,
   correlationFor,
   createKadiV1WebhookRuntime,
   idempotencyFor,
