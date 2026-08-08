@@ -9,11 +9,24 @@
 // the Supabase client the real provider itself queries — is faked, as a
 // minimal in-memory double of the exact two tables the real provider
 // reads/writes: kadi_v1_recharge_sessions (a real, migrated V1 table) and
-// kadi_topups (a legacy, pre-V1 table with no migration file in this repo
-// — its schema is established here strictly from what the real provider
-// code itself reads/writes, kadiPaymentsRepo.js's own usage, and
-// docs/kadi_v1_legacy_data_migration_policy.md, which explicitly marks
-// kadi_topups's exact remote schema as UNKNOWN_REQUIRES_RUNTIME_CHECK).
+// kadi_topups (a legacy, pre-V1 table with no migration file in this repo).
+//
+// R1 (independent review, ORANGE_TOPUP_REFERENCE_CONCURRENCY_001): an
+// authorized read-only runtime inspection of the real Supabase project
+// confirmed kadi_topups's column contract (id, wa_id, reference,
+// amount_fcfa, credits, includes_stamp, status, proof_text,
+// proof_image_url, payment_method, created_at, updated_at, approved_at,
+// rejection_reason — RLS enabled), superseding the prior
+// UNKNOWN_REQUIRES_RUNTIME_CHECK characterization for column existence.
+// The inspection also found `reference` has NO unique constraint — only
+// the primary key on `id` is unique — and exactly one pre-existing
+// duplicated-reference group (2 rows, both legacy/non-V1, both pending;
+// the actual reference value is never recorded here or anywhere in this
+// repository). See
+// migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql
+// for the forward-only fix (not applied to any real database by this
+// mission) and docs/KADI_ENGINEERING_MEMORY.md for the full record.
+//
 // No network, no real Supabase project, no real Orange Money API call
 // anywhere in this file.
 
@@ -80,14 +93,35 @@ function createAdvancingClock(startIso) {
   };
 }
 
-// The exact minimal Supabase double the REAL createManualOrangeMoneyPaymentProvider
-// needs — schema traced directly from kadiV1ProductionInfrastructure.js's
-// own read/write calls (see file header). kadi_v1_recharge_sessions is
-// mirrored here from the real in-memory recharge repository's own
-// createRechargeSession() output (never a second, independently-invented
-// session shape) — see wireRechargeSessionMirror() below.
-function createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock }) {
+// R1 (independent review, ORANGE_TOPUP_REFERENCE_CONCURRENCY_001): an
+// authorized read-only runtime inspection of the real Supabase project
+// confirmed public.kadi_topups has NO unique constraint on `reference` —
+// only the primary key on `id` is unique. topups is therefore modeled
+// here as a real row collection keyed by id (never Map<reference, row>,
+// which structurally permits only one row per reference and would mask
+// exactly this defect), so multiple rows CAN share a reference, exactly
+// like the real table. maybeSingle() mirrors real PostgREST semantics:
+// 0 matching rows -> {data:null,error:null}; exactly 1 -> {data:row,
+// error:null}; more than 1 -> an error (never returning an arbitrary row).
+//
+// enforceV1UniqueReference simulates the new partial unique index this
+// R1 mission adds (migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql,
+// NOT applied to any real database by this mission) — scoped only to the
+// `recharge:` reference namespace, exactly matching the real predicate.
+// onTopupReferenceRead is an optional hook (defaults to a no-op) letting
+// a test synchronize concurrent reads at the exact point a real
+// concurrent request would race, without ever using a sleep.
+function createFakeSupabaseClient({
+  rechargeSessionsByReference,
+  topups,
+  clock,
+  enforceV1UniqueReference = false,
+  onTopupReferenceRead = async () => {},
+}) {
   let topupSeq = 0;
+  function rowsForReference(reference) {
+    return [...topups.values()].filter((row) => row.reference === reference);
+  }
   return {
     async rpc() { throw new Error("UNEXPECTED_CALL:rpc"); },
     storage: { from() { throw new Error("UNEXPECTED_CALL:storage"); } },
@@ -121,8 +155,14 @@ function createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock }
                 if (column !== "reference") throw new Error(`UNEXPECTED_QUERY:${table}.${column}`);
                 return {
                   async maybeSingle() {
-                    const row = topups.get(value);
-                    return row ? { data: clone(row), error: null } : { data: null, error: null };
+                    await onTopupReferenceRead(value);
+                    const rows = rowsForReference(value);
+                    if (rows.length === 0) return { data: null, error: null };
+                    if (rows.length === 1) return { data: clone(rows[0]), error: null };
+                    // Real PostgREST/postgrest-js .maybeSingle() errors
+                    // when a query unexpectedly matches more than one row
+                    // — it never picks one arbitrarily.
+                    return { data: null, error: { code: "PGRST116", message: "JSON object requested, multiple (or no) rows returned" } };
                   },
                 };
               },
@@ -133,7 +173,16 @@ function createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock }
               select(columns) {
                 if (columns !== "*") throw new Error(`UNEXPECTED_COLUMNS:${table}:${columns}`);
                 return {
+                  // Deliberately synchronous body (no internal await)
+                  // before the state mutation: JS run-to-completion
+                  // semantics make the conflict-check-then-insert below
+                  // atomic with respect to any other pending microtask —
+                  // exactly the atomicity a single real Postgres INSERT
+                  // statement (and its unique index check) provides.
                   async single() {
+                    if (enforceV1UniqueReference && payload.reference.startsWith("recharge:") && rowsForReference(payload.reference).length > 0) {
+                      return { data: null, error: { code: "23505", message: `duplicate key value violates unique constraint "kadi_topups_v1_recharge_reference_unique"` } };
+                    }
                     topupSeq += 1;
                     const timestamp = clock();
                     const row = {
@@ -143,7 +192,7 @@ function createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock }
                       updated_at: timestamp,
                       approved_at: null,
                     };
-                    topups.set(row.reference, row);
+                    topups.set(row.id, row);
                     return { data: clone(row), error: null };
                   },
                 };
@@ -165,11 +214,60 @@ function createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock }
 // derived from a live clock reused elsewhere) so the resulting
 // provider_event_id (derived from reference:status:updated_at) is stable
 // across repeated reads, which is exactly what makes the real provider's
-// exactly-once dedup work.
+// exactly-once dedup work. Requires the reference to currently resolve to
+// exactly one row (matching what a real approval action would act on).
 function approveTopup(topups, reference, approvedAt) {
-  const row = topups.get(reference);
-  assert.ok(row, `no topup found for reference ${reference}`);
-  topups.set(reference, { ...row, status: "approved", approved_at: approvedAt, updated_at: approvedAt });
+  const matches = [...topups.entries()].filter(([, row]) => row.reference === reference);
+  assert.equal(matches.length, 1, `expected exactly one topup for reference ${reference}, found ${matches.length}`);
+  const [id, row] = matches[0];
+  topups.set(id, { ...row, status: "approved", approved_at: approvedAt, updated_at: approvedAt });
+}
+
+// Test-only helper mirroring the fake client's own rowsForReference: the
+// row collection is keyed by `id` (matching the real table, where
+// `reference` is not unique), so test bodies asserting on "the" topup for
+// a given reference must go through this instead of topups.get(reference).
+// Requires the reference to currently resolve to exactly one row.
+function findTopupByReference(topups, reference) {
+  const matches = [...topups.values()].filter((row) => row.reference === reference);
+  assert.equal(matches.length, 1, `expected exactly one topup for reference ${reference}, found ${matches.length}`);
+  return matches[0];
+}
+
+// Test-only helper for seeding a raw topup row directly (legacy rows,
+// incompatible pre-existing rows) — bypasses the real provider entirely,
+// simulating data that already existed in the real table before this
+// call, exactly like a real concurrent/legacy row would.
+function seedTopup(topups, overrides) {
+  const id = overrides.id || `topup:seed:${nextKey("seed")}`;
+  const row = {
+    id, wa_id: "00000000000", reference: "legacy:unset", amount_fcfa: 1, credits: 1,
+    payment_method: "orange_money", includes_stamp: false, status: "pending",
+    proof_text: null, proof_image_url: null, rejection_reason: null,
+    created_at: NOW, updated_at: NOW, approved_at: null,
+    ...overrides,
+  };
+  topups.set(id, row);
+  return row;
+}
+
+// Deterministic rendezvous barrier for exactly `parties` concurrent
+// callers — no sleeps. Each caller calls arrive() and suspends until
+// every party has arrived, at which point all are released together, in
+// the order they arrived (JS's microtask FIFO on the same resolved
+// promise), simulating two real concurrent requests both observing "no
+// existing row" before either write commits.
+function createRendezvousBarrier(parties) {
+  let arrived = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  return {
+    async arrive() {
+      arrived += 1;
+      if (arrived >= parties) release();
+      await gate;
+    },
+  };
 }
 
 function wireRechargeSessionMirror(rechargeRepository, rechargeSessionsByReference, sessionIdsByOwner) {
@@ -204,6 +302,14 @@ function buildComposition({
   rechargeSessionsByReference: existingRechargeSessionsByReference = null,
   sessionIdsByOwner: existingSessionIdsByOwner = null,
   topups: existingTopups = null,
+  // R1: enforceV1UniqueReference simulates the new partial unique index
+  // (NOT applied to any real database by this mission — see the
+  // migration file). Defaults to true so every test proves the FIXED,
+  // post-migration behavior by default; the dedicated pre-fix
+  // reproduction test explicitly passes false to exercise the real,
+  // currently-deployed schema (no unique constraint at all).
+  enforceV1UniqueReference = true,
+  onTopupReferenceRead = undefined,
 } = {}) {
   const packCatalog = createRechargePackCatalog({ packs });
   const documentRepository = createInMemoryV1DocumentRepository();
@@ -220,7 +326,10 @@ function buildComposition({
 
   // REAL Supabase double for the REAL payment provider — the exact two
   // tables it queries, nothing invented, nothing simplified away.
-  const fakeSupabase = createFakeSupabaseClient({ rechargeSessionsByReference, topups, clock: sharedClock });
+  const fakeSupabase = createFakeSupabaseClient({
+    rechargeSessionsByReference, topups, clock: sharedClock, enforceV1UniqueReference,
+    ...(onTopupReferenceRead ? { onTopupReferenceRead } : {}),
+  });
 
   // The REAL provider implementation — never substituted.
   const provider = createManualOrangeMoneyPaymentProvider({ client: fakeSupabase, clock: sharedClock });
@@ -379,7 +488,7 @@ test("1. SELECT_PACK with a valid active XOF pack calls the REAL Orange Money pr
 
   // The real provider genuinely created a kadi_topups row for this exact
   // merchant_reference.
-  const topup = f.topups.get(session.merchant_reference);
+  const topup = findTopupByReference(f.topups, session.merchant_reference);
   assert.ok(topup, "the real provider must have inserted a real kadi_topups row");
   assert.equal(topup.wa_id, OWNER);
   assert.equal(topup.amount_fcfa, PACK_1000.amount);
@@ -459,7 +568,7 @@ test("4. CHECK_PAYMENT through the real provider while the topup is still pendin
   assert.equal(after.value.status, "PAYMENT_PENDING", "must remain pending — no premature credit");
   const balance = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
   assert.equal(balance.value, 0, "wallet must remain unchanged");
-  assert.equal(f.topups.get(session.merchant_reference).status, "pending");
+  assert.equal(findTopupByReference(f.topups, session.merchant_reference).status, "pending");
 });
 
 // =====================================================================
@@ -532,6 +641,22 @@ test("7. A fresh CHECK_PAYMENT submission for an already-credited recharge (same
   assert.equal(ledgerEntries.length, 1);
 });
 
+// R1 wording-accuracy note (independent review): this test rebuilds every
+// in-process runtime/service object around the SAME persisted-store
+// objects (rechargeRepository, topups, session maps) — it proves the
+// service-layer event-fingerprint dedup survives a full in-process object
+// reconstruction, i.e. that no in-memory cache or closure state is the
+// thing preventing a double credit. It does NOT exercise, and must never
+// be cited as proving, the real Supabase-backed recharge repository's
+// cross-process atomicity under genuine concurrent Postgres connections —
+// that guarantee is instead provided in production by
+// kadi_v1_confirm_recharge_credit()'s own pg_advisory_xact_lock +
+// `for update` row lock (migrations/20260802_add_kadi_v1_recharge.sql),
+// whose grants/privileges are checked in
+// tests/kadiV1MigrationPrivileges.test.js. No test in this repository runs
+// against a live Postgres connection, so that RPC's live concurrent
+// behavior itself remains unverified here — a live-DB verification, not an
+// in-process one, would be required to close that gap.
 test("Exactly-once gate: process-restart semantics survive a full runtime reconstruction around the same persisted stores", async () => {
   const f = buildComposition();
   const { session } = await selectPack(f, { packId: "PACK_1000" });
@@ -561,8 +686,8 @@ test("Exactly-once gate: process-restart semantics survive a full runtime recons
 test("8. A tampered topup amount fails closed at CHECK_PAYMENT time — zero credit", async () => {
   const f = buildComposition();
   const { session } = await selectPack(f, { packId: "PACK_1000" });
-  const topup = f.topups.get(session.merchant_reference);
-  f.topups.set(session.merchant_reference, { ...topup, amount_fcfa: 500, status: "approved", approved_at: "2026-08-09T02:05:00.000Z", updated_at: "2026-08-09T02:05:00.000Z" });
+  const topup = findTopupByReference(f.topups, session.merchant_reference);
+  f.topups.set(topup.id, { ...topup, amount_fcfa: 500, status: "approved", approved_at: "2026-08-09T02:05:00.000Z", updated_at: "2026-08-09T02:05:00.000Z" });
 
   const check = await send(f, { action: "CHECK_PAYMENT", data: { pack_id: "", payment_reference: session.merchant_reference }, expectAccepted: false });
   assert.equal(check.reason, "PAYMENT_EVENT_MISMATCH");
@@ -630,7 +755,7 @@ test("12. Multiple pending recharges for the same owner: a payment/reference for
   assert.equal(aAfter.value.status, "CREDITED");
   const bAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: sessionB.recharge_session_id });
   assert.equal(bAfter.value.status, "PAYMENT_PENDING", "B must remain untouched by A's confirmation");
-  assert.equal(f.topups.get(sessionB.merchant_reference).status, "pending", "B's own topup must remain unapproved");
+  assert.equal(findTopupByReference(f.topups, sessionB.merchant_reference).status, "pending", "B's own topup must remain unapproved");
 
   const balance = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
   assert.equal(balance.value, PACK_1000.credits, "only A's credits, never B's");
@@ -686,4 +811,207 @@ test("14. T6 balance parity: after the confirmed credit, BALANCE reflects it thr
   const result = await f.composition.webhookHandler({ messages: [nfmReply({ sessionId: menuSessionId, flowKey: "MENU", action: "BALANCE", data: {} })] });
   assert.equal(result.results[0].accepted, true);
   assert.equal(lastText(f), `Vous avez ${PACK_2000.credits} crédits disponibles.`, "the canonical available-balance model must reflect the real credited amount");
+});
+
+// =====================================================================
+// R1 (ORANGE_TOPUP_REFERENCE_CONCURRENCY_001): concurrency-safety of the
+// real provider's createPaymentRequest() against public.kadi_topups — a
+// legacy table with NO unique constraint on `reference` (confirmed via an
+// authorized read-only runtime inspection of the real Supabase project;
+// only the primary key on `id` is unique). Kadi V1 owns the `recharge:`
+// reference namespace exclusively — see kadiV1RechargeService.js's
+// createRechargeSession(), which always derives merchant_reference as
+// sessionId = makeId("recharge", ...), the only such call site in that
+// file, with idFactory never overridden in production
+// (kadiV1ProductionBootstrap.js). This namespace exclusivity is exactly
+// what migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql
+// (NOT applied to any real database by this mission) protects, and what
+// these tests below assume when seeding `recharge:`-prefixed references.
+// =====================================================================
+
+// Directly seeds a kadi_v1_recharge_sessions row by merchant_reference —
+// bypassing the full RECHARGE Flow/session machinery — so these tests can
+// call the real provider's createPaymentRequest()/getPaymentStatus()
+// directly, exactly as kadiV1RechargeService.js itself does, without the
+// unrelated session-layer plumbing every other test in this file exists to
+// exercise.
+function seedRechargeSessionByReference(f, reference, { ownerWaId = OWNER, packSnapshot } = {}) {
+  f.rechargeSessionsByReference.set(reference, {
+    owner_wa_id: ownerWaId,
+    merchant_reference: reference,
+    pack_snapshot: packSnapshot,
+  });
+}
+
+function countTopupsForReference(topups, reference) {
+  return [...topups.values()].filter((row) => row.reference === reference).length;
+}
+
+test("R1-A. Pre-fix reproduction: without the partial unique index, two concurrent createPaymentRequest calls for the same V1 reference both insert, producing two physical rows, after which getPaymentStatus can no longer resolve a unique topup", async () => {
+  const barrier = createRendezvousBarrier(2);
+  const f = buildComposition({ enforceV1UniqueReference: false, onTopupReferenceRead: () => barrier.arrive() });
+  const reference = "recharge:concurrency-pre-fix-1";
+  seedRechargeSessionByReference(f, reference, { packSnapshot: { credits: PACK_1000.credits } });
+  const request = { merchant_reference: reference, amount: PACK_1000.amount, currency: "XOF" };
+
+  const [a, b] = await Promise.all([
+    f.provider.createPaymentRequest(request),
+    f.provider.createPaymentRequest(request),
+  ]);
+
+  assert.equal(a.ok, true, a.error);
+  assert.equal(b.ok, true, b.error);
+  assert.equal(countTopupsForReference(f.topups, reference), 2, "pre-fix: both concurrent inserts succeed, producing two rows sharing one reference — the real, currently-deployed schema defect");
+
+  const status = await f.provider.getPaymentStatus({ merchantReference: reference });
+  assert.equal(status.ok, false, "a reference with two matching rows can no longer resolve to a unique topup — maybeSingle() fails rather than picking one arbitrarily");
+  assert.equal(status.error, "PAYMENT_STATUS_NOT_FOUND");
+});
+
+test("R1-B. Post-fix: with the V1 partial unique index enforced, two concurrent createPaymentRequest calls for the same reference create exactly one physical row and converge on the same payment identity — the loser recovers via 23505", async () => {
+  const barrier = createRendezvousBarrier(2);
+  const f = buildComposition({ enforceV1UniqueReference: true, onTopupReferenceRead: () => barrier.arrive() });
+  const reference = "recharge:concurrency-post-fix-1";
+  seedRechargeSessionByReference(f, reference, { packSnapshot: { credits: PACK_1000.credits } });
+  const request = { merchant_reference: reference, amount: PACK_1000.amount, currency: "XOF" };
+
+  const [a, b] = await Promise.all([
+    f.provider.createPaymentRequest(request),
+    f.provider.createPaymentRequest(request),
+  ]);
+
+  assert.equal(a.ok, true, a.error);
+  assert.equal(b.ok, true, b.error);
+  assert.equal(countTopupsForReference(f.topups, reference), 1, "exactly one physical V1 topup row must exist after the race");
+  assert.equal(a.value.provider_payment_id, b.value.provider_payment_id, "both concurrent calls must converge on the SAME payment identity");
+  assert.equal(a.value.provider_payment_id, reference);
+  assert.equal(a.value.amount, PACK_1000.amount);
+  assert.equal(b.value.amount, PACK_1000.amount);
+
+  // CHECK_PAYMENT still works after the race: exactly one row, unambiguous.
+  const status = await f.provider.getPaymentStatus({ merchantReference: reference });
+  assert.equal(status.ok, true, status.error);
+  assert.equal(status.value.status, "PENDING");
+
+  approveTopup(f.topups, reference, "2026-08-09T02:05:00.000Z");
+  seedRechargeSessionByReference(f, reference, { packSnapshot: { credits: PACK_1000.credits } });
+  const confirmed = await f.provider.getPaymentStatus({ merchantReference: reference });
+  assert.equal(confirmed.ok, true, confirmed.error);
+  assert.equal(confirmed.value.status, "CONFIRMED");
+});
+
+test("R1-C. Concurrent race, confirmed through the real recharge session flow, credits the wallet exactly once with exactly one ledger entry", async () => {
+  // The barrier must not gate selectPack's own, non-concurrent
+  // createPaymentRequest() call — a 2-party barrier fed by a single
+  // sequential call would hang forever waiting for a second arrival that
+  // never comes. Route the hook through a reassignable holder so it stays
+  // a no-op during selectPack, and only starts gating once the deliberate
+  // race below begins.
+  const hook = { current: async () => {} };
+  const f = buildComposition({ onTopupReferenceRead: (value) => hook.current(value) });
+  const { session } = await selectPack(f, { packId: "PACK_1000" });
+
+  // Simulate a genuinely concurrent RETRY for the same reference (e.g. a
+  // duplicated SELECT_PACK webhook arriving while the first request is
+  // still in flight): two more concurrent createPaymentRequest() calls
+  // must still converge on the one existing row rather than racing a
+  // second insert.
+  const barrier = createRendezvousBarrier(2);
+  hook.current = () => barrier.arrive();
+  const request = { merchant_reference: session.merchant_reference, amount: PACK_1000.amount, currency: "XOF" };
+  const [a, b] = await Promise.all([
+    f.provider.createPaymentRequest(request),
+    f.provider.createPaymentRequest(request),
+  ]);
+  assert.equal(a.ok, true, a.error);
+  assert.equal(b.ok, true, b.error);
+  assert.equal(countTopupsForReference(f.topups, session.merchant_reference), 1);
+
+  approveTopup(f.topups, session.merchant_reference, "2026-08-09T02:05:00.000Z");
+  const check = await send(f, { action: "CHECK_PAYMENT", data: { pack_id: "", payment_reference: session.merchant_reference } });
+  assert.equal(check.accepted, true, check.reason);
+
+  const balance = await f.rechargeRepository.getBalance({ ownerWaId: OWNER });
+  assert.equal(balance.value, PACK_1000.credits, "exactly one wallet credit, despite the earlier concurrent createPaymentRequest race");
+  const ledgerEntries = f.rechargeRepository.inspect().ledger.filter((entry) => entry.owner_wa_id === OWNER);
+  assert.equal(ledgerEntries.length, 1, "exactly one recharge ledger entry");
+});
+
+test("R1-D. Sequential idempotence: calling createPaymentRequest again for the same reference returns the same payment identity with only one topup row", async () => {
+  const f = buildComposition();
+  const reference = "recharge:sequential-idempotence-1";
+  seedRechargeSessionByReference(f, reference, { packSnapshot: { credits: PACK_1000.credits } });
+  const request = { merchant_reference: reference, amount: PACK_1000.amount, currency: "XOF" };
+
+  const first = await f.provider.createPaymentRequest(request);
+  const second = await f.provider.createPaymentRequest(request);
+
+  assert.equal(first.ok, true, first.error);
+  assert.equal(second.ok, true, second.error);
+  assert.equal(first.value.provider_payment_id, second.value.provider_payment_id);
+  assert.equal(countTopupsForReference(f.topups, reference), 1);
+});
+
+test("R1-E. Legacy duplicate non-regression: two pre-existing legacy rows sharing a non-recharge reference are never rejected, merged or altered by the V1 partial-unique enforcement", async () => {
+  const f = buildComposition();
+  const legacyReference = "legacy:pre-existing-duplicate-group";
+  const rowOne = seedTopup(f.topups, { reference: legacyReference, wa_id: "22600000001", amount_fcfa: 500, credits: 5, status: "pending" });
+  const rowTwo = seedTopup(f.topups, { reference: legacyReference, wa_id: "22600000002", amount_fcfa: 750, credits: 7, status: "pending" });
+
+  assert.equal(countTopupsForReference(f.topups, legacyReference), 2, "both legacy rows must remain present, untouched");
+  assert.deepEqual(f.topups.get(rowOne.id), rowOne);
+  assert.deepEqual(f.topups.get(rowTwo.id), rowTwo);
+
+  // A real V1 code path never queries a legacy (non-`recharge:`)
+  // reference, but the fake DB must still behave exactly like the real
+  // table would: an ambiguous (>1 row) reference fails closed via
+  // maybeSingle() — never picking one arbitrarily, never merging, never
+  // deleting either row.
+  const status = await f.provider.getPaymentStatus({ merchantReference: legacyReference });
+  assert.equal(status.ok, false);
+  assert.equal(status.error, "PAYMENT_STATUS_NOT_FOUND");
+  assert.equal(countTopupsForReference(f.topups, legacyReference), 2, "querying an ambiguous legacy reference must never delete, merge or alter either row");
+  assert.deepEqual(f.topups.get(rowOne.id), rowOne, "row one byte-for-byte unchanged");
+  assert.deepEqual(f.topups.get(rowTwo.id), rowTwo, "row two byte-for-byte unchanged");
+});
+
+function seedIncompatibleExistingRow(f, reference, overrides) {
+  seedRechargeSessionByReference(f, reference, { ownerWaId: OWNER, packSnapshot: { credits: PACK_1000.credits } });
+  seedTopup(f.topups, {
+    reference, wa_id: OWNER, amount_fcfa: PACK_1000.amount, credits: PACK_1000.credits,
+    payment_method: "orange_money", status: "pending", ...overrides,
+  });
+  return { merchant_reference: reference, amount: PACK_1000.amount, currency: "XOF" };
+}
+
+test("R1-F. Incompatible existing row (A) wrong owner: createPaymentRequest fails closed, never adopting an unrelated topup merely because the reference matches", async () => {
+  const f = buildComposition();
+  const request = seedIncompatibleExistingRow(f, "recharge:existing-row-wrong-owner", { wa_id: OTHER_OWNER });
+  const result = await f.provider.createPaymentRequest(request);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "PAYMENT_REQUEST_EXISTING_MISMATCH");
+});
+
+test("R1-G. Incompatible existing row (B) wrong amount: createPaymentRequest fails closed", async () => {
+  const f = buildComposition();
+  const request = seedIncompatibleExistingRow(f, "recharge:existing-row-wrong-amount", { amount_fcfa: PACK_1000.amount + 1 });
+  const result = await f.provider.createPaymentRequest(request);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "PAYMENT_REQUEST_EXISTING_MISMATCH");
+});
+
+test("R1-H. Incompatible existing row (C) wrong credits: createPaymentRequest fails closed", async () => {
+  const f = buildComposition();
+  const request = seedIncompatibleExistingRow(f, "recharge:existing-row-wrong-credits", { credits: PACK_1000.credits + 1 });
+  const result = await f.provider.createPaymentRequest(request);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "PAYMENT_REQUEST_EXISTING_MISMATCH");
+});
+
+test("R1-I. Incompatible existing row (D) wrong payment_method: createPaymentRequest fails closed", async () => {
+  const f = buildComposition();
+  const request = seedIncompatibleExistingRow(f, "recharge:existing-row-wrong-method", { payment_method: "wave" });
+  const result = await f.provider.createPaymentRequest(request);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "PAYMENT_REQUEST_EXISTING_MISMATCH");
 });
