@@ -1038,9 +1038,124 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   acceptent tous deux normalement, `voice=true` ne rendant jamais le
   fournisseur sortant disponible par lui-même. TEXTE, `MENU_ACTION` et
   réponses de Flow restent inchangés lorsque la transcription est
-  désactivée. **Statut : `IMPLEMENTED_NOT_MERGED`.** Tests ciblés
-  (149/149 sur les fichiers concernés) puis suite complète (1583/1583),
-  `git diff --check` propre. Voir fiche AD de
+  désactivée. **Statut : `IMPLEMENTED_NOT_MERGED`** au moment de la
+  mission. Tests ciblés (149/149 sur les fichiers concernés) puis suite
+  complète (1583/1583), `git diff --check` propre. Voir fiche AD de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
+* **Mise à jour (2026-08-11) : PR #25 fusionnée dans `main`.**
+  `main@b20c8ed7970cdbbc9226f602885af05b8c399471`. **T11/INBOUND-VOICE-TRANSCRIPTION-GATE-001
+  est désormais `CLOSED/MERGED`** — vocal entrant WhatsApp sous
+  l'autorité exclusive de `config.features.transcription`, jamais
+  `config.features.voice`. Aucun vocal sortant n'a été implémenté ou
+  activé par cette mission. Le déploiement Render de ce commit n'est pas
+  vérifiable depuis cet environnement — ne pas déduire qu'il a été
+  déployé, ni qu'il ne l'a pas été.
+* **Mise à jour (2026-08-11) : T12/IMAGE-PDF-VISION-GATE-001 — image/PDF
+  entrant WhatsApp mis sous l'autorité conjointe de
+  `config.features.vision` ET `config.features.brain`, et pipeline vision
+  Gemini existant prouvé réellement câblé de bout en bout. Branche isolée
+  `fix/kadi-v1-image-pdf-vision-gate-t12` créée depuis
+  `main@b20c8ed7970cdbbc9226f602885af05b8c399471` — vérifié exactement
+  égal au head réel de `main` avant tout branchement (PR #25/T11 déjà
+  fusionnée à ce commit). PR brouillon ouverte, **non fusionnée, non
+  déployée. Aucune migration appliquée à distance, aucune mutation
+  Supabase/Meta/Render/WhatsApp réelle, aucun appel Gemini réel.**
+  Migrations T6 et T10 R1 toujours en attente, non touchées.
+
+  **Défaut confirmé (le pendant visuel du défaut T11) puis corrigé** :
+  `kadiV1WebhookRuntime.js` appelait déjà `mediaResolver.resolveImage()`/
+  `resolvePdf()` pour tout message `IMAGE`/`document` PDF sans jamais
+  vérifier `config.features.vision` à ce point d'entrée — l'unique
+  vérification existante (`kadiV1ConversationOrchestrator.js`, `visual &&
+  !config.features.vision`) intervenait après que le média avait déjà été
+  recherché, téléchargé et validé chez Meta. Reproduit avant correctif via
+  le vrai runtime webhook (`resolveImage`/`resolvePdf` appelés malgré
+  `vision=false`, pour IMAGE et PDF séparément), puis corrigé par un gate
+  ajouté strictement avant ces appels. **Dépendance au cerveau
+  auditée et confirmée** : aucun chemin visuel-sans-cerveau légitime
+  n'existe (`input.media` n'est jamais lu avant le court-circuit
+  `BRAIN_DISABLED` dans l'orchestrateur) — la règle retenue est donc
+  `vision === true ET brain === true`, avec deux raisons internes
+  distinctes (`KADI_V1_VISION_DISABLED`, `KADI_V1_VISUAL_BRAIN_DISABLED`)
+  pour un diagnostic précis, le même texte utilisateur véridique dans les
+  deux cas.
+
+  **Défaut de cycle de vie confirmé (B) puis corrigé** : `kadiV1GeminiVisionProvider.js`
+  lisait le média temporaire (`getTemporaryMedia`), appelait Gemini, puis
+  normalisait le résultat — sans jamais l'expirer. Ce fournisseur est
+  l'unique consommateur post-ingestion du média temporaire pour ce
+  parcours (confirmé : aucun autre code de production n'appelle
+  `getTemporaryMedia`). Corrigé par une expiration best-effort en
+  `finally`, sur toute sortie (rejet de validation, analyse réussie,
+  analyse échouée, timeout, sortie structurée invalide) — bornée au
+  propriétaire exact déjà lié au contrat, sans jamais transformer un échec
+  d'expiration en échec d'une analyse par ailleurs réussie.
+
+  **Pipeline réellement câblé, prouvé** (aucun deuxième pipeline vocal
+  construit — le pipeline réel existant est réutilisé tel quel) :
+  `createKadiV1ProductionMediaResolver` → `createMediaValidationService` →
+  `createInMemoryTemporaryMediaStore` (le vrai en mémoire, équivalent
+  fonctionnel du magasin réel) → `createGeminiVisionProvider` (via le vrai
+  `createGoogleGenerativeAIClientAdapter`, seul le client
+  GoogleGenerativeAI sous-jacent est factice) → `createKadiBrain`
+  (routage réel IMAGE/DOCUMENT → GEMINI) →
+  `createKadiV1InterpretationRuntimeAdapter` →
+  `createKadiV1ConversationOrchestrator` → `createKadiV1DocumentRuntimeAdapter`/
+  `createSharedDocumentPipeline`/`createInMemoryV1DocumentRepository` (le
+  vrai pipeline document, en mémoire). Preuve d'une FACTURE photographiée
+  et d'un DEVIS PDF multi-page bout en bout : client et articles extraits,
+  document créé, **sous-total et total recalculés côté serveur depuis les
+  articles sauvegardés — jamais depuis `total_read` de Gemini**, y compris
+  un test adversarial où `total_read` est délibérément faux (le résultat
+  calculé côté serveur l'emporte toujours). Champs d'autorité interdits
+  (`document_number`, `issued_at`, `credit_debit`, `delivered`, `total`,
+  `subtotal`, `final_total`, imbriqués ou au premier niveau) tous rejetés
+  par le contrat `AUTHORITY_FIELDS`/validation Brain existant, jamais
+  affaibli. Incertitude (client/quantité/prix incertains, documents
+  multiples, type de document inconnu) ne devient jamais une donnée
+  confirmée silencieusement — question ciblée ou `missing_fields`/
+  `uncertainties` systématiques.
+
+  Matrice d'indépendance des indicateurs prouvée (A vision=false
+  brain=false, B vision=false brain=true, C vision=true brain=false — tous
+  trois zéro appel média/Gemini —, D vision=true brain=true — traitement
+  normal). Isolation propriétaire, rejeu exact d'un même `wamid`
+  IMAGE (une seule mutation métier réelle), non-régression T11 (le vocal
+  entrant reste gouverné uniquement par `config.features.transcription`)
+  tous prouvés au R0. Statut R0 : `IMPLEMENTED_NOT_MERGED`.
+
+  **R1 (revue indépendante) : deux défauts MEDIUM/P1 de progression,
+  corrigés.** Les champs de lecture non-authoritatifs
+  (`total_read`/`date_read`/`document_number_read`, toujours `UNCERTAIN`
+  par construction) restaient persistés dans `missing_fields`/
+  `uncertainties` et bloquaient définitivement une FACTURE/DEVIS de
+  passer en `READY_FOR_REVIEW`, même une fois client, articles et total
+  recalculé côté serveur tous corrects — reproduit avant correctif
+  (`total_read` correspondant au total réel restait quand même bloquant),
+  corrigé en filtrant `RESERVED_BRAIN_FIELDS` hors de l'ensemble
+  persisté/bloquant uniquement, dans les deux pipelines
+  (`kadiV1SharedDocumentPipeline.js`, `kadiV1DischargePipeline.js`) —
+  ces champs restent non confirmés, jamais copiés dans un champ
+  authoritatif. Séparément, un type de document visuel indéterminé
+  faisait perdre la question ciblée validée de Gemini
+  (« Quel document voulez-vous préparer ? ») dans le `SHOW_MENU`
+  générique — reproduit puis corrigé dans
+  `kadiV1ConversationOrchestrator.js`, avec un bogue auto-détecté et
+  corrigé pendant la revue elle-même (le correctif initial aurait
+  intercepté à tort une photo de correction envoyée pendant qu'un
+  document est déjà actif — désormais explicitement exclu et couvert par
+  un test dédié). Confiance globale faible sans `total_read` déterminée
+  comme déjà sûre (rejet générique existant, contrat Brain partagé
+  jamais affaibli) — documentée, non modifiée. Deux fichiers de
+  production modifiés (`kadiV1WebhookRuntime.js`,
+  `kadiV1GeminiVisionProvider.js`) au R0. Trois fichiers de production
+  modifiés au R1 (`kadiV1SharedDocumentPipeline.js`,
+  `kadiV1DischargePipeline.js`, `kadiV1ConversationOrchestrator.js`).
+  **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
+  `IMPLEMENTED_NOT_MERGED`.** Ne pas marquer T12 `CLOSED` avant fusion.
+  Tests ciblés (487/487) puis suite complète (1634/1634),
+  `git diff --check` propre. Voir fiche AE de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
 

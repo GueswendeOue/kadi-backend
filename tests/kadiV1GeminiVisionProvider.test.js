@@ -129,9 +129,17 @@ test("rejects reserved authority fields, unknown fields and invalid items", () =
 });
 
 test("specialized analysis methods enforce media source type", async () => {
-  const { provider, request } = await setup();
-  await assert.rejects(provider.analyzePdf(request), (error) => error.code === "MEDIA_SOURCE_TYPE_INVALID");
-  await assert.rejects(provider.analyzeDocument(request), (error) => error.code === "MEDIA_SOURCE_TYPE_INVALID");
+  // Each call gets its own temporary media instance: in real production a
+  // given media_id is only ever analyzed once (Brain routes deterministically
+  // to a single modality -> analyze* method), and T12's temporary-media
+  // expiration fix now expires the contract on every exit from
+  // extractStructuredDocumentData — including a source-type rejection —
+  // so reusing one contract across two calls would otherwise surface
+  // MEDIA_EXPIRED on the second call instead of the guard under test.
+  const pdfAttempt = await setup();
+  await assert.rejects(pdfAttempt.provider.analyzePdf(pdfAttempt.request), (error) => error.code === "MEDIA_SOURCE_TYPE_INVALID");
+  const documentAttempt = await setup();
+  await assert.rejects(documentAttempt.provider.analyzeDocument(documentAttempt.request), (error) => error.code === "MEDIA_SOURCE_TYPE_INVALID");
 });
 
 test("analyzeDocument preserves ordered multi-image pages sent to Gemini", async () => {

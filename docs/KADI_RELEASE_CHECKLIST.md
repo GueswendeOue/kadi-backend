@@ -1065,12 +1065,126 @@ Supabase/OpenAI réelle.
    `git diff --check` propre.
 10. **[FAIT]** Revue adversariale du diff complet — aucun défaut
     HIGH/MEDIUM restant.
-11. **[EN ATTENTE]** Fusion dans `main`.
+11. **[FAIT]** Fusion dans `main` — PR #25, `main@b20c8ed7970cdbbc9226f602885af05b8c399471`.
+    T11/INBOUND-VOICE-TRANSCRIPTION-GATE-001 est désormais `CLOSED/MERGED`.
 12. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
     à T11, mais les dépendances déjà en attente (migration T6, migration
     T10 R1 `kadi_topups_v1_recharge_reference_unique`) restent
     applicables en premier si ce déploiement les compose. Après
     déploiement : `KADI_V1_TRANSCRIPTION_ENABLED` reste à sa valeur
+    actuelle tant qu'une mission distincte n'autorise pas explicitement
+    son activation en production.
+
+## Ordre — `fix/kadi-v1-image-pdf-vision-gate-t12` (T12/IMAGE-PDF-VISION-GATE-001 : mise sous autorité du vocal visuel entrant + preuve de câblage Gemini)
+
+Aucune migration requise par T12. Aucune mutation Meta/Render/WhatsApp/
+Supabase/Gemini réelle.
+
+1. **[FAIT]** Baseline confirmée exactement à
+   `main@b20c8ed7970cdbbc9226f602885af05b8c399471` (PR #25/T11 fusionnée)
+   avant de créer la branche isolée.
+2. **[FAIT]** Défaut A confirmé et reproduit avant correctif (script
+   jetable, le pendant visuel du défaut T11) : un message IMAGE et un
+   message PDF synthétiques déclenchaient chacun
+   `mediaResolver.resolveImage()`/`resolvePdf()` malgré
+   `KADI_V1_VISION_ENABLED=false`, à travers le vrai
+   `createKadiV1WebhookRuntime` — le seul gate existant vivait dans
+   `kadiV1ConversationOrchestrator.js`, après résolution du média.
+3. **[FAIT]** Dépendance au cerveau auditée : aucun chemin
+   visuel-sans-cerveau légitime n'existe (`input.media` n'est lu qu'après
+   le court-circuit `BRAIN_DISABLED`, confirmé par grep exhaustif).
+4. **[FAIT]** Correctif A : gate combiné ajouté dans
+   `kadiV1WebhookRuntime.js`, strictement avant
+   `resolveImage()`/`resolvePdf()`, rejetant fermé sur `vision !== true`
+   (`KADI_V1_VISION_DISABLED`) puis `brain !== true`
+   (`KADI_V1_VISUAL_BRAIN_DISABLED`) — `isVisualMessage()` réutilise
+   exactement la même détection que le mappeur existant, jamais une
+   deuxième définition.
+5. **[FAIT]** Défaut B confirmé (audit de tous les consommateurs de
+   `getTemporaryMedia` : `kadiV1GeminiVisionProvider.js` est le seul) :
+   aucune expiration du média temporaire après consommation Gemini, ni en
+   succès ni en échec.
+6. **[FAIT]** Correctif B : expiration best-effort en `finally` dans
+   `extractStructuredDocumentData()`, sur toute sortie (rejet de
+   validation, succès, échec, timeout, sortie invalide), bornée au
+   propriétaire exact du contrat, nouvel événement observable
+   `temporary_media_expired`.
+7. **[FAIT]** Pipeline réellement câblé, prouvé de bout en bout (IMAGE
+   FACTURE, PDF DEVIS multi-page) sans construire de deuxième pipeline —
+   média resolver, validation média, média temporaire, `createGeminiVisionProvider`
+   via le vrai `createGoogleGenerativeAIClientAdapter`, `createKadiBrain`,
+   `createKadiV1InterpretationRuntimeAdapter`, orchestrateur, pipeline
+   document réel en mémoire.
+8. **[FAIT]** Autorité du total prouvée : sous-total/total toujours
+   recalculés côté serveur depuis les articles sauvegardés, jamais depuis
+   `total_read` — test adversarial avec `total_read` délibérément faux,
+   le résultat serveur l'emporte.
+9. **[FAIT]** Champs d'autorité interdits (`document_number`, `issued_at`,
+   `credit_debit`, `delivered`, `total`, `subtotal`, `final_total`, imbriqués
+   ou non) tous rejetés par le contrat `AUTHORITY_FIELDS`/Brain existant,
+   jamais affaibli.
+10. **[FAIT]** Incertitude (client/quantité/prix incertains, documents
+    multiples, type inconnu) jamais promue silencieusement — question
+    ciblée ou `missing_fields`/`uncertainties` systématiques.
+11. **[FAIT]** Matrice d'indépendance des indicateurs prouvée : A
+    (vision=false, brain=false), B (vision=false, brain=true), C
+    (vision=true, brain=false) — zéro appel média/Gemini — ; D
+    (vision=true, brain=true) — traitement normal.
+12. **[FAIT]** Contrat média et contrat d'échec Gemini fail-closed
+    (échantillon représentatif bout en bout + matrice exhaustive déjà
+    couverte au niveau unitaire, re-exécutée sans régression) ; isolation
+    propriétaire ; rejeu exact d'un même `wamid` IMAGE (une seule mutation
+    métier réelle) ; non-régression T11.
+13. **[FAIT]** Tests ciblés (400/400) puis suite complète (1620/1620),
+    `git diff --check` propre — état R0.
+14. **[FAIT]** Revue adversariale du diff complet R0 — aucun défaut
+    HIGH/MEDIUM restant à ce stade.
+
+### R1 (revue indépendante) — deux défauts MEDIUM/P1 de progression
+
+15. **[FAIT]** Défaut 1 confirmé et reproduit avant correctif (vrai
+    pipeline) : un `total_read` égal au total backend recalculé laissait
+    quand même `missing_fields: ["total_read"]` et bloquait
+    `markReadyForReview()` (`DOCUMENT_INFORMATION_MISSING`) pour
+    toujours — `RESERVED_BRAIN_FIELDS` n'est jamais résolu par
+    `brainPatch`/`mapBrainExtraction` par construction.
+16. **[FAIT]** Correctif 1 : `RESERVED_BRAIN_FIELDS` filtré hors de
+    l'ensemble persisté/bloquant (`missing_fields`/`uncertainties`)
+    uniquement, dans `kadiV1SharedDocumentPipeline.js` ET
+    `kadiV1DischargePipeline.js` — jamais confirmé, jamais copié dans un
+    champ authoritatif ; le rejet `BRAIN_AUTHORITY_FIELD_FORBIDDEN`
+    existant (statut `CONFIRMED` adversarial) reste inchangé.
+17. **[FAIT]** Défaut 2 confirmé et reproduit avant correctif (vrai
+    orchestrateur) : un type de document visuel indéterminé produisait
+    `SHOW_MENU` générique au lieu de la question ciblée validée de
+    Gemini (« Quel document voulez-vous préparer ? »).
+18. **[FAIT]** Correctif 2 : nouveau branchement dans
+    `kadiV1ConversationOrchestrator.js` retournant
+    `brain_result.user_facing_message_draft` (via `validateCanonicalText()`
+    existant), zéro document créé, zéro mutation. **Bogue auto-détecté et
+    corrigé pendant la revue** : garde `!activeDocument` ajoutée après
+    avoir identifié que son absence aurait intercepté à tort une photo de
+    correction envoyée pendant qu'un document est déjà actif — deux
+    tests dédiés couvrent maintenant explicitement les deux cas.
+19. **[FAIT]** Défaut 3 (confiance globale faible sans `total_read`)
+    déterminé déjà sûr — `validateBrainResult` (contrat Brain général,
+    partagé TEXTE/TRANSCRIPTION) rejette déjà l'ensemble avec
+    `BRAIN_CONFIRMATION_REQUIRED`, propagé comme échec récupérable
+    générique, zéro mutation. Documenté et testé, **aucun changement de
+    code** — le contrat Brain général n'a pas été affaibli.
+20. **[FAIT]** Non-régression du cycle de vie du média temporaire sur
+    tous les nouveaux chemins R1 (réconciliation correspondante/
+    incohérente/absente, type inconnu) — expiration toujours confirmée.
+21. **[FAIT]** Tests ciblés (487/487) puis suite complète (1634/1634),
+    `git diff --check` propre.
+22. **[FAIT]** Revue adversariale du diff complet R0+R1 — un bogue réel
+    auto-détecté et corrigé avant commit (item 18 ci-dessus), aucun
+    défaut HIGH/MEDIUM restant.
+23. **[EN ATTENTE]** Fusion dans `main`.
+24. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
+    à T12, mais les dépendances déjà en attente (migration T6, migration
+    T10 R1) restent applicables en premier si ce déploiement les compose.
+    Après déploiement : `KADI_V1_VISION_ENABLED` reste à sa valeur
     actuelle tant qu'une mission distincte n'autorise pas explicitement
     son activation en production.
 

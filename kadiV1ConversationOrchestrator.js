@@ -573,6 +573,41 @@ function createKadiV1ConversationOrchestrator({
       return respondFromDocument({ document: changed.value, profile, inputType: input.inputType, action: "DOCUMENT_TYPE_CHANGED" });
     }
 
+    // T12 R1 (independent review, MEDIUM/P1): a VISUAL PREPARE_DOCUMENT
+    // whose document_type Brain could not determine must never be
+    // silently discarded into the generic MENU dead end below —
+    // normalizeStructuredExtraction (kadiV1GeminiVisionProvider.js)
+    // already produced a validated, safe targeted question for exactly
+    // this case ("Quel document voulez-vous préparer ?" or whichever
+    // missing field it asks about first). The user sent a photo/PDF and
+    // deserves that real question, not a menu that ignores it. Zero
+    // document created, zero financial mutation — this fires strictly
+    // before documents.start() below is ever reached. buildResponse()'s
+    // own validateCanonicalText() is the same safety check every other
+    // response in this file already goes through — raw Gemini copy is
+    // never trusted directly. Scoped to visual inputs only: TEXT/
+    // TRANSCRIPTION's existing MENU fallback is unchanged, out of T12's
+    // scope. Also requires !activeDocument — normalizeStructuredExtraction
+    // always hardcodes intent "CREATE_DOCUMENT" (there is no separate
+    // "UPDATE_DOCUMENT" outcome it can return), so a correction photo sent
+    // while a document is already active would otherwise be misread as a
+    // fresh, type-unknown creation attempt; the existing activeDocument
+    // fallback further below already applies exactly this kind of
+    // extraction (client/items) as a correction to the document already in
+    // progress, using its already-known document_type — untouched by T12.
+    if (
+      visual &&
+      !activeDocument &&
+      interpreted.value?.intent === "PREPARE_DOCUMENT" &&
+      !DOCUMENT_TYPES.includes(interpreted.value.document_type) &&
+      typeof interpreted.value.brain_result?.user_facing_message_draft === "string"
+    ) {
+      return buildResponse({
+        canonicalText: interpreted.value.brain_result.user_facing_message_draft,
+        action: "PREPARE_DOCUMENT_TYPE_UNKNOWN",
+      });
+    }
+
     if (interpreted.value?.intent === "PREPARE_DOCUMENT" && DOCUMENT_TYPES.includes(interpreted.value.document_type)) {
       const started = asResult(await documents.start({
         ownerWaId: input.ownerWaId,

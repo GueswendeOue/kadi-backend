@@ -726,6 +726,110 @@ test("changeDocumentType rejects a stale expectedVersion", async () => {
   assert.deepEqual(result, { ok: false, error: "DOCUMENT_VERSION_CONFLICT" });
 });
 
+// T12 R1 (independent review, MEDIUM/P1): RESERVED_BRAIN_FIELDS
+// (total_read/date_read/document_number_read) are observational OCR
+// evidence only — the backend already owns those exact values and never
+// lets brainPatch resolve them (see the "rejects AI-provided totals..."
+// test above for the CONFIRMED-status defense-in-depth rejection, unchanged
+// by this fix). Left in the PERSISTED missing_fields/uncertainties set
+// unfiltered, a field Gemini can only ever mark UNCERTAIN would otherwise
+// block a document from READY_FOR_REVIEW forever, even once every
+// backend-owned value (client, items, recalculated total) is correct.
+
+test("R1. a total_read matching the recalculated total never blocks READY_FOR_REVIEW and is never copied into an authoritative field", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "FACTURE", "reconcile-match");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "issuer", { issuerProfileId: "issuer:1" }))).value;
+  const applied = await f.pipeline.applyBrainExtraction(command(document, "applyBrainExtraction", "extract", {
+    brainResult: brainResult({
+      extracted_fields: {
+        client: candidate({ name: "Client Kadi Test" }),
+        items: candidate([{ description: "Sacs de ciment", quantity: 2, unit: "sac", unit_price: 5000 }]),
+        total_read: candidate(10000, "UNCERTAIN", 0.9), // matches 2 * 5000
+      },
+      missing_fields: ["total_read"],
+      uncertainties: [{ field: "total_read", reason: "SERVER_RECALCULATION_REQUIRED", candidate_value: 10000, confidence: 0.9, source_reference: "synthetic-input" }],
+      suggested_next_action: "ASK_TARGETED_QUESTION",
+      user_facing_message_draft: "Quel est le montant exact ?",
+    }),
+  }));
+  assert.equal(applied.ok, true, applied.error);
+  assert.equal(applied.value.subtotal, 10000);
+  assert.equal(applied.value.total, 10000);
+  assert.equal(applied.value.total_read, undefined, "total_read is never copied into an authoritative document field");
+  assert.deepEqual(applied.value.missing_fields, [], "a reconciled total_read must not remain a blocking missing field");
+  assert.deepEqual(applied.value.uncertainties, []);
+  const ready = await f.pipeline.markReadyForReview(command(applied.value, "markReadyForReview", "reconcile-match"));
+  assert.equal(ready.ok, true, ready.error);
+  assert.equal(ready.value.status, "READY_FOR_REVIEW");
+});
+
+test("R1. a total_read that mismatches the recalculated total still never blocks READY_FOR_REVIEW — backend total wins", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "FACTURE", "reconcile-mismatch");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "issuer", { issuerProfileId: "issuer:1" }))).value;
+  const applied = await f.pipeline.applyBrainExtraction(command(document, "applyBrainExtraction", "extract", {
+    brainResult: brainResult({
+      extracted_fields: {
+        client: candidate({ name: "Client Kadi Test" }),
+        items: candidate([{ description: "Sacs de ciment", quantity: 2, unit: "sac", unit_price: 5000 }]),
+        total_read: candidate(999999, "UNCERTAIN", 0.9), // deliberately wrong
+      },
+      missing_fields: ["total_read"],
+      uncertainties: [{ field: "total_read", reason: "SERVER_RECALCULATION_REQUIRED", candidate_value: 999999, confidence: 0.9, source_reference: "synthetic-input" }],
+      suggested_next_action: "ASK_TARGETED_QUESTION",
+      user_facing_message_draft: "Quel est le montant exact ?",
+    }),
+  }));
+  assert.equal(applied.ok, true, applied.error);
+  assert.equal(applied.value.subtotal, 10000);
+  assert.equal(applied.value.total, 10000);
+  assert.notEqual(applied.value.total, 999999, "the deliberately wrong total_read must never win");
+  assert.deepEqual(applied.value.missing_fields, []);
+  const ready = await f.pipeline.markReadyForReview(command(applied.value, "markReadyForReview", "reconcile-mismatch"));
+  assert.equal(ready.ok, true, ready.error);
+  assert.equal(ready.value.status, "READY_FOR_REVIEW");
+});
+
+test("R1. editing items afterward recalculates the total normally and never resurrects a stale total_read as authority", async () => {
+  const f = fixture();
+  let document = await createDraft(f, "FACTURE", "reconcile-then-edit");
+  document = (await f.pipeline.setIssuer(command(document, "setIssuer", "issuer", { issuerProfileId: "issuer:1" }))).value;
+  const firstPass = await f.pipeline.applyBrainExtraction(command(document, "applyBrainExtraction", "extract", {
+    brainResult: brainResult({
+      extracted_fields: {
+        client: candidate({ name: "Client Kadi Test" }),
+        items: candidate([{ description: "Sacs de ciment", quantity: 2, unit: "sac", unit_price: 5000 }]),
+        total_read: candidate(10000, "UNCERTAIN", 0.9),
+      },
+      missing_fields: ["total_read"],
+      uncertainties: [{ field: "total_read", reason: "SERVER_RECALCULATION_REQUIRED", candidate_value: 10000, confidence: 0.9, source_reference: "synthetic-input" }],
+      suggested_next_action: "ASK_TARGETED_QUESTION",
+      user_facing_message_draft: "Quel est le montant exact ?",
+    }),
+  }));
+  assert.equal(firstPass.ok, true, firstPass.error);
+  assert.equal(firstPass.value.total, 10000);
+
+  // A real correction afterward (e.g. the user edits an item, or sends a
+  // second photo) — a fresh applyBrainExtraction with different items and
+  // no total_read at all. The new total must reflect the NEW items only;
+  // the earlier (now-stale) total_read observation must never resurface.
+  const secondPass = await f.pipeline.applyBrainExtraction(command(firstPass.value, "applyBrainExtraction", "edit", {
+    brainResult: brainResult({
+      extracted_fields: {
+        items: candidate([{ description: "Sacs de ciment", quantity: 5, unit: "sac", unit_price: 5000 }]),
+      },
+    }),
+  }));
+  assert.equal(secondPass.ok, true, secondPass.error);
+  assert.equal(secondPass.value.items[0].quantity_millis, 5000, "quantity now reflects the correction (5 units)");
+  assert.equal(secondPass.value.subtotal, 25000, "recalculated from the NEW items — 5 * 5000");
+  assert.equal(secondPass.value.total, 25000);
+  assert.notEqual(secondPass.value.total, 10000, "the stale first-pass total_read/total must never resurface");
+  assert.deepEqual(secondPass.value.missing_fields, []);
+});
+
 test("shared pipeline has no Meta, PDF, wallet, payment or provider SDK dependency", () => {
   for (const file of ["kadiV1SharedDocumentPipeline.js", "kadiV1SharedDocumentPolicies.js"]) {
     const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8");

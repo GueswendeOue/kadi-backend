@@ -373,3 +373,48 @@ test("cancel applies to the active document only", async () => {
   assert.equal(cancelCall.documentId, "doc:9");
   assert.equal(cancelCall.expectedVersion, 4);
 });
+
+// T12 R1 (independent review, MEDIUM/P1): a visual PREPARE_DOCUMENT whose
+// document_type Brain could not determine must surface Brain's own
+// validated targeted question instead of the generic MENU dead end — but
+// only when there is no active document yet (see kadiV1ConversationOrchestrator.js's
+// comment on why: normalizeStructuredExtraction always hardcodes intent
+// "CREATE_DOCUMENT", so this exact shape can also arrive mid-conversation
+// as a correction, which must keep applying to the existing document).
+
+test("T12 R1: visual PREPARE_DOCUMENT with unknown document_type and no active document surfaces the targeted question, never MENU, zero document mutation", async () => {
+  const { orchestrator, calls } = makeHarness({
+    interpretation: {
+      intent: "PREPARE_DOCUMENT",
+      document_type: null,
+      brain_result: { user_facing_message_draft: "Quel document voulez-vous préparer ?" },
+    },
+  });
+  const response = await orchestrator.handle(input({ inputType: "IMAGE", media: { media_id: "media:1" } }));
+  assert.equal(response.business_action, "PREPARE_DOCUMENT_TYPE_UNKNOWN");
+  assert.equal(response.canonical_text, "Quel document voulez-vous préparer ?");
+  assert.notEqual(response.business_action, "SHOW_MENU");
+  assert.equal(calls.some(([name]) => name === "start"), false, "zero document created");
+  assert.equal(calls.some(([name]) => name === "apply"), false, "zero mutation");
+});
+
+test("T12 R1: the SAME unknown-document_type shape, but WITH an active document, is still applied as a correction — never intercepted as a fresh unknown-type creation", async () => {
+  const activeDocument = { document_id: "doc:42", document_type: "FACTURE", status: "COLLECTING", version: 2 };
+  const { orchestrator, calls } = makeHarness({
+    context: {
+      profile: { onboarding_status: "COMPLETED", voice_response_mode: "TEXT_ONLY" },
+      active_document: activeDocument,
+    },
+    interpretation: {
+      intent: "PREPARE_DOCUMENT",
+      document_type: null,
+      brain_result: { user_facing_message_draft: "Quel document voulez-vous préparer ?" },
+    },
+  });
+  const response = await orchestrator.handle(input({ inputType: "IMAGE", media: { media_id: "media:2" } }));
+  assert.equal(response.business_action, "DOCUMENT_DATA_APPLIED");
+  assert.notEqual(response.business_action, "PREPARE_DOCUMENT_TYPE_UNKNOWN");
+  const applyCall = calls.find(([name]) => name === "apply")[1];
+  assert.equal(applyCall.document.document_id, "doc:42", "the extraction is applied to the already-active document, using its already-known type");
+  assert.equal(calls.some(([name]) => name === "start"), false, "no new document is started while one is already active");
+});

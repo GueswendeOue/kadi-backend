@@ -331,6 +331,17 @@ function createDischargePipeline({
     }
     const mapped = mapBrainExtraction(loaded.value, validated.value);
     if (!mapped.ok) return mapped;
+    // T12 R1 (independent review, MEDIUM/P1) — same fix as
+    // kadiV1SharedDocumentPipeline.js's applyBrainExtraction: DECHARGE has
+    // no total, but Gemini's own output schema is not gated by document
+    // type, so a RESERVED_BRAIN_FIELDS entry (total_read/date_read/
+    // document_number_read) could still appear here and, being
+    // permanently unresolvable (mapBrainExtraction/RESERVED_BRAIN_FIELDS
+    // above never lets them reach `resolved`), would otherwise block this
+    // discharge from READY_FOR_REVIEW forever for a value the backend
+    // never asked Gemini to own in the first place.
+    const persistedMissingFields = validated.value.missing_fields.filter((field) => !RESERVED_BRAIN_FIELDS.has(field));
+    const persistedUncertainties = validated.value.uncertainties.filter((entry) => !RESERVED_BRAIN_FIELDS.has(entry.field));
     const persisted = await persistModifiedLoaded(
       loaded.value,
       command,
@@ -338,8 +349,8 @@ function createDischargePipeline({
       mapped.value.patch,
       mapped.value.resolved,
       {
-        missingFields: validated.value.missing_fields,
-        uncertainties: validated.value.uncertainties,
+        missingFields: persistedMissingFields,
+        uncertainties: persistedUncertainties,
       }
     );
     if (!persisted.ok) return persisted;

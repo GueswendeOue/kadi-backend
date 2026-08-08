@@ -9,6 +9,7 @@ const VISION_POLICIES = Object.freeze(["GEMINI_PRIMARY_ONLY", "CONTROLLED_FALLBA
 const VISION_EVENTS = new Set([
   "vision_analysis_started", "vision_analysis_succeeded", "vision_analysis_failed",
   "structured_extraction_validated", "structured_extraction_rejected",
+  "temporary_media_expired",
 ]);
 // Imported from kadiV1BrainContracts.js rather than redefined here — this
 // used to be a second, independently-maintained list that had drifted from
@@ -270,23 +271,40 @@ function createGeminiVisionProvider({ client, temporaryMediaStore, config, logge
     const stored = await temporaryMediaStore.getTemporaryMedia({ mediaId, ownerRef });
     if (!stored.ok) throw new GeminiVisionError(stored.error);
     const contract = stored.value.contract;
-    if (allowedSourceTypes && !allowedSourceTypes.includes(contract.source_type)) throw new GeminiVisionError("MEDIA_SOURCE_TYPE_INVALID");
-    const maximumBytes = contract.mime_type === "application/pdf" ? settings.maxPdfBytes : settings.maxImageBytes * contract.page_count;
-    if (contract.byte_size > maximumBytes) throw new GeminiVisionError("MEDIA_TOO_LARGE");
-    if (contract.page_count > settings.maxPages) throw new GeminiVisionError("MEDIA_PAGE_LIMIT_EXCEEDED");
-    emit("vision_analysis_started", { correlation_id: contract.correlation_id, checksum: contract.checksum, mime_type: contract.mime_type, page_count: contract.page_count });
-    const contents = Array.isArray(stored.value.content) ? stored.value.content : [stored.value.content];
-    const media = contents.map((buffer) => ({ mime_type: contract.mime_type, buffer }));
+    // This provider is the sole post-ingest consumer of temporary media for
+    // the inbound IMAGE/PDF path (confirmed: no other production code calls
+    // temporaryMediaStore.getTemporaryMedia). Once the media has been read
+    // here, the raw bytes must not remain retrievable for the rest of the
+    // TTL — expire it best-effort in finally, on every exit from this point
+    // on (validation rejection, successful analysis, failed analysis,
+    // timeout, or invalid structured output). Owner-scoped by construction
+    // (mediaId/ownerRef are the exact pair already bound to this contract).
+    // Expiration failure must never turn a successful analysis into a
+    // reported failure, but stays observable via its own event.
     try {
-      const raw = await callClient(media, contract.correlation_id);
-      emit("vision_analysis_succeeded", { correlation_id: contract.correlation_id, checksum: contract.checksum, mime_type: contract.mime_type, page_count: contract.page_count });
-      const normalized = normalizeStructuredExtraction(raw, { model: settings.model, minimumConfidence: settings.minimumConfidence });
-      emit("structured_extraction_validated", { correlation_id: contract.correlation_id, extracted_field_count: Object.keys(normalized.extracted_fields).length, uncertainty_count: normalized.uncertainties.length });
-      return normalized;
-    } catch (error) {
-      const controlled = error instanceof GeminiVisionError ? error : new GeminiVisionError("VISION_RESULT_INVALID");
-      emit(error instanceof GeminiVisionError && error.code.startsWith("VISION_PROVIDER") ? "vision_analysis_failed" : "structured_extraction_rejected", { correlation_id: contract.correlation_id, error_code: controlled.code });
-      throw controlled;
+      if (allowedSourceTypes && !allowedSourceTypes.includes(contract.source_type)) throw new GeminiVisionError("MEDIA_SOURCE_TYPE_INVALID");
+      const maximumBytes = contract.mime_type === "application/pdf" ? settings.maxPdfBytes : settings.maxImageBytes * contract.page_count;
+      if (contract.byte_size > maximumBytes) throw new GeminiVisionError("MEDIA_TOO_LARGE");
+      if (contract.page_count > settings.maxPages) throw new GeminiVisionError("MEDIA_PAGE_LIMIT_EXCEEDED");
+      emit("vision_analysis_started", { correlation_id: contract.correlation_id, checksum: contract.checksum, mime_type: contract.mime_type, page_count: contract.page_count });
+      const contents = Array.isArray(stored.value.content) ? stored.value.content : [stored.value.content];
+      const media = contents.map((buffer) => ({ mime_type: contract.mime_type, buffer }));
+      try {
+        const raw = await callClient(media, contract.correlation_id);
+        emit("vision_analysis_succeeded", { correlation_id: contract.correlation_id, checksum: contract.checksum, mime_type: contract.mime_type, page_count: contract.page_count });
+        const normalized = normalizeStructuredExtraction(raw, { model: settings.model, minimumConfidence: settings.minimumConfidence });
+        emit("structured_extraction_validated", { correlation_id: contract.correlation_id, extracted_field_count: Object.keys(normalized.extracted_fields).length, uncertainty_count: normalized.uncertainties.length });
+        return normalized;
+      } catch (error) {
+        const controlled = error instanceof GeminiVisionError ? error : new GeminiVisionError("VISION_RESULT_INVALID");
+        emit(error instanceof GeminiVisionError && error.code.startsWith("VISION_PROVIDER") ? "vision_analysis_failed" : "structured_extraction_rejected", { correlation_id: contract.correlation_id, error_code: controlled.code });
+        throw controlled;
+      }
+    } finally {
+      try {
+        const expired = await temporaryMediaStore.expireTemporaryMedia({ mediaId, ownerRef });
+        if (expired?.ok) emit("temporary_media_expired", { correlation_id: contract.correlation_id });
+      } catch { /* best-effort — never turns a successful analysis into a failure */ }
     }
   }
 
