@@ -5132,3 +5132,162 @@ documentation.
   (voir `docs/kadi_v1_legacy_data_migration_policy.md`, mis à jour en
   conséquence).
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AD. T11/INBOUND-VOICE-TRANSCRIPTION-GATE-001 — mise sous autorité du vocal entrant WhatsApp
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — branche isolée
+  `fix/kadi-v1-inbound-voice-transcription-gate-t11`, créée depuis
+  `main@381cf0e1b33b62c83257ada7e5c0a2837f49b834` — vérifié exactement
+  égal au head réel de `main` avant tout branchement (PR #24/T10 R0+R1
+  déjà fusionnée à ce commit). PR brouillon ouverte, non fusionnée, non
+  déployée. Aucune migration appliquée à distance, aucune mutation
+  Supabase/Meta/Render/WhatsApp réelle, aucun appel OpenAI réel.
+* **Origine :** mission « KADI V1 — T11 INBOUND VOICE / TRANSCRIPTION
+  FEATURE-GATE AUTHORITY ».
+
+### Terminologie verrouillée (portée produit-wide, pas seulement T11)
+
+**Vocal ENTRANT** : audio WhatsApp → résolution média sécurisée → OpenAI
+speech-to-text → entrée conversationnelle `TRANSCRIPTION`. Autorité
+exclusive : `config.features.transcription`
+(`KADI_V1_TRANSCRIPTION_ENABLED`, `kadiV1RuntimeConfig.js`).
+
+**Vocal SORTANT** : Kadi envoyant une réponse audio. Autorité séparée :
+`config.features.voice` (`KADI_V1_VOICE_ENABLED`). Ces deux sémantiques
+ne doivent jamais être fusionnées — `config.features.voice` ne gouverne
+jamais l'acceptation d'un vocal entrant, et `config.features.transcription`
+ne gouverne jamais l'envoi d'un vocal sortant.
+
+T11 ne concerne QUE le vocal entrant. Le vocal sortant (TTS, génération
+audio, envoi vocal, crédits vocaux sortants) reste explicitement hors
+périmètre — `kadiV1ProductionBootstrap.js`'s
+`providerAvailability: async () => false` n'a pas été modifié (vérifié
+par test structurel, `tests/kadiV1InboundVoiceTranscriptionGate.test.js`,
+scénario 19).
+
+### Défaut confirmé : le flag transcription n'était pas appliqué à la frontière webhook
+
+`kadiV1WebhookRuntime.js`'s `mapMetaMessageToConversationInput()` appelait
+déjà `mediaResolver.resolveAudio({...})` pour tout message
+`message.type === "audio"`, sans jamais vérifier
+`config.features.transcription` à ce point d'entrée. Une configuration
+`KADI_V1_TRANSCRIPTION_ENABLED=false` pouvait donc encore déclencher une
+recherche média Meta, un téléchargement Meta, une ingestion audio
+temporaire et un appel OpenAI de transcription, tant que le webhook V1
+global était actif — rendant le flag non-authoritaire.
+
+**Reproduction pré-correctif** (script jetable exécutant le VRAI
+`createKadiV1WebhookRuntime`, avec le fichier corrigé temporairement mis
+de côté via `git stash`) : avec
+`KADI_V1_ENABLED=true`, `KADI_V1_WEBHOOK_ENABLED=true`,
+`KADI_V1_ROLLOUT_MODE=FULL`, `KADI_V1_TRANSCRIPTION_ENABLED=false`, un
+message audio synthétique déclenchait `mediaResolver.resolveAudio()`
+exactement une fois (`handled:true, accepted:true`) — confirmant le
+défaut. Après restauration du correctif, le même scénario produit
+`resolveAudio` appelé zéro fois (`handled:true, accepted:false,
+reason:"KADI_V1_TRANSCRIPTION_DISABLED"`).
+
+### Correctif — un seul fichier de production modifié
+
+`kadiV1WebhookRuntime.js` (+25/−2 lignes) : dans `handleMessage()`,
+immédiatement avant l'appel à `mapMetaMessageToConversationInput()`
+(donc strictement avant tout appel à `mediaResolver.resolveAudio()`) :
+
+```js
+if (message?.type === "audio" && config.features.transcription !== true) {
+  return recover(ownerWaId, message, TRANSCRIPTION_DISABLED_REASON);
+}
+```
+
+`recover()` (déjà existant, réutilisé sans modification de comportement
+pour les autres raisons) journalise, tente
+`output.presentRecoverableError` avec un texte fermé et véridique («
+Les messages vocaux ne sont pas encore activés ici. Vous pouvez
+m'écrire les informations. »), et retourne toujours
+`{handled:true, accepted:false, reason}` — le message reste
+terminalement géré par Kadi V1 pour un propriétaire autorisé, sans
+jamais retomber vers le routage legacy. `config.features.voice` n'est
+jamais consulté par ce gate — vérifié par grep (`git diff` du fichier)
+et par test.
+
+Aucun second pipeline vocal n'a été créé : le pipeline réel existant
+(`createKadiV1ProductionMediaResolver`, `createAudioValidationService`,
+`createSpeechToTextService`, `createOpenAISpeechToTextProvider`) est
+strictement réutilisé, avec `resolveAudio()` lui-même totalement
+inchangé.
+
+### Modèle d'autorité de test
+
+RÉEL, jamais mocké : `createKadiV1WebhookRuntime`, `createKadiV1RuntimeConfig`
+(le vrai parseur d'env), `createKadiV1ProductionMediaResolver`,
+`createAudioValidationService`, `createInMemoryTemporaryAudioStore`,
+`createSpeechToTextService`, et **l'adaptateur réel**
+`createOpenAISpeechToTextProvider` (seule sa fonction `transcribe`
+sous-jacente est injectée factice — jamais le service entier remplacé
+par un trivial fake, pour prouver que le contrat de l'adaptateur est
+réellement exercé). FAUX uniquement : le client WhatsApp Meta
+(`getMediaInfo`/`downloadMediaToBuffer`, vraie E/S externe) et l'appel
+réseau OpenAI sous-jacent ; l'orchestrateur conversationnel complet et
+le présentateur sont également factices — le moteur conversationnel
+complet (`KADI_CONVERSATIONAL_MULTIMODAL_V1`) reste un gate de roadmap
+séparé, T11 ne l'active pas et un vocal transcrit suit le même chemin
+d'interprétation qu'un texte tapé équivalent.
+
+### Preuve
+
+* `tests/kadiV1InboundVoiceTranscriptionGate.test.js` (nouveau, 21
+  scénarios) : transcription=false rejette systématiquement avant tout
+  appel Meta/OpenAI (seul ou combiné à voice=true) ; transcription=true
+  accepte, valide (OGG et WAV réels, décodés par le vrai inspecteur audio),
+  transcrit via l'adaptateur OpenAI réel et transmet le texte à
+  l'orchestrateur comme `TRANSCRIPTION` ; MIME non supporté, MIME Meta
+  incohérent, média vide/invalide, taille déclarée incohérente, ID média
+  invalide, audio surdimensionné, durée excessive, échec du fournisseur
+  STT (audio temporaire expiré, aucune erreur brute exposée), transcript
+  vide et transcript surdimensionné échouent tous fermé ; rejeu exact du
+  même `wamid` audio produit exactement une mutation métier (même clé
+  d'idempotence côté conversation, jamais une seconde couche
+  d'idempotence inventée) ; isolation propriétaire (audio temporaire de
+  A jamais lisible sous B) ; un propriétaire hors CANARY reste sur le
+  routage legacy, jamais absorbé par le gate transcription ; TEXTE et
+  `MENU_ACTION` continuent de fonctionner normalement quand la
+  transcription est désactivée ; aucune méthode d'envoi vocal/audio
+  n'existe dans l'ensemble fermé des méthodes du présentateur jamais
+  appelées par `kadiV1WebhookRuntime.js` (vérifié par grep structurel) ;
+  `providerAvailability: async () => false` inchangé.
+* `tests/kadiV1WebhookRuntime.test.js` : configuration par défaut mise à
+  jour (`transcription: true`) pour préserver le comportement des tests
+  existants ; 4 nouveaux tests unitaires rapides couvrant exactement la
+  matrice A/B/C/D à la frontière webhook, complémentaires à la preuve
+  E2E ci-dessus.
+* Focused (fichiers concernés — recharge, T10 réel, migration, audio,
+  media resolver, composition, bootstrap, webhook runtime, ce nouveau
+  fichier) : 149/149. Suite complète : 1583/1583. `git diff --check` :
+  propre.
+
+### Matrice d'indépendance des indicateurs (prouvée)
+
+| | `voice=false` | `voice=true` |
+|---|---|---|
+| `transcription=false` | rejeté avant tout appel Meta/OpenAI | rejeté avant tout appel Meta/OpenAI — `voice` n'a aucun effet |
+| `transcription=true` | accepté, transcrit, réponse texte | accepté, transcrit — `voice=true` seul ne rend jamais le fournisseur sortant disponible |
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau Meta ou OpenAI réel nulle part dans les tests. Le
+texte utilisateur affiché en cas de désactivation ne mentionne ni
+`transcription`, ni `OpenAI`, ni le nom d'un moteur, ni aucun diagnostic
+technique. Une défaillance du fournisseur STT ne fait jamais fuiter le
+message d'erreur brut ni le nom du modèle vers l'utilisateur.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant, toujours non corrigé.
+* Application de la migration T6 (AA.3) et de la migration T10 R1
+  (`kadi_topups_v1_recharge_reference_unique`) à Supabase de production,
+  dans l'ordre sûr déjà établi — toujours hors périmètre.
+* Le vocal sortant (TTS, `config.features.voice`) reste une mission de
+  roadmap distincte et bornée, à n'entreprendre que sur demande
+  explicite future.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

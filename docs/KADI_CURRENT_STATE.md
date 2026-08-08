@@ -982,8 +982,65 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   fermé, crédit zéro. Continuité T5 (packs/solde authoritative, CANCEL
   toujours non exposé) et parité T6 (solde disponible canonique)
   confirmées à travers le vrai chemin fournisseur. **Statut :
-  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés puis suite complète
-  (1558/1558), `git diff --check` propre. Voir fiche AC de
+  `IMPLEMENTED_NOT_MERGED`** au moment de R1. Tests ciblés puis suite
+  complète (1558/1558), `git diff --check` propre. Voir fiche AC de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
+* **Mise à jour (2026-08-10) : PR #24 fusionnée dans `main`.**
+  `main@381cf0e1b33b62c83257ada7e5c0a2837f49b834`. **T10/ORANGE-MONEY-TEST-001
+  (R0+R1) est désormais `CLOSED/MERGED`** — couverture de composition de
+  production du vrai fournisseur Orange Money, et le correctif
+  `ORANGE_TOPUP_REFERENCE_CONCURRENCY_001` (index unique partiel V1 +
+  récupération `23505` + autorité de ligne existante uniforme). La
+  migration `kadi_topups_v1_recharge_reference_unique` reste **non
+  appliquée** au projet Supabase réel — voir la dépendance de
+  déploiement dans [`KADI_RELEASE_CHECKLIST.md`](KADI_RELEASE_CHECKLIST.md).
+  Le déploiement Render de ce commit n'est pas vérifiable depuis cet
+  environnement — ne pas déduire qu'il a été déployé, ni qu'il ne l'a
+  pas été.
+* **Mise à jour (2026-08-10) : T11/INBOUND-VOICE-TRANSCRIPTION-GATE-001 —
+  vocal entrant WhatsApp mis sous l'autorité exclusive de
+  `config.features.transcription`, branche isolée
+  `fix/kadi-v1-inbound-voice-transcription-gate-t11` créée depuis
+  `main@381cf0e1b33b62c83257ada7e5c0a2837f49b834` (exactement le head de
+  `main` au moment de la mission — vérifié avant branchement), PR
+  brouillon ouverte, **non fusionnée, non déployée. Aucune migration
+  appliquée à distance, aucune mutation Supabase/Meta/Render/WhatsApp
+  réelle, aucun appel OpenAI réel.**
+  Terminologie verrouillée pour tout le produit Kadi, pas seulement cette
+  mission : **vocal ENTRANT** (audio WhatsApp → résolution média sécurisée
+  → transcription OpenAI → entrée conversationnelle `TRANSCRIPTION`) est
+  gouverné par `config.features.transcription`
+  (`KADI_V1_TRANSCRIPTION_ENABLED`) ; **vocal SORTANT** (Kadi envoyant une
+  réponse audio) est gouverné séparément par `config.features.voice`
+  (`KADI_V1_VOICE_ENABLED`) et reste hors périmètre de T11 — aucune TTS,
+  aucun appel à un fournisseur de génération audio, aucun envoi vocal
+  sortant, aucun débit de crédit pour du vocal sortant n'a été ajouté ou
+  activé ; `kadiV1ProductionBootstrap.js`'s
+  `providerAvailability: async () => false` reste inchangé (vérifié par
+  test structurel).
+  **Défaut confirmé (MEDIUM) puis corrigé** : `kadiV1WebhookRuntime.js`
+  appelait déjà `mediaResolver.resolveAudio()` pour tout message
+  `type: "audio"` sans jamais vérifier `config.features.transcription` —
+  reproduit avant correctif via le vrai runtime webhook (`resolveAudio`
+  appelé malgré `transcription=false`), puis corrigé par un gate ajouté
+  strictement avant cet appel, retournant `KADI_V1_TRANSCRIPTION_DISABLED`
+  (message utilisateur véridique, aucun terme technique exposé) sans
+  jamais consulter `config.features.voice`. Seul fichier de production
+  modifié : `kadiV1WebhookRuntime.js` (+25/−2 lignes). Aucun second
+  pipeline vocal créé — le pipeline réel existant
+  (`createKadiV1ProductionMediaResolver`, `createAudioValidationService`,
+  `createSpeechToTextService`, `createOpenAISpeechToTextProvider`) est
+  réutilisé tel quel. Matrice d'indépendance des indicateurs prouvée : A
+  (transcription=false, voice=false) et B (transcription=false,
+  voice=true) rejettent tous deux avant tout appel Meta/OpenAI ; C
+  (transcription=true, voice=false) et D (transcription=true, voice=true)
+  acceptent tous deux normalement, `voice=true` ne rendant jamais le
+  fournisseur sortant disponible par lui-même. TEXTE, `MENU_ACTION` et
+  réponses de Flow restent inchangés lorsque la transcription est
+  désactivée. **Statut : `IMPLEMENTED_NOT_MERGED`.** Tests ciblés
+  (149/149 sur les fichiers concernés) puis suite complète (1583/1583),
+  `git diff --check` propre. Voir fiche AD de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
 
