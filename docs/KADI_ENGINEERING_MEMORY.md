@@ -4861,3 +4861,274 @@ Meta, Render ou WhatsApp réelle.
 * Application de la migration T6 à Supabase de production, dans l'ordre
   sûr établi en AA.3 (migration d'abord) — toujours hors périmètre.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AC. T10/ORANGE-MONEY-TEST-001 — mission de preuve : couverture de composition de production du vrai fournisseur Orange Money
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — branche isolée
+  `fix/kadi-v1-orange-money-real-provider-t10`, créée depuis
+  `main@6d4ac32d8cbe069a05425394f9eddf3385283c8d` (PR #23/T5 R0+R1+R2
+  déjà fusionnée), PR #24 brouillon ouverte, non fusionnée, non déployée.
+  Aucune migration appliquée à distance, aucune mutation Supabase/Meta/
+  Render/WhatsApp réelle. R0 était une mission purement test/preuve, sans
+  code de production modifié ; **R1 (revue indépendante) corrige un
+  défaut MEDIUM/P1 réel** — voir section R1 ci-dessous.
+* **Origine R0 :** mission « KADI V1 — T10 ORANGE-MONEY-TEST-001 REAL
+  PROVIDER PRODUCTION-COMPOSITION COVERAGE ».
+* **Origine R1 :** mission « KADI V1 — T10 ORANGE-MONEY-TEST-001
+  INDEPENDENT REVIEW FIX R1 », faisant suite à une inspection en lecture
+  seule autorisée du schéma distant réel de `kadi_topups`.
+
+### Constat de départ (T7)
+
+T7 confirmé `CLOSED BY T1 / PR #17`, sans nouveau code de production.
+`kadiV1SharedDocumentPolicies.js` mappe déjà le champ plat
+`validity_days` (soumis par le vrai Flow `DOCUMENT_OPTIONS`) vers
+`document.options.validity_days` ; le test existant
+`tests/kadiV1SharedDocumentPipeline.test.js`'s « OPTIONS-001: DEVIS
+validity_days submitted as the real flat field genuinely persists and is
+retrievable afterward » (fiche X, T1/PR #17) prouve déjà la persistance
+et la relecture sur un dépôt frais.
+
+### Écart T10 : aucun test de composition de production n'exerçait le vrai fournisseur
+
+`createManualOrangeMoneyPaymentProvider()`
+(`kadiV1ProductionInfrastructure.js`) existe depuis T3, mais **tous**
+les fichiers de test RECHARGE existants (T3, T5 R0/R1/R2) substituaient
+systématiquement un `fakePaymentProvider()` synthétique à sa place —
+aucune preuve de composition de production n'exerçait jamais le vrai
+`createPaymentRequest`/`getPaymentStatus`/`verifyPaymentEvent`. C'est le
+gate d'acceptation manquant que T10 ferme.
+
+### Contrat de schéma tracé — R0 (à partir du code) puis R1 (confirmé en runtime)
+
+Le vrai fournisseur touche exactement deux tables :
+
+* **`kadi_v1_recharge_sessions`** — une vraie table V1 migrée
+  (`migrations/20260802_add_kadi_v1_recharge.sql`). Lecture seule :
+  `select("owner_wa_id,pack_snapshot").eq("merchant_reference", X)`.
+  Colonnes confirmées présentes dans la migration
+  (`owner_wa_id text not null`, `pack_snapshot jsonb not null`,
+  `merchant_reference text not null unique`) — **aucune divergence**.
+* **`kadi_topups`** — une table **historique, pré-V1, sans fichier de
+  migration dans ce dépôt**. En R0, `docs/kadi_v1_legacy_data_migration_policy.md`
+  marquait son schéma distant exact comme
+  `UNKNOWN_REQUIRES_RUNTIME_CHECK`, et le contrat de colonnes utilisé
+  était établi strictement à partir du code (le fournisseur lui-même et
+  `kadiPaymentsRepo.js`), sans divergence trouvée. **En R1, une
+  inspection en lecture seule autorisée du projet Supabase réel a
+  confirmé ce contrat directement contre le schéma distant** : `id uuid`,
+  `wa_id text`, `reference text`, `amount_fcfa integer`, `credits
+  integer`, `includes_stamp boolean`, `status text`, `proof_text text`,
+  `proof_image_url text`, `payment_method text`, `created_at timestamptz`,
+  `updated_at timestamptz`, `approved_at timestamptz`, `rejection_reason
+  text`, RLS activé — le statut `UNKNOWN_REQUIRES_RUNTIME_CHECK` est donc
+  levé pour l'existence des colonnes (voir mise à jour correspondante de
+  `docs/kadi_v1_legacy_data_migration_policy.md`).
+  **Fait nouveau et significatif : `reference` n'a AUCUNE contrainte
+  d'unicité** — seule la clé primaire `id` est unique. L'inspection a
+  également trouvé, en forme agrégée/anonymisée uniquement : exactement
+  un groupe de références dupliquées préexistant (2 lignes, toutes deux
+  legacy/non-V1 — aucune n'utilise l'espace de noms `recharge:%` de Kadi
+  V1 — toutes deux `pending`, aucune `approved`), et zéro ligne utilisant
+  actuellement `recharge:%`. **La valeur réelle de la référence dupliquée
+  n'est jamais consignée dans ce dépôt, dans le code, les tests, les
+  commentaires ou cette documentation, et ces deux lignes legacy n'ont
+  été ni modifiées ni supprimées ni fusionnées par cette mission.**
+
+### Modèle d'autorité de test
+
+RÉEL, jamais mocké : `createManualOrangeMoneyPaymentProvider`,
+`createRechargeService`, `createKadiV1RechargeRuntime`,
+`FlowCommandRuntime`/`FlowReplyRuntime`, le vrai catalogue de packs
+(`createRechargePackCatalog`), le vrai dépôt de recharge en mémoire
+(`createInMemoryRechargeRepository`, y compris sa méthode
+`getAvailableBalance()` déjà intégrée — réutilisée directement comme
+autorité T6, jamais un second calcul de solde). FAUX uniquement : le
+client Supabase minimal que le vrai fournisseur interroge (les deux
+tables ci-dessus), plus un client Supabase séparé et volontairement
+inatteignable pour `rechargeRuntime.cancel()` (jamais appelé — RECHARGE/
+CANCEL reste rejeté inconditionnellement, T5 R2). Un assistant de test
+dédié (`approveTopup`) simule l'action humaine hors-bande du personnel
+Orange Money (mutation directe du statut du topup factice) — jamais un
+chemin de code V1.
+
+### Preuve R0
+
+* `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (15 scénarios R0) :
+  SELECT_PACK avec pack XOF actif crée réellement une ligne `kadi_topups`
+  via le vrai fournisseur, référence marchande/paiement stable ; pack
+  invalide/inconnu échoue fermé avant toute mutation financière, vrai
+  fournisseur jamais appelé ; `createPaymentRequest` du vrai fournisseur
+  rejette directement référence invalide, montant non positif/non entier
+  et devise non-XOF ; CHECK_PAYMENT en attente ne crédite rien ; topup
+  confirmé crédite exactement une fois le bon montant ; **porte
+  exactement-une-fois** prouvée sous trois angles différents — rejeu
+  exact du même webhook (court-circuit de doublon au niveau session),
+  soumission fraîche d'un nouveau webhook pour un paiement déjà crédité
+  (dédoublonnage par empreinte d'événement du service de recharge), et
+  reconstruction complète du runtime autour des mêmes dépôts persistés
+  (redémarrage simulé) — aucun scénario ne produit un second crédit ;
+  montant falsifié, devise non-XOF (échoue dès SELECT_PACK, ce chemin ne
+  peut jamais atteindre un état crédité) et référence inconnue échouent
+  tous fermé avec crédit zéro ; isolation propriétaire ; recharges
+  multiples en attente (le paiement de l'une ne crédite jamais l'autre) ;
+  continuité de présentation T5 (packs/solde authoritative, RECHARGE/
+  CANCEL toujours non exposé) et parité de solde T6 (modèle de solde
+  disponible canonique) confirmées à travers le vrai chemin fournisseur.
+* Focused (fichiers concernés) : 169/169. Suite complète : 1542/1542.
+  `git diff --check` : propre.
+
+### R1 — ORANGE_TOPUP_REFERENCE_CONCURRENCY_001 (MEDIUM/P1, corrigé)
+
+**Défaut confirmé.** `createManualOrangeMoneyPaymentProvider()`'s
+`createPaymentRequest()` faisait : (1) lire `kadi_topups` par
+`reference` ; (2) si absente, (3) l'insérer. Comme `reference` n'a
+aucune contrainte d'unicité sur la table réelle, deux appels
+concurrents pour la MÊME `merchant_reference` pouvaient tous deux lire
+« absente », puis tous deux insérer — produisant deux lignes physiques
+partageant une référence, après quoi `readTopup()`'s
+`.eq("reference", reference).maybeSingle()` ne pouvait plus résoudre
+une ligne unique (`getPaymentStatus()` échoue alors `PAYMENT_STATUS_NOT_FOUND`,
+plus grave que « lent » : une confirmation de paiement légitime
+pourrait ne plus jamais aboutir). Le double factice de test R0
+modélisait `kadi_topups` comme `Map<reference, row>`, ce qui interdit
+structurellement plus d'une ligne par référence — masquant donc ce
+défaut ; le double a été reconstruit en R1 comme une vraie collection
+de lignes indexée par `id`, avec une sémantique `maybeSingle()`
+fidèle à PostgREST (0 ligne → `data:null`, 1 ligne → `data:row`, >1
+lignes → erreur, jamais un choix arbitraire).
+
+**Preuve de reproduction pré-correctif** (`R1-A` dans le fichier de
+test, sans utiliser aucun `sleep` — une barrière de rendez-vous
+déterministe force les deux appels concurrents à observer « aucune
+ligne existante » avant que l'un ou l'autre n'insère) : deux appels
+`createPaymentRequest()` concurrents pour la même référence
+réussissent tous deux, créant deux lignes physiques partageant une
+référence ; `getPaymentStatus()` échoue ensuite avec
+`PAYMENT_STATUS_NOT_FOUND` — la référence ne peut plus être résolue de
+façon unique.
+
+**Preuve de non-régression sur le doublon legacy réel** (`R1-E`) : deux
+lignes legacy factices partageant une référence non-`recharge:` sont
+semées directement ; l'application de l'unicité partielle V1 ne les
+rejette, fusionne ni altère jamais — un index partiel n'impose
+l'unicité que parmi les lignes qui correspondent à son propre
+prédicat.
+
+**Correctif — migration.**
+`migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql`
+(et sa copie `supabase/migrations/20260809030000_...`, testées
+byte-identiques) : `create unique index if not exists
+kadi_topups_v1_recharge_reference_unique on public.kadi_topups
+(reference) where reference like 'recharge:%';`. Jamais
+`UNIQUE(reference)` global (casserait immédiatement sur le doublon
+legacy existant et exigerait un nettoyage de données historiques hors
+autorisation). Preuve que l'espace de noms `recharge:%` appartient
+exclusivement à Kadi V1 : `kadiV1RechargeService.js`'s
+`createRechargeSession()` dérive toujours `merchant_reference` comme
+`sessionId = makeId("recharge", command.idempotencyKey)` — seul site
+d'appel `makeId("recharge", ...)` du fichier — et
+`kadiV1ProductionBootstrap.js` ne surcharge jamais `idFactory` en
+production. **Cette migration n'a pas été appliquée à distance par
+cette mission.**
+
+**Correctif — fournisseur.** `createPaymentRequest()` capture désormais
+une violation Postgres `23505` sur l'insertion (et uniquement ce code —
+toute autre erreur d'insertion continue d'échouer
+`PAYMENT_REQUEST_CREATE_FAILED`, inchangé) : elle relit la référence
+exacte et vérifie que la ligne trouvée est authentiquement compatible
+(`reference`, `wa_id === session.owner_wa_id`, `amount_fcfa ===
+request.amount`, `credits === session.pack_snapshot.credits`,
+`payment_method === "orange_money"`) avant de l'adopter comme réponse —
+sinon `PAYMENT_REQUEST_EXISTING_MISMATCH`, jamais d'adoption silencieuse
+d'une ligne non liée. Cette même vérification de compatibilité
+(`rowMatchesRequest`) est désormais appliquée **de façon uniforme** au
+chemin normal (ligne déjà trouvée avant tentative d'insertion) — un
+écart trouvé pendant la revue R1 elle-même : la version initiale du
+correctif ne vérifiait la compatibilité que sur le chemin de
+récupération 23505, laissant le chemin de lecture normal adopter
+silencieusement n'importe quelle ligne existante correspondant par
+référence, sans jamais vérifier `wa_id`/`amount_fcfa`/`credits`/
+`payment_method`.
+
+**Preuve post-correctif** (`R1-B`, `R1-C`) : sous la même course
+concurrente déterministe, exactement une ligne physique existe après
+la course ; les deux appels convergent vers la même identité de
+paiement (`provider_payment_id`) ; `getPaymentStatus()` fonctionne
+toujours ; un paiement confirmé après la course produit exactement un
+crédit de portefeuille et exactement une entrée de ledger de recharge.
+Idempotence séquentielle (`R1-D`) : deux appels successifs pour la même
+référence renvoient la même identité, une seule ligne. Quatre scénarios
+de ligne existante incompatible (`R1-F` à `R1-I` : mauvais propriétaire,
+montant, crédits, méthode de paiement) échouent tous fermé avec
+`PAYMENT_REQUEST_EXISTING_MISMATCH`.
+
+**Ordre de déploiement obligatoire** (jamais exécuté par cette
+mission) : (1) appliquer la migration V1 en premier ; (2) vérifier en
+lecture seule que l'index existe avec le prédicat exact, que les
+doublons legacy existants restent intacts, et qu'il n'existe aucun
+doublon `recharge:%` ; (3) alors seulement déployer le backend portant
+ce correctif. Un backend ancien après la migration reste sûr (une
+requête concurrente en course peut échouer proprement avec `23505` mais
+ne peut jamais créer de doublon V1) ; un nouveau backend avant la
+migration reste dangereux (la récupération `23505` ne peut rien faire
+si la base autorise encore les deux insertions concurrentes). La
+migration T6 (AA.3) reste également en attente — le futur runbook de
+livraison doit composer les deux dépendances de migration dans un
+déploiement ordonné sûr.
+
+**Précision d'exactitude sur la preuve de redémarrage.** Le test « porte
+exactement-une-fois : ... redémarrage simulé » prouve que le
+dédoublonnage par empreinte d'événement au niveau service survit à une
+reconstruction complète d'objets en mémoire — pas que le dépôt de
+recharge Supabase réel (`kadiV1SupabaseRechargeRepository.js`, RPC
+`kadi_v1_confirm_recharge_credit`) est lui-même atomique entre
+processus réels. Cette garantie-là est fournie en production par le
+propre verrou de l'RPC (`pg_advisory_xact_lock` +
+`select ... for update`, `migrations/20260802_add_kadi_v1_recharge.sql`),
+dont les privilèges/grants sont vérifiés par
+`tests/kadiV1MigrationPrivileges.test.js` — mais aucun test de ce dépôt
+ne s'exécute contre une connexion Postgres réelle, donc le comportement
+concurrent réel de cette RPC reste lui-même non vérifié ici.
+
+* Fichiers modifiés/ajoutés en R1 : `kadiV1ProductionInfrastructure.js`
+  (seul fichier de production modifié),
+  `tests/kadiV1OrangeMoneyRealProviderE2E.test.js` (9 scénarios
+  supplémentaires, 24 au total),
+  `migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql`,
+  `supabase/migrations/20260809030000_add_kadi_v1_topups_recharge_reference_unique.sql`,
+  `tests/kadiV1TopupsRechargeReferenceUniqueMigration.test.js` (7
+  scénarios structurels).
+* Focused (fichiers concernés) : 33/33. Suite complète : 1558/1558.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau, aucun appel API Orange Money réel, aucune mutation
+Supabase/Meta/Render/WhatsApp réelle nulle part dans le fichier de test.
+`ownerWaId` reste la seule source de portée pour la vérification de
+paiement. Aucun secret, token ou identifiant sensible journalisé. La
+valeur réelle de la référence dupliquée legacy trouvée par l'inspection
+R1 n'apparaît nulle part — ni dans le code, ni les tests, ni cette
+documentation.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant sous `resumePolicy: "REQUIRE_CONFIRMATION"`,
+  toujours non corrigé.
+* Application de la migration T6 (AA.3) **et** de la nouvelle migration
+  T10 R1 (`kadi_topups_v1_recharge_reference_unique`) à Supabase de
+  production, dans l'ordre sûr décrit ci-dessus (migration T10 d'abord
+  si les deux sont composées dans un même runbook) — toujours hors
+  périmètre.
+* Le comportement concurrent réel de la RPC
+  `kadi_v1_confirm_recharge_credit` sous connexions Postgres simultanées
+  reste non vérifié par un test de ce dépôt (aucun test ne s'exécute
+  contre une base réelle) — voir la précision d'exactitude ci-dessus.
+* L'audit runtime autorisé du schéma distant réel de `kadi_topups`
+  requis en R0 a été réalisé en R1 (voir section R1 ci-dessus) — son
+  contrat de colonnes est désormais `CONFIRMED`, plus `UNKNOWN_REQUIRES_RUNTIME_CHECK`
+  (voir `docs/kadi_v1_legacy_data_migration_policy.md`, mis à jour en
+  conséquence).
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
