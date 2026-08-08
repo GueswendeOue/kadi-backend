@@ -321,7 +321,7 @@ function buildComposition({
     domain, clock, idFactory: (kind, key) => `${kind}:${nextKey(key || kind)}`,
     observer: () => {},
   });
-  const generationRuntime = createKadiV1GenerationRuntimeAdapter({ generationLifecycleService });
+  const generationRuntime = createKadiV1GenerationRuntimeAdapter({ generationLifecycleService, documentRepository: repository });
 
   // T5: the same generationRepo drives both the real reservation lifecycle
   // AND the presenter/BALANCE authority — never two independent financial
@@ -520,33 +520,25 @@ async function buildFactureAwaitingConfirmation(f, ownerWaId = OWNER, suffix = "
   return { document, quoteId };
 }
 
-// A failed (INSUFFICIENT_CREDITS) CONFIRM_GENERATION never reaches
-// presentFlowReply at all — kadiV1WebhookRuntime.js's handleMessage()
-// routes any !result.ok flow-reply outcome through recover() ->
-// presentRecoverableError(), which only ever sends a generic "couldn't
-// complete this step" text and never opens a Flow (confirmed by reading
-// both functions directly). So the RECHARGE Flow is never shown at the
-// exact moment a document becomes RECHARGE_REQUIRED. The real, reachable
-// way a user later sees RECHARGE for a stuck document is by reopening it
-// from history: HISTORY_SEARCH/OPEN_DOCUMENT -> kadiV1HistoryService.js's
-// getDocumentDetails() -> presentFlowReply()'s generic path (the
-// RETRY_DELIVERY-specific branch is skipped since there is no delivery
-// attempt) -> nextFlowForReply() -> routeDocument() maps RECHARGE_REQUIRED
-// to "RECHARGE". This helper reproduces that real path so lastFlowData(f)
-// reflects an actual RECHARGE Flow send, not a stale earlier screen.
+// R1/MEDIUM: a document reaching RECHARGE_REQUIRED via CONFIRM_GENERATION
+// (INSUFFICIENT_CREDITS) is a handled business outcome, not a technical
+// failure — kadiV1RuntimeAdapters.js's generation runtime adapter re-reads
+// the authoritative document after INSUFFICIENT_CREDITS and, only once its
+// status is genuinely RECHARGE_REQUIRED, returns a handled result with
+// next_flow_key "RECHARGE" and a truthful copy, so the user is routed
+// straight into the RECHARGE Flow — no history detour required. This
+// initial, document-driven RECHARGE context carries no bound recharge
+// session yet, so it must never offer CANCEL (see R1/HIGH below) — only
+// SELECT_PACK/CHECK_PAYMENT.
 async function driveToRechargeRequired(f, ownerWaId = OWNER, suffix = "rr") {
   const { document, quoteId } = await buildFactureAwaitingConfirmation(f, ownerWaId, suffix);
-  const confirmResult = await send(f, { document, flowKey: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: quoteId }, ownerWaId, expectAccepted: false, id: nextKey(`${suffix}-confirm`) });
-  assert.equal(confirmResult.reason, "INSUFFICIENT_CREDITS");
+  const confirmResult = await send(f, { document, flowKey: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: quoteId }, ownerWaId, id: nextKey(`${suffix}-confirm`) });
+  assert.equal(confirmResult.accepted, true, confirmResult.reason);
   const rechargeRequired = await loadDocument(f, document.document_id, ownerWaId);
   assert.equal(rechargeRequired.status, "RECHARGE_REQUIRED");
-  const reopen = await send(f, {
-    flowKey: "HISTORY_SEARCH", action: "OPEN_DOCUMENT",
-    data: { document_id: rechargeRequired.document_id, query: "", document_type: "", date_from: "", date_to: "" },
-    ownerWaId, id: nextKey(`${suffix}-open`),
-  });
-  assert.equal(reopen.accepted, true, reopen.reason);
-  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.RECHARGE, "reopening a RECHARGE_REQUIRED document from history must show the RECHARGE Flow");
+  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.RECHARGE, "INSUFFICIENT_CREDITS must immediately open RECHARGE, no history detour required");
+  assert.equal(lastText(f), "Votre solde est insuffisant pour générer ce document. Choisissez une recharge pour continuer.");
+  assert.deepEqual(lastFlowData(f).recharge_actions.map((entry) => entry.id), ["SELECT_PACK", "CHECK_PAYMENT"], "the initial document-driven RECHARGE context must never offer terminal CANCEL");
   return rechargeRequired;
 }
 
@@ -722,19 +714,157 @@ test("T5-13/T5-14. RECHARGE/CANCEL's visible action label is terminal and unambi
   const f = buildComposition({ balance: 5 });
   const document = await driveToRechargeRequired(f);
   void document;
-  const actions = lastFlowData(f).recharge_actions;
-  const cancelAction = actions.find((entry) => entry.id === "CANCEL");
-  assert.ok(cancelAction, "CANCEL must be offered");
+  // The initial, document-driven RECHARGE context (proven by
+  // driveToRechargeRequired itself) never offers CANCEL — see R1/HIGH.
+  // CANCEL only appears once SELECT_PACK has created a real, bound
+  // recharge session for this exact reopened screen.
+  const select = await send(f, { flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
+  assert.equal(select.accepted, true, select.reason);
+  const boundActions = lastFlowData(f).recharge_actions;
+  const cancelAction = boundActions.find((entry) => entry.id === "CANCEL");
+  assert.ok(cancelAction, "CANCEL must be offered once a real recharge session is bound to this screen");
   assert.equal(cancelAction.title, "Annuler cette recharge");
   assert.notEqual(cancelAction.title, "Revenir plus tard", "the misleading non-terminal label must no longer be shown");
 
-  const select = await send(f, { flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
-  assert.equal(select.accepted, true, select.reason);
-  const sessionId = await openSession(f, { document, expectedFlowKey: "RECHARGE" });
+  const sessionId = await openSession(f, { expectedFlowKey: "RECHARGE" });
   const result = await f.composition.webhookHandler({ messages: [nfmReply({ sessionId, flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } })] });
   assert.equal(result.results[0].accepted, true, result.results[0].reason);
   assert.equal(lastText(f), "La recharge est annulée. Vous pourrez en démarrer une nouvelle plus tard.");
   assert.notEqual(lastText(f), "L’opération est annulée.");
+});
+
+// =====================================================================
+// R1/HIGH — UNBOUND RECHARGE CANCEL (independent review)
+// =====================================================================
+//
+// The real RECHARGE Flow carries no recharge_session_id of its own.
+// cancel() has always had to resolve "which session" from context
+// (owner + sessionOpenedAt bound, newest-first — see
+// kadiV1ProductionInfrastructure.js's cancel()). That resolution is
+// scoped to the OWNER, never to a particular document or Flow-opening
+// context. Before this fix, recharge_actions always included CANCEL
+// whenever RECHARGE was opened, even for a document-driven, initial
+// RECHARGE_REQUIRED context where no recharge session had ever been
+// created for THAT screen — so a CANCEL submitted from that unbound
+// context could resolve to and cancel a completely unrelated older
+// recharge session for the same owner. Fixed two ways: (1) presentation
+// — recharge_actions only ever offers CANCEL once a real recharge
+// session is actually bound to this exact reopened screen (see
+// RECHARGE_ACTIONS_INITIAL/RECHARGE_ACTIONS_BOUND above); (2) defense in
+// depth, server-side — kadiV1FlowCommandRuntime.js rejects CANCEL
+// outright, before ever calling cancel(), whenever the trusted session's
+// own documentContext shows document_state === "RECHARGE_REQUIRED" (set
+// only from the session record itself by kadiV1FlowReplyRuntime.js,
+// never client-supplied) — this is exactly the signature of a
+// document-driven, unbound RECHARGE session, whether reached via the
+// immediate INSUFFICIENT_CREDITS route or via history. A RECHARGE
+// session reopened after SELECT_PACK/CHECK_PAYMENT carries no document
+// context at all (neither production call ever returns one — see
+// kadiV1ProductionInfrastructure.js's selectPack()/checkPayment()), so
+// this defense never blocks a legitimate, session-bound cancellation.
+
+test("R1-HIGH-A. An unbound, document-driven RECHARGE Flow can never cancel an unrelated older recharge session for the same owner", async () => {
+  const f = buildComposition({ balance: 5 });
+
+  // Recharge A: a legitimate older recharge for the same owner, still
+  // PAYMENT_PENDING — created well before document B ever exists.
+  const selectA = await send(f, { flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
+  assert.equal(selectA.accepted, true, selectA.reason);
+  const sessionsForOwner = f.sessionIdsByOwner.get(OWNER);
+  const rechargeAId = sessionsForOwner[sessionsForOwner.length - 1];
+  const beforeA = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeAId });
+  assert.equal(beforeA.value.status, "PAYMENT_PENDING");
+
+  // Document B reaches RECHARGE_REQUIRED without ever calling SELECT_PACK
+  // — driveToRechargeRequired() itself already asserts (see its own
+  // comment) that B's initial RECHARGE context offers no CANCEL. B: no
+  // new recharge session was created for B at all.
+  const walletBefore = f.generationRepo.inspect();
+  const documentB = await driveToRechargeRequired(f, OWNER, "b");
+  assert.equal(documentB.status, "RECHARGE_REQUIRED");
+
+  // A forged/manual CANCEL submission from B's unbound RECHARGE session
+  // (bypassing the fact that the real UI never offers this button here)
+  // must still fail closed server-side — defense in depth, never relying
+  // only on hiding the option.
+  const sessionId = await openSession(f, { document: documentB, expectedFlowKey: "RECHARGE" });
+  const result = await f.composition.webhookHandler({ messages: [nfmReply({ sessionId, flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } })] });
+  assert.equal(result.results[0].accepted, false, "an unbound, document-driven RECHARGE CANCEL must fail closed server-side");
+
+  const afterA = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeAId });
+  assert.equal(afterA.value.status, "PAYMENT_PENDING", "recharge A must remain completely untouched");
+  const afterB = await loadDocument(f, documentB.document_id);
+  assert.equal(afterB.status, "RECHARGE_REQUIRED", "document B must remain RECHARGE_REQUIRED, unaffected by the rejected CANCEL");
+
+  // No wallet/payment mutation from the rejected CANCEL attempt.
+  const walletAfter = f.generationRepo.inspect();
+  assert.deepEqual(walletAfter.balances, walletBefore.balances, "the rejected CANCEL must cause zero wallet mutation");
+  assert.deepEqual(walletAfter.reservations, walletBefore.reservations, "the rejected CANCEL must create/release zero reservation");
+  const sessionsAfterCancel = f.sessionIdsByOwner.get(OWNER);
+  assert.equal(sessionsAfterCancel.length, sessionsForOwner.length, "the rejected CANCEL must create zero new recharge session");
+});
+
+test("R1-HIGH-B. Once B's own SELECT_PACK creates a real recharge session, B's reopened RECHARGE Flow may cancel only B, never A", async () => {
+  const f = buildComposition({ balance: 5 });
+
+  const selectA = await send(f, { flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
+  assert.equal(selectA.accepted, true, selectA.reason);
+  const sessionsForOwner = f.sessionIdsByOwner.get(OWNER);
+  const rechargeAId = sessionsForOwner[sessionsForOwner.length - 1];
+
+  const documentB = await driveToRechargeRequired(f, OWNER, "b2");
+
+  // B's own SELECT_PACK creates a real, bound recharge session for B.
+  const selectB = await send(f, { document: documentB, flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" } });
+  assert.equal(selectB.accepted, true, selectB.reason);
+  const sessionsAfterB = f.sessionIdsByOwner.get(OWNER);
+  const rechargeBId = sessionsAfterB[sessionsAfterB.length - 1];
+  assert.notEqual(rechargeBId, rechargeAId, "B must have created its own, distinct recharge session");
+
+  // The reopened RECHARGE Flow (after B's SELECT_PACK) now legitimately
+  // offers CANCEL — a real session is bound to this exact screen.
+  const boundActions = lastFlowData(f).recharge_actions;
+  assert.ok(boundActions.find((entry) => entry.id === "CANCEL"), "CANCEL must be offered once B's own session is bound");
+
+  const sessionId = await openSession(f, { expectedFlowKey: "RECHARGE" });
+  const result = await f.composition.webhookHandler({ messages: [nfmReply({ sessionId, flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } })] });
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+
+  const afterB = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeBId });
+  assert.equal(afterB.value.status, "CANCELLED", "B's own recharge session must be the one cancelled");
+  const afterA = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeAId });
+  assert.equal(afterA.value.status, "PAYMENT_PENDING", "recharge A must remain completely untouched by B's cancellation");
+});
+
+test("R1-HIGH-C. A pending CHECK_PAYMENT reopen is also a bound context, and its CANCEL target remains stable", async () => {
+  const f = buildComposition({ balance: 5, provider: fakePaymentProvider({ confirmOnVerify: false }) });
+
+  const selectA = await send(f, { flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_1000", payment_reference: "" } });
+  assert.equal(selectA.accepted, true, selectA.reason);
+  const sessionsForOwner = f.sessionIdsByOwner.get(OWNER);
+  const rechargeAId = sessionsForOwner[sessionsForOwner.length - 1];
+
+  const documentB = await driveToRechargeRequired(f, OWNER, "b3");
+  const selectB = await send(f, { document: documentB, flowKey: "RECHARGE", action: "SELECT_PACK", data: { pack_id: "PACK_2000", payment_reference: "" } });
+  assert.equal(selectB.accepted, true, selectB.reason);
+  const sessionsAfterB = f.sessionIdsByOwner.get(OWNER);
+  const rechargeBId = sessionsAfterB[sessionsAfterB.length - 1];
+  const reference = f.sent.texts.slice(-1)[0].text.match(/Référence à conserver : (\S+)\./)[1];
+
+  const checkResult = await send(f, { flowKey: "RECHARGE", action: "CHECK_PAYMENT", data: { pack_id: "", payment_reference: reference } });
+  assert.equal(checkResult.accepted, true, checkResult.reason);
+  assert.equal(lastText(f), "Le paiement n’est pas encore confirmé. Vérifiez la référence puis réessayez.");
+  const pendingActions = lastFlowData(f).recharge_actions;
+  assert.ok(pendingActions.find((entry) => entry.id === "CANCEL"), "a pending CHECK_PAYMENT reopen is also a bound context and may offer CANCEL");
+
+  const sessionId = await openSession(f, { expectedFlowKey: "RECHARGE" });
+  const result = await f.composition.webhookHandler({ messages: [nfmReply({ sessionId, flowKey: "RECHARGE", action: "CANCEL", data: { pack_id: "", payment_reference: "" } })] });
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+
+  const afterB = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeBId });
+  assert.equal(afterB.value.status, "CANCELLED", "the pending CHECK_PAYMENT reopen's CANCEL target must remain B");
+  const afterA = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: rechargeAId });
+  assert.equal(afterA.value.status, "PAYMENT_PENDING", "recharge A must remain untouched");
 });
 
 test("T5-21. Other CANCEL flows keep the generic copy, completely unaffected", async () => {
@@ -876,5 +1006,79 @@ test("T5-conversational. The conversational RECHARGE-opening path also receives 
   const data = lastFlowData(f);
   assert.equal(data.balance_summary, "Solde disponible : 9 crédits.");
   assert.deepEqual(data.pack_options.map((option) => option.id), ["PACK_1000"]);
-  assert.deepEqual(data.recharge_actions.map((entry) => entry.id), ["SELECT_PACK", "CHECK_PAYMENT", "CANCEL"]);
+  // R1/HIGH: the conversational direct RECHARGE opening is always an
+  // initial, unbound context — no recharge session exists yet — so it
+  // must never offer terminal CANCEL either.
+  assert.deepEqual(data.recharge_actions.map((entry) => entry.id), ["SELECT_PACK", "CHECK_PAYMENT"]);
+});
+
+// =====================================================================
+// R1/MEDIUM — INSUFFICIENT CREDITS MUST OPEN RECHARGE
+// =====================================================================
+//
+// GenerationLifecycle successfully persists AWAITING_GENERATION_CONFIRMATION
+// -> RECHARGE_REQUIRED, then returns INSUFFICIENT_CREDITS — a handled
+// business outcome, not a technical failure. driveToRechargeRequired()
+// itself already asserts the truthful copy and the immediate RECHARGE
+// Flow open (no history detour); the tests below cover the exact replay
+// and history-reopen non-regression the mission separately requires.
+
+test("R1-MEDIUM-I. Exact replay of the same CONFIRM_GENERATION webhook after RECHARGE_REQUIRED causes zero second mutation", async () => {
+  const f = buildComposition({ balance: 5 });
+  const { document, quoteId } = await buildFactureAwaitingConfirmation(f, OWNER, "replay");
+  const sessionId = await openSession(f, { document, expectedFlowKey: "GENERATION_CONFIRMATION" });
+  const message = nfmReply({ sessionId, flowKey: "GENERATION_CONFIRMATION", action: "CONFIRM_GENERATION", data: { quote_id: quoteId } });
+
+  const before = f.generationRepo.inspect();
+  const first = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(first.results[0].accepted, true, first.results[0].reason);
+  const afterFirst = await loadDocument(f, document.document_id);
+  assert.equal(afterFirst.status, "RECHARGE_REQUIRED");
+  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.RECHARGE);
+  const firstVersion = afterFirst.version;
+
+  const second = await f.composition.webhookHandler({ messages: [message] });
+  assert.equal(second.results[0].accepted, true, second.results[0].reason);
+  assert.equal(second.results[0].duplicate, true, "an exact replay must be recognized as a duplicate");
+
+  const afterSecond = await loadDocument(f, document.document_id);
+  assert.equal(afterSecond.status, "RECHARGE_REQUIRED");
+  assert.equal(afterSecond.version, firstVersion, "zero second document transition");
+  const afterState = f.generationRepo.inspect();
+  assert.deepEqual(afterState.balances, before.balances, "zero wallet mutation");
+  assert.deepEqual(afterState.reservations, before.reservations, "zero reservation created");
+  const sessionsForOwner = f.sessionIdsByOwner.get(OWNER) || [];
+  assert.equal(sessionsForOwner.length, 0, "zero recharge session created by CONFIRM_GENERATION itself");
+});
+
+test("R1-MEDIUM-J. Reopening a RECHARGE_REQUIRED document from history still works, and remains an initial (no-CANCEL) context", async () => {
+  const f = buildComposition({ balance: 6 });
+  const document = await driveToRechargeRequired(f, OWNER, "history");
+
+  const reopen = await send(f, {
+    flowKey: "HISTORY_SEARCH", action: "OPEN_DOCUMENT",
+    data: { document_id: document.document_id, query: "", document_type: "", date_from: "", date_to: "" },
+  });
+  assert.equal(reopen.accepted, true, reopen.reason);
+  assert.equal(lastFlowPayload(f).flow_id, FLOW_IDS.RECHARGE, "reopening a RECHARGE_REQUIRED document from history must still open RECHARGE");
+  const data = lastFlowData(f);
+  assert.equal(data.balance_summary, "Solde disponible : 6 crédits.", "the history reopen must still be authoritative");
+  assert.deepEqual(data.pack_options.map((option) => option.id), ["PACK_1000", "PACK_2000"]);
+  assert.deepEqual(data.recharge_actions.map((entry) => entry.id), ["SELECT_PACK", "CHECK_PAYMENT"], "a history reopen is still an initial, unbound context — no CANCEL");
+});
+
+// =====================================================================
+// R1/LOW — pack currency label
+// =====================================================================
+
+test("R1-LOW. A non-XOF active pack is labeled with its own currency code, never mislabeled as FCFA", async () => {
+  const PACK_USD = Object.freeze({ pack_id: "PACK_USD", amount: 5, currency: "USD", credits: 3, pricing_version: "legacy-v1", active: true });
+  const f = buildComposition({ balance: 5, packs: [PACK_1000, PACK_USD] });
+  const document = await driveToRechargeRequired(f, OWNER, "currency");
+  void document;
+  const options = lastFlowData(f).pack_options;
+  const xof = options.find((option) => option.id === "PACK_1000");
+  const usd = options.find((option) => option.id === "PACK_USD");
+  assert.equal(xof.title, "1 000 FCFA — 10 crédits", "XOF still renders as FCFA, matching every other Kadi surface");
+  assert.equal(usd.title, "5 USD — 3 crédits", "a non-XOF pack must be labeled with its own currency code, never silently mislabeled as FCFA");
 });
