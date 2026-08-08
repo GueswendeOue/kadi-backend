@@ -1123,12 +1123,39 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   normal). Isolation propriétaire, rejeu exact d'un même `wamid`
   IMAGE (une seule mutation métier réelle), non-régression T11 (le vocal
   entrant reste gouverné uniquement par `config.features.transcription`)
-  tous prouvés. Deux fichiers de production modifiés :
-  `kadiV1WebhookRuntime.js` (le gate) et `kadiV1GeminiVisionProvider.js`
-  (l'expiration). **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI
-  PROVEN-WIRED`, `IMPLEMENTED_NOT_MERGED`.** Ne pas marquer T12 `CLOSED`
-  avant fusion. Tests ciblés (400/400 sur les fichiers concernés) puis
-  suite complète (1620/1620), `git diff --check` propre. Voir fiche AE de
+  tous prouvés au R0. Statut R0 : `IMPLEMENTED_NOT_MERGED`.
+
+  **R1 (revue indépendante) : deux défauts MEDIUM/P1 de progression,
+  corrigés.** Les champs de lecture non-authoritatifs
+  (`total_read`/`date_read`/`document_number_read`, toujours `UNCERTAIN`
+  par construction) restaient persistés dans `missing_fields`/
+  `uncertainties` et bloquaient définitivement une FACTURE/DEVIS de
+  passer en `READY_FOR_REVIEW`, même une fois client, articles et total
+  recalculé côté serveur tous corrects — reproduit avant correctif
+  (`total_read` correspondant au total réel restait quand même bloquant),
+  corrigé en filtrant `RESERVED_BRAIN_FIELDS` hors de l'ensemble
+  persisté/bloquant uniquement, dans les deux pipelines
+  (`kadiV1SharedDocumentPipeline.js`, `kadiV1DischargePipeline.js`) —
+  ces champs restent non confirmés, jamais copiés dans un champ
+  authoritatif. Séparément, un type de document visuel indéterminé
+  faisait perdre la question ciblée validée de Gemini
+  (« Quel document voulez-vous préparer ? ») dans le `SHOW_MENU`
+  générique — reproduit puis corrigé dans
+  `kadiV1ConversationOrchestrator.js`, avec un bogue auto-détecté et
+  corrigé pendant la revue elle-même (le correctif initial aurait
+  intercepté à tort une photo de correction envoyée pendant qu'un
+  document est déjà actif — désormais explicitement exclu et couvert par
+  un test dédié). Confiance globale faible sans `total_read` déterminée
+  comme déjà sûre (rejet générique existant, contrat Brain partagé
+  jamais affaibli) — documentée, non modifiée. Deux fichiers de
+  production modifiés (`kadiV1WebhookRuntime.js`,
+  `kadiV1GeminiVisionProvider.js`) au R0. Trois fichiers de production
+  modifiés au R1 (`kadiV1SharedDocumentPipeline.js`,
+  `kadiV1DischargePipeline.js`, `kadiV1ConversationOrchestrator.js`).
+  **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
+  `IMPLEMENTED_NOT_MERGED`.** Ne pas marquer T12 `CLOSED` avant fusion.
+  Tests ciblés (487/487) puis suite complète (1634/1634),
+  `git diff --check` propre. Voir fiche AE de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
 

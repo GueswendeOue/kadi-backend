@@ -5539,3 +5539,114 @@ technique vers l'utilisateur.
 * `KADI_CONVERSATIONAL_MULTIMODAL_V1` (moteur conversationnel complet)
   reste un gate de roadmap séparé — T12 ne l'active pas.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+### R1 (revue indépendante) — deux défauts MEDIUM/P1 de progression, corrigés
+
+**Défaut 1 : les champs de lecture non-authoritatifs bloquaient
+définitivement le document.** `normalizeStructuredExtraction` force
+toujours `total_read`/`date_read`/`document_number_read` au statut
+`UNCERTAIN` (ils ne doivent jamais devenir autorité backend) et les
+ajoute à `missing_fields`/`uncertainties`. `applyBrainExtraction`
+persistait ces tableaux sans filtrage, et `brainPatch`
+(kadiV1SharedDocumentPipeline.js)/`mapBrainExtraction`
+(kadiV1DischargePipeline.js) ne résolvent jamais ces champs par
+construction — le backend possède déjà ces valeurs exactes (le total est
+toujours recalculé depuis les articles sauvegardés ; `document_number`/
+`issued_at` sont assignés à la génération). Résultat : une FACTURE/DEVIS
+photographiée avec client confirmé, articles confirmés et total
+backend correctement recalculé restait bloquée en `COLLECTING` pour
+toujours, que `total_read` de Gemini corresponde ou non au total réel.
+
+**Reproduction pré-correctif** (via le vrai pipeline,
+`kadiV1SharedDocumentPipeline.js`/`kadiV1DocumentRepository.js`) :
+`total_read` égal au total backend recalculé (10000 = 10000) laissait
+quand même `missing_fields: ["total_read"]` et
+`markReadyForReview()` échouait `DOCUMENT_INFORMATION_MISSING`. Idem
+pour un `total_read` incohérent.
+
+**Correctif** : `applyBrainExtraction` (les deux pipelines, FACTURE/
+DEVIS/RECU et DECHARGE) filtre désormais `RESERVED_BRAIN_FIELDS` hors
+des ensembles `missing_fields`/`uncertainties` **persistés/bloquants**
+uniquement — ces champs restent non confirmés, jamais copiés dans un
+champ authoritatif. Le rejet `BRAIN_AUTHORITY_FIELD_FORBIDDEN` existant
+(quand un champ réservé arrive avec le statut `CONFIRMED`, défense en
+profondeur contre une tentative adversariale) reste totalement
+inchangé — le filtre ne touche que les champs `UNCERTAIN` légitimement
+produits par Gemini.
+
+**Défaut 2 : la question ciblée pour un type de document inconnu était
+perdue dans le MENU générique.** `normalizeStructuredExtraction`
+produit correctement `document_type: null`,
+`missing_fields: ["document_type"]` et
+`user_facing_message_draft: "Quel document voulez-vous préparer ?"`
+quand Gemini ne peut pas déterminer le type. Mais
+`kadiV1ConversationOrchestrator.js` ne démarrait un document que si
+`intent === "PREPARE_DOCUMENT"` ET `document_type` faisait partie des
+quatre types connus — sinon, sans document actif, la requête tombait
+sur le `SHOW_MENU` générique, jetant la question validée de Brain.
+
+**Reproduction pré-correctif** (via le vrai orchestrateur avec la vraie
+sortie normalisée de Gemini) : une IMAGE avec client/articles confirmés
+mais type de document indéterminé produisait « Que souhaitez-vous
+faire ? » (`SHOW_MENU`) au lieu de la question ciblée.
+
+**Correctif** : un nouveau branchement dans `kadiV1ConversationOrchestrator.js`
+retourne `brain_result.user_facing_message_draft` directement (à
+travers le même `validateCanonicalText()` que toute autre réponse de ce
+fichier — jamais de confiance directe dans le texte brut de Gemini),
+zéro document créé, zéro mutation. **Bogue auto-détecté pendant la
+revue et corrigé avant commit** : la première version du correctif ne
+vérifiait pas `!activeDocument` — or `normalizeStructuredExtraction`
+code toujours `intent: "CREATE_DOCUMENT"` (il n'existe pas de sortie
+`UPDATE_DOCUMENT` séparée), donc une photo de correction envoyée
+pendant qu'un document est déjà actif aurait été interceptée à tort
+comme une création de type inconnu, au lieu d'être appliquée comme
+correction au document déjà en cours (chemin existant, inchangé). Deux
+tests dédiés couvrent maintenant explicitement les deux cas
+(`tests/kadiV1ConversationOrchestrator.test.js`).
+
+**Défaut 3 (déterminé, non corrigé) : confiance globale faible sans
+`total_read`.** Quand rien n'est individuellement marqué manquant/
+incertain mais que la confiance globale est sous le seuil,
+`validateBrainResult` (le contrat Brain général, partagé par toutes les
+modalités) rejette déjà l'ensemble du résultat avec
+`BRAIN_CONFIRMATION_REQUIRED` — confirmé par script direct. Ce rejet se
+propage comme un échec d'interprétation récupérable générique
+(`INTERPRETATION_RECOVERABLE_FAILURE`, texte `SAVED_RETRY`), sans
+aucune mutation de document. Les trois exigences du résultat produit
+attendu sont déjà satisfaites (jamais promu silencieusement comme
+fiable ; jamais persisté comme donnée métier confirmée ; l'utilisateur
+reçoit un chemin de nouvelle tentative sûr) — **aucun changement de
+code n'a donc été fait ici**, conformément à l'instruction explicite de
+ne jamais affaiblir le contrat Brain général partagé avec TEXTE/
+TRANSCRIPTION pour ce seul cas visuel. Comportement documenté et
+couvert par un test dédié.
+
+**Constat résiduel LOW (non bloquant)** : quand PLUSIEURS champs sont
+concernés (ex. `total_read` incertain ET `client` incertain dans la
+même extraction), la question affichée à l'utilisateur peut porter sur
+le premier champ inséré par Gemini (potentiellement `total_read`,
+« Quel est le montant exact ? ») plutôt que sur le champ réellement
+bloquant après filtrage (`client`) — cosmétique uniquement : le document
+reste correctement bloqué tant qu'un champ légitimement requis manque,
+aucune donnée n'est jamais promue à tort. Non corrigé dans cette
+mission (nécessiterait de re-dériver la question après filtrage,
+hors périmètre du correctif minimal R1).
+
+**Preuve R1** : 9 nouveaux scénarios bout en bout
+(`tests/kadiV1ImagePdfVisionGate.test.js`) — FACTURE/DEVIS sans
+`total_read`, avec `total_read` correspondant, avec `total_read`
+incohérent, tous atteignent `READY_FOR_REVIEW` avec le total
+recalculé côté serveur ; média temporaire toujours expiré dans tous les
+cas ; type de document inconnu affiche la question validée, zéro
+document créé ; confiance globale faible sans `total_read` confirmée
+comme déjà sûre. 3 nouveaux scénarios pipeline
+(`tests/kadiV1SharedDocumentPipeline.test.js`) : réconciliation
+correspondante, réconciliation incohérente, et édition d'articles après
+réconciliation qui recalcule normalement sans jamais faire resurgir un
+`total_read` obsolète. 2 nouveaux scénarios orchestrateur
+(`tests/kadiV1ConversationOrchestrator.test.js`) couvrant précisément
+le bogue auto-détecté (`!activeDocument`). Focused : 487/487. Suite
+complète : 1634/1634. `git diff --check` : propre. Revue adversariale
+du diff complet R0+R1 : un bogue réel auto-détecté et corrigé avant
+commit (voir ci-dessus), aucun défaut HIGH/MEDIUM restant.
