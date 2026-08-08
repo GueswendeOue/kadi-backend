@@ -4531,3 +4531,172 @@ explicitement. Toujours vérifier, pour un nouveau Flow ou un nouveau
 champ de Flow, qu'une valeur serveur explicite est bien fournie à chaque
 ouverture réelle, jamais seulement au premier coup d'œil sur le texte
 affiché.
+
+## AB.1 — T5 R1 : revue adversariale indépendante — CANCEL non lié cross-session (HIGH), recharge non ouverte sur crédits insuffisants (MEDIUM), devise de pack mal étiquetée (LOW)
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — même branche isolée
+  `fix/kadi-v1-recharge-presenter-t5`, même PR brouillon #23, non
+  fusionnée, non déployée. Aucune migration Supabase touchée.
+* **Origine :** revue adversariale indépendante de la PR #23, mission
+  « KADI V1 — T5 RECHARGE PRESENTER / UX INDEPENDENT REVIEW FIX R1 ».
+
+### Constat HIGH/P0 — CANCEL non lié pouvait annuler une recharge d'un autre contexte (cross-session)
+
+Le vrai Flow RECHARGE ne porte aucun `recharge_session_id` propre :
+`cancel()` (`kadiV1ProductionInfrastructure.js`) a toujours dû résoudre
+« quelle session » à partir du seul contexte propriétaire +
+`sessionOpenedAt` (la session la plus récente créée au plus tard à ce
+moment), jamais à partir d'un document ou d'un contexte d'ouverture
+particulier — une portée strictement au niveau du **propriétaire**,
+jamais au niveau de l'écran RECHARGE précis qui vient de s'ouvrir. Or
+depuis le fix T5 R0, `recharge_actions` proposait toujours CANCEL dès
+que RECHARGE s'ouvrait — y compris pour un document B fraîchement
+`RECHARGE_REQUIRED` qui n'a **jamais** appelé SELECT_PACK et pour lequel
+**aucune session de recharge n'existe**. Si le même propriétaire avait
+par ailleurs une recharge A plus ancienne, encore `PAYMENT_PENDING`, un
+CANCEL soumis depuis l'écran RECHARGE non lié de B résolvait et annulait
+A — une recharge complètement étrangère au contexte B.
+
+**Reproduction, prouvée dans la composition de production avant
+correctif** (correctif R1 temporairement retiré via `git stash` puis
+restauré) : `driveToRechargeRequired()` échouait déjà à l'étape
+`CONFIRM_GENERATION` (défaut MEDIUM ci-dessous, chaîné), confirmant que
+l'état pré-correctif complet reproduit bien les deux défauts ensemble ;
+un test ciblé sur `CONFIRM_GENERATION` seul (R1-MEDIUM-I) confirme
+séparément que la première soumission échoue avec
+`INSUFFICIENT_CREDITS` au lieu de router immédiatement vers RECHARGE.
+
+**Corrigé, deux couches, aucune ne remplaçant l'autre :**
+
+1. **Présentation** — `recharge_actions` n'offre CANCEL que lorsqu'une
+   vraie session de recharge vient d'être créée ou est activement suivie
+   pour **cet écran précis** : `boundToSession` est vrai uniquement si
+   l'action à l'origine de la réouverture est `SELECT_PACK` ou
+   `CHECK_PAYMENT` (les deux seuls appels de production qui ne renvoient
+   jamais de document — voir `selectPack()`/`checkPayment()`). Tout autre
+   contexte d'ouverture (la route immédiate `INSUFFICIENT_CREDITS`, une
+   réouverture depuis l'historique, l'ouverture conversationnelle
+   directe) est un contexte initial, non lié, qui n'offre que
+   SELECT_PACK/CHECK_PAYMENT — jamais CANCEL.
+2. **Défense en profondeur, côté serveur** — `kadiV1FlowCommandRuntime.js`
+   rejette désormais CANCEL, avant même d'appeler `cancel()`, dès que le
+   `documentContext` de la session fiable (posé uniquement par
+   `kadiV1FlowReplyRuntime.js` depuis l'enregistrement de session
+   lui-même, jamais fourni par le client) montre
+   `document_state === "RECHARGE_REQUIRED"` — signature exacte d'un
+   contexte RECHARGE initial et non lié. Une session RECHARGE rouverte
+   après SELECT_PACK/CHECK_PAYMENT ne porte jamais de contexte document
+   du tout, donc cette défense ne bloque jamais une annulation légitime
+   et déjà liée. Ne fait **jamais** confiance à `pack_id`/
+   `payment_reference` comme autorité d'annulation, et n'ajoute **aucun**
+   `recharge_session_id` côté client.
+
+Les protections R1/R2/R3 de T3 (`sessionOpenedAt`, doublon exact,
+résolution de cible sans repli) restent **totalement inchangées** —
+cette correction ajoute une vérification *avant* elles, jamais une
+modification de leur propre logique.
+
+### Constat MEDIUM/P1 — crédits insuffisants n'ouvrait jamais RECHARGE, seulement un texte générique
+
+`kadiV1GenerationLifecycleService.js`'s `runConfirmation` persiste avec
+succès la transition `AWAITING_GENERATION_CONFIRMATION` →
+`RECHARGE_REQUIRED` (`DOCUMENT_EVENTS.REQUIRE_RECHARGE`) **avant** de
+retourner `{ok:false, error:"INSUFFICIENT_CREDITS"}` — un échec technique
+en apparence, alors que le document a déjà atteint un état métier
+authentique et géré. Or `kadiV1WebhookRuntime.js`'s `handleMessage()`
+route tout résultat `!result.ok` de `flowReplyRuntime.handle()` vers
+`recover()` → `presentRecoverableError()`, qui n'envoie qu'un texte
+générique (« Je n'ai pas pu terminer cette étape. Réessayez dans un
+instant. », `INSUFFICIENT_CREDITS` n'étant pas dans
+`GENERATION_RETRY_REASONS`) et **n'ouvre jamais aucun Flow** — confirmé
+par lecture directe du code dans la fiche AB (défaut de présentation
+d'origine). L'utilisateur ne voyait donc RECHARGE qu'en rouvrant
+manuellement le document bloqué depuis l'historique — un parcours de
+conversion recharge cassé au moment le plus commun où un utilisateur en
+a besoin.
+
+**Corrigé**, à la frontière Flow/runtime, sans toucher la sémantique du
+service de génération lui-même (les autres appelants —
+`resumePendingGeneration`, la reprise après échec de rendu — appellent
+`kadiV1GenerationLifecycleService.js` directement, jamais via cet
+adaptateur, et restent totalement inchangés) :
+`kadiV1RuntimeAdapters.js`'s `createKadiV1GenerationRuntimeAdapter`
+reçoit désormais un `documentRepository` optionnel et étroit (la même
+instance déjà construite par le bootstrap), utilisé **uniquement** pour
+relire le document APRÈS le retour de `confirmOrRetryGeneration()`,
+jamais pour muter quoi que ce soit ni recréer la logique de réservation.
+Sur `INSUFFICIENT_CREDITS`, relit le document et, uniquement si son
+statut **actuel** est authentiquement `RECHARGE_REQUIRED` (jamais déduit
+de la seule chaîne d'erreur), traduit cela en un résultat réussi géré
+(`{document, recharge_required:true, next_flow_key:"RECHARGE"}`), qui
+route immédiatement vers le Flow RECHARGE authoritative (solde/packs
+T6/catalogue réels, aucun CANCEL — contexte initial non lié). Le texte
+utilisateur devient : « Votre solde est insuffisant pour générer ce
+document. Choisissez une recharge pour continuer. » — jamais « La
+génération du document est terminée. » ni le texte technique générique.
+
+**Rejeu exact confirmé sûr.** Une seconde soumission identique du même
+webhook `CONFIRM_GENERATION` ré-exécute `validateConfirmation` depuis
+zéro (aucune ligne de tentative n'a jamais été créée pour une réservation
+échouée, donc le dédoublonnage `store.findByQuoteId` en tête de
+`runConfirmation` ne trouve jamais de correspondance). Les transitions
+d'état pures ne font jamais avancer `document.version`
+(`kadiV1DocumentDomain.js`'s `transitionDocument` —
+`REQUIRE_RECHARGE` en est une), donc `documentVersion` capturé au
+rejeu correspond toujours à la version courante et la vérification de
+version réussit ; c'est la vérification de statut suivante qui échoue,
+comme `GENERATION_CONFIRMATION_STATE_INVALID` (et
+`DOCUMENT_VERSION_CONFLICT` est également géré, par prudence, si cet
+ordre venait à changer). Retrouver le même statut `RECHARGE_REQUIRED`
+prouve qu'il s'agit d'un rejeu sûr de la même transition déjà appliquée
+— marqué `duplicate:true`, aucune deuxième transition de document, aucune
+deuxième réservation, aucune deuxième session de recharge, aucun texte
+d'erreur générique. Tout autre statut courant (`CANCELLED`,
+`GENERATION_IN_PROGRESS`, `DELIVERED`, …) est laissé complètement
+intact et l'erreur d'origine se propage normalement.
+
+### Constat LOW — étiquette de devise de pack toujours codée en dur « FCFA »
+
+`resolveRechargePackOptions()` ignorait `pack.currency` (validé comme
+code à 3 lettres réel par `createRechargePackCatalog`) et étiquetait
+toujours « FCFA ». **Corrigé** : XOF continue de s'afficher « FCFA »
+(seule devise Kadi V1 aujourd'hui, déjà utilisée partout ailleurs dans
+l'app), toute autre devise validée s'affiche avec son propre code — plus
+jamais une étiquette fabriquée. **Aucune valeur de pack actuelle
+modifiée** : tous les packs existants sont XOF.
+
+### Preuve
+
+* `tests/kadiV1RechargePresenterE2E.test.js` étendu (28 scénarios au
+  total, +6 pour R1) : cross-session CANCEL non lié prouvé et corrigé
+  (A intacte, B intact, échec fermé, zéro mutation portefeuille/
+  réservation/session) ; CANCEL lié après SELECT_PACK n'affecte que sa
+  propre session ; réouverture `CHECK_PAYMENT` en attente reste une
+  cible stable et liée ; rejeu exact de `CONFIRM_GENERATION` sûr
+  (zéro deuxième mutation, marqué duplicate) ; réouverture depuis
+  l'historique toujours fonctionnelle et toujours un contexte initial
+  sans CANCEL ; devise non-XOF étiquetée correctement. **Reproduction
+  avant correctif prouvée concrètement** (`git stash` des 4 fichiers de
+  production R1 puis restauration) : les trois scénarios cibles échouent
+  exactement comme attendu contre le code réel non corrigé.
+* Focused (fichiers concernés incluant présentateur, runtime adapters,
+  flow command runtime, bootstrap, T3, T6, historique, composition) :
+  379/379. Suite complète : 1526/1526. `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+`ownerWaId` reste la seule source de portée pour la relecture du document
+et pour `cancel()`. Le `documentContext` utilisé par la défense en
+profondeur provient exclusivement de l'enregistrement de session côté
+serveur, jamais d'un champ client. Aucun `recharge_session_id` n'est
+jamais accepté depuis un payload client. Aucune migration ni mutation
+Supabase, Meta, Render ou WhatsApp réelle.
+
+### Suivi requis (hors périmètre de cette correction)
+
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant sous `resumePolicy: "REQUIRE_CONFIRMATION"`,
+  toujours non corrigé.
+* Application de la migration T6 à Supabase de production, dans l'ordre
+  sûr établi en AA.3 (migration d'abord) — toujours hors périmètre.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

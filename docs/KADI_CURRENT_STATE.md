@@ -833,6 +833,37 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   (1520/1520), `git diff --check` propre. Voir fiche AB de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-08) : T5 R1 (revue adversariale indépendante de
+  la PR #23) — deux défauts confirmés et corrigés, un LOW corrigé.**
+  Même branche, même PR #23, toujours **`IMPLEMENTED_NOT_MERGED`, aucune
+  migration touchée.** **HIGH/P0 :** `recharge_actions` offrait toujours
+  CANCEL dès que RECHARGE s'ouvrait, y compris pour un document
+  fraîchement `RECHARGE_REQUIRED` n'ayant jamais appelé SELECT_PACK —
+  `cancel()` résout sa cible par propriétaire + `sessionOpenedAt` seuls
+  (jamais par document), donc un CANCEL soumis depuis ce contexte non lié
+  pouvait annuler une recharge plus ancienne et complètement étrangère du
+  même propriétaire. **Corrigé**, deux couches : CANCEL n'est offert que
+  lorsqu'une vraie session de recharge vient d'être créée pour cet écran
+  précis (après SELECT_PACK/CHECK_PAYMENT) ; défense en profondeur
+  côté serveur (`kadiV1FlowCommandRuntime.js`) rejetant tout CANCEL dont
+  le contexte de session fiable montre un document `RECHARGE_REQUIRED`,
+  avant même d'appeler `cancel()`. R1/R2/R3 de T3 confirmés inchangés.
+  **MEDIUM/P1 :** confirmé — `INSUFFICIENT_CREDITS` n'ouvrait jamais le
+  Flow RECHARGE, seulement un texte générique de récupération. **Corrigé**
+  à la frontière Flow/runtime (`kadiV1RuntimeAdapters.js`'s adaptateur de
+  génération, jamais le service de génération lui-même) : relit le
+  document après l'échec et, uniquement si son statut actuel est
+  authentiquement `RECHARGE_REQUIRED`, route immédiatement vers RECHARGE
+  avec une copie truthful — plus de détour par l'historique. Rejeu exact
+  confirmé sûr (zéro deuxième mutation, marqué duplicate). **LOW :**
+  l'étiquette de pack codait en dur « FCFA » quelle que soit
+  `pack.currency` — corrigé, aucune valeur de pack actuelle modifiée.
+  **Statut : `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (379/379) puis
+  suite complète (1526/1526), `git diff --check` propre. Reproduction
+  avant correctif prouvée concrètement (`git stash` des 4 fichiers de
+  production R1 puis restauration). Voir fiche AB.1 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 

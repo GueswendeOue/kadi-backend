@@ -828,13 +828,56 @@ déploiement Render incluant T5).
     conditions réelles (validation téléphone) après déploiement, incluant
     si possible un cas à crédits réellement retenus et un cas
     d'annulation.
-11. **[EN ATTENTE]** Nouveau constat backlog séparé, non corrigé dans T5
-    — au moment précis où `CONFIRM_GENERATION` échoue avec
-    `INSUFFICIENT_CREDITS`, l'utilisateur ne voit qu'un texte générique
-    de récupération, sans Flow RECHARGE ni invitation à recharger ; voir
-    fiche AB pour le détail complet.
+11. **[FAIT — R1]** Le constat « `CONFIRM_GENERATION`/`INSUFFICIENT_CREDITS`
+    n'ouvrait jamais RECHARGE » a été reclassé MEDIUM/P1 et corrigé dans
+    T5 R1 (voir ci-dessous) — n'est plus un suivi séparé.
 12. **[EN ATTENTE]** Suivi backlog séparé, non corrigé — voir item 12 de
     la section T6 ci-dessus, `RECHARGE_RESUME_AVAILABLE_BALANCE_001`.
+
+### R1 — revue adversariale indépendante de la PR #23 : CANCEL non lié (HIGH), recharge non ouverte sur crédits insuffisants (MEDIUM), devise de pack (LOW)
+
+* **Statut R1 : `IMPLEMENTED_NOT_MERGED`** — même branche, même PR #23,
+  aucune migration touchée. **Origine :** mission « KADI V1 — T5
+  RECHARGE PRESENTER / UX INDEPENDENT REVIEW FIX R1 ».
+13. **[FAIT]** HIGH/P0 reproduit puis corrigé avant correctif
+    (`git stash` des 4 fichiers de production R1 puis restauration) :
+    `recharge_actions` offrait CANCEL même pour un document B fraîchement
+    `RECHARGE_REQUIRED` n'ayant jamais appelé SELECT_PACK — `cancel()`
+    résolvant sa cible par propriétaire + `sessionOpenedAt` seuls (jamais
+    par document), un CANCEL depuis cet écran non lié pouvait annuler une
+    recharge A plus ancienne et complètement étrangère du même
+    propriétaire. **Corrigé**, deux couches : (a) présentation — CANCEL
+    n'est offert que lorsqu'une vraie session de recharge est bound à cet
+    écran précis (après SELECT_PACK/CHECK_PAYMENT) ; (b) défense en
+    profondeur côté serveur (`kadiV1FlowCommandRuntime.js`) — rejette tout
+    CANCEL dont le `documentContext` de session fiable montre
+    `RECHARGE_REQUIRED`, avant même d'appeler `cancel()`. T3 R1/R2/R3
+    confirmés inchangés.
+14. **[FAIT]** MEDIUM/P1 confirmé et corrigé : `INSUFFICIENT_CREDITS`
+    n'ouvrait jamais le Flow RECHARGE, seulement un texte générique de
+    récupération, malgré une transition `RECHARGE_REQUIRED` déjà
+    persistée avec succès. **Corrigé** à la frontière Flow/runtime
+    (`kadiV1RuntimeAdapters.js`'s adaptateur de génération — le service de
+    génération lui-même, et ses autres appelants comme
+    `resumePendingGeneration`, restent complètement inchangés) : relit le
+    document après l'échec, et route immédiatement vers RECHARGE
+    uniquement si son statut actuel est authentiquement
+    `RECHARGE_REQUIRED`, avec une copie truthful. Rejeu exact confirmé sûr
+    (zéro deuxième mutation, marqué duplicate).
+15. **[FAIT]** LOW corrigé : l'étiquette de pack codait en dur « FCFA »
+    quelle que soit `pack.currency` — corrigé (XOF reste « FCFA », toute
+    autre devise validée s'affiche avec son propre code). Aucune valeur de
+    pack actuelle modifiée.
+16. **[FAIT]** Tests ciblés (379/379) puis suite complète (1526/1526),
+    `git diff --check` propre.
+17. **[FAIT]** Revue adversariale du diff complet R0+R1 — aucun défaut
+    HIGH/MEDIUM restant.
+18. **[EN ATTENTE]** Fusion dans `main`.
+19. **[EN ATTENTE]** Déploiement Render — même ordre que ci-dessus (item
+    9), migration T6 d'abord si pas déjà appliquée.
+20. **[EN ATTENTE]** Une vraie annulation liée (après SELECT_PACK) et une
+    vraie tentative d'annulation non liée refusée, observées en
+    conditions réelles après déploiement.
 
 ## Déploiement Render
 
