@@ -268,16 +268,38 @@ function createRechargeService({
       const document = await documents.getDocumentById({ documentId: link.value.document_id, ownerWaId });
       const quote = await quoteService.getGenerationQuote({ quoteId: link.value.quote_id, ownerWaId });
       const time = now();
-      const balance = await store.getBalance({ ownerWaId });
-      const valid = document.ok && quote.ok && time.ok && balance.ok && document.value.status === "RECHARGE_REQUIRED" &&
+      // RECHARGE_RESUME_AVAILABLE_BALANCE_001: the auto-resume precheck
+      // must consult the SAME available-balance authority T6 introduced
+      // (total_credits - reserved_credits = available_credits) — never a
+      // second, independently-computed notion of spendability, and never
+      // the raw wallet total, which ignores credits another live
+      // generation already holds. This remains only a precheck: the
+      // real, atomic financial authority is still
+      // generationLifecycleService.confirmGeneration()'s own wallet
+      // reservation call below (kadiV1WalletReservationService.js) — a
+      // race that lands between this read and that call is still caught
+      // there, safely, exactly as it already is for a manually-confirmed
+      // (REQUIRE_CONFIRMATION) resume. The shape is also independently
+      // re-validated here rather than trusted blindly, so a malformed or
+      // impossible balance (e.g. a future repository bug) fails this
+      // precheck closed instead of silently reading `undefined` as
+      // "sufficient".
+      const balance = await store.getAvailableBalance({ ownerWaId });
+      const balanceShapeValid = balance.ok &&
+        Number.isSafeInteger(balance.value?.total_credits) && balance.value.total_credits >= 0 &&
+        Number.isSafeInteger(balance.value?.reserved_credits) && balance.value.reserved_credits >= 0 &&
+        Number.isSafeInteger(balance.value?.available_credits) && balance.value.available_credits >= 0 &&
+        balance.value.total_credits - balance.value.reserved_credits === balance.value.available_credits;
+      const valid = document.ok && quote.ok && time.ok && balanceShapeValid && document.value.status === "RECHARGE_REQUIRED" &&
         document.value.version === link.value.document_version && quote.value.status === "ACTIVE" &&
         quote.value.document_id === link.value.document_id && quote.value.document_version === link.value.document_version &&
         quote.value.total_credits === link.value.generation_cost && quote.value.pricing_version === link.value.pricing_version &&
-        Date.parse(quote.value.expires_at) > time.milliseconds && balance.value >= quote.value.total_credits;
+        Date.parse(quote.value.expires_at) > time.milliseconds && balance.value.available_credits >= quote.value.total_credits;
       if (!valid) {
         const reason = !document.ok || document.value.version !== link.value.document_version ? "DOCUMENT_CHANGED" :
           !quote.ok || quote.value.status !== "ACTIVE" || Date.parse(quote.value.expires_at) <= (time.milliseconds || 0) ? "QUOTE_NOT_ACTIVE" :
-            quote.value.total_credits !== link.value.generation_cost || quote.value.pricing_version !== link.value.pricing_version ? "COST_CHANGED" : "BALANCE_INSUFFICIENT";
+            quote.value.total_credits !== link.value.generation_cost || quote.value.pricing_version !== link.value.pricing_version ? "COST_CHANGED" :
+              !balanceShapeValid ? "BALANCE_INVALID" : "BALANCE_INSUFFICIENT";
         await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["WAITING_FOR_CREDIT", "PENDING", "FAILED"], changes: { resume_status: "PENDING", last_error_code: reason } });
         return ok(session.value, { resume: { automatic: false, reason } });
       }
