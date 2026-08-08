@@ -864,6 +864,39 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   production R1 puis restauration). Voir fiche AB.1 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet et la preuve.
+* **Mise à jour (2026-08-08) : T5 R2 (revue adversariale indépendante de
+  la PR #23) — un HIGH et un MEDIUM confirmés et corrigés.** Même
+  branche, même PR #23, toujours **`IMPLEMENTED_NOT_MERGED`, aucune
+  migration touchée.** **HIGH/P0 (trou restant après R1) :** l'ouverture
+  RECHARGE conversationnelle directe ne touche jamais de document, donc
+  la défense R1 (basée sur `documentContext`) n'avait aucun signal sur
+  lequel agir — un CANCEL forgé depuis cette session pouvait toujours
+  annuler une recharge étrangère plus ancienne du même propriétaire
+  (**prouvé concrètement avant correctif**, `git stash`/restauration
+  contre le code réel R1). **Corrigé** : le CANCEL terminal est retiré du
+  Flow RECHARGE dans **tous** les contextes (y compris après
+  SELECT_PACK/CHECK_PAYMENT, qui n'offraient CANCEL qu'en R1) — une
+  liaison fiable exigerait un `recharge_session_id` persistant dans le
+  modèle de session, une migration explicitement hors périmètre.
+  `kadiV1FlowCommandRuntime.js` rejette désormais RECHARGE/CANCEL de
+  façon inconditionnelle, côté serveur. La primitive de plus bas niveau
+  (`rechargeRuntime.cancel()`) reste inchangée et continue d'être testée
+  directement. **MEDIUM/P1 :** le correctif R1 classait à tort
+  `DOCUMENT_VERSION_CONFLICT` comme un rejeu sûr dès que le document
+  relu était `RECHARGE_REQUIRED`, sans vérifier que sa version/son type
+  correspondaient encore à la commande d'origine — une commande obsolète
+  pour une version N aurait pu être classée comme rejeu sûr d'une
+  confirmation postérieure et indépendante ayant atteint la version N+1.
+  **Corrigé** : `DOCUMENT_VERSION_CONFLICT` n'est plus jamais classé
+  comme rejeu ; `GENERATION_CONFIRMATION_STATE_INVALID` ne l'est que si
+  un nouveau signal fiable `exactReplay` (propagé depuis le signal de
+  rejeu exact authentique de `kadiV1FlowReplyRuntime.js`, jamais fourni
+  par le client) est vrai **et** que la version/le type relus
+  correspondent exactement à la commande d'origine. **Statut :
+  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (483/483) puis suite complète
+  (1527/1527), `git diff --check` propre. Voir fiche AB.2 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 

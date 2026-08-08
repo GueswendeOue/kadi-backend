@@ -871,13 +871,67 @@ déploiement Render incluant T5).
 16. **[FAIT]** Tests ciblés (379/379) puis suite complète (1526/1526),
     `git diff --check` propre.
 17. **[FAIT]** Revue adversariale du diff complet R0+R1 — aucun défaut
+    HIGH/MEDIUM restant au moment de R1 (un HIGH et un MEDIUM
+    supplémentaires ont ensuite été trouvés et corrigés en R2 — voir
+    ci-dessous).
+18. **[FAIT — R2]** Fusion dans `main` : toujours en attente, voir R2.
+19. **[FAIT — R2]** Déploiement Render : toujours en attente, voir R2.
+20. **[OBSOLÈTE — R2]** « Une vraie annulation liée (après SELECT_PACK) » :
+    obsolète — R2 retire le CANCEL terminal du Flow RECHARGE entièrement,
+    y compris après SELECT_PACK. Voir R2 ci-dessous.
+
+### R2 — revue adversariale indépendante de la PR #23 : CANCEL non lié restant (conversationnel, HIGH), classification de rejeu trop large (MEDIUM)
+
+* **Statut R2 : `IMPLEMENTED_NOT_MERGED`** — même branche, même PR #23,
+  aucune migration touchée. **Origine :** mission « KADI V1 — T5
+  RECHARGE PRESENTER / UX INDEPENDENT REVIEW FIX R2 ».
+21. **[FAIT]** HIGH/P0 reproduit puis corrigé avant correctif (`git
+    stash` des 4 fichiers de production R2 puis restauration contre le
+    code réel R1) : l'ouverture RECHARGE conversationnelle directe ne
+    touche jamais de document — la défense R1
+    (`documentContext?.document_state === "RECHARGE_REQUIRED"`) n'avait
+    donc aucun signal sur lequel agir, et un CANCEL forgé depuis cette
+    session pouvait toujours annuler une recharge étrangère plus
+    ancienne du même propriétaire. **Corrigé** : le CANCEL terminal est
+    retiré du Flow RECHARGE dans tous les contextes (y compris après
+    SELECT_PACK/CHECK_PAYMENT) — une liaison fiable exigerait un
+    `recharge_session_id` persistant dans le modèle de session
+    (`kadiV1ConversationSession.js` n'en a aucun aujourd'hui), une
+    migration de schéma explicitement hors périmètre de cette mission.
+    `kadiV1FlowCommandRuntime.js` rejette désormais RECHARGE/CANCEL de
+    façon inconditionnelle, côté serveur
+    (`KADI_V1_RECHARGE_CANCEL_NOT_EXPOSED`), avant même d'appeler
+    `rechargeRuntime.cancel()`. La primitive de plus bas niveau
+    (`kadiV1ProductionInfrastructure.js`'s `cancel()`) reste
+    intentionnellement inchangée ; les tests R1/R3 de T3 sont conservés
+    en rigueur mais désormais exercés en l'appelant directement,
+    contournant le point d'entrée Flow désormais fermé.
+22. **[FAIT]** MEDIUM/P1 confirmé et corrigé : le correctif R1 classait
+    `GENERATION_CONFIRMATION_STATE_INVALID` **et**
+    `DOCUMENT_VERSION_CONFLICT` comme rejeu sûr dès qu'une relecture
+    montrait `RECHARGE_REQUIRED`, sans exiger que la
+    version/le type relus correspondent encore à la commande d'origine —
+    une commande obsolète pour la version N aurait pu être classée à
+    tort comme rejeu sûr d'une confirmation postérieure et indépendante
+    ayant atteint la version N+1. **Corrigé** :
+    `DOCUMENT_VERSION_CONFLICT` n'est plus jamais classé comme rejeu ;
+    `GENERATION_CONFIRMATION_STATE_INVALID` ne l'est que si un nouveau
+    signal fiable `exactReplay` (propagé depuis le signal de rejeu exact
+    authentique `consumed.duplicate` de `kadiV1FlowReplyRuntime.js`,
+    jamais fourni par le client) est vrai **et** que la version/le type
+    relus correspondent exactement à `expectedVersion`/`documentType` de
+    la commande d'origine. `INSUFFICIENT_CREDITS` (premier passage
+    authentique) reste inchangé, sans exiger `exactReplay`.
+23. **[FAIT]** Tests ciblés (483/483) puis suite complète (1527/1527),
+    `git diff --check` propre.
+24. **[FAIT]** Revue adversariale du diff complet R0+R1+R2 — aucun défaut
     HIGH/MEDIUM restant.
-18. **[EN ATTENTE]** Fusion dans `main`.
-19. **[EN ATTENTE]** Déploiement Render — même ordre que ci-dessus (item
+25. **[EN ATTENTE]** Fusion dans `main`.
+26. **[EN ATTENTE]** Déploiement Render — même ordre que ci-dessus (item
     9), migration T6 d'abord si pas déjà appliquée.
-20. **[EN ATTENTE]** Une vraie annulation liée (après SELECT_PACK) et une
-    vraie tentative d'annulation non liée refusée, observées en
-    conditions réelles après déploiement.
+27. **[EN ATTENTE]** Une vraie tentative de CANCEL refusée (depuis
+    n'importe quel contexte RECHARGE), observée en conditions réelles
+    après déploiement.
 
 ## Déploiement Render
 
