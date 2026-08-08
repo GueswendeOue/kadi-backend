@@ -137,10 +137,11 @@ function fakePaymentProvider() {
 // document's own eventual quote cost is always exactly 8 credits (pricing
 // policy below), matching the mission's "available precheck = 8, generation
 // cost = 8" scenario when balance=8.
-function buildFixture({ balance = 8, otherOwnerBalance = 0, resumePolicy = "AUTO_RESUME_IF_VALID" } = {}) {
+function buildFixture({ balance = 8, otherOwnerBalance = 0, resumePolicy = "AUTO_RESUME_IF_VALID", documentsOverride = null } = {}) {
   const clock = () => NOW;
   const domain = createDocumentDomain({ clock });
-  const documents = createInMemoryV1DocumentRepository();
+  const realDocuments = createInMemoryV1DocumentRepository();
+  const documents = documentsOverride ? documentsOverride(realDocuments) : realDocuments;
 
   const previewRepository = createInMemoryV1PreviewRepository();
   const previewService = createPreviewService({ documentRepository: documents, previewRepository, domain, clock, idFactory: (kind) => `${kind}:${nextKey(kind)}` });
@@ -182,10 +183,13 @@ function buildFixture({ balance = 8, otherOwnerBalance = 0, resumePolicy = "AUTO
   const paymentProvider = fakePaymentProvider();
   const packCatalog = createRechargePackCatalog({ packs: [{ pack_id: "TEST_10", amount: 2000, currency: "XOF", credits: 10, pricing_version: "test-v1", active: true }] });
 
-  const rechargeService = createRechargeService({
-    repository: rechargeRepository, packCatalog, paymentProvider, documentRepository: documents,
-    quoteService, generationLifecycleService, domain, resumePolicy, clock,
-  });
+  function makeService(repoOverride) {
+    return createRechargeService({
+      repository: repoOverride || rechargeRepository, packCatalog, paymentProvider, documentRepository: documents,
+      quoteService, generationLifecycleService, domain, resumePolicy, clock,
+    });
+  }
+  const rechargeService = makeService();
 
   async function driveToRechargeRequired(ownerWaId, suffix) {
     let document = domain.createDocument({
@@ -240,9 +244,49 @@ function buildFixture({ balance = 8, otherOwnerBalance = 0, resumePolicy = "AUTO
   }
 
   return {
-    domain, documents, previewRepository, generationRepo, walletReservationService, generationLifecycleService,
-    rechargeRepository, rechargeService, barrierHolder,
+    domain, documents, realDocuments, previewRepository, generationRepo, walletReservationService, generationLifecycleService,
+    rechargeRepository, rechargeService, barrierHolder, makeService,
     driveToRechargeRequired, linkAndConfirmRecharge,
+  };
+}
+
+// AUTO_RESUME_CRASH_RECONCILIATION_001: wraps the real in-memory document
+// repository's persistTransition — lets the real commit happen, then
+// (armed.value===true, matching eventType) throws PROCESS_CRASH before
+// returning to the caller, never rolling back the already-persisted
+// transition. Mirrors exactly how a real process crash would leave
+// durable state: the write landed, but the caller never got to react to
+// it or make its own next write.
+function wrapDocumentsWithCrash(realDocuments, { crashOnEventType, armed }) {
+  return {
+    ...realDocuments,
+    async persistTransition(command) {
+      const result = await realDocuments.persistTransition(command);
+      if (armed.value && result.ok && command.eventType === crashOnEventType) {
+        armed.value = false;
+        throw new Error("SIMULATED_PROCESS_CRASH");
+      }
+      return result;
+    },
+  };
+}
+
+// Wraps the recharge repository's own updateResumeLink — lets the real
+// commit happen for every OTHER call, but throws PROCESS_CRASH on the
+// first call matching the given resume_status change, simulating a crash
+// strictly AFTER the real financial authority already completed but
+// BEFORE this service's own bookkeeping could finish.
+function wrapRechargeRepositoryWithCrash(rechargeRepository, { crashOnResumeStatus, armed }) {
+  const realUpdateResumeLink = rechargeRepository.updateResumeLink.bind(rechargeRepository);
+  return {
+    ...rechargeRepository,
+    async updateResumeLink(command) {
+      if (armed.value && command.changes?.resume_status === crashOnResumeStatus) {
+        armed.value = false;
+        throw new Error("SIMULATED_PROCESS_CRASH");
+      }
+      return realUpdateResumeLink(command);
+    },
   };
 }
 
@@ -509,4 +553,234 @@ test("R1-6. A document already progressed to GENERATION_IN_PROGRESS through some
   assert.equal(afterAttempt.value.status, "GENERATION_IN_PROGRESS", "the document's real, in-flight state is never disturbed");
   const rechargeState = f.rechargeRepository.inspect();
   assert.equal(rechargeState.sessions[0].status, "RESUME_PENDING", "a failed-closed resume never mismarks the session as RESUMED");
+});
+
+// =====================================================================
+// AUTO_RESUME_CRASH_RECONCILIATION_001 (independent R2 review): a process
+// crash strictly between two of resumePendingGeneration's own bookkeeping
+// writes leaves durable state a later, reconstructed service instance
+// must reconcile from -- never guessed from in-memory flags, since the
+// serial() queue does not survive a restart. See
+// docs/KADI_ENGINEERING_MEMORY.md fiche AH for the confirmed pre-fix
+// reproduction (git stash) this closes.
+// =====================================================================
+
+// 7. Crash after RECHARGE_CONFIRMED commits, before the resume link's own
+// STARTED write -- CASE A. Sufficient credits: the reconstructed service
+// must reconcile the link to STARTED (reusing the SAME round identity)
+// and reach a normal, exactly-once success.
+test("R2-1. Crash after RECHARGE_CONFIRMED commit, before link STARTED: reconstructed service resumes normally, exactly once", async () => {
+  const armed = { value: true };
+  const f = buildFixture({ balance: 8, documentsOverride: (real) => wrapDocumentsWithCrash(real, { crashOnEventType: "RECHARGE_CONFIRMED", armed }) });
+  const { document, quote } = await f.driveToRechargeRequired(OWNER, "r2-1");
+  const created = await f.rechargeService.createRechargeSession({
+    ownerWaId: OWNER, packId: "TEST_10", idempotencyKey: "recharge:create:r2-1",
+    document: { documentId: document.document_id, documentVersion: document.version, quoteId: quote.quote_id, generationConfirmationId: "confirm:r2-1", missingCredits: quote.total_credits },
+  });
+  assert.equal(created.ok, true, created.error);
+  const initiated = await f.rechargeService.initiatePayment({ rechargeSessionId: created.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(initiated.ok, true, initiated.error);
+
+  let crashed = false;
+  try {
+    await f.rechargeService.confirmPaymentEvent({
+      rechargeSessionId: initiated.value.recharge_session_id,
+      rawEvent: { provider: "SYNTHETIC_PAY", provider_payment_id: initiated.value.provider_payment_id, provider_event_id: "event:r2-1", merchant_reference: initiated.value.merchant_reference, amount: 2000, currency: "XOF", status: "CONFIRMED", verified: true, occurred_at: NOW, metadata: {} },
+    });
+  } catch (error) { crashed = error.message === "SIMULATED_PROCESS_CRASH"; }
+  assert.equal(crashed, true, "the crash must have been genuinely simulated");
+  const docAfterCrash = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterCrash.value.status, "AWAITING_GENERATION_CONFIRMATION", "RECHARGE_CONFIRMED already committed before the crash");
+  const linkAfterCrash = await f.rechargeRepository.getResumeLink({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(linkAfterCrash.value.resume_status, "WAITING_FOR_CREDIT", "the STARTED write never landed");
+  assert.equal(linkAfterCrash.value.generation_started, false);
+
+  // Reconstruct: a brand new createRechargeService instance around the
+  // SAME persistent repositories -- the in-memory serial() queue from the
+  // crashed instance is gone, proving reconciliation comes from persisted
+  // state alone.
+  const reconstructed = f.makeService();
+  const retried = await reconstructed.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(retried.resume.automatic, true);
+  const docAfterRetry = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterRetry.value.status, "DELIVERED");
+  const genState = f.generationRepo.inspect();
+  assert.equal(genState.attempts.length, 1, "exactly one generation attempt");
+  assert.equal(genState.reservations.filter((r) => r.quote_id === quote.quote_id).length, 1, "exactly one reservation");
+  const linkAfterRetry = await f.rechargeRepository.getResumeLink({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(linkAfterRetry.value.resume_status, "RESUMED", "the link itself must be genuinely reconciled, not just the session");
+  const sessionAfterRetry = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(sessionAfterRetry.value.status, "RESUMED");
+});
+
+// 8-12. Same crash window, but a real competing reservation lands before
+// the reconstructed retry, so the real downstream reservation genuinely
+// returns INSUFFICIENT_CREDITS -- bookkeeping must stay safely retryable
+// (no stale idempotency-key dead end), and a further retry after the
+// competing hold is released must succeed.
+test("R2-2. Same crash window, then real INSUFFICIENT_CREDITS after restart: bookkeeping stays safely retryable, no stale dead end", async () => {
+  const armed = { value: true };
+  const f = buildFixture({ balance: 8, documentsOverride: (real) => wrapDocumentsWithCrash(real, { crashOnEventType: "RECHARGE_CONFIRMED", armed }) });
+  const { document, quote } = await f.driveToRechargeRequired(OWNER, "r2-2");
+  const created = await f.rechargeService.createRechargeSession({
+    ownerWaId: OWNER, packId: "TEST_10", idempotencyKey: "recharge:create:r2-2",
+    document: { documentId: document.document_id, documentVersion: document.version, quoteId: quote.quote_id, generationConfirmationId: "confirm:r2-2", missingCredits: quote.total_credits },
+  });
+  const initiated = await f.rechargeService.initiatePayment({ rechargeSessionId: created.value.recharge_session_id, ownerWaId: OWNER });
+  let crashed = false;
+  try {
+    await f.rechargeService.confirmPaymentEvent({
+      rechargeSessionId: initiated.value.recharge_session_id,
+      rawEvent: { provider: "SYNTHETIC_PAY", provider_payment_id: initiated.value.provider_payment_id, provider_event_id: "event:r2-2", merchant_reference: initiated.value.merchant_reference, amount: 2000, currency: "XOF", status: "CONFIRMED", verified: true, occurred_at: NOW, metadata: {} },
+    });
+  } catch (error) { crashed = error.message === "SIMULATED_PROCESS_CRASH"; }
+  assert.equal(crashed, true);
+
+  const competing = await f.walletReservationService.reserveCredits({ ownerWaId: OWNER, quoteId: "quote:competing:r2-2", amount: 1, idempotencyKey: "reserve:competing:r2-2" });
+  assert.equal(competing.ok, true, competing.error);
+
+  const svc2 = f.makeService();
+  const retried = await svc2.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(retried.ok, false);
+  assert.equal(retried.error, "GENERATION_RESUME_FAILED");
+  const docAfter = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfter.value.status, "RECHARGE_REQUIRED", "the real authority's own REQUIRE_RECHARGE bounce-back");
+  const sessionAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(sessionAfter.value.status, "RESUME_PENDING", "never falsely marked RESUMED");
+
+  const released = await f.walletReservationService.releaseReservation({ reservationId: competing.value.reservation_id, idempotencyKey: "release:competing:r2-2" });
+  assert.equal(released.ok, true, released.error);
+  const svc3 = f.makeService();
+  const finalRetry = await svc3.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(finalRetry.ok, true, finalRetry.error, "no stale idempotency-key dead end once the conflict genuinely resolves");
+  const docFinal = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docFinal.value.status, "DELIVERED");
+  const genState = f.generationRepo.inspect();
+  assert.equal(genState.attempts.length, 1, "exactly one generation attempt, across the crash, the race, and the eventual success");
+});
+
+// 13-17. The real generation genuinely reaches DELIVERED, but the process
+// crashes strictly before resumePendingGeneration's own bookkeeping
+// (finalizeResumedSession) can mark the link/session RESUMED --
+// reconstruction must authoritatively recognize this exact round's own
+// completion and reconcile, WITHOUT generating a second time.
+test("R2-3. Real generation reaches DELIVERED, crash before bookkeeping finalization: reconstructed service reconciles the same round, never regenerates", async () => {
+  const f = buildFixture({ balance: 8 });
+  const { document, quote } = await f.driveToRechargeRequired(OWNER, "r2-3");
+  const armed = { value: true };
+  const crashRepo = wrapRechargeRepositoryWithCrash(f.rechargeRepository, { crashOnResumeStatus: "RESUMED", armed });
+  const svc1 = f.makeService(crashRepo);
+  const created = await svc1.createRechargeSession({
+    ownerWaId: OWNER, packId: "TEST_10", idempotencyKey: "recharge:create:r2-3",
+    document: { documentId: document.document_id, documentVersion: document.version, quoteId: quote.quote_id, generationConfirmationId: "confirm:r2-3", missingCredits: quote.total_credits },
+  });
+  const initiated = await svc1.initiatePayment({ rechargeSessionId: created.value.recharge_session_id, ownerWaId: OWNER });
+  let crashed = false;
+  try {
+    await svc1.confirmPaymentEvent({
+      rechargeSessionId: initiated.value.recharge_session_id,
+      rawEvent: { provider: "SYNTHETIC_PAY", provider_payment_id: initiated.value.provider_payment_id, provider_event_id: "event:r2-3", merchant_reference: initiated.value.merchant_reference, amount: 2000, currency: "XOF", status: "CONFIRMED", verified: true, occurred_at: NOW, metadata: {} },
+    });
+  } catch (error) { crashed = error.message === "SIMULATED_PROCESS_CRASH"; }
+  assert.equal(crashed, true, "the crash must land after real success, before bookkeeping finalization");
+  const docAfterCrash = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterCrash.value.status, "DELIVERED", "the real generation genuinely completed");
+  const sessionAfterCrash = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(sessionAfterCrash.value.status, "RESUME_PENDING", "never finalized before the crash");
+  const genStateBefore = f.generationRepo.inspect();
+  assert.equal(genStateBefore.attempts.length, 1);
+
+  const svc2 = f.makeService();
+  const retried = await svc2.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(retried.ok, true, retried.error, "authoritative reconciliation must recognize the already-completed round");
+  assert.equal(retried.resume.automatic, true);
+  const linkAfter = await f.rechargeRepository.getResumeLink({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(linkAfter.value.resume_status, "RESUMED");
+  const sessionAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(sessionAfter.value.status, "RESUMED");
+  const genStateAfter = f.generationRepo.inspect();
+  assert.equal(genStateAfter.attempts.length, 1, "reconciliation must never generate a second time");
+  const rechargeState = f.rechargeRepository.inspect();
+  assert.equal(rechargeState.ledger.length, 1, "the recharge itself was only ever credited once");
+});
+
+// 18-21. Crash after the link's own STARTED write, but before
+// confirmGeneration is ever called -- the reconstructed service must
+// reuse the same round identity (still recoverable from the unbumped
+// revision) and reach exactly one real generation.
+test("R2-4. Crash after link STARTED, before confirmGeneration is called: reconstructed service reuses the same round identity, exactly one generation", async () => {
+  const f = buildFixture({ balance: 8 });
+  const { document, quote } = await f.driveToRechargeRequired(OWNER, "r2-4");
+  const armed = { value: true };
+  const crashRepo = wrapRechargeRepositoryWithCrash(f.rechargeRepository, { crashOnResumeStatus: "STARTED", armed });
+  const svc1 = f.makeService(crashRepo);
+  const created = await svc1.createRechargeSession({
+    ownerWaId: OWNER, packId: "TEST_10", idempotencyKey: "recharge:create:r2-4",
+    document: { documentId: document.document_id, documentVersion: document.version, quoteId: quote.quote_id, generationConfirmationId: "confirm:r2-4", missingCredits: quote.total_credits },
+  });
+  const initiated = await svc1.initiatePayment({ rechargeSessionId: created.value.recharge_session_id, ownerWaId: OWNER });
+  let crashed = false;
+  try {
+    await svc1.confirmPaymentEvent({
+      rechargeSessionId: initiated.value.recharge_session_id,
+      rawEvent: { provider: "SYNTHETIC_PAY", provider_payment_id: initiated.value.provider_payment_id, provider_event_id: "event:r2-4", merchant_reference: initiated.value.merchant_reference, amount: 2000, currency: "XOF", status: "CONFIRMED", verified: true, occurred_at: NOW, metadata: {} },
+    });
+  } catch (error) { crashed = error.message === "SIMULATED_PROCESS_CRASH"; }
+  assert.equal(crashed, true);
+  const docAfterCrash = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterCrash.value.status, "AWAITING_GENERATION_CONFIRMATION");
+  const genStateBefore = f.generationRepo.inspect();
+  assert.equal(genStateBefore.attempts.length, 0, "confirmGeneration was never reached before the crash");
+
+  const svc2 = f.makeService();
+  const retried = await svc2.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(retried.ok, true, retried.error);
+  const docAfterRetry = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterRetry.value.status, "DELIVERED");
+  const genStateAfter = f.generationRepo.inspect();
+  assert.equal(genStateAfter.attempts.length, 1, "exactly one generation attempt");
+});
+
+// Crash strictly between MARK_GENERATED committing (credits already
+// captured, PDF already promoted -- completeAfterCapture applies
+// promoteFinal BEFORE persisting MARK_GENERATED) and delivery ever being
+// attempted: document stuck at GENERATED, never DELIVERED. Proves the
+// document.status === "DELIVERED" requirement in reconcileCompletedGeneration
+// -- attempt.status is already PROMOTED and reservation CAPTURED here,
+// but the recharge must NEVER be reconciled as RESUMED until delivery
+// itself has genuinely resolved, matching exactly what the normal
+// (non-crash) confirmGeneration path itself would report.
+test("R2-5. Crash after capture/promotion but before delivery resolves (document stuck GENERATED): never falsely reconciled as RESUMED", async () => {
+  const armed = { value: true };
+  const f = buildFixture({ balance: 8, documentsOverride: (real) => wrapDocumentsWithCrash(real, { crashOnEventType: "DOCUMENT_GENERATED", armed }) });
+  const { document, quote } = await f.driveToRechargeRequired(OWNER, "r2-5");
+  const created = await f.rechargeService.createRechargeSession({
+    ownerWaId: OWNER, packId: "TEST_10", idempotencyKey: "recharge:create:r2-5",
+    document: { documentId: document.document_id, documentVersion: document.version, quoteId: quote.quote_id, generationConfirmationId: "confirm:r2-5", missingCredits: quote.total_credits },
+  });
+  const initiated = await f.rechargeService.initiatePayment({ rechargeSessionId: created.value.recharge_session_id, ownerWaId: OWNER });
+
+  let crashed = false;
+  try {
+    await f.rechargeService.confirmPaymentEvent({
+      rechargeSessionId: initiated.value.recharge_session_id,
+      rawEvent: { provider: "SYNTHETIC_PAY", provider_payment_id: initiated.value.provider_payment_id, provider_event_id: "event:r2-5", merchant_reference: initiated.value.merchant_reference, amount: 2000, currency: "XOF", status: "CONFIRMED", verified: true, occurred_at: NOW, metadata: {} },
+    });
+  } catch (error) { crashed = error.message === "SIMULATED_PROCESS_CRASH"; }
+  assert.equal(crashed, true, "the crash must land after capture/promotion, before delivery resolves");
+  const docAfterCrash = await f.realDocuments.getDocumentById({ documentId: document.document_id, ownerWaId: OWNER });
+  assert.equal(docAfterCrash.value.status, "GENERATED", "credits captured, PDF promoted, but never delivered");
+  const genState = f.generationRepo.inspect();
+  const attempt = genState.attempts.find((a) => a.quote_id === quote.quote_id);
+  assert.equal(attempt.status, "PROMOTED");
+  const reservation = genState.reservations.find((r) => r.quote_id === quote.quote_id);
+  assert.equal(reservation.status, "CAPTURED");
+
+  const svc3 = f.makeService();
+  const retried = await svc3.resumePendingGeneration({ rechargeSessionId: initiated.value.recharge_session_id, ownerWaId: OWNER });
+  assert.equal(retried.ok, false);
+  assert.equal(retried.error, "RECHARGE_RESUME_DOCUMENT_STATE_INVALID", "must never be reconciled as RESUMED while genuinely undelivered");
+  const sessionAfter = await f.rechargeRepository.getRechargeSession({ rechargeSessionId: initiated.value.recharge_session_id });
+  assert.equal(sessionAfter.value.status, "RESUME_PENDING", "left retryable via the existing delivery-retry contract, never falsely finalized");
 });

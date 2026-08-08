@@ -350,7 +350,10 @@ function buildComposition({
     paymentProvider: provider,
     documentRepository,
     quoteService: { getGenerationQuote: async () => { throw new Error("UNEXPECTED_CALL:getGenerationQuote"); } },
-    generationLifecycleService: { confirmGeneration: async () => { throw new Error("UNEXPECTED_CALL:confirmGeneration"); } },
+    generationLifecycleService: {
+      confirmGeneration: async () => { throw new Error("UNEXPECTED_CALL:confirmGeneration"); },
+      getGenerationStatus: async () => { throw new Error("UNEXPECTED_CALL:getGenerationStatus"); },
+    },
     clock: sharedClock,
   });
 

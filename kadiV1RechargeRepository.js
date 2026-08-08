@@ -149,13 +149,15 @@ function createInMemoryRechargeRepository({ balances = {}, failpoint = async () 
   }
 
   // T6/BALANCE-001: additive method, never replacing getBalance() above —
-  // kadiV1RechargeService.js's resumePendingGeneration still reads the raw
-  // number from getBalance() and must not be affected. total_credits is
-  // the exact same raw wallet balance getBalance() returns;
-  // reserved_credits/available_credits are derived from
-  // reservedAmountProvider. Fails closed (never clamps or fabricates) on
-  // any impossible financial state, matching the real SQL RPC's
-  // fail-closed contract.
+  // getBalance() remains available for its other callers.
+  // RECHARGE_RESUME_AVAILABLE_BALANCE_001 (R0) switched
+  // kadiV1RechargeService.js's resumePendingGeneration precheck from
+  // getBalance() to THIS method — the raw wallet total ignored credits
+  // another live generation already held. total_credits is the exact
+  // same raw wallet balance getBalance() returns; reserved_credits/
+  // available_credits are derived from reservedAmountProvider. Fails
+  // closed (never clamps or fabricates) on any impossible financial
+  // state, matching the real SQL RPC's fail-closed contract.
   async function getAvailableBalance({ ownerWaId }) {
     const total = wallets.get(ownerWaId) ?? 0;
     const reserved = await reservedAmountProvider({ ownerWaId });

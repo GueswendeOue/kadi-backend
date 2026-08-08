@@ -23,6 +23,23 @@ function fingerprintPayment(event) {
   ])).digest("hex");
 }
 
+// AUTO_RESUME_CRASH_RECONCILIATION_001: deliberately NOT built from the
+// injectable idFactory/makeId — that dependency's contract never promised
+// determinism across a process restart (a caller is free to inject a
+// random/counter-based one for other id kinds this service also mints,
+// e.g. recharge_session_id), and an idempotency-critical resume-round
+// identity MUST reproduce the exact same value on every call for the
+// exact same (generation_confirmation_id, resume link revision) pair,
+// including after a crash and reconstruction. This dedicated helper is a
+// pure function of stable, already-persisted values (generation_confirmation_id
+// is client-supplied once at document-link time and never changes;
+// revision is the resume link's own persisted, monotonic update counter —
+// no new migration), using the exact same bounded-length SHA256 format
+// this file's own default idFactory already uses elsewhere.
+function resumeRoundKey(generationConfirmationId, revision) {
+  return `resume:${crypto.createHash("sha256").update(`${generationConfirmationId}:${revision}`).digest("hex").slice(0, 32)}`;
+}
+
 function createRechargeService({
   repository,
   packCatalog,
@@ -44,6 +61,7 @@ function createRechargeService({
   if (typeof packCatalog?.getPack !== "function") throw new TypeError("RECHARGE_PACK_CATALOG_REQUIRED");
   if (typeof quoteService?.getGenerationQuote !== "function") throw new TypeError("RECHARGE_QUOTE_SERVICE_REQUIRED");
   if (typeof generationLifecycleService?.confirmGeneration !== "function") throw new TypeError("RECHARGE_GENERATION_SERVICE_REQUIRED");
+  if (typeof generationLifecycleService?.getGenerationStatus !== "function") throw new TypeError("RECHARGE_GENERATION_SERVICE_REQUIRED");
   if (!RESUME_POLICIES.includes(resumePolicy)) throw new TypeError("RECHARGE_RESUME_POLICY_INVALID");
   if (!LATE_PAYMENT_POLICIES.includes(latePaymentPolicy)) throw new TypeError("RECHARGE_LATE_PAYMENT_POLICY_INVALID");
   if (!Number.isSafeInteger(sessionLifetimeSeconds) || sessionLifetimeSeconds < 60) throw new TypeError("RECHARGE_SESSION_LIFETIME_INVALID");
@@ -261,6 +279,28 @@ function createRechargeService({
     return serial(rechargeSessionId, () => runResumePendingGeneration({ rechargeSessionId, ownerWaId }));
   }
 
+  // AUTO_RESUME_CRASH_RECONCILIATION_001: the single place both a normal
+  // successful confirmGeneration call AND a crash-window-B reconciliation
+  // (see reconcileCompletedGeneration below) finalize bookkeeping through —
+  // never marks the recharge session RESUMED unless the resume link itself
+  // could be authoritatively reconciled to RESUMED first. A wide
+  // expectedStatuses set is used deliberately: this can legitimately run
+  // from WAITING_FOR_CREDIT/PENDING (a crash before the link's own STARTED
+  // write ever landed, see runResumePendingGeneration's reconciliation
+  // branch below) as well as the ordinary STARTED/FAILED cases.
+  async function finalizeResumedSession({ rechargeSessionId, generation }) {
+    const linkResumed = await store.updateResumeLink({
+      rechargeSessionId,
+      expectedStatuses: ["WAITING_FOR_CREDIT", "PENDING", "STARTED", "FAILED"],
+      changes: { resume_status: "RESUMED", resumed_at: now().value, last_error_code: null },
+    });
+    if (!linkResumed.ok) return linkResumed;
+    const updated = await store.updateRechargeSession({ rechargeSessionId, expectedStatuses: ["RESUME_PENDING"], changes: { status: "RESUMED", resumed_at: now().value } });
+    if (!updated.ok) return updated;
+    emit("generation_resume_succeeded", { recharge_session_id: rechargeSessionId });
+    return ok(updated.value, { resume: { automatic: true, generation } });
+  }
+
   async function runGenerationConfirmation({ rechargeSessionId, ownerWaId, link, idempotencyKey }) {
     const generated = await generationLifecycleService.confirmGeneration({
       documentId: link.document_id,
@@ -270,14 +310,63 @@ function createRechargeService({
       idempotencyKey,
     });
     if (!generated.ok) {
-      await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "FAILED", last_error_code: generated.error } });
+      const marked = await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "FAILED", last_error_code: generated.error } });
       emit("generation_resume_failed", { recharge_session_id: rechargeSessionId, reason_code: generated.error });
-      return fail("GENERATION_RESUME_FAILED");
+      // The failure-bookkeeping write's own result matters to a future
+      // retry's identity (an unreconciled resume_status stuck at STARTED
+      // would block a later RECHARGE_REQUIRED re-arm's own expectedStatuses
+      // gate) — surface it rather than silently assuming it landed.
+      return marked.ok ? fail("GENERATION_RESUME_FAILED") : marked;
     }
-    await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "RESUMED", resumed_at: now().value, last_error_code: null } });
-    const updated = await store.updateRechargeSession({ rechargeSessionId, expectedStatuses: ["RESUME_PENDING"], changes: { status: "RESUMED", resumed_at: now().value } });
-    emit("generation_resume_succeeded", { recharge_session_id: rechargeSessionId });
-    return updated.ok ? ok(updated.value, { resume: { automatic: true, generation: generated.value } }) : updated;
+    return finalizeResumedSession({ rechargeSessionId, generation: generated.value });
+  }
+
+  // AUTO_RESUME_CRASH_RECONCILIATION_001 (CASE B/C): reached whenever the
+  // document is in a state auto-resume never itself drives it to
+  // (GENERATION_IN_PROGRESS, GENERATED, DELIVERED, RECOVERABLE_FAILURE,
+  // CANCELLED, ...) — most commonly because a prior process crashed
+  // strictly AFTER the real, atomic financial authority
+  // (generationLifecycleService.confirmGeneration) genuinely completed but
+  // BEFORE this service's own bookkeeping (finalizeResumedSession) could
+  // run. Persistent document/generation state is the authority, never the
+  // resume-link flags alone, and the in-memory serial() queue is not crash
+  // persistence — so this never guesses success from document.status
+  // alone: it cross-checks the REAL generation lifecycle repository's own
+  // record for this EXACT (owner, document_id, document_version, quote_id),
+  // via the same generationLifecycleService.getGenerationStatus() the
+  // manual/REQUIRE_CONFIRMATION path already exposes read-only — so a
+  // document later delivered through a completely unrelated, later quote
+  // (e.g. edited and re-quoted after this resume link was created) is
+  // never mistaken for this exact round's own success. If completion isn't
+  // authoritatively proven this way, fails closed exactly as before —
+  // recovery for GENERATION_IN_PROGRESS/RECOVERABLE_FAILURE belongs to
+  // GenerationLifecycleService's own existing recovery contracts
+  // (resumeGeneration/retryFailedGeneration/retryDelivery), never
+  // reimplemented or guessed at here.
+  async function reconcileCompletedGeneration({ rechargeSessionId, ownerWaId, link, document }) {
+    // document.status === "DELIVERED" is required, not merely
+    // attempt.status CAPTURED/PROMOTED: a NORMAL (non-crash)
+    // confirmGeneration call only ever reports overall success once
+    // delivery itself has also resolved — a delivery-stage failure is
+    // reported as a FAILURE ("DELIVERY_RECOVERABLE_FAILURE"), never a
+    // success, even though credits were already captured and the PDF
+    // already promoted by that point. Reconciling document.status ===
+    // "GENERATED"/"RECOVERABLE_FAILURE" (a crash strictly inside or
+    // before deliverFinal, or a genuine delivery failure) as RESUMED here
+    // would silently tell the user their document is ready when it was
+    // never actually delivered — CASE D territory instead: fails closed,
+    // leaving recovery to GenerationLifecycleService's own existing
+    // retryDelivery contract.
+    if (document.status !== "DELIVERED") return fail("RECHARGE_RESUME_DOCUMENT_STATE_INVALID");
+    const status = await generationLifecycleService.getGenerationStatus({ quoteId: link.quote_id, ownerWaId });
+    const attempt = status.ok ? status.value.generation_attempt : null;
+    const reservation = status.ok ? status.value.reservation : null;
+    const genuinelyComplete = document.version === link.document_version && attempt && reservation &&
+      attempt.document_id === link.document_id && attempt.owner_wa_id === ownerWaId &&
+      attempt.document_version === link.document_version && attempt.quote_id === link.quote_id &&
+      attempt.status === "PROMOTED" && reservation.status === "CAPTURED";
+    if (!genuinelyComplete) return fail("RECHARGE_RESUME_DOCUMENT_STATE_INVALID");
+    return finalizeResumedSession({ rechargeSessionId, generation: status.value });
   }
 
   async function runResumePendingGeneration({ rechargeSessionId, ownerWaId }) {
@@ -308,28 +397,40 @@ function createRechargeService({
     const document = await documents.getDocumentById({ documentId: link.value.document_id, ownerWaId });
     if (!document.ok) return document;
     if (document.value.status !== "RECHARGE_REQUIRED" && document.value.status !== "AWAITING_GENERATION_CONFIRMATION") {
-      // Not a state auto-resume can act on at all (already progressed to
-      // GENERATION_IN_PROGRESS/RECOVERABLE_FAILURE/etc. through some other
-      // path, e.g. a crashed prior attempt) — fail closed rather than
-      // blindly calling the downstream authority and risking it reporting a
-      // stale, unrelated status as if this resume had just succeeded.
-      return fail("RECHARGE_RESUME_DOCUMENT_STATE_INVALID");
+      // AUTO_RESUME_CRASH_RECONCILIATION_001: not a state the precheck/arm
+      // logic below can act on — but it may still be this exact round's
+      // own genuine completion (crash window B), authoritatively verified
+      // (never guessed) by reconcileCompletedGeneration; falls back to the
+      // original R1 fail-closed behavior otherwise (e.g.
+      // GENERATION_IN_PROGRESS/RECOVERABLE_FAILURE with completion not yet
+      // proven — CASE D, left to GenerationLifecycleService's own recovery
+      // contracts).
+      return reconcileCompletedGeneration({ rechargeSessionId, ownerWaId, link: link.value, document: document.value });
     }
     // Deterministic, server-authoritative, bounded-length per-round identity
     // — link.value.revision is the resume link's own persisted, monotonic
     // update counter (already a mandatory column, no new migration) — never
-    // random, never client-supplied. Reusing the FIRST attempt's exact
-    // RECHARGE_CONFIRMED idempotency key for a later, genuinely distinct
-    // re-arm would hit the document repository's own idempotency cache and
-    // silently no-op (returning the stale "duplicate" document instead of
-    // truly re-transitioning it) — see docs/KADI_ENGINEERING_MEMORY.md fiche
-    // AG for the confirmed reproduction. Namespacing confirmGeneration's own
-    // idempotencyKey the same way additionally keeps
-    // generationLifecycleService's internal `${key}:reserve`/`${key}:recharge`
-    // sub-keys fresh per round too, so a SECOND race in a row cannot hit a
-    // stale REQUIRE_RECHARGE key from the first race and silently fail to
-    // re-transition the document a second time.
-    const roundKey = makeId("resume", `${link.value.generation_confirmation_id}:${link.value.revision}`);
+    // random, never client-supplied, and deliberately independent of the
+    // injectable idFactory (see resumeRoundKey's own comment) so it
+    // reproduces identically across a process restart. Reusing the FIRST
+    // attempt's exact RECHARGE_CONFIRMED idempotency key for a later,
+    // genuinely distinct re-arm would hit the document repository's own
+    // idempotency cache and silently no-op (returning the stale "duplicate"
+    // document instead of truly re-transitioning it) — see
+    // docs/KADI_ENGINEERING_MEMORY.md fiche AG for the confirmed
+    // reproduction. Namespacing confirmGeneration's own idempotencyKey the
+    // same way additionally keeps generationLifecycleService's internal
+    // `${key}:reserve`/`${key}:recharge` sub-keys fresh per round too, so a
+    // SECOND race in a row cannot hit a stale REQUIRE_RECHARGE key from the
+    // first race and silently fail to re-transition the document a second
+    // time. Because a crash can only land strictly BEFORE this round's
+    // first resume-link write (the RECHARGE_REQUIRED branch's own STARTED
+    // mark below), link.value.revision is still exactly the value that was
+    // current when this round's RECHARGE_CONFIRMED transition (if any)
+    // committed — recomputing from it here, on a freshly reconstructed
+    // service, reproduces that SAME round key without needing to persist a
+    // separate round-identity field.
+    const roundKey = resumeRoundKey(link.value.generation_confirmation_id, link.value.revision);
     if (document.value.status === "RECHARGE_REQUIRED") {
       const quote = await quoteService.getGenerationQuote({ quoteId: link.value.quote_id, ownerWaId });
       const time = now();
@@ -385,6 +486,24 @@ function createRechargeService({
         changes: { resume_status: "STARTED", generation_started: true, started_at: time.value, last_error_code: null },
       });
       if (!marked.ok) return marked;
+    } else if (link.value.resume_status !== "STARTED") {
+      // AUTO_RESUME_CRASH_RECONCILIATION_001 (CASE A): the document is
+      // already AWAITING_GENERATION_CONFIRMATION (only this function ever
+      // applies RECHARGE_CONFIRMED — see AF/AG — so this exact document
+      // proves that transition already genuinely committed) but the resume
+      // link's own STARTED bookkeeping write never landed — a process
+      // crash strictly between the two, or (equivalently safe to handle
+      // the same way) a prior non-balance confirmGeneration failure that
+      // left resume_status at FAILED. Reconcile the link into a valid
+      // STARTED state before calling the downstream authority, reusing
+      // the SAME round identity already implied by the still-unbumped
+      // revision computed above — never a fresh, unrelated one.
+      const reconciled = await store.updateResumeLink({
+        rechargeSessionId,
+        expectedStatuses: ["WAITING_FOR_CREDIT", "PENDING", "FAILED"],
+        changes: { resume_status: "STARTED", generation_started: true, started_at: now().value, last_error_code: null },
+      });
+      if (!reconciled.ok) return reconciled;
     }
     return runGenerationConfirmation({ rechargeSessionId, ownerWaId, link: link.value, idempotencyKey: roundKey });
   }

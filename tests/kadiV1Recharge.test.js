@@ -123,6 +123,7 @@ async function fixture({
   const generationCalls = [];
   const generationLifecycleService = {
     async confirmGeneration(command) { generationCalls.push(command); return typeof generationResult === "function" ? generationResult(command) : generationResult; },
+    async getGenerationStatus() { return { ok: false, error: "GENERATION_ATTEMPT_NOT_FOUND" }; },
   };
   const events = [];
   const service = createRechargeService({

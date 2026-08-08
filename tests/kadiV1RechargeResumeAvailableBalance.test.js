@@ -130,6 +130,7 @@ async function fixture({
       generationCalls.push(command);
       return typeof generationResult === "function" ? generationResult(command) : generationResult;
     },
+    async getGenerationStatus() { return { ok: false, error: "GENERATION_ATTEMPT_NOT_FOUND" }; },
   };
   const service = createRechargeService({
     repository, packCatalog: createRechargePackCatalog({ packs: [PACK] }), paymentProvider: provider,
@@ -236,7 +237,10 @@ test("4. negative/impossible financial values fail closed, never treated as suff
     },
     documentRepository: f.documents,
     quoteService: { async getGenerationQuote({ quoteId, ownerWaId }) { return quoteId === QUOTE.quote_id && ownerWaId === OWNER ? { ok: true, value: { ...QUOTE } } : { ok: false, error: "GENERATION_QUOTE_NOT_FOUND" }; } },
-    generationLifecycleService: { async confirmGeneration() { throw new Error("UNEXPECTED_CALL:confirmGeneration"); } },
+    generationLifecycleService: {
+      async confirmGeneration() { throw new Error("UNEXPECTED_CALL:confirmGeneration"); },
+      async getGenerationStatus() { throw new Error("UNEXPECTED_CALL:getGenerationStatus"); },
+    },
     domain: f.domain,
     resumePolicy: "AUTO_RESUME_IF_VALID",
     clock: () => NOW,
