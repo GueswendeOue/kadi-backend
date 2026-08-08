@@ -16,6 +16,17 @@ const RECOVERABLE_TEXT = "Je n’ai pas pu terminer cette étape. Réessayez dan
 // download, or OpenAI call is ever made for this message.
 const TRANSCRIPTION_DISABLED_REASON = "KADI_V1_TRANSCRIPTION_DISABLED";
 const TRANSCRIPTION_DISABLED_TEXT = "Les messages vocaux ne sont pas encore activés ici. Vous pouvez m’écrire les informations.";
+// T12: config.features.vision is the sole inbound IMAGE/PDF authority.
+// Visual interpretation additionally requires config.features.brain —
+// interpretation.interpret() (kadiV1ConversationOrchestrator.js) never
+// reaches Gemini without it (BRAIN_DISABLED fires first), so downloading
+// and storing media only to hit that dead end would be pure waste. Two
+// distinct internal reasons (vision itself off vs. vision on but brain
+// off) for precise, safe-to-log diagnostics — both show the identical
+// truthful, internals-free user text.
+const VISION_DISABLED_REASON = "KADI_V1_VISION_DISABLED";
+const VISUAL_BRAIN_DISABLED_REASON = "KADI_V1_VISUAL_BRAIN_DISABLED";
+const VISUAL_DISABLED_TEXT = "Les photos et documents ne sont pas encore activés ici. Vous pouvez m’écrire les informations.";
 // Every one of these codes comes from kadiV1FinalGenerationService.js's
 // generatePrivate — a render/private-storage failure strictly before
 // capture, always accompanied by a released reservation and zero debit
@@ -86,6 +97,18 @@ function idempotencyFor(prefix, message) {
 
 function isNfmReply(message) {
   return message?.type === "interactive" && message?.interactive?.type === "nfm_reply";
+}
+
+// T12: the exact same shape mapMetaMessageToConversationInput() below uses
+// to decide whether a message is visual (IMAGE, or a "document" message
+// whose declared MIME is application/pdf) — kept as a single source of
+// truth so the gate and the mapper can never drift apart. A "document"
+// message with any other MIME is not visual: mapMetaMessageToConversationInput
+// already fails it closed as KADI_V1_WEBHOOK_MESSAGE_UNSUPPORTED without
+// ever touching a media resolver, regardless of config.features.vision.
+function isVisualMessage(message) {
+  return message?.type === "image" ||
+    (message?.type === "document" && String(message?.document?.mime_type || "").toLowerCase() === "application/pdf");
 }
 
 function parseNfmReply(message, ownerWaId) {
@@ -226,7 +249,9 @@ function createKadiV1WebhookRuntime({
     }
     const canonicalText = reason === TRANSCRIPTION_DISABLED_REASON
       ? TRANSCRIPTION_DISABLED_TEXT
-      : GENERATION_RETRY_REASONS.has(reason) ? GENERATION_RETRY_TEXT : RECOVERABLE_TEXT;
+      : (reason === VISION_DISABLED_REASON || reason === VISUAL_BRAIN_DISABLED_REASON)
+        ? VISUAL_DISABLED_TEXT
+        : GENERATION_RETRY_REASONS.has(reason) ? GENERATION_RETRY_TEXT : RECOVERABLE_TEXT;
     try {
       await output.presentRecoverableError({ ownerWaId, messageId: message?.id || null, canonicalText, reason });
     } catch { /* one failed presentation must not expose the message to legacy routing */ }
@@ -350,6 +375,21 @@ function createKadiV1WebhookRuntime({
       return recover(ownerWaId, message, TRANSCRIPTION_DISABLED_REASON);
     }
 
+    // T12 (image/PDF vision ingress gate): the earliest safe application
+    // boundary, strictly before mediaResolver.resolveImage()/resolvePdf()
+    // is ever reached, so a disabled owner triggers ZERO Meta media
+    // lookup, ZERO Meta media download, ZERO media validation and ZERO
+    // temporary media ingestion. Visual interpretation additionally
+    // requires config.features.brain — interpretation.interpret() never
+    // reaches Gemini without it (kadiV1ConversationOrchestrator.js's own
+    // BRAIN_DISABLED short-circuit fires first, confirmed by code: input.media
+    // is only ever read after that check passes) — so media would
+    // otherwise be downloaded and stored only to hit that dead end.
+    if (isVisualMessage(message)) {
+      if (config.features.vision !== true) return recover(ownerWaId, message, VISION_DISABLED_REASON);
+      if (config.features.brain !== true) return recover(ownerWaId, message, VISUAL_BRAIN_DISABLED_REASON);
+    }
+
     let mapped;
     try { mapped = await mapMetaMessageToConversationInput({ ownerWaId, message, value, mediaResolver: media }); }
     catch { mapped = fail("KADI_V1_WEBHOOK_INPUT_RESOLUTION_FAILED"); }
@@ -393,6 +433,9 @@ module.exports = {
   GENERATION_RETRY_TEXT,
   TRANSCRIPTION_DISABLED_REASON,
   TRANSCRIPTION_DISABLED_TEXT,
+  VISION_DISABLED_REASON,
+  VISUAL_BRAIN_DISABLED_REASON,
+  VISUAL_DISABLED_TEXT,
   correlationFor,
   createKadiV1WebhookRuntime,
   idempotencyFor,

@@ -15,11 +15,11 @@ const {
 function enabledConfig(overrides = {}) {
   return {
     enabled: true,
-    // transcription: true by default so this file's existing audio
-    // dispatch coverage keeps exercising the resolver path unchanged;
-    // the T11 disabled-gate matrix (tests below) explicitly overrides
-    // this to false/true per scenario.
-    features: { webhook: true, transcription: true },
+    // transcription/vision/brain: true by default so this file's existing
+    // audio/image/PDF dispatch coverage keeps exercising the resolver path
+    // unchanged; the T11/T12 disabled-gate matrices (tests below)
+    // explicitly override these to false/true per scenario.
+    features: { webhook: true, transcription: true, vision: true, brain: true },
     rollout: { mode: "FULL", valid: true, canaryOwnerCount: 0, canaryWaIds: [] },
     ...overrides,
   };
@@ -318,6 +318,65 @@ test("T11 flag matrix D: transcription=true, voice=true — audio still accepted
   const result = await runtime.handleIncomingValue({ messages: [{ id: "m.d", from: "22670000000", type: "audio", audio: { id: "media-d" } }] });
   assert.equal(result.results[0].accepted, true);
   assert.equal(calls.filter(([name]) => name === "audio").length, 1);
+});
+
+// T12 (image/PDF vision ingress gate) — config.features.vision is the sole
+// inbound-visual authority, AND requires config.features.brain (visual
+// interpretation has no useful path without it — see
+// kadiV1ConversationOrchestrator.js's BRAIN_DISABLED short-circuit).
+// Unit-level coverage of the exact webhook-runtime boundary, complementing
+// the heavier real-pipeline E2E coverage in
+// tests/kadiV1ImagePdfVisionGate.test.js.
+function visualMatrixConfig(features) {
+  return enabledConfig({ features: { webhook: true, ...features } });
+}
+
+test("T12 flag matrix A: vision=false, brain=false — IMAGE/PDF rejected before the media resolver, never falls through", async () => {
+  const { runtime, calls } = harness({ runtime: { config: visualMatrixConfig({ vision: false, brain: false }) } });
+  const image = await runtime.handleIncomingValue({ messages: [{ id: "v.a.i", from: "22670000000", type: "image", image: { id: "media-v-a-i" } }] });
+  assert.equal(image.results[0].handled, true);
+  assert.equal(image.results[0].accepted, false);
+  assert.equal(image.results[0].reason, "KADI_V1_VISION_DISABLED");
+  const pdf = await runtime.handleIncomingValue({ messages: [{ id: "v.a.p", from: "22670000000", type: "document", document: { id: "media-v-a-p", mime_type: "application/pdf" } }] });
+  assert.equal(pdf.results[0].accepted, false);
+  assert.equal(pdf.results[0].reason, "KADI_V1_VISION_DISABLED");
+  assert.equal(calls.filter(([name]) => name === "image" || name === "pdf").length, 0);
+  assert.equal(calls.filter(([name]) => name === "conversation").length, 0);
+});
+
+test("T12 flag matrix B: vision=false, brain=true — IMAGE/PDF still rejected, brain never overrides the inbound vision gate", async () => {
+  const { runtime, calls } = harness({ runtime: { config: visualMatrixConfig({ vision: false, brain: true }) } });
+  const image = await runtime.handleIncomingValue({ messages: [{ id: "v.b.i", from: "22670000000", type: "image", image: { id: "media-v-b-i" } }] });
+  assert.equal(image.results[0].accepted, false);
+  assert.equal(image.results[0].reason, "KADI_V1_VISION_DISABLED");
+  assert.equal(calls.filter(([name]) => name === "image").length, 0);
+});
+
+test("T12 flag matrix C: vision=true, brain=false — IMAGE/PDF rejected (no legitimate visual-without-brain path exists), reason distinguishes brain from vision", async () => {
+  const { runtime, calls } = harness({ runtime: { config: visualMatrixConfig({ vision: true, brain: false }) } });
+  const pdf = await runtime.handleIncomingValue({ messages: [{ id: "v.c.p", from: "22670000000", type: "document", document: { id: "media-v-c-p", mime_type: "application/pdf" } }] });
+  assert.equal(pdf.results[0].accepted, false);
+  assert.equal(pdf.results[0].reason, "KADI_V1_VISUAL_BRAIN_DISABLED");
+  assert.equal(calls.filter(([name]) => name === "pdf").length, 0);
+});
+
+test("T12 flag matrix D: vision=true, brain=true — IMAGE/PDF accepted and reach the orchestrator with the correct inputType", async () => {
+  const { runtime, calls } = harness({ runtime: { config: visualMatrixConfig({ vision: true, brain: true }) } });
+  const image = await runtime.handleIncomingValue({ messages: [{ id: "v.d.i", from: "22670000000", type: "image", image: { id: "media-v-d-i" } }] });
+  assert.equal(image.results[0].accepted, true);
+  const pdf = await runtime.handleIncomingValue({ messages: [{ id: "v.d.p", from: "22670000000", type: "document", document: { id: "media-v-d-p", mime_type: "application/pdf" } }] });
+  assert.equal(pdf.results[0].accepted, true);
+  assert.equal(calls.filter(([name]) => name === "image").length, 1);
+  assert.equal(calls.filter(([name]) => name === "pdf").length, 1);
+  const inputs = calls.filter(([name]) => name === "conversation").map(([, input]) => input.inputType);
+  assert.deepEqual(inputs, ["IMAGE", "PDF"]);
+});
+
+test("T12: a non-application/pdf document message is never absorbed by the vision gate, even with vision/brain disabled — falls through unsupported exactly as before", async () => {
+  const { runtime, calls } = harness({ runtime: { config: visualMatrixConfig({ vision: false, brain: false }) } });
+  const result = await runtime.handleIncomingValue({ messages: [{ id: "v.doc.png", from: "22670000000", type: "document", document: { id: "media-v-doc-png", mime_type: "image/png" } }] });
+  assert.equal(result.results[0].handled, false);
+  assert.equal(calls.length, 0);
 });
 
 test("audio, image and PDF inputs use their dedicated resolvers", async () => {
