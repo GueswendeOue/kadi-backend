@@ -5291,3 +5291,251 @@ message d'erreur brut ni le nom du modèle vers l'utilisateur.
   roadmap distincte et bornée, à n'entreprendre que sur demande
   explicite future.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AE. T12/IMAGE-PDF-VISION-GATE-001 — mise sous autorité du vocal visuel entrant (IMAGE/PDF) et preuve de câblage Gemini
+
+* **Statut : `IMAGE/PDF VISION INGRESS GATE + GEMINI PROVEN-WIRED`,
+  `IMPLEMENTED_NOT_MERGED`** — branche isolée
+  `fix/kadi-v1-image-pdf-vision-gate-t12`, créée depuis
+  `main@b20c8ed7970cdbbc9226f602885af05b8c399471` — vérifié exactement
+  égal au head réel de `main` avant tout branchement (PR #25/T11 déjà
+  fusionnée à ce commit). PR brouillon ouverte, non fusionnée, non
+  déployée. Aucune migration appliquée à distance, aucune mutation
+  Supabase/Meta/Render/WhatsApp réelle, aucun appel Gemini réel. Ne pas
+  marquer T12 `CLOSED` avant fusion.
+* **Origine :** mission « KADI V1 — T12 IMAGE/PDF VISION GATE + GEMINI
+  PROVEN-WIRED ».
+
+### Objectifs de la mission
+
+1. rendre `config.features.vision` authoritative AVANT toute recherche/
+   téléchargement/stockage temporaire Meta ;
+2. prouver qu'IMAGE et PDF sont réellement câblés à travers le vrai
+   pipeline Kadi (WhatsApp media → validation média → média temporaire →
+   fournisseur vision Gemini → Kadi Brain → runtime d'interprétation →
+   pipeline document backend-authoritative) ;
+3. fermer le cycle de vie du média temporaire après traitement Gemini.
+
+### Défaut A confirmé : le gate vision arrivait trop tard
+
+Exactement le pendant visuel du défaut T11. `kadiV1WebhookRuntime.js`
+appelait déjà `mediaResolver.resolveImage()`/`resolvePdf()` pour tout
+message `IMAGE`/`document` de MIME `application/pdf`, sans jamais
+vérifier `config.features.vision` à ce point d'entrée. La seule
+vérification existante,
+```js
+const visual = ["IMAGE", "PDF"].includes(input.inputType);
+if (visual && !config.features.vision) { ... }
+```
+vivait dans `kadiV1ConversationOrchestrator.js`, donc APRÈS que
+`mapMetaMessageToConversationInput()` avait déjà résolu le média — recherche
+Meta, téléchargement Meta, validation média et ingestion temporaire déjà
+effectuées avant le rejet.
+
+**Reproduction pré-correctif** (script jetable exécutant le VRAI
+`createKadiV1WebhookRuntime`) : avec `KADI_V1_ENABLED=true`,
+`KADI_V1_WEBHOOK_ENABLED=true`, `KADI_V1_ROLLOUT_MODE=FULL`,
+`KADI_V1_VISION_ENABLED=false`, `KADI_V1_BRAIN_ENABLED=true`, un message
+IMAGE et un message PDF synthétiques déclenchaient chacun
+`mediaResolver.resolveImage()`/`resolvePdf()` exactement une fois
+(`handled:true, accepted:true`) — confirmant le défaut pour les deux
+types. Après correctif, les deux scénarios produisent zéro appel
+résolveur (`handled:true, accepted:false,
+reason:"KADI_V1_VISION_DISABLED"`).
+
+### Dépendance au cerveau auditée : aucun chemin visuel-sans-cerveau légitime
+
+`kadiV1ConversationOrchestrator.js` ne lit `input.media` que dans l'appel
+`interpretation.interpret({..., media: input.media, ...})`, et cet appel
+n'est atteint qu'APRÈS le court-circuit `if (!config.features.brain) {
+return buildResponse({..., action: "BRAIN_DISABLED"}); }`. Confirmé par
+grep exhaustif : `input.media` n'apparaît nulle part ailleurs dans ce
+fichier. Il n'existe donc aucun chemin visuel-sans-cerveau légitime —
+avant ce correctif, `vision=true, brain=false` téléchargeait et stockait
+un média Meta uniquement pour atteindre `BRAIN_DISABLED` en aval, un
+gaspillage pur.
+
+### Correctif A — gate combiné vision+brain, un seul point d'entrée
+
+`kadiV1WebhookRuntime.js`, dans `handleMessage()`, immédiatement avant
+`mapMetaMessageToConversationInput()` (donc strictement avant tout appel
+à `resolveImage()`/`resolvePdf()`) :
+```js
+if (isVisualMessage(message)) {
+  if (config.features.vision !== true) return recover(ownerWaId, message, VISION_DISABLED_REASON);
+  if (config.features.brain !== true) return recover(ownerWaId, message, VISUAL_BRAIN_DISABLED_REASON);
+}
+```
+`isVisualMessage()` reproduit exactement la même détection que
+`mapMetaMessageToConversationInput()` utilise déjà (IMAGE, ou message
+`document` dont le MIME déclaré est `application/pdf`) — une seule
+source de vérité, jamais deux définitions qui pourraient diverger. Un
+message `document` de tout autre MIME n'est jamais visuel et continue
+d'échouer `KADI_V1_WEBHOOK_MESSAGE_UNSUPPORTED` sans jamais toucher de
+résolveur, quel que soit `config.features.vision` — comportement
+inchangé, prouvé par test dédié. Deux raisons internes distinctes
+(`KADI_V1_VISION_DISABLED`, `KADI_V1_VISUAL_BRAIN_DISABLED`) pour un
+diagnostic précis et sûr à journaliser ; le même texte utilisateur
+véridique dans les deux cas (« Les photos et documents ne sont pas
+encore activés ici. Vous pouvez m'écrire les informations. »). Le
+message reste terminalement géré par Kadi V1 pour un propriétaire
+autorisé, sans jamais retomber vers le routage legacy.
+`config.features.voice` n'est jamais consulté par ce gate.
+
+### Défaut B confirmé : aucune expiration du média temporaire après consommation Gemini
+
+`kadiV1GeminiVisionProvider.js`'s `extractStructuredDocumentData()`
+faisait : `getTemporaryMedia()` → appel Gemini → normalisation du
+résultat — sans jamais appeler `temporaryMediaStore.expireTemporaryMedia()`,
+ni en cas de succès ni en cas d'échec. Audit exhaustif des consommateurs
+(grep sur `getTemporaryMedia` dans tout le dépôt, hors définition du
+store et fichiers de test) : **ce fournisseur est l'unique consommateur
+post-ingestion du média temporaire** pour le parcours entrant IMAGE/PDF
+— aucun autre code de production ne lit jamais le média après son
+ingestion par `mediaValidationService.ingest()`.
+
+### Correctif B — expiration best-effort en finally, sur toute sortie
+
+Le corps de `extractStructuredDocumentData()` (à partir du moment où
+`getTemporaryMedia()` a réussi) est désormais enveloppé dans un
+`try/finally` : le `finally` appelle
+`temporaryMediaStore.expireTemporaryMedia({mediaId, ownerRef})`,
+best-effort (erreur avalée, jamais propagée), sur **toute** sortie —
+rejet de validation avant l'appel Gemini (type de source non autorisé,
+taille excessive, limite de pages dépassée), analyse réussie, analyse
+échouée, timeout, ou sortie structurée invalide. Bornée au propriétaire
+exact déjà lié au contrat (`mediaId`/`ownerRef`, jamais un autre média).
+Une défaillance d'expiration ne transforme jamais une analyse par
+ailleurs réussie en échec rapporté, mais reste observable via un nouvel
+événement `temporary_media_expired` (miroir de
+`kadiV1AudioValidationService.js`'s propre `temporary_audio_expired` de
+T11).
+
+**Effet de bord découvert et corrigé pendant la revue** : un test
+existant (`tests/kadiV1GeminiVisionProvider.test.js`, « specialized
+analysis methods enforce media source type ») appelait `analyzePdf()`
+PUIS `analyzeDocument()` sur le MÊME média factice, s'attendant à ce que
+les deux rejettent indépendamment `MEDIA_SOURCE_TYPE_INVALID`. Avec le
+correctif, le premier appel expire désormais le média même en cas de
+rejet — le second appel voyait donc `MEDIA_EXPIRED` au lieu du garde
+testé. Corrigé en donnant à chaque appel sa propre instance de média
+temporaire, ce qui reflète fidèlement la production réelle : `kadiV1Brain.js`
+route toujours de façon déterministe une seule méthode `analyze*` (via
+son unique port générique `understand()`) par média — aucun code de
+production n'appelle jamais `analyzePdf`/`analyzeDocument`/`analyzeImage`
+directement (confirmé par grep), ces méthodes spécialisées ne sont
+exercées que par ce fichier de test.
+
+### Pipeline réellement câblé, prouvé — aucun deuxième pipeline construit
+
+`tests/kadiV1ImagePdfVisionGate.test.js` (nouveau, 32 scénarios) câble le
+VRAI `createKadiV1WebhookRuntime`, `createKadiV1RuntimeConfig` (le vrai
+parseur d'env), `createKadiV1ProductionMediaResolver`,
+`createMediaValidationService`, `createInMemoryTemporaryMediaStore`,
+`createGeminiVisionProvider` à travers le VRAI
+`createGoogleGenerativeAIClientAdapter` (seul le client
+GoogleGenerativeAI sous-jacent factice — le contrat de l'adaptateur
+réseau lui-même est exercé, jamais contourné), `createKadiBrain` (routage
+réel IMAGE/DOCUMENT → GEMINI, TEXT/TRANSCRIPTION → un fournisseur factice
+jamais appelé dans ces scénarios), `createKadiV1InterpretationRuntimeAdapter`,
+`createKadiV1ConversationOrchestrator`, `createKadiV1DocumentRuntimeAdapter`/
+`createSharedDocumentPipeline`/`createDischargePipeline`/
+`createInMemoryV1DocumentRepository` (le vrai pipeline document, en
+mémoire — `createInMemoryV1DocumentRepository` n'expose délibérément
+aucun port d'inspection/énumération, exactement comme le vrai dépôt
+Supabase ; les tests retrouvent un document via
+`repository.getDocumentById({documentId, ownerWaId})`, la même méthode
+réelle que le code de production utilise, en suivant le `document_id`
+retourné par un wrapper d'instrumentation autour de `documentRuntime.start`/
+`apply`). FAUX uniquement : le client WhatsApp Meta, l'appel réseau
+Gemini sous-jacent, et les ports hors périmètre de ces scénarios
+(contexte utilisateur, onboarding, historique, portefeuille, résolveur
+d'émetteur) — jamais le moteur conversationnel complet
+(`KADI_CONVERSATIONAL_MULTIMODAL_V1` n'est jamais activé par cette
+mission).
+
+### Preuve
+
+* IMAGE (FACTURE photographiée, PNG réel via `sharp`) et PDF (DEVIS
+  multi-page réel via `pdf-lib`) bout en bout : client et articles
+  extraits, document créé dans le vrai dépôt, **sous-total et total
+  recalculés côté serveur depuis les articles sauvegardés** — jamais
+  depuis `total_read` (toujours `UNCERTAIN`, jamais appliqué par
+  `brainPatch`, confirmé par lecture directe de
+  `kadiV1SharedDocumentPipeline.js` : aucune correspondance
+  `confirmed.total`/`total_read` n'existe dans le patch). JPEG et WEBP
+  également acceptés.
+* **Test adversarial** : `total_read` délibérément faux (1, alors que les
+  articles somment à 36 000) — le document persisté a `subtotal: 36000,
+  total: 36000`, jamais 1. Le résultat calculé côté serveur l'emporte
+  toujours.
+* **Champs d'autorité interdits** : `document_number`, `issued_at`,
+  `credit_debit`, `delivered`, `total`, `subtotal`, `final_total`
+  injectés au premier niveau, plus `fields.total` imbriqué — tous
+  rejetés par le contrat `AUTHORITY_FIELDS`/validation Brain existant
+  (jamais affaibli). Un rejet Gemini/interprétation est une réponse
+  RÉCUPÉRABLE de l'orchestrateur (`accepted: true` côté webhook,
+  `business_action: "INTERPRETATION_RECOVERABLE_FAILURE"`, le même texte
+  générique sûr) — jamais un rejet webhook ; la preuve réelle du rejet
+  est l'absence de mutation document (aucun article persisté) et
+  l'absence de toute valeur technique dans le texte présenté.
+* **Incertitude** : client/quantité/prix incertains, documents multiples
+  détectés, type de document inconnu — jamais promus silencieusement en
+  donnée confirmée ; `missing_fields`/`uncertainties` renseignés, aucun
+  article incertain persisté, document jamais `VERIFIED`.
+* **Contrat média** (échantillon représentatif bout en bout — la matrice
+  exhaustive de codes de validation reste couverte au niveau unitaire par
+  `tests/kadiV1MediaValidation.test.js` et
+  `tests/kadiV1ProductionMediaResolver.test.js`, tous deux re-exécutés
+  sans régression) : MIME non supporté, MIME Meta incohérent, média vide,
+  taille déclarée incohérente, page PDF au-delà de la limite — tous
+  échouent fermé avant tout appel Gemini.
+* **Contrat d'échec Gemini** : timeout, exception fournisseur, réponse
+  vide, JSON malformé, champ de premier niveau inconnu, articles
+  malformés — tous échouent fermé (réponse récupérable), aucune erreur
+  brute/clé API/JSON technique jamais exposée à l'utilisateur, média
+  temporaire expiré y compris après timeout et exception. Une
+  `source_reference` malveillante (`javascript:alert(1)`) est normalisée
+  vers un repli sûr, jamais propagée, sans jamais faire planter le
+  pipeline.
+* **Isolation propriétaire** : le média temporaire du propriétaire A
+  n'est jamais récupérable sous l'identité du propriétaire B ; aucun
+  document jamais créé pour B depuis un message de A.
+* **Rejeu exact** : le même `wamid` IMAGE soumis deux fois produit
+  exactement une mutation métier réelle (compteur d'appels `apply`
+  non-dupliqués), un seul article jamais dupliqué.
+* **Matrice d'indépendance des indicateurs** : A (vision=false,
+  brain=false), B (vision=false, brain=true), C (vision=true,
+  brain=false) — les trois zéro appel média/Gemini — ; D (vision=true,
+  brain=true) — traitement normal, IMAGE et PDF tous deux acceptés avec
+  le bon `inputType`.
+* **Non-régression T11** : le vocal entrant reste gouverné uniquement par
+  `config.features.transcription`, inchangé par le gate visuel de T12.
+* Focused (fichiers concernés — webhook runtime, ce nouveau fichier,
+  fournisseur Gemini, Brain, conversationnel multimodal, validation
+  média/audio, chemin conversationnel préparé, composition/bootstrap de
+  production, résolveur média, orchestrateur, recharge, fournisseur
+  Orange Money réel) : 400/400. Suite complète : 1620/1620.
+  `git diff --check` : propre.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau Meta ou Gemini réel nulle part dans les tests. Le
+texte utilisateur affiché en cas de désactivation ne mentionne ni
+`vision`, ni `Gemini`, ni le nom d'un fournisseur IA, ni aucun
+diagnostic technique. Une défaillance du fournisseur Gemini ne fait
+jamais fuiter le message d'erreur brut, une clé API ou un JSON
+technique vers l'utilisateur.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* `RECHARGE_RESUME_AVAILABLE_BALANCE_001` (MEDIUM/P1 avant RC, voir
+  AA.3) — toujours dormant, toujours non corrigé.
+* Application de la migration T6 (AA.3) et de la migration T10 R1
+  (`kadi_topups_v1_recharge_reference_unique`) à Supabase de production —
+  toujours hors périmètre, toujours en attente.
+* Le vocal sortant (TTS, `config.features.voice`) reste hors périmètre,
+  inchangé par T12.
+* `KADI_CONVERSATIONAL_MULTIMODAL_V1` (moteur conversationnel complet)
+  reste un gate de roadmap séparé — T12 ne l'active pas.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
