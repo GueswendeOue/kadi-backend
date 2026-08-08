@@ -528,6 +528,21 @@ function createManualOrangeMoneyPaymentProvider({
     };
   }
 
+  // ORANGE_TOPUP_REFERENCE_CONCURRENCY_001 (R1, EXISTING_ROW_AUTHORITY): a
+  // row found by reference — whether via the ordinary pre-insert read below
+  // or via 23505 recovery after a losing concurrent insert — is only ever
+  // an authoritative answer to *this* request if it actually is the row
+  // this call itself would have created. Applied uniformly to both call
+  // sites so neither path can silently adopt an unrelated topup merely
+  // because the reference string matches.
+  function rowMatchesRequest(row, { request, session, credits }) {
+    return row.reference === request.merchant_reference &&
+      row.wa_id === session.owner_wa_id &&
+      Number(row.amount_fcfa) === request.amount &&
+      Number(row.credits) === credits &&
+      row.payment_method === "orange_money";
+  }
+
   return Object.freeze({
     name,
     async createPaymentRequest(request = {}) {
@@ -541,30 +556,65 @@ function createManualOrangeMoneyPaymentProvider({
       }
       const session = await findSession(request.merchant_reference);
       if (!session.ok) return session;
+      const credits = Number(session.value.pack_snapshot?.credits);
       const existing = await readTopup(request.merchant_reference);
       if (existing.ok) {
+        if (!rowMatchesRequest(existing.value, { request, session: session.value, credits })) {
+          return fail("PAYMENT_REQUEST_EXISTING_MISMATCH");
+        }
         return ok(paymentResult({
           topup: existing.value,
           merchantReference: request.merchant_reference,
         }));
       }
-      const credits = Number(session.value.pack_snapshot?.credits);
+      const insertPayload = {
+        wa_id: session.value.owner_wa_id,
+        reference: request.merchant_reference,
+        amount_fcfa: request.amount,
+        credits,
+        payment_method: "orange_money",
+        includes_stamp: false,
+        status: "pending",
+        proof_text: null,
+        proof_image_url: null,
+      };
       const inserted = await supabase
         .from("kadi_topups")
-        .insert({
-          wa_id: session.value.owner_wa_id,
-          reference: request.merchant_reference,
-          amount_fcfa: request.amount,
-          credits,
-          payment_method: "orange_money",
-          includes_stamp: false,
-          status: "pending",
-          proof_text: null,
-          proof_image_url: null,
-        })
+        .insert(insertPayload)
         .select("*")
         .single();
-      return inserted?.error || !inserted?.data
+      if (inserted?.error) {
+        // ORANGE_TOPUP_REFERENCE_CONCURRENCY_001 (R1 independent review,
+        // MEDIUM/P1): public.kadi_topups has no table-wide unique
+        // constraint on `reference` — only a partial one, scoped to Kadi
+        // V1's own `recharge:` reference namespace (see
+        // migrations/20260809_add_kadi_v1_topups_recharge_reference_unique.sql).
+        // A concurrent createPaymentRequest() call for the exact same
+        // merchant_reference can therefore race this INSERT and lose,
+        // receiving Postgres 23505 (unique_violation) — the exact,
+        // narrow signal that another call already created the row this
+        // call was also trying to create, never a generic insert
+        // failure. Recovery: re-read that exact reference and verify the
+        // row it now finds is genuinely the one this call itself would
+        // have created — never silently adopting an unrelated row just
+        // because the reference string matches. Only 23505 receives this
+        // recovery; every other insert error keeps failing as
+        // PAYMENT_REQUEST_CREATE_FAILED, unchanged.
+        if (inserted.error.code === "23505") {
+          const recovered = await readTopup(request.merchant_reference);
+          if (!recovered.ok) return recovered;
+          const row = recovered.value;
+          if (!rowMatchesRequest(row, { request, session: session.value, credits })) {
+            return fail("PAYMENT_REQUEST_EXISTING_MISMATCH");
+          }
+          return ok(paymentResult({
+            topup: row,
+            merchantReference: request.merchant_reference,
+          }));
+        }
+        return fail("PAYMENT_REQUEST_CREATE_FAILED");
+      }
+      return !inserted?.data
         ? fail("PAYMENT_REQUEST_CREATE_FAILED")
         : ok(paymentResult({
             topup: inserted.data,
