@@ -481,12 +481,36 @@ const DISCHARGE_REVIEW_ACTIONS = Object.freeze([
 // misleading. Always explicitly supplied here (never left to the Flow
 // JSON's own __example__ — see safeFlowData()) so this corrected label
 // actually reaches the user.
-const RECHARGE_ACTIONS = Object.freeze([
+//
+// R1/HIGH (independent review): the real RECHARGE Flow carries no
+// recharge_session_id of its own, so cancel() has always had to resolve
+// "which session" from owner + sessionOpenedAt context alone (see
+// kadiV1ProductionInfrastructure.js's cancel()) — scoped to the OWNER,
+// never to a particular document or Flow-opening context. Offering
+// CANCEL before any recharge session is actually bound to THIS reopened
+// screen (the initial, document-driven RECHARGE_REQUIRED context —
+// reached via the immediate INSUFFICIENT_CREDITS route, a history
+// reopen, or the conversational direct opening) would let a CANCEL
+// submitted from that context resolve to and cancel a completely
+// unrelated older recharge for the same owner. Only SELECT_PACK/
+// CHECK_PAYMENT are offered until a real recharge session exists for
+// this exact screen (see buildRechargePresentationData's boundToSession
+// parameter). See also kadiV1FlowCommandRuntime.js's server-side defense
+// in depth, which never relies on this list alone.
+const RECHARGE_ACTIONS_INITIAL = Object.freeze([
+  Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
+  Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
+]);
+const RECHARGE_ACTIONS_BOUND = Object.freeze([
   Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
   Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
   Object.freeze({ id: "CANCEL", title: "Annuler cette recharge" }),
 ]);
 const RECHARGE_BALANCE_UNAVAILABLE_TEXT = "Solde indisponible pour le moment.";
+// R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
+// via CONFIRM_GENERATION is a handled business outcome, never a technical
+// failure — see kadiV1RuntimeAdapters.js's generation runtime adapter.
+const RECHARGE_REQUIRED_COPY = "Votre solde est insuffisant pour générer ce document. Choisissez une recharge pour continuer.";
 
 function buildReviewActions(document) {
   if (document?.document_type === "RECU") return RECEIPT_REVIEW_ACTIONS;
@@ -747,17 +771,30 @@ function canonicalReplyText(action, value, flowKey = null) {
   }
 
   // T5/RECHARGE_PRESENTER_001: RECHARGE/CANCEL performs a real terminal
-  // cancellation (see RECHARGE_ACTIONS above), so it must never read as
-  // the generic "L’opération est annulée." shown for every other CANCEL
-  // flow. flowKey is the trusted, session-verified screen the reply was
-  // actually submitted from (kadiV1FlowReplyRuntime.js's handle() —
-  // consumeReply() already rejected any mismatch before this point),
-  // never a client-supplied value — so this can never be spoofed by a
-  // payload claiming to be from RECHARGE. Every other CANCEL flow
+  // cancellation (see RECHARGE_ACTIONS_BOUND above), so it must never read
+  // as the generic "L’opération est annulée." shown for every other
+  // CANCEL flow. flowKey is the trusted, session-verified screen the
+  // reply was actually submitted from (kadiV1FlowReplyRuntime.js's
+  // handle() — consumeReply() already rejected any mismatch before this
+  // point), never a client-supplied value — so this can never be spoofed
+  // by a payload claiming to be from RECHARGE. Every other CANCEL flow
   // (DOCUMENT_REVIEW, DOCUMENT_PREVIEW, GENERATION_CONFIRMATION) is
   // completely unaffected — this checks flowKey, not just action.
   if (action === "CANCEL" && flowKey === "RECHARGE") {
     return "La recharge est annulée. Vous pourrez en démarrer une nouvelle plus tard.";
+  }
+
+  // R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
+  // via CONFIRM_GENERATION is a handled business outcome, never a
+  // technical failure — never the misleading "La génération du document
+  // est terminée." (static table below) nor a generic recoverable-error
+  // text. value.recharge_required is set only by
+  // kadiV1RuntimeAdapters.js's generation runtime adapter, only after
+  // re-reading the authoritative document and confirming its CURRENT
+  // status is genuinely RECHARGE_REQUIRED — never fabricated from the
+  // error string alone.
+  if (action === "CONFIRM_GENERATION" && value?.recharge_required === true) {
+    return RECHARGE_REQUIRED_COPY;
   }
 
   if (action === "SELECT_PACK" && value?.payment_instructions) {
@@ -1110,6 +1147,19 @@ function createKadiV1ProductionPresenter({
     return formatRechargeBalanceSummary({ availableCredits: available, reservedCredits: reserved });
   }
 
+  // R1/LOW (independent review): createRechargePackCatalog validates a
+  // real 3-letter currency per pack (kadiV1RechargeConfig.js's
+  // CURRENCY_PATTERN) — hardcoding "FCFA" regardless of pack.currency
+  // would silently mislabel a future non-XOF active pack. XOF still
+  // renders as "FCFA" (Kadi V1's only currency today, and the label
+  // already used everywhere else in the app); any other validated
+  // currency renders with its own code instead of a fabricated one. No
+  // current pack value is changed by this — every existing pack is XOF.
+  function rechargePackAmountLabel(amount, currency) {
+    const label = currency === "XOF" ? "FCFA" : currency;
+    return `${amount.toLocaleString("fr-FR")} ${label}`;
+  }
+
   function resolveRechargePackOptions() {
     if (!packCatalog) return [];
     let activePacks;
@@ -1124,14 +1174,29 @@ function createKadiV1ProductionPresenter({
         pack &&
         typeof pack.pack_id === "string" && pack.pack_id &&
         Number.isSafeInteger(pack.amount) && pack.amount > 0 &&
+        typeof pack.currency === "string" && /^[A-Z]{3}$/.test(pack.currency) &&
         Number.isSafeInteger(pack.credits) && pack.credits > 0)
       .map((pack) => ({
         id: pack.pack_id,
-        title: `${pack.amount.toLocaleString("fr-FR")} FCFA — ${pack.credits} crédit${pack.credits === 1 ? "" : "s"}`,
+        title: `${rechargePackAmountLabel(pack.amount, pack.currency)} — ${pack.credits} crédit${pack.credits === 1 ? "" : "s"}`,
       }));
   }
 
-  async function buildRechargePresentationData(ownerWaId) {
+  // R1/HIGH (independent review): boundToSession is true only when this
+  // exact RECHARGE reopen was triggered by SELECT_PACK or a pending
+  // CHECK_PAYMENT — the two production calls that just created or are
+  // actively tracking a real, server-side recharge session for THIS
+  // screen (neither ever returns a document — see
+  // kadiV1ProductionInfrastructure.js's selectPack()/checkPayment()).
+  // Every other RECHARGE-opening context (the initial document-driven
+  // RECHARGE_REQUIRED route, a history reopen, the conversational direct
+  // opening) is unbound — no recharge session exists for this screen yet
+  // — and must never offer terminal CANCEL, which could otherwise resolve
+  // to and cancel a completely unrelated older recharge for the same
+  // owner (cancel() only ever resolves by owner + time, never by a
+  // client-supplied session id — see
+  // kadiV1ProductionInfrastructure.js's cancel()).
+  async function buildRechargePresentationData(ownerWaId, { boundToSession = false } = {}) {
     const [balance_summary, pack_options] = await Promise.all([
       resolveRechargeBalanceSummary(ownerWaId),
       Promise.resolve(resolveRechargePackOptions()),
@@ -1139,7 +1204,7 @@ function createKadiV1ProductionPresenter({
     return Object.freeze({
       balance_summary,
       pack_options: Object.freeze(pack_options),
-      recharge_actions: RECHARGE_ACTIONS,
+      recharge_actions: boundToSession ? RECHARGE_ACTIONS_BOUND : RECHARGE_ACTIONS_INITIAL,
     });
   }
 
@@ -1403,8 +1468,16 @@ function createKadiV1ProductionPresenter({
       const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
         ? await resolveIssuerProfileForPreview(document)
         : null;
+      // R1/HIGH: only SELECT_PACK/CHECK_PAYMENT just created or are
+      // actively tracking a real, server-side recharge session bound to
+      // THIS exact reopened screen — every other originating action
+      // (CONFIRM_GENERATION's immediate RECHARGE_REQUIRED route,
+      // OPEN_DOCUMENT from history, CANCEL never reopens RECHARGE at all)
+      // is an unbound, initial context. See buildRechargePresentationData.
       const recharge = flowKey === "RECHARGE"
-        ? await buildRechargePresentationData(ownerWaId)
+        ? await buildRechargePresentationData(ownerWaId, {
+            boundToSession: result.action === "SELECT_PACK" || result.action === "CHECK_PAYMENT",
+          })
         : null;
       flow = await openAndSendFlow({
         ownerWaId,

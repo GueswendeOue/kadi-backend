@@ -134,6 +134,28 @@ function createKadiV1FlowCommandRuntime({
       return call(recharge, "checkPayment", { ...base, paymentReference: data.payment_reference }, "KADI_V1_PAYMENT_CHECK_FAILED");
     }
     if (command.action === "CANCEL" && command.flowKey === "RECHARGE") {
+      // RECHARGE-PRESENTER-001 (R1 independent review, HIGH/P0 — unbound
+      // CANCEL): cancel() resolves its target purely by owner +
+      // sessionOpenedAt (newest session created at or before that
+      // moment), never by a document or Flow-opening context — see below
+      // and kadiV1ProductionInfrastructure.js's cancel(). A RECHARGE Flow
+      // opened directly for a document that is RECHARGE_REQUIRED (the
+      // immediate INSUFFICIENT_CREDITS route, or a history reopen) has no
+      // recharge session bound to it yet, so its trusted session
+      // documentContext (set only by kadiV1FlowReplyRuntime.js from the
+      // session record itself, never client-supplied) carries that
+      // document's state. Defense in depth, never relying only on the
+      // presenter hiding the CANCEL option: reject any CANCEL from that
+      // unbound context here, before ever calling cancel(), so it can
+      // never resolve to and cancel a completely unrelated older recharge
+      // for the same owner. A RECHARGE Flow reopened after SELECT_PACK/
+      // CHECK_PAYMENT carries no document context at all (neither
+      // production call ever returns one — see
+      // kadiV1ProductionInfrastructure.js's selectPack()/checkPayment()),
+      // so this never blocks a legitimate, session-bound cancellation.
+      if (command.documentContext?.document_state === "RECHARGE_REQUIRED") {
+        return fail("KADI_V1_RECHARGE_CANCEL_UNBOUND");
+      }
       // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): the real
       // RECHARGE Flow carries no recharge_session_id of its own — cancel()
       // must be bound to the trusted server-side moment this exact Flow

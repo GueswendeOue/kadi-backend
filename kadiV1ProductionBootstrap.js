@@ -602,6 +602,11 @@ function createKadiV1ProductionBootstrap({
     });
     const generationRuntime = createKadiV1GenerationRuntimeAdapter({
       generationLifecycleService,
+      // R1/MEDIUM (independent review): the same documentRepository
+      // instance already constructed above — used only to re-read the
+      // authoritative document after INSUFFICIENT_CREDITS/
+      // DOCUMENT_VERSION_CONFLICT, never a second document store.
+      documentRepository,
     });
     const deliveryRetryRuntime = createKadiV1DeliveryRetryRuntime({
       generationRuntime,

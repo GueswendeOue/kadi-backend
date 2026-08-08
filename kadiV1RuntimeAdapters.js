@@ -4,6 +4,14 @@ const crypto = require("node:crypto");
 const { DOCUMENT_STATES } = require("./kadiV1DocumentStateMachine");
 
 const SHARED_DOCUMENT_TYPES = Object.freeze(["FACTURE", "DEVIS", "RECU"]);
+// R1/MEDIUM (independent review): the two errors kadiV1GenerationLifecycleService.js's
+// validateConfirmation can return for an EXACT replay of an already-applied
+// REQUIRE_RECHARGE transition — pure state transitions never bump
+// document.version, so the version check passes and it is the status
+// check (status !== AWAITING_GENERATION_CONFIRMATION) that fails.
+// DOCUMENT_VERSION_CONFLICT is kept too, defensively, in case that
+// ordering or the no-version-bump behavior ever changes.
+const RECHARGE_REQUIRED_REPLAY_ERRORS = Object.freeze(new Set(["GENERATION_CONFIRMATION_STATE_INVALID", "DOCUMENT_VERSION_CONFLICT"]));
 const DOCUMENT_TYPES = Object.freeze([...SHARED_DOCUMENT_TYPES, "DECHARGE"]);
 const EDITABLE_STATES = new Set([
   "COLLECTING", "INCOMPLETE", "READY_FOR_REVIEW", "VERIFIED",
@@ -377,8 +385,53 @@ function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderServ
   return Object.freeze({ prepare });
 }
 
-function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {}) {
+function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService, documentRepository = null } = {}) {
   const lifecycle = assertMethods(generationLifecycleService, ["confirmOrRetryGeneration", "retryDelivery"], "KADI_V1_GENERATION_LIFECYCLE_SERVICE");
+  // R1/MEDIUM (independent review): documentRepository is optional and
+  // narrow — used only to re-read the document AFTER
+  // confirmOrRetryGeneration already returned, never to perform any
+  // mutation or to recreate generation/reservation logic here.
+  // kadiV1GenerationLifecycleService.js's own INSUFFICIENT_CREDITS/
+  // DOCUMENT_VERSION_CONFLICT semantics are completely unchanged (its
+  // other callers — RechargeService's resumePendingGeneration, retry
+  // paths — call it directly, never through this adapter, and are
+  // unaffected by anything below).
+  const documents = documentRepository == null
+    ? null
+    : assertMethods(documentRepository, ["getDocumentById"], "KADI_V1_GENERATION_RUNTIME_DOCUMENT_REPOSITORY");
+
+  // R1/MEDIUM (independent review, HIGH-impact broken conversion journey):
+  // a document reaching RECHARGE_REQUIRED via CONFIRM_GENERATION is a
+  // handled business outcome, not a technical failure — the generation
+  // service already durably persisted the transition before returning
+  // INSUFFICIENT_CREDITS. Re-reading the document here (never trusting
+  // the error string alone) and, only once its CURRENT status is
+  // genuinely RECHARGE_REQUIRED, translating this into a handled success
+  // with next_flow_key "RECHARGE" lets the Flow/presentation layer route
+  // straight into RECHARGE — no history detour required. This also
+  // covers the exact-replay case: a second identical CONFIRM_GENERATION
+  // submission re-runs kadiV1GenerationLifecycleService.js's
+  // validateConfirmation from scratch (no attempt row was ever created
+  // for the failed reservation, so its own store.findByQuoteId dedup at
+  // the top of runConfirmation never matches). Pure document state
+  // transitions never bump document.version (kadiV1DocumentDomain.js's
+  // transitionDocument — REQUIRE_RECHARGE is one), so the replay's
+  // captured documentVersion still matches and the version check passes;
+  // it instead fails validateConfirmation's next check, status !==
+  // "AWAITING_GENERATION_CONFIRMATION", as GENERATION_CONFIRMATION_STATE_INVALID
+  // (DOCUMENT_VERSION_CONFLICT is handled too, defensively, in case that
+  // ordering ever changes). Re-reading and finding the SAME
+  // RECHARGE_REQUIRED status again proves this is a safe replay of the
+  // same already-applied transition, not a new one — any OTHER current
+  // status (CANCELLED, GENERATION_IN_PROGRESS, DELIVERED, ...) is left
+  // completely alone and the original error propagates normally.
+  async function reloadAsRechargeRequired(command) {
+    if (!documents) return null;
+    const reloaded = await documents.getDocumentById({ documentId: command.documentId, ownerWaId: command.ownerWaId });
+    if (!reloaded?.ok || reloaded.value?.status !== "RECHARGE_REQUIRED") return null;
+    return reloaded.value;
+  }
+
   async function confirm(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
@@ -387,10 +440,21 @@ function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {
     // confirmation path or, when the document is in the exact eligible
     // pre-capture recovery state, to the render-retry path — same action,
     // same idempotencyKey derivation, no new Meta Flow or command name.
-    return lifecycle.confirmOrRetryGeneration({
+    const result = await lifecycle.confirmOrRetryGeneration({
       ownerWaId: command.ownerWaId, documentId: command.documentId, documentVersion: command.expectedVersion,
       quoteId: command.quoteId, idempotencyKey: runtimeKey("generation_confirm:", command.idempotencyKey),
     });
+    if (result?.ok) return result;
+    if (result?.error === "INSUFFICIENT_CREDITS" || RECHARGE_REQUIRED_REPLAY_ERRORS.has(result?.error)) {
+      const document = await reloadAsRechargeRequired(command);
+      if (document) {
+        return ok(
+          Object.freeze({ document, recharge_required: true, next_flow_key: "RECHARGE" }),
+          { duplicate: RECHARGE_REQUIRED_REPLAY_ERRORS.has(result.error) }
+        );
+      }
+    }
+    return result;
   }
   // documentId is the only reference this ever accepts from outside — it is
   // opaque (not a secret) and already routinely exposed in Flow prefill
