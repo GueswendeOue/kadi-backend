@@ -24,6 +24,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { createDocumentDomain, DOCUMENT_EVENTS } = require("../kadiV1DocumentDomain");
 const { createInMemoryV1DocumentRepository } = require("../kadiV1DocumentRepository");
 const { createRechargePackCatalog } = require("../kadiV1RechargeConfig");
@@ -45,6 +46,17 @@ function paymentResult(overrides = {}) {
     merchant_reference: "unused", amount: PACK.amount, currency: PACK.currency, status: "CONFIRMED",
     verified: true, occurred_at: "2026-08-02T12:05:00.000Z", metadata: { fixture: true }, ...overrides,
   };
+}
+
+// AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001 (R1): resumePendingGeneration
+// derives confirmGeneration's idempotencyKey from
+// (generation_confirmation_id, resume link revision) via the same default
+// makeId() formula kadiV1RechargeService.js itself uses, rather than the
+// bare generation_confirmation_id — see tests/kadiV1RechargeResumeRealLifecycleRace.test.js
+// for the real-composition reproduction/proof. revision=1 on the resume
+// link's very first read.
+function resumeRoundKey(generationConfirmationId, revision) {
+  return `resume:${crypto.createHash("sha256").update(`${generationConfirmationId}:${revision}`).digest("hex").slice(0, 32)}`;
 }
 
 async function documentInRecharge({ documents, domain, ownerWaId = OWNER }) {
@@ -308,7 +320,7 @@ test("6. successful AUTO_RESUME with sufficient available credits: exactly one g
   assert.equal(result.ok, true, result.error);
   assert.equal(result.resume.automatic, true);
   assert.equal(f.generationCalls.length, 1);
-  assert.deepEqual(f.generationCalls[0], { documentId: QUOTE.document_id, ownerWaId: OWNER, documentVersion: 1, quoteId: QUOTE.quote_id, idempotencyKey: "confirm:recharge" });
+  assert.deepEqual(f.generationCalls[0], { documentId: QUOTE.document_id, ownerWaId: OWNER, documentVersion: 1, quoteId: QUOTE.quote_id, idempotencyKey: resumeRoundKey("confirm:recharge", 1) });
   assert.equal(f.repository.inspect().sessions[0].status, "RESUMED");
   assert.equal(f.repository.inspect().resumeLinks[0].resume_status, "RESUMED");
 });

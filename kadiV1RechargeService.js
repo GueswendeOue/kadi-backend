@@ -224,7 +224,11 @@ function createRechargeService({
       if (!credited.ok) return credited;
       emit("recharge_credited", { provider: provider.name, recharge_session_id: rechargeSessionId, credits: loaded.value.pack_snapshot.credits });
       if (!loaded.value.document_id) return credited;
-      const resumed = await resumePendingGeneration({ rechargeSessionId, ownerWaId: loaded.value.owner_wa_id });
+      // Calls the unwrapped, unserialized body directly — confirmPaymentEvent
+      // already holds this exact rechargeSessionId's serial() slot (see the
+      // wrapper above), so re-entering serial() here with the same key would
+      // deadlock (await its own still-pending outer slot forever).
+      const resumed = await runResumePendingGeneration({ rechargeSessionId, ownerWaId: loaded.value.owner_wa_id });
       return resumed.ok ? ok(resumed.value, { balance: credited.balance, resume: resumed.resume }) : ok(credited.value, { balance: credited.balance, resume_error: resumed.error });
     });
   }
@@ -254,6 +258,29 @@ function createRechargeService({
   }
 
   async function resumePendingGeneration({ rechargeSessionId, ownerWaId }) {
+    return serial(rechargeSessionId, () => runResumePendingGeneration({ rechargeSessionId, ownerWaId }));
+  }
+
+  async function runGenerationConfirmation({ rechargeSessionId, ownerWaId, link, idempotencyKey }) {
+    const generated = await generationLifecycleService.confirmGeneration({
+      documentId: link.document_id,
+      ownerWaId,
+      documentVersion: link.document_version,
+      quoteId: link.quote_id,
+      idempotencyKey,
+    });
+    if (!generated.ok) {
+      await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "FAILED", last_error_code: generated.error } });
+      emit("generation_resume_failed", { recharge_session_id: rechargeSessionId, reason_code: generated.error });
+      return fail("GENERATION_RESUME_FAILED");
+    }
+    await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "RESUMED", resumed_at: now().value, last_error_code: null } });
+    const updated = await store.updateRechargeSession({ rechargeSessionId, expectedStatuses: ["RESUME_PENDING"], changes: { status: "RESUMED", resumed_at: now().value } });
+    emit("generation_resume_succeeded", { recharge_session_id: rechargeSessionId });
+    return updated.ok ? ok(updated.value, { resume: { automatic: true, generation: generated.value } }) : updated;
+  }
+
+  async function runResumePendingGeneration({ rechargeSessionId, ownerWaId }) {
     const session = await getRechargeSession({ rechargeSessionId, ownerWaId });
     if (!session.ok) return session;
     if (!session.value.document_id) return fail("RECHARGE_HAS_NO_DOCUMENT");
@@ -263,9 +290,47 @@ function createRechargeService({
     if (!link.ok) return link;
     if (resumePolicy !== "AUTO_RESUME_IF_VALID") return ok(session.value, { resume: { automatic: false, reason: "CONFIRMATION_REQUIRED" } });
     emit("generation_resume_started", { recharge_session_id: rechargeSessionId });
-    let generationStarted = link.value.generation_started === true;
-    if (!generationStarted) {
-      const document = await documents.getDocumentById({ documentId: link.value.document_id, ownerWaId });
+    // AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001: generation_started alone is
+    // never the gate for whether to (re-)run the precheck+RECHARGE_CONFIRMED
+    // transition. The real, atomic financial authority
+    // (generationLifecycleService.confirmGeneration ->
+    // walletReservationService.reserveCredits) can legitimately reject a
+    // resume AFTER a correct precheck (a genuine TOCTOU race) — when it
+    // does, its own runConfirmation moves the document back to
+    // RECHARGE_REQUIRED via REQUIRE_RECHARGE, a state confirmGeneration can
+    // never again be legitimately called against (validateConfirmation
+    // requires AWAITING_GENERATION_CONFIRMATION) — calling it anyway forever
+    // returns GENERATION_CONFIRMATION_STATE_INVALID, permanently stranding
+    // the auto-resume. generation_started is kept exactly as before (an
+    // audit trail that a resume was genuinely attempted, set once and never
+    // reset) but a fresh read of the document's CURRENT status — not that
+    // flag — decides whether this call must (re-)arm the document first.
+    const document = await documents.getDocumentById({ documentId: link.value.document_id, ownerWaId });
+    if (!document.ok) return document;
+    if (document.value.status !== "RECHARGE_REQUIRED" && document.value.status !== "AWAITING_GENERATION_CONFIRMATION") {
+      // Not a state auto-resume can act on at all (already progressed to
+      // GENERATION_IN_PROGRESS/RECOVERABLE_FAILURE/etc. through some other
+      // path, e.g. a crashed prior attempt) — fail closed rather than
+      // blindly calling the downstream authority and risking it reporting a
+      // stale, unrelated status as if this resume had just succeeded.
+      return fail("RECHARGE_RESUME_DOCUMENT_STATE_INVALID");
+    }
+    // Deterministic, server-authoritative, bounded-length per-round identity
+    // — link.value.revision is the resume link's own persisted, monotonic
+    // update counter (already a mandatory column, no new migration) — never
+    // random, never client-supplied. Reusing the FIRST attempt's exact
+    // RECHARGE_CONFIRMED idempotency key for a later, genuinely distinct
+    // re-arm would hit the document repository's own idempotency cache and
+    // silently no-op (returning the stale "duplicate" document instead of
+    // truly re-transitioning it) — see docs/KADI_ENGINEERING_MEMORY.md fiche
+    // AG for the confirmed reproduction. Namespacing confirmGeneration's own
+    // idempotencyKey the same way additionally keeps
+    // generationLifecycleService's internal `${key}:reserve`/`${key}:recharge`
+    // sub-keys fresh per round too, so a SECOND race in a row cannot hit a
+    // stale REQUIRE_RECHARGE key from the first race and silently fail to
+    // re-transition the document a second time.
+    const roundKey = makeId("resume", `${link.value.generation_confirmation_id}:${link.value.revision}`);
+    if (document.value.status === "RECHARGE_REQUIRED") {
       const quote = await quoteService.getGenerationQuote({ quoteId: link.value.quote_id, ownerWaId });
       const time = now();
       // RECHARGE_RESUME_AVAILABLE_BALANCE_001: the auto-resume precheck
@@ -290,13 +355,13 @@ function createRechargeService({
         Number.isSafeInteger(balance.value?.reserved_credits) && balance.value.reserved_credits >= 0 &&
         Number.isSafeInteger(balance.value?.available_credits) && balance.value.available_credits >= 0 &&
         balance.value.total_credits - balance.value.reserved_credits === balance.value.available_credits;
-      const valid = document.ok && quote.ok && time.ok && balanceShapeValid && document.value.status === "RECHARGE_REQUIRED" &&
+      const valid = quote.ok && time.ok && balanceShapeValid &&
         document.value.version === link.value.document_version && quote.value.status === "ACTIVE" &&
         quote.value.document_id === link.value.document_id && quote.value.document_version === link.value.document_version &&
         quote.value.total_credits === link.value.generation_cost && quote.value.pricing_version === link.value.pricing_version &&
         Date.parse(quote.value.expires_at) > time.milliseconds && balance.value.available_credits >= quote.value.total_credits;
       if (!valid) {
-        const reason = !document.ok || document.value.version !== link.value.document_version ? "DOCUMENT_CHANGED" :
+        const reason = document.value.version !== link.value.document_version ? "DOCUMENT_CHANGED" :
           !quote.ok || quote.value.status !== "ACTIVE" || Date.parse(quote.value.expires_at) <= (time.milliseconds || 0) ? "QUOTE_NOT_ACTIVE" :
             quote.value.total_credits !== link.value.generation_cost || quote.value.pricing_version !== link.value.pricing_version ? "COST_CHANGED" :
               !balanceShapeValid ? "BALANCE_INVALID" : "BALANCE_INSUFFICIENT";
@@ -311,7 +376,7 @@ function createRechargeService({
         expectedVersion: document.value.version,
         fromState: "RECHARGE_REQUIRED",
         eventType: "RECHARGE_CONFIRMED",
-        idempotencyKey: `${link.value.generation_confirmation_id}:recharge-confirmed`,
+        idempotencyKey: `${roundKey}:recharge-confirmed`,
       });
       if (!persisted.ok) return persisted;
       const marked = await store.updateResumeLink({
@@ -320,24 +385,8 @@ function createRechargeService({
         changes: { resume_status: "STARTED", generation_started: true, started_at: time.value, last_error_code: null },
       });
       if (!marked.ok) return marked;
-      generationStarted = true;
     }
-    const generated = await generationLifecycleService.confirmGeneration({
-      documentId: link.value.document_id,
-      ownerWaId,
-      documentVersion: link.value.document_version,
-      quoteId: link.value.quote_id,
-      idempotencyKey: link.value.generation_confirmation_id,
-    });
-    if (!generated.ok) {
-      await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "FAILED", last_error_code: generated.error } });
-      emit("generation_resume_failed", { recharge_session_id: rechargeSessionId, reason_code: generated.error });
-      return fail("GENERATION_RESUME_FAILED");
-    }
-    await store.updateResumeLink({ rechargeSessionId, expectedStatuses: ["STARTED", "FAILED"], changes: { resume_status: "RESUMED", resumed_at: now().value, last_error_code: null } });
-    const updated = await store.updateRechargeSession({ rechargeSessionId, expectedStatuses: ["RESUME_PENDING"], changes: { status: "RESUMED", resumed_at: now().value } });
-    emit("generation_resume_succeeded", { recharge_session_id: rechargeSessionId });
-    return updated.ok ? ok(updated.value, { resume: { automatic: true, generation: generated.value } }) : updated;
+    return runGenerationConfirmation({ rechargeSessionId, ownerWaId, link: link.value, idempotencyKey: roundKey });
   }
 
   return Object.freeze({
