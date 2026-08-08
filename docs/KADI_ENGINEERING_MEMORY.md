@@ -5950,3 +5950,199 @@ financière brute, aucun identifiant de propriétaire.
   toujours une décision produit séparée ; `REQUIRE_CONFIRMATION` reste
   la politique active.
 * `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.
+
+## AH. R2 (revue indépendante) de AG — AUTO_RESUME_CRASH_RECONCILIATION_001 : une panne de processus entre deux écritures de bookkeeping laissait la reprise incohérente ou bloquée définitivement
+
+* **Statut : `IMPLEMENTED_NOT_MERGED`** — même branche isolée
+  `fix/kadi-v1-recharge-resume-available-balance-p1`, même PR #27
+  brouillon, toujours non fusionnée, non déployée. Garde intacts les
+  correctifs R0 (fiche AF, `getAvailableBalance()`) et R1 (fiche AG,
+  statut document réel au lieu de `generation_started` seul, course
+  gérée par la vraie autorité, sérialisation par session). Aucune
+  migration appliquée à distance, aucune mutation Meta/WhatsApp/Orange
+  Money réelle, aucun changement de tarification. `AUTO_RESUME_IF_VALID`
+  toujours non activé en production.
+* **Origine :** mission « KADI V1 — RECHARGE_RESUME_AVAILABLE_BALANCE
+  INDEPENDENT REVIEW FIX R2 », constat indépendant qu'une panne de
+  processus entre deux écritures de bookkeeping propres à
+  `resumePendingGeneration` n'était pas couverte par R1.
+
+### Défauts confirmés, reproduits avec la composition réelle (`git stash`)
+
+**Fenêtre A — panne après le commit réel de `RECHARGE_CONFIRMED`, avant
+l'écriture `STARTED` du lien de reprise.** Simulée en enveloppant le vrai
+dépôt document en mémoire : le vrai `persistTransition` s'exécute et
+committe réellement, PUIS une exception `PROCESS_CRASH` est levée avant
+de revenir à `RechargeService` (transition jamais annulée). État persisté
+après la panne : `document.status = AWAITING_GENERATION_CONFIRMATION`,
+`session.status = RESUME_PENDING`, `link.resume_status = WAITING_FOR_CREDIT`,
+`link.generation_started = false`. Une nouvelle instance
+`createRechargeService` reconstruite autour des MÊMES dépôts persistants,
+puis `resumePendingGeneration()` :
+
+* **A1 (crédits suffisants)** : l'ancien code R1 sautait directement à
+  `runGenerationConfirmation` (document déjà `AWAITING_GENERATION_CONFIRMATION`)
+  — la vraie génération réussissait réellement (`document.status`
+  devenait `DELIVERED`) et `session.status` devenait `RESUMED`
+  (écriture non conditionnée à l'état du lien), MAIS `link.resume_status`
+  restait bloqué à `WAITING_FOR_CREDIT` pour toujours — la mise à jour de
+  `runGenerationConfirmation` utilisait `expectedStatuses: ["STARTED","FAILED"]`,
+  qui ne correspond pas, et son résultat n'était jamais vérifié.
+  Bookkeeping du lien de reprise durablement incohérent avec la session.
+* **A2 (crédits réellement insuffisants après redémarrage)** : une vraie
+  réservation concurrente injectée avant la reprise fait échouer
+  authentiquement `walletReservationService.reserveCredits()` — le
+  document rebondit correctement `RECHARGE_REQUIRED` (comportement R1
+  correct), mais `link.resume_status` restait ÉGALEMENT bloqué à
+  `WAITING_FOR_CREDIT` (même défaut d'écriture ignorée). Conséquence plus
+  grave : même après libération de la réservation concurrente, une
+  NOUVELLE reprise restait bloquée `GENERATION_RESUME_FAILED` en
+  permanence — `link.revision` n'ayant jamais avancé (aucune des deux
+  écritures n'avait jamais réellement abouti), la clé de tentative
+  recalculée restait identique à celle déjà consommée par la première
+  transition `RECHARGE_CONFIRMED` avant la panne ; le nouvel essai de
+  transition heurtait donc le cache d'idempotence du dépôt document et ne
+  se ré-appliquait jamais réellement — cul-de-sac d'idempotence
+  confirmé.
+
+**Fenêtre B — la vraie génération atteint `DELIVERED`, panne avant la
+finalisation du bookkeeping.** Simulée en enveloppant le dépôt recharge :
+le vrai `updateResumeLink` s'exécute normalement pour tout AUTRE appel,
+mais lève `PROCESS_CRASH` sur son premier appel avec
+`resume_status: "RESUMED"` — après que la vraie génération a réellement
+réussi (crédits capturés, PDF promu, document livré). Confirmé :
+`document.status = DELIVERED` (la génération a authentiquement réussi),
+`session.status` reste `RESUME_PENDING` pour toujours. Une instance
+reconstruite appelant `resumePendingGeneration()` retournait
+`RECHARGE_RESUME_DOCUMENT_STATE_INVALID` (le nouveau garde-fou R1 pour un
+statut document non actionnable) — le rechargement payé et le document
+livré restaient donc définitivement disjoints dans le bookkeeping,
+malgré un document réellement livré à l'utilisateur.
+
+### Correctif — le statut document réel décide, jamais les seuls indicateurs du lien, jamais deviné
+
+**CASE A (fenêtre A) : réconciliation avant appel à l'autorité en aval.**
+Quand le document est déjà `AWAITING_GENERATION_CONFIRMATION` mais que
+`link.resume_status !== "STARTED"` (panne avant cette écriture, ou un
+échec `FAILED` non lié au solde antérieur — même traitement sûr dans les
+deux cas), `resumePendingGeneration()` réconcilie désormais le lien vers
+`STARTED` (même transition idempotente que la voie normale) AVANT
+d'appeler `confirmGeneration`, en réutilisant la MÊME identité de
+tentative déjà impliquée par la révision non encore incrémentée — jamais
+une nouvelle identité sans rapport.
+
+**Identité de tentative dédiée, indépendante de `idFactory`.** L'audit
+confirme que `idFactory` est un service injectable dont le contrat ne
+garantit PAS le déterminisme entre redémarrages (un appelant pourrait
+légitimement y injecter un générateur aléatoire/compteur pour d'autres
+usages de ce même fichier, ex. `recharge_session_id`). Une nouvelle
+fonction dédiée `resumeRoundKey(generationConfirmationId, revision)` (pure,
+SHA256, même format borné que l'`idFactory` par défaut existant)
+remplace `makeId("resume", ...)` pour ce seul usage critique
+d'idempotence — jamais construite depuis `idFactory`. Preuve formelle par
+composition réelle que : (a) une panne APRÈS l'écriture `STARTED` mais
+AVANT tout appel à `confirmGeneration` permet à l'instance reconstruite
+de recalculer et réutiliser en toute sécurité la même révision non
+encore incrémentée (aucune tentative n'existe encore pour ce devis, donc
+même une clé recalculée ne heurte jamais de doublon — prouvé, R2-4) ; (b)
+une reprise APRÈS un échec `FAILED` produit toujours une NOUVELLE clé de
+tentative (`link.revision` a avancé), jamais la même — invariant déjà
+prouvé en R1 (fiche AG) et reconfirmé inchangé ici.
+
+**CASE B/C (fenêtre B) : réconciliation authentifiée, jamais devinée.**
+Une nouvelle fonction `reconcileCompletedGeneration()` est atteinte
+chaque fois que le document n'est ni `RECHARGE_REQUIRED` ni
+`AWAITING_GENERATION_CONFIRMATION`. Elle n'accepte JAMAIS le seul
+`document.status` comme preuve : elle interroge le vrai
+`generationLifecycleService.getGenerationStatus({quoteId, ownerWaId})`
+(méthode publique déjà exposée en lecture seule, désormais rendue
+obligatoire au constructeur) et exige la correspondance EXACTE de
+`owner_wa_id`, `document_id`, `document_version` et `quote_id` avec le
+lien de reprise, plus `attempt.status === "PROMOTED"` ET
+`reservation.status === "CAPTURED"` ET **`document.status === "DELIVERED"`
+explicitement** — ce dernier point est déterminant : un appel normal
+(sans panne) à `confirmGeneration` ne rapporte un succès global qu'une
+fois la LIVRAISON elle-même résolue ; un échec au stade livraison est
+rapporté comme un ÉCHEC (`DELIVERY_RECOVERABLE_FAILURE`), jamais un
+succès, même si les crédits sont déjà capturés et le PDF déjà promu à ce
+stade. Réconcilier `document.status = GENERATED` (panne pendant ou avant
+`deliverFinal`) ou `RECOVERABLE_FAILURE` (échec de livraison réel) comme
+`RESUMED` aurait annoncé à tort au bookkeeping que le document est prêt
+alors qu'il n'a jamais été livré — testé et confirmé nécessaire (R2-5) :
+sans cette exigence explicite, ce scénario exact aurait été réconcilié à
+tort comme un succès. Si la complétion n'est pas prouvée ainsi, échec
+fermé exactement comme avant (CASE D) — la récupération de
+`GENERATION_IN_PROGRESS`/`RECOVERABLE_FAILURE` reste entièrement du
+ressort des contrats de récupération déjà existants de
+`GenerationLifecycleService` (`resumeGeneration`/`retryFailedGeneration`/
+`retryDelivery`), jamais réimplémentée ni devinée ici.
+
+**Écritures de bookkeeping désormais vérifiées, jamais silencieusement
+ignorées.** Une nouvelle fonction partagée `finalizeResumedSession()` est
+l'unique point qui marque `link.resume_status = RESUMED` PUIS
+`session.status = RESUMED` — la session n'est plus jamais marquée
+`RESUMED` si la réconciliation du lien lui-même échoue (résultat
+désormais vérifié). L'écriture d'échec (`resume_status: FAILED`) de
+`runGenerationConfirmation` est également désormais vérifiée : si elle
+échoue, l'erreur brute du dépôt est propagée plutôt que le générique
+`GENERATION_RESUME_FAILED`, pour ne jamais laisser croire à tort que le
+bookkeeping d'échec a bien été enregistré.
+
+### Preuve
+
+* **5 nouveaux scénarios de composition réelle**
+  (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`, ajoutés aux 7
+  déjà existants de R1, 12 au total dans ce fichier) : panne après commit
+  `RECHARGE_CONFIRMED` avant `STARTED`, crédits suffisants — reprise
+  normale, exactement une réservation/tentative, lien ET session
+  `RESUMED` (R2-1) ; même fenêtre puis `INSUFFICIENT_CREDITS` réel après
+  redémarrage — bookkeeping reste sûrement rejouable, aucun cul-de-sac
+  d'idempotence, succès après libération (R2-2) ; vraie génération
+  `DELIVERED`, panne avant finalisation — instance reconstruite reconnaît
+  authentiquement la même tentative réussie, jamais de seconde génération
+  (R2-3) ; panne après `STARTED` mais avant tout appel à
+  `confirmGeneration` — identité de tentative réutilisée, exactement une
+  génération (R2-4) ; panne après capture/promotion mais avant résolution
+  de la livraison (document bloqué `GENERATED`) — jamais réconcilié à
+  tort comme `RESUMED` (R2-5, vérifié en désactivant temporairement le
+  garde-fou `DELIVERED` pour confirmer que le test détecte bien la
+  régression).
+* Tests ciblés (recharge, solde disponible T6/E2E, cycle de vie de
+  génération, fournisseur Orange Money réel, contrat/présentateur
+  recharge, migration d'unicité T10, retry livraison, autorité d'état
+  d'annulation) : 250/250. Suite complète : 1656/1656. `git diff --check` :
+  propre.
+* Revue adversariale du diff complet R0+R1+R2 : trois fichiers de
+  production modifiés — `kadiV1RechargeService.js` (le correctif réel) et
+  deux corrections de commentaires obsolètes, comportement inchangé,
+  dans `kadiV1RechargeRepository.js` et
+  `kadiV1SupabaseRechargeRepository.js` (voir section suivante) ; aucun
+  autre appelant de `resumePendingGeneration`/`resumePolicy` hors de
+  `kadiV1RechargeService.js` et du bootstrap de production (confirmé par
+  grep exhaustif) ; aucun défaut HIGH/MEDIUM restant.
+
+### Commentaires obsolètes corrigés (aucun changement de comportement)
+
+`kadiV1RechargeRepository.js` et `kadiV1SupabaseRechargeRepository.js`
+affirmaient encore, dans leur commentaire au-dessus de
+`getAvailableBalance()`, que `resumePendingGeneration` utilisait
+toujours `getBalance()` brut — faux depuis R0 (fiche AF). Corrigé,
+commentaire uniquement, comportement du code totalement inchangé.
+
+### Sécurité re-vérifiée
+
+Aucun appel réseau Meta/WhatsApp/Orange Money réel dans les tests.
+Aucune migration Supabase appliquée à distance. Aucune nouvelle
+colonne/table requise (`resumeRoundKey` et la réconciliation utilisent
+uniquement des colonnes déjà existantes : `revision`, `resume_status`,
+`generation_started`). Aucune donnée sensible journalisée par ce
+correctif.
+
+### Suivi requis (hors périmètre de cette mission)
+
+* Application des migrations T6 et T10 R1 à Supabase de production —
+  toujours hors périmètre, toujours en attente.
+* Activation éventuelle de `AUTO_RESUME_IF_VALID` en production —
+  toujours une décision produit séparée ; `REQUIRE_CONFIRMATION` reste
+  la politique active.
+* `FLOW-PARITY-GATE` global — toujours un suivi de backlog distinct.

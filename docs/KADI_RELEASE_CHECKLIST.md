@@ -1304,10 +1304,80 @@ reste `REQUIRE_CONFIRMATION`.
 16. **[FAIT]** Revue adversariale du diff complet R0+R1 — un seul fichier
     de production modifié au total (`kadiV1RechargeService.js`) ; aucun
     défaut HIGH/MEDIUM restant.
-17. **[EN ATTENTE]** Fusion dans `main`. Ne pas marquer
-    `RECHARGE_RESUME_AVAILABLE_BALANCE_001` ni
-    `AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001` `CLOSED` avant fusion.
-18. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
+
+### R2 (revue indépendante) — AUTO_RESUME_CRASH_RECONCILIATION_001
+
+17. **[FAIT]** Constat indépendant : une panne de processus entre deux
+    écritures de bookkeeping propres à `resumePendingGeneration` n'était
+    pas couverte par R1.
+18. **[FAIT]** Défauts confirmés et reproduits avant correctif via
+    composition réelle (`git stash`) : fenêtre A (panne après le commit
+    réel de `RECHARGE_CONFIRMED`, avant l'écriture `STARTED` du lien) —
+    `link.resume_status` restait bloqué à `WAITING_FOR_CREDIT` pour
+    toujours même quand `session.status` devenait authentiquement
+    `RESUMED` (écriture ignorée, `expectedStatuses` ne correspondant
+    pas) ; avec crédits réellement insuffisants après redémarrage, une
+    NOUVELLE reprise restait bloquée en permanence même après libération
+    de la réservation concurrente (`link.revision` n'ayant jamais
+    avancé, cul-de-sac d'idempotence confirmé). Fenêtre B (vraie
+    génération `DELIVERED`, panne avant finalisation du bookkeeping) —
+    le rechargement payé et le document livré restaient définitivement
+    disjoints (`RECHARGE_RESUME_DOCUMENT_STATE_INVALID` pour toujours).
+19. **[FAIT]** Correctif CASE A : réconciliation du lien vers `STARTED`
+    (même identité de tentative, dérivée de `link.value.revision` non
+    encore incrémentée par la panne) avant tout appel à l'autorité en
+    aval, quand le document est déjà `AWAITING_GENERATION_CONFIRMATION`
+    mais `resume_status !== "STARTED"`.
+20. **[FAIT]** Correctif identité de tentative : nouvelle fonction dédiée
+    `resumeRoundKey(generationConfirmationId, revision)`, indépendante de
+    l'`idFactory` injectable (dont le contrat ne garantissait pas le
+    déterminisme entre redémarrages) — remplace `makeId("resume", ...)`
+    pour ce seul usage critique d'idempotence. Aucune nouvelle migration
+    (utilise uniquement la colonne `revision` déjà existante du lien de
+    reprise).
+21. **[FAIT]** Correctif CASE B/C : nouvelle `reconcileCompletedGeneration()`
+    reconnaît une complétion authentique via le vrai
+    `generationLifecycleService.getGenerationStatus()` (désormais
+    obligatoire au constructeur) — owner/document_id/document_version/
+    quote_id EXACTS, `attempt.status === "PROMOTED"`,
+    `reservation.status === "CAPTURED"`, et `document.status === "DELIVERED"`
+    explicitement requis (jamais une génération capturée/promue dont la
+    livraison n'a pas encore résolu — cohérent avec ce que le chemin
+    normal sans panne rapporte lui-même comme succès) — sans jamais
+    régénérer. Tout le reste échoue fermé (CASE D), laissé aux contrats
+    de récupération déjà existants de `GenerationLifecycleService`.
+22. **[FAIT]** Correctif bookkeeping : nouvelle `finalizeResumedSession()`
+    unique point de marquage `RESUMED`, la session n'étant plus jamais
+    marquée `RESUMED` si la réconciliation du lien échoue ; l'écriture
+    d'échec (`FAILED`) est désormais également vérifiée plutôt que
+    silencieusement ignorée.
+23. **[FAIT]** 5 nouveaux scénarios de composition réelle
+    (`tests/kadiV1RechargeResumeRealLifecycleRace.test.js`, 12 au total
+    avec R1) : panne avant `STARTED`, crédits suffisants — reprise
+    normale exactement une fois ; même fenêtre puis `INSUFFICIENT_CREDITS`
+    réel — retryable sans cul-de-sac ; vraie livraison, panne avant
+    finalisation — reconnue sans régénérer ; panne après `STARTED` avant
+    `confirmGeneration` — identité réutilisée, exactement une génération ;
+    panne après capture/promotion avant résolution de la livraison —
+    jamais faussement réconcilié comme réussi (vérifié en désactivant
+    temporairement le garde-fou `DELIVERED` pour confirmer que le test
+    détecte bien la régression).
+24. **[FAIT]** Commentaires obsolètes corrigés (aucun changement de
+    comportement) : `kadiV1RechargeRepository.js` et
+    `kadiV1SupabaseRechargeRepository.js` affirmaient encore que
+    `resumePendingGeneration` utilisait `getBalance()` brut — faux
+    depuis R0.
+25. **[FAIT]** Tests ciblés (250/250) puis suite complète (1656/1656),
+    `git diff --check` propre.
+26. **[FAIT]** Revue adversariale du diff complet R0+R1+R2 — trois
+    fichiers de production modifiés au total (le correctif réel dans
+    `kadiV1RechargeService.js`, plus deux corrections de commentaires
+    obsolètes) ; aucun défaut HIGH/MEDIUM restant.
+27. **[EN ATTENTE]** Fusion dans `main`. Ne pas marquer
+    `RECHARGE_RESUME_AVAILABLE_BALANCE_001`,
+    `AUTO_RESUME_POST_PRECHECK_RACE_STUCK_001` ni
+    `AUTO_RESUME_CRASH_RECONCILIATION_001` `CLOSED` avant fusion.
+28. **[EN ATTENTE]** Déploiement — aucune dépendance de migration propre
     à cette correction, mais les dépendances déjà en attente (migration
     T6, migration T10 R1) restent applicables en premier si ce
     déploiement les compose. Après déploiement : `resumePolicy` reste
