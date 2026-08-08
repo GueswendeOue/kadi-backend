@@ -133,17 +133,38 @@ function createKadiV1FlowCommandRuntime({
       if (!ID_PATTERN.test(data.payment_reference || "")) return fail("KADI_V1_PAYMENT_REFERENCE_INVALID");
       return call(recharge, "checkPayment", { ...base, paymentReference: data.payment_reference }, "KADI_V1_PAYMENT_CHECK_FAILED");
     }
+    // RECHARGE-PRESENTER-001 (R2 independent review, HIGH/P0 — unbound
+    // CANCEL, remaining hole after R1): the real RECHARGE Flow carries no
+    // recharge_session_id of its own, so rechargeRuntime.cancel()
+    // (kadiV1ProductionInfrastructure.js) has always had to resolve its
+    // target purely by owner + sessionOpenedAt (newest session created at
+    // or before that moment) — never by a document or Flow-opening
+    // context. R1's documentContext-based defense only covers RECHARGE
+    // sessions opened directly for a RECHARGE_REQUIRED document (the
+    // immediate INSUFFICIENT_CREDITS route, a history reopen); the direct
+    // conversational RECHARGE opening (kadiV1ConversationOrchestrator.js's
+    // "RECHARGE" intent branch, reachable by an interpretation runtime
+    // that opts into it) never touches a document at all, so its
+    // documentContext is null — R1's check had no signal to act on there,
+    // and a forged CANCEL from that session could still resolve to and
+    // cancel a completely unrelated older recharge for the same owner
+    // (reproduced concretely; see the R2 mission report). Fixed by
+    // disabling the ambiguous Flow entry point entirely, unconditionally,
+    // for every RECHARGE-opening context (initial, history, conversational,
+    // and even after SELECT_PACK/CHECK_PAYMENT) — a client cannot prove
+    // this exact Flow session is the one genuinely bound to a specific
+    // recharge session without a durable, persisted recharge_session_id in
+    // the conversation session model, which does not exist today and is
+    // out of scope for a schema/migration change here (see the R2 mission
+    // report's SESSION_BINDING_MODEL section). Abandoning a recharge no
+    // longer terminally cancels it through the Flow; the user can simply
+    // close the Flow and start a new recharge later. The lower-level
+    // target-selection primitive this disables (rechargeRuntime.cancel(),
+    // kadiV1ProductionInfrastructure.js) is intentionally left completely
+    // unchanged and still directly tested — see
+    // tests/kadiV1RechargeContractE2E.test.js.
     if (command.action === "CANCEL" && command.flowKey === "RECHARGE") {
-      // RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): the real
-      // RECHARGE Flow carries no recharge_session_id of its own — cancel()
-      // must be bound to the trusted server-side moment this exact Flow
-      // session was opened (sessionOpenedAt, set only by
-      // kadiV1FlowReplyRuntime.js from the session record, never
-      // client-supplied), so a stale or replayed CANCEL submission can
-      // never affect a recharge session created after that session was
-      // opened. See kadiV1ProductionInfrastructure.js's cancel().
-      if (!Number.isFinite(Date.parse(command.sessionOpenedAt || ""))) return fail("KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID");
-      return call(recharge, "cancel", { ...base, sessionOpenedAt: command.sessionOpenedAt }, "KADI_V1_RECHARGE_CANCEL_FAILED");
+      return fail("KADI_V1_RECHARGE_CANCEL_NOT_EXPOSED");
     }
     if (command.action === "CANCEL" && command.flowKey === "GENERATION_CONFIRMATION") {
       // GENERATION_CONFIRMATION-001 (R1 independent review, HIGH/P0): a
@@ -249,7 +270,15 @@ function createKadiV1FlowCommandRuntime({
       SAVE_FOR_LATER: [documents, "saveForLater", documentBase, "KADI_V1_DOCUMENT_SAVE_LATER_FAILED"],
       SAVE_DETAILS: [documents, "saveDischargeDetails", { ...documentBase, details: structuredClone(data) }, "KADI_V1_DISCHARGE_DETAILS_FAILED"],
       PREPARE_PDF: [previews, "prepare", documentBase, "KADI_V1_PREVIEW_PREPARE_FAILED"],
-      CONFIRM_GENERATION: [generation, "confirm", { ...documentBase, quoteId: data.quote_id }, "KADI_V1_GENERATION_CONFIRM_FAILED"],
+      // exactReplay (R2/MEDIUM independent review): the trusted,
+      // session-layer exact-replay signal (kadiV1FlowReplyRuntime.js's
+      // consumed.duplicate) — never client-supplied, never derived from
+      // any downstream error code. See kadiV1RuntimeAdapters.js's
+      // generation runtime adapter for how it bounds which
+      // GENERATION_CONFIRMATION_STATE_INVALID failures may ever be
+      // classified as a safe replay of an already-applied
+      // RECHARGE_REQUIRED transition.
+      CONFIRM_GENERATION: [generation, "confirm", { ...documentBase, quoteId: data.quote_id, exactReplay: command.exactReplay === true }, "KADI_V1_GENERATION_CONFIRM_FAILED"],
       CANCEL: [documents, "cancel", documentBase, "KADI_V1_DOCUMENT_CANCEL_FAILED"],
     };
     const operation = operations[command.action];

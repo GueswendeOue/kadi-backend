@@ -14,7 +14,7 @@ const {
 } = require("./kadiV1DraftFlowCatalog");
 const { FLOW_KEYS } = require("./kadiV1FlowRouter");
 const { buildPreviewData } = require("./kadiV1PreviewService");
-const { formatAvailableBalanceText } = require("./kadiV1BalancePresentation");
+const { formatAvailableBalanceText, formatRechargeBalanceSummary } = require("./kadiV1BalancePresentation");
 
 const MAX_SUMMARY_ITEMS = 10;
 
@@ -473,6 +473,44 @@ const DISCHARGE_REVIEW_ACTIONS = Object.freeze([
   { id: "CANCEL", title: "Annuler" },
 ]);
 
+// R2/HIGH (independent review): the real RECHARGE Flow carries no
+// recharge_session_id of its own, so rechargeRuntime.cancel() has always
+// had to resolve "which session" from owner + sessionOpenedAt context
+// alone (see kadiV1ProductionInfrastructure.js's cancel()) — scoped to
+// the OWNER, never to a particular document or Flow-opening context. R1
+// tried offering CANCEL only once a recharge session appeared "bound" to
+// the reopened screen (after SELECT_PACK/CHECK_PAYMENT), but the direct
+// conversational RECHARGE opening
+// (kadiV1ConversationOrchestrator.js's "RECHARGE" intent branch) proved
+// that even a supposedly-unbound session (no document, nothing selected
+// yet) could still have a forged CANCEL resolve to and cancel a
+// completely unrelated older recharge for the same owner — R1's
+// documentContext-based server defense had no signal to act on there.
+// Proving a client-submitted CANCEL genuinely targets a specific
+// recharge session would require a durable, persisted
+// recharge_session_id in the conversation session model, which does not
+// exist today (kadiV1ConversationSession.js has no such field) and is
+// out of scope for a schema/migration change here. R2 therefore removes
+// terminal CANCEL from the RECHARGE Flow entirely, in every context —
+// only SELECT_PACK/CHECK_PAYMENT are ever offered. Abandoning a recharge
+// no longer terminally cancels it through the Flow; the user can simply
+// close the Flow and start a new recharge later.
+// kadiV1FlowCommandRuntime.js also rejects RECHARGE/CANCEL
+// unconditionally, server-side, so a forged/replayed submission or a
+// stale cached Meta screen still offering the old CANCEL button remains
+// harmless. The lower-level target-selection primitive this disables
+// (rechargeRuntime.cancel(), kadiV1ProductionInfrastructure.js) is
+// intentionally left completely unchanged.
+const RECHARGE_ACTIONS = Object.freeze([
+  Object.freeze({ id: "SELECT_PACK", title: "Choisir ce pack" }),
+  Object.freeze({ id: "CHECK_PAYMENT", title: "Vérifier mon paiement" }),
+]);
+const RECHARGE_BALANCE_UNAVAILABLE_TEXT = "Solde indisponible pour le moment.";
+// R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
+// via CONFIRM_GENERATION is a handled business outcome, never a technical
+// failure — see kadiV1RuntimeAdapters.js's generation runtime adapter.
+const RECHARGE_REQUIRED_COPY = "Votre solde est insuffisant pour générer ce document. Choisissez une recharge pour continuer.";
+
 function buildReviewActions(document) {
   if (document?.document_type === "RECU") return RECEIPT_REVIEW_ACTIONS;
   if (document?.document_type === "DECHARGE") return DISCHARGE_REVIEW_ACTIONS;
@@ -725,10 +763,35 @@ function quoteFromResult(value) {
   return ID_PATTERN.test(candidate || "") ? candidate : null;
 }
 
-function canonicalReplyText(action, value) {
+function canonicalReplyText(action, value, flowKey = null) {
   const document = extractDocument(value);
   if (document?.status === "DELIVERED") {
     return "Votre document est prêt et a été envoyé.";
+  }
+
+  // R2/HIGH (independent review): RECHARGE/CANCEL is now rejected
+  // unconditionally, server-side, by kadiV1FlowCommandRuntime.js before
+  // this presenter is ever reached with a successful result — this
+  // branch (T5/R1's "La recharge est annulée..." copy) is therefore
+  // unreachable and intentionally removed rather than left as misleading
+  // dead code. A rejected CANCEL is presented through the normal
+  // recoverable-error path (kadiV1WebhookRuntime.js's recover()), never
+  // through canonicalReplyText. Every other CANCEL flow (DOCUMENT_REVIEW,
+  // DOCUMENT_PREVIEW, GENERATION_CONFIRMATION) is unaffected and keeps
+  // its own generic "L’opération est annulée." from the static table
+  // below.
+
+  // R1/MEDIUM (independent review): a document reaching RECHARGE_REQUIRED
+  // via CONFIRM_GENERATION is a handled business outcome, never a
+  // technical failure — never the misleading "La génération du document
+  // est terminée." (static table below) nor a generic recoverable-error
+  // text. value.recharge_required is set only by
+  // kadiV1RuntimeAdapters.js's generation runtime adapter, only after
+  // re-reading the authoritative document and confirming its CURRENT
+  // status is genuinely RECHARGE_REQUIRED — never fabricated from the
+  // error string alone.
+  if (action === "CONFIRM_GENERATION" && value?.recharge_required === true) {
+    return RECHARGE_REQUIRED_COPY;
   }
 
   if (action === "SELECT_PACK" && value?.payment_instructions) {
@@ -842,6 +905,21 @@ function suggestedDataForFlow(flowKey, source, extra = {}) {
   const quoteId = quoteFromResult(source);
   if (quoteId) output.quote_id = quoteId;
 
+  // T5/RECHARGE_PRESENTER_001: extra.recharge is pre-fetched
+  // asynchronously by the caller (this function itself stays synchronous,
+  // matching extra.issuerProfile's existing pattern) via
+  // buildRechargePresentationData() — the real available balance and the
+  // real active pack catalog, never the Flow JSON's __example__ values.
+  // Always explicitly supplied whenever RECHARGE is opened; if the
+  // dependency were ever missing, extra.recharge itself already carries
+  // the safe "Solde indisponible" / empty-pack-list fallback, never a
+  // fabricated zero or fake packs.
+  if (flowKey === "RECHARGE" && extra.recharge) {
+    output.balance_summary = extra.recharge.balance_summary;
+    output.pack_options = extra.recharge.pack_options;
+    output.recharge_actions = extra.recharge.recharge_actions;
+  }
+
   // Populates the same history_options dropdown the Flow's own JSON
   // contract already declares (kadi_history_search_v1.json) — the search
   // screen and the results screen are the same single Meta screen (Meta
@@ -944,6 +1022,19 @@ function createKadiV1ProductionPresenter({
   voiceResponseEngine = null,
   voiceDelivery = null,
   issuerProfileReader = null,
+  // T5/RECHARGE_PRESENTER_001: the presenter is a presentation layer only
+  // — it never queries Supabase for wallet rows, never recreates the
+  // available-balance calculation, and never redefines pack values. It
+  // reads the exact same, already-authoritative capabilities the rest of
+  // the runtime already uses: balanceReader.getBalance() (the T6
+  // BalanceReader — same one wired into walletRuntime, so the RECHARGE
+  // Flow and the normal BALANCE response can never disagree) and
+  // packCatalog.listActivePacks() (the SAME createRechargePackCatalog
+  // instance already used by RechargeService, never a second pack list).
+  // Both optional and narrow, matching this constructor's existing
+  // issuerProfileReader convention.
+  balanceReader = null,
+  packCatalog = null,
   logger = console,
   rootDir = __dirname,
 } = {}) {
@@ -1001,6 +1092,12 @@ function createKadiV1ProductionPresenter({
   ) {
     throw new TypeError("KADI_V1_PRESENTER_ISSUER_PROFILE_READER_INVALID");
   }
+  if (balanceReader != null && typeof balanceReader.getBalance !== "function") {
+    throw new TypeError("KADI_V1_PRESENTER_BALANCE_READER_INVALID");
+  }
+  if (packCatalog != null && typeof packCatalog.listActivePacks !== "function") {
+    throw new TypeError("KADI_V1_PRESENTER_PACK_CATALOG_INVALID");
+  }
 
   const registry = loadFlowRegistry(rootDir);
 
@@ -1014,6 +1111,88 @@ function createKadiV1ProductionPresenter({
     } catch {
       return null;
     }
+  }
+
+  // T5/RECHARGE_PRESENTER_001: computed fresh every time RECHARGE is
+  // opened (never cached) so the balance and pack list are always the
+  // authoritative, current server state. Balance failure never becomes a
+  // fabricated zero — zero is a real financial value and a lookup failure
+  // must never be indistinguishable from it; a non-numeric safe phrase is
+  // shown instead. Zero active packs never falls back to the Flow JSON's
+  // __example__ packs — an empty list is shown honestly, never invented
+  // data presented as live.
+  async function resolveRechargeBalanceSummary(ownerWaId) {
+    if (!balanceReader) return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    let result;
+    try {
+      result = await balanceReader.getBalance({ ownerWaId });
+    } catch {
+      return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    }
+    const total = result?.value?.total_credits;
+    const reserved = result?.value?.reserved_credits;
+    const available = result?.value?.available_credits;
+    if (
+      result?.ok !== true ||
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(reserved) || reserved < 0 ||
+      !Number.isSafeInteger(available) || available < 0 ||
+      total - reserved !== available
+    ) {
+      return RECHARGE_BALANCE_UNAVAILABLE_TEXT;
+    }
+    return formatRechargeBalanceSummary({ availableCredits: available, reservedCredits: reserved });
+  }
+
+  // R1/LOW (independent review): createRechargePackCatalog validates a
+  // real 3-letter currency per pack (kadiV1RechargeConfig.js's
+  // CURRENCY_PATTERN) — hardcoding "FCFA" regardless of pack.currency
+  // would silently mislabel a future non-XOF active pack. XOF still
+  // renders as "FCFA" (Kadi V1's only currency today, and the label
+  // already used everywhere else in the app); any other validated
+  // currency renders with its own code instead of a fabricated one. No
+  // current pack value is changed by this — every existing pack is XOF.
+  function rechargePackAmountLabel(amount, currency) {
+    const label = currency === "XOF" ? "FCFA" : currency;
+    return `${amount.toLocaleString("fr-FR")} ${label}`;
+  }
+
+  function resolveRechargePackOptions() {
+    if (!packCatalog) return [];
+    let activePacks;
+    try {
+      activePacks = packCatalog.listActivePacks();
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(activePacks)) return [];
+    return activePacks
+      .filter((pack) =>
+        pack &&
+        typeof pack.pack_id === "string" && pack.pack_id &&
+        Number.isSafeInteger(pack.amount) && pack.amount > 0 &&
+        typeof pack.currency === "string" && /^[A-Z]{3}$/.test(pack.currency) &&
+        Number.isSafeInteger(pack.credits) && pack.credits > 0)
+      .map((pack) => ({
+        id: pack.pack_id,
+        title: `${rechargePackAmountLabel(pack.amount, pack.currency)} — ${pack.credits} crédit${pack.credits === 1 ? "" : "s"}`,
+      }));
+  }
+
+  // R2/HIGH (independent review): recharge_actions is now always the
+  // same SELECT_PACK/CHECK_PAYMENT-only list in every RECHARGE-opening
+  // context — see RECHARGE_ACTIONS above for why terminal CANCEL was
+  // removed entirely rather than kept "bound" to some contexts only.
+  async function buildRechargePresentationData(ownerWaId) {
+    const [balance_summary, pack_options] = await Promise.all([
+      resolveRechargeBalanceSummary(ownerWaId),
+      Promise.resolve(resolveRechargePackOptions()),
+    ]);
+    return Object.freeze({
+      balance_summary,
+      pack_options: Object.freeze(pack_options),
+      recharge_actions: RECHARGE_ACTIONS,
+    });
   }
 
   async function maybeTyping(messageId) {
@@ -1164,6 +1343,15 @@ function createKadiV1ProductionPresenter({
         response.flow_request.prefill,
         response.next_state
       );
+      // T5/RECHARGE_PRESENTER_001: the conversational RECHARGE-opening
+      // path (kadiV1ConversationOrchestrator.js's "RECHARGE" intent
+      // branch) never builds its own prefill — the same authoritative
+      // balance_summary/pack_options/recharge_actions used by the
+      // Flow/menu path are supplied here too, spread last so they can
+      // never be shadowed by an unrelated prefill field of the same name.
+      const rechargeData = flowKey === "RECHARGE"
+        ? await buildRechargePresentationData(ownerWaId)
+        : null;
       const suggestedData = {
         ...(isPlainObject(response.flow_request.prefill)
           ? response.flow_request.prefill
@@ -1174,6 +1362,7 @@ function createKadiV1ProductionPresenter({
               document_label: documentLabel(document.document_type),
             }
           : {}),
+        ...(rechargeData || {}),
       };
       flow = await openAndSendFlow({
         ownerWaId,
@@ -1249,7 +1438,8 @@ function createKadiV1ProductionPresenter({
 
     const canonicalText = canonicalReplyText(
       result.action,
-      result.result
+      result.result,
+      typeof result.flow_key === "string" ? result.flow_key : null
     );
     await maybeTyping(messageId);
     await messaging.sendText(ownerWaId, canonicalText);
@@ -1265,6 +1455,9 @@ function createKadiV1ProductionPresenter({
       const issuerProfile = flowKey === "DOCUMENT_PREVIEW"
         ? await resolveIssuerProfileForPreview(document)
         : null;
+      const recharge = flowKey === "RECHARGE"
+        ? await buildRechargePresentationData(ownerWaId)
+        : null;
       flow = await openAndSendFlow({
         ownerWaId,
         messageId,
@@ -1273,7 +1466,7 @@ function createKadiV1ProductionPresenter({
         suggestedData: suggestedDataForFlow(
           flowKey,
           result.result,
-          { issuerProfile }
+          { issuerProfile, recharge }
         ),
       });
     }

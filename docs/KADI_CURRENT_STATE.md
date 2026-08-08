@@ -799,6 +799,104 @@ Statuts utilisés : `VALIDATED_CANARY`, `IMPLEMENTED_NOT_DEPLOYED`,
   hors périmètre T6). Voir fiche AA.3 de
   [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
   détail complet.
+* **Mise à jour (2026-08-07) : T5/RECHARGE_PRESENTER_001 corrigé,
+  branche isolée `fix/kadi-v1-recharge-presenter-t5` créée depuis
+  `main@87b95bfa41ec40d6e0da5a7a53b25f9ecc2563f2`, PR brouillon ouverte,
+  **non fusionnée, non déployée. Aucune migration touchée par T5.**
+  Défaut confirmé : le Flow RECHARGE réel affichait toujours les valeurs
+  `__example__` du JSON (« Solde actuel : 0 crédit. », packs
+  PACK_1000/2000/5000 d'exemple) au lieu du solde disponible réel (T6) et
+  du catalogue de packs actif réel — **prouvé concrètement avant
+  correctif** (`git stash` puis restauration : solde réel de 7 crédits
+  affichant « Solde actuel : 0 crédit. »). **Corrigé** : le presenter
+  reçoit désormais deux dépendances optionnelles étroites,
+  `balanceReader`/`packCatalog`, **les mêmes instances** déjà câblées
+  dans `walletRuntime`/`RechargeService` — jamais un second calcul
+  financier ni une seconde liste de packs. Échec fermé systématique :
+  échec de lecture du solde → « Solde indisponible pour le moment. »,
+  jamais un zéro fabriqué ; zéro pack actif → liste vide, jamais les
+  exemples du JSON présentés comme réels. Libellé CANCEL corrigé
+  (« Annuler cette recharge » au lieu de « Revenir plus tard », qui
+  décrivait à tort une annulation terminale réelle comme un simple
+  ajournement), avec une copie de confirmation dédiée à RECHARGE,
+  déterminée par le `flow_key` vérifié côté serveur — les autres CANCEL
+  (`DOCUMENT_REVIEW`, `DOCUMENT_PREVIEW`, `GENERATION_CONFIRMATION`)
+  inchangés. R1/R2/R3 de T3 (intégrité d'annulation), le contrat combiné
+  `pack_id`/`payment_reference`, et le comportement `SELECT_PACK`/
+  `CHECK_PAYMENT` existants tous confirmés inchangés. **Nouveau constat
+  non corrigé** : au moment précis où `CONFIRM_GENERATION` échoue avec
+  `INSUFFICIENT_CREDITS`, l'utilisateur ne voit qu'un texte générique de
+  récupération, sans Flow RECHARGE ni invitation à recharger — celui-ci
+  n'apparaît qu'en rouvrant plus tard le document bloqué depuis
+  l'historique. Délibérément hors périmètre de T5. **Statut :
+  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (242/242) puis suite complète
+  (1520/1520), `git diff --check` propre. Voir fiche AB de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
+* **Mise à jour (2026-08-08) : T5 R1 (revue adversariale indépendante de
+  la PR #23) — deux défauts confirmés et corrigés, un LOW corrigé.**
+  Même branche, même PR #23, toujours **`IMPLEMENTED_NOT_MERGED`, aucune
+  migration touchée.** **HIGH/P0 :** `recharge_actions` offrait toujours
+  CANCEL dès que RECHARGE s'ouvrait, y compris pour un document
+  fraîchement `RECHARGE_REQUIRED` n'ayant jamais appelé SELECT_PACK —
+  `cancel()` résout sa cible par propriétaire + `sessionOpenedAt` seuls
+  (jamais par document), donc un CANCEL soumis depuis ce contexte non lié
+  pouvait annuler une recharge plus ancienne et complètement étrangère du
+  même propriétaire. **Corrigé**, deux couches : CANCEL n'est offert que
+  lorsqu'une vraie session de recharge vient d'être créée pour cet écran
+  précis (après SELECT_PACK/CHECK_PAYMENT) ; défense en profondeur
+  côté serveur (`kadiV1FlowCommandRuntime.js`) rejetant tout CANCEL dont
+  le contexte de session fiable montre un document `RECHARGE_REQUIRED`,
+  avant même d'appeler `cancel()`. R1/R2/R3 de T3 confirmés inchangés.
+  **MEDIUM/P1 :** confirmé — `INSUFFICIENT_CREDITS` n'ouvrait jamais le
+  Flow RECHARGE, seulement un texte générique de récupération. **Corrigé**
+  à la frontière Flow/runtime (`kadiV1RuntimeAdapters.js`'s adaptateur de
+  génération, jamais le service de génération lui-même) : relit le
+  document après l'échec et, uniquement si son statut actuel est
+  authentiquement `RECHARGE_REQUIRED`, route immédiatement vers RECHARGE
+  avec une copie truthful — plus de détour par l'historique. Rejeu exact
+  confirmé sûr (zéro deuxième mutation, marqué duplicate). **LOW :**
+  l'étiquette de pack codait en dur « FCFA » quelle que soit
+  `pack.currency` — corrigé, aucune valeur de pack actuelle modifiée.
+  **Statut : `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (379/379) puis
+  suite complète (1526/1526), `git diff --check` propre. Reproduction
+  avant correctif prouvée concrètement (`git stash` des 4 fichiers de
+  production R1 puis restauration). Voir fiche AB.1 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
+* **Mise à jour (2026-08-08) : T5 R2 (revue adversariale indépendante de
+  la PR #23) — un HIGH et un MEDIUM confirmés et corrigés.** Même
+  branche, même PR #23, toujours **`IMPLEMENTED_NOT_MERGED`, aucune
+  migration touchée.** **HIGH/P0 (trou restant après R1) :** l'ouverture
+  RECHARGE conversationnelle directe ne touche jamais de document, donc
+  la défense R1 (basée sur `documentContext`) n'avait aucun signal sur
+  lequel agir — un CANCEL forgé depuis cette session pouvait toujours
+  annuler une recharge étrangère plus ancienne du même propriétaire
+  (**prouvé concrètement avant correctif**, `git stash`/restauration
+  contre le code réel R1). **Corrigé** : le CANCEL terminal est retiré du
+  Flow RECHARGE dans **tous** les contextes (y compris après
+  SELECT_PACK/CHECK_PAYMENT, qui n'offraient CANCEL qu'en R1) — une
+  liaison fiable exigerait un `recharge_session_id` persistant dans le
+  modèle de session, une migration explicitement hors périmètre.
+  `kadiV1FlowCommandRuntime.js` rejette désormais RECHARGE/CANCEL de
+  façon inconditionnelle, côté serveur. La primitive de plus bas niveau
+  (`rechargeRuntime.cancel()`) reste inchangée et continue d'être testée
+  directement. **MEDIUM/P1 :** le correctif R1 classait à tort
+  `DOCUMENT_VERSION_CONFLICT` comme un rejeu sûr dès que le document
+  relu était `RECHARGE_REQUIRED`, sans vérifier que sa version/son type
+  correspondaient encore à la commande d'origine — une commande obsolète
+  pour une version N aurait pu être classée comme rejeu sûr d'une
+  confirmation postérieure et indépendante ayant atteint la version N+1.
+  **Corrigé** : `DOCUMENT_VERSION_CONFLICT` n'est plus jamais classé
+  comme rejeu ; `GENERATION_CONFIRMATION_STATE_INVALID` ne l'est que si
+  un nouveau signal fiable `exactReplay` (propagé depuis le signal de
+  rejeu exact authentique de `kadiV1FlowReplyRuntime.js`, jamais fourni
+  par le client) est vrai **et** que la version/le type relus
+  correspondent exactement à la commande d'origine. **Statut :
+  `IMPLEMENTED_NOT_MERGED`.** Tests ciblés (483/483) puis suite complète
+  (1527/1527), `git diff --check` propre. Voir fiche AB.2 de
+  [`KADI_ENGINEERING_MEMORY.md`](KADI_ENGINEERING_MEMORY.md) pour le
+  détail complet et la preuve.
 
 ## Blocages connus
 

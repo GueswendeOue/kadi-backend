@@ -133,26 +133,28 @@ test("generation confirmation passes quote id together with immutable server con
   assert.equal(calls[0].payload.expectedVersion, 3);
 });
 
-test("cancel from recharge never calls document cancellation", async () => {
+// RECHARGE-PRESENTER-001 (R2 independent review, HIGH/P0): the real
+// RECHARGE Flow carries no recharge_session_id of its own, and no client-
+// submitted or session-derived signal reliably proves which recharge
+// session a CANCEL is actually about — even a documentContext-based
+// defense (R1) had no signal to act on for the direct conversational
+// RECHARGE opening (no document at all). RECHARGE/CANCEL is therefore
+// rejected unconditionally here, before rechargeRuntime.cancel() is ever
+// called, regardless of sessionOpenedAt/documentContext — see
+// tests/kadiV1RechargePresenterE2E.test.js's R2/HIGH tests for the full
+// production-composition proof. The lower-level cancel() primitive
+// itself (kadiV1ProductionInfrastructure.js) is unchanged and still
+// directly tested in tests/kadiV1RechargeContractE2E.test.js.
+test("RECHARGE/CANCEL is rejected unconditionally, regardless of sessionOpenedAt/documentContext, and cancelRecharge is never called", async () => {
   const calls = [];
-  await makeRuntime(calls).execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: null, sessionOpenedAt: "2026-08-07T02:00:00.000Z" }));
-  assert.deepEqual(calls.map((entry) => entry.name), ["cancelRecharge"]);
-});
-
-// RECHARGE-CONTRACT-001 (R1 independent review, HIGH/P0): sessionOpenedAt
-// is the trusted server-side moment the exact Flow session was opened —
-// kadiV1FlowReplyRuntime.js always supplies it for every command, never
-// the client. RECHARGE/CANCEL is the only action that currently reads it
-// (to bound which recharge session cancel() may target); a missing or
-// invalid value must fail closed rather than silently falling back to the
-// old unbounded "cancel whatever is newest" behavior.
-test("RECHARGE/CANCEL fails closed when sessionOpenedAt is missing or invalid, never falls back to an unbounded cancel", async () => {
-  const calls = [];
-  const missing = await makeRuntime(calls).execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: null }));
-  assert.deepEqual(missing, { ok: false, error: "KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID" });
-  const invalid = await makeRuntime(calls).execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: null, sessionOpenedAt: "not-a-date" }));
-  assert.deepEqual(invalid, { ok: false, error: "KADI_V1_FLOW_COMMAND_SESSION_CONTEXT_INVALID" });
-  assert.deepEqual(calls, [], "cancelRecharge must never be called without a valid session context");
+  const runtime = makeRuntime(calls);
+  const withValidContext = await runtime.execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: null, sessionOpenedAt: "2026-08-07T02:00:00.000Z" }));
+  assert.deepEqual(withValidContext, { ok: false, error: "KADI_V1_RECHARGE_CANCEL_NOT_EXPOSED" });
+  const missingSessionOpenedAt = await runtime.execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: null }));
+  assert.deepEqual(missingSessionOpenedAt, { ok: false, error: "KADI_V1_RECHARGE_CANCEL_NOT_EXPOSED" });
+  const withDocumentContext = await runtime.execute(command({ flowKey: "RECHARGE", action: "CANCEL", data: {}, documentContext: { ...command().documentContext, document_state: "RECHARGE_REQUIRED" }, sessionOpenedAt: "2026-08-07T02:00:00.000Z" }));
+  assert.deepEqual(withDocumentContext, { ok: false, error: "KADI_V1_RECHARGE_CANCEL_NOT_EXPOSED" });
+  assert.deepEqual(calls, [], "cancelRecharge must never be called for RECHARGE/CANCEL, in any context");
 });
 
 test("history open remains owner-scoped", async () => {

@@ -377,8 +377,73 @@ function createKadiV1PreviewRuntimeAdapter({ previewService, temporaryRenderServ
   return Object.freeze({ prepare });
 }
 
-function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {}) {
+function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService, documentRepository = null } = {}) {
   const lifecycle = assertMethods(generationLifecycleService, ["confirmOrRetryGeneration", "retryDelivery"], "KADI_V1_GENERATION_LIFECYCLE_SERVICE");
+  // R1/MEDIUM (independent review): documentRepository is optional and
+  // narrow — used only to re-read the document AFTER
+  // confirmOrRetryGeneration already returned, never to perform any
+  // mutation or to recreate generation/reservation logic here.
+  // kadiV1GenerationLifecycleService.js's own INSUFFICIENT_CREDITS/
+  // DOCUMENT_VERSION_CONFLICT semantics are completely unchanged (its
+  // other callers — RechargeService's resumePendingGeneration, retry
+  // paths — call it directly, never through this adapter, and are
+  // unaffected by anything below).
+  const documents = documentRepository == null
+    ? null
+    : assertMethods(documentRepository, ["getDocumentById"], "KADI_V1_GENERATION_RUNTIME_DOCUMENT_REPOSITORY");
+
+  // R1/MEDIUM (independent review, HIGH-impact broken conversion journey),
+  // tightened by R2/MEDIUM (independent review — the R1 authority model
+  // was too broad): a document reaching RECHARGE_REQUIRED via
+  // CONFIRM_GENERATION is a handled business outcome, not a technical
+  // failure — the generation service already durably persisted the
+  // transition before returning INSUFFICIENT_CREDITS. Re-reading the
+  // document here (never trusting the error string alone) and, only once
+  // its CURRENT status is genuinely RECHARGE_REQUIRED, translating this
+  // into a handled success with next_flow_key "RECHARGE" lets the Flow/
+  // presentation layer route straight into RECHARGE — no history detour
+  // required. The first-time INSUFFICIENT_CREDITS path already passed
+  // real quote validation inside kadiV1GenerationLifecycleService.js
+  // before reservation, so no quote/version authority is recreated here
+  // — only owner + documentId scope the re-read (getDocumentById itself
+  // enforces the owner match).
+  //
+  // Exact replay is a DIFFERENT, narrower claim: a second identical
+  // CONFIRM_GENERATION submission re-runs validateConfirmation from
+  // scratch (no attempt row was ever created for the failed reservation,
+  // so store.findByQuoteId's own dedup never matches). Pure document
+  // state transitions never bump document.version
+  // (kadiV1DocumentDomain.js's transitionDocument — REQUIRE_RECHARGE is
+  // one), so a genuine replay's captured documentVersion still matches
+  // and fails the NEXT check instead, status !==
+  // "AWAITING_GENERATION_CONFIRMATION", as
+  // GENERATION_CONFIRMATION_STATE_INVALID. But that same error can also
+  // mean something else entirely: a STALE command for an OLDER version N,
+  // where the document later independently reached version N+1/
+  // RECHARGE_REQUIRED through a completely different confirmation attempt
+  // — re-reading and finding RECHARGE_REQUIRED alone does NOT prove this
+  // is a replay of THIS command. So GENERATION_CONFIRMATION_STATE_INVALID
+  // is only ever classified as a safe replay when ALL of: (a)
+  // command.exactReplay is true (the trusted, session-layer signal
+  // threaded from kadiV1FlowReplyRuntime.js's consumed.duplicate — never
+  // client-supplied, never inferred from this error code alone); (b) the
+  // re-read document's version still exactly equals
+  // command.expectedVersion; (c) its document_type still exactly equals
+  // command.documentType — proving the re-read document is genuinely the
+  // SAME state this exact command was originally about, not a different
+  // document state reached independently. DOCUMENT_VERSION_CONFLICT is a
+  // strictly stronger signal that the document has moved on for some
+  // OTHER reason — it is never classified as a replay, regardless of
+  // exactReplay, and always fails closed. Any other current status
+  // (CANCELLED, GENERATION_IN_PROGRESS, DELIVERED, ...) is left
+  // completely alone and the original error propagates normally.
+  async function reloadAsRechargeRequired(command) {
+    if (!documents) return null;
+    const reloaded = await documents.getDocumentById({ documentId: command.documentId, ownerWaId: command.ownerWaId });
+    if (!reloaded?.ok || reloaded.value?.status !== "RECHARGE_REQUIRED") return null;
+    return reloaded.value;
+  }
+
   async function confirm(command) {
     const checked = documentIdentity(command);
     if (!checked.ok) return checked;
@@ -387,10 +452,33 @@ function createKadiV1GenerationRuntimeAdapter({ generationLifecycleService } = {
     // confirmation path or, when the document is in the exact eligible
     // pre-capture recovery state, to the render-retry path — same action,
     // same idempotencyKey derivation, no new Meta Flow or command name.
-    return lifecycle.confirmOrRetryGeneration({
+    const result = await lifecycle.confirmOrRetryGeneration({
       ownerWaId: command.ownerWaId, documentId: command.documentId, documentVersion: command.expectedVersion,
       quoteId: command.quoteId, idempotencyKey: runtimeKey("generation_confirm:", command.idempotencyKey),
     });
+    if (result?.ok) return result;
+
+    if (result?.error === "INSUFFICIENT_CREDITS") {
+      const document = await reloadAsRechargeRequired(command);
+      if (document) {
+        return ok(Object.freeze({ document, recharge_required: true, next_flow_key: "RECHARGE" }));
+      }
+    }
+
+    if (result?.error === "GENERATION_CONFIRMATION_STATE_INVALID" && command.exactReplay === true) {
+      const document = await reloadAsRechargeRequired(command);
+      if (document && document.version === command.expectedVersion && document.document_type === command.documentType) {
+        return ok(
+          Object.freeze({ document, recharge_required: true, next_flow_key: "RECHARGE" }),
+          { duplicate: true }
+        );
+      }
+    }
+
+    // DOCUMENT_VERSION_CONFLICT is never classified as a replay — a
+    // changed document version is evidence the original command's context
+    // is stale, not evidence of an exact business replay of it.
+    return result;
   }
   // documentId is the only reference this ever accepts from outside — it is
   // opaque (not a secret) and already routinely exposed in Flow prefill
