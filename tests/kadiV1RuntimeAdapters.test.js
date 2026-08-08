@@ -286,6 +286,107 @@ test("generation adapter's retryDelivery rejects malformed owner/document input 
   assert.equal(called, false);
 });
 
+// R2 independent review (MEDIUM/P1): the R1 fix classified BOTH
+// GENERATION_CONFIRMATION_STATE_INVALID and DOCUMENT_VERSION_CONFLICT as
+// "safe replay" signals whenever a re-read of the document showed
+// RECHARGE_REQUIRED, without also requiring the re-read document's
+// version/type to still match the ORIGINAL command's expectedVersion/
+// documentType. A stale command for version N, replayed after the SAME
+// document later independently reached version N+1/RECHARGE_REQUIRED
+// through a DIFFERENT confirmation, would be wrongly classified as a
+// safe, duplicate replay of the ORIGINAL (now-stale) confirmation
+// attempt — even though it was never actually about that later state.
+// Fixed: DOCUMENT_VERSION_CONFLICT always fails closed, never translated
+// into a handled RECHARGE_REQUIRED success. GENERATION_CONFIRMATION_STATE_INVALID
+// is only ever translated when BOTH the trusted exactReplay signal
+// (threaded from kadiV1FlowReplyRuntime.js's own consumed.duplicate —
+// never the payload) is true AND the re-read document's version/type
+// still exactly match the original command's expectedVersion/
+// documentType. INSUFFICIENT_CREDITS (the genuine first-time path) is
+// unaffected — it never needs exactReplay, only the re-read's RECHARGE_REQUIRED
+// status.
+
+test("R2-MEDIUM-repro-fixed: a stale command for version N is never classified as a safe replay merely because the document is now RECHARGE_REQUIRED at version N+1", async () => {
+  const adapter = createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: {
+      confirmOrRetryGeneration: async () => ({ ok: false, error: "DOCUMENT_VERSION_CONFLICT" }),
+      retryDelivery: async () => ({ ok: true, value: {} }),
+    },
+    documentRepository: {
+      getDocumentById: async () => ({ ok: true, value: { document_id: "document:1", version: 9, document_type: "FACTURE", status: "RECHARGE_REQUIRED" } }),
+    },
+  });
+  const result = await adapter.confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:old", idempotencyKey: "flow_command:generation:stale" });
+  assert.equal(result.ok, false, "DOCUMENT_VERSION_CONFLICT must always fail closed — never converted into a handled RECHARGE_REQUIRED success merely because the document happens to be RECHARGE_REQUIRED now");
+  assert.equal(result.error, "DOCUMENT_VERSION_CONFLICT");
+});
+
+test("R2-MEDIUM: GENERATION_CONFIRMATION_STATE_INVALID is translated as a safe replay only when exactReplay is true AND the re-read version/type still match the original command", async () => {
+  const baseLifecycle = { confirmOrRetryGeneration: async () => ({ ok: false, error: "GENERATION_CONFIRMATION_STATE_INVALID" }), retryDelivery: async () => ({ ok: true, value: {} }) };
+  const matchingDocument = { getDocumentById: async () => ({ ok: true, value: { document_id: "document:1", version: 8, document_type: "FACTURE", status: "RECHARGE_REQUIRED" } }) };
+  const mismatchedVersionDocument = { getDocumentById: async () => ({ ok: true, value: { document_id: "document:1", version: 9, document_type: "FACTURE", status: "RECHARGE_REQUIRED" } }) };
+  const mismatchedTypeDocument = { getDocumentById: async () => ({ ok: true, value: { document_id: "document:1", version: 8, document_type: "DEVIS", status: "RECHARGE_REQUIRED" } }) };
+
+  // Not an exact replay (exactReplay: false/absent) — must fail closed
+  // even though the document is genuinely RECHARGE_REQUIRED at the exact
+  // matching version: this is a first-time stale submission, not a proven
+  // replay of the same original transition.
+  const notReplay = await createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: baseLifecycle, documentRepository: matchingDocument })
+    .confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1" });
+  assert.equal(notReplay.ok, false, "GENERATION_CONFIRMATION_STATE_INVALID must fail closed when exactReplay is not proven true");
+
+  // Exact replay proven, but the re-read version no longer matches the
+  // original command's expectedVersion — the document moved on for a
+  // DIFFERENT reason since this stale context was captured; must fail
+  // closed, never treated as a safe replay of THIS command.
+  const versionMismatch = await createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: baseLifecycle, documentRepository: mismatchedVersionDocument })
+    .confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1", exactReplay: true });
+  assert.equal(versionMismatch.ok, false, "a version mismatch must fail closed even when exactReplay is true");
+
+  // Exact replay proven, but the re-read document_type no longer matches
+  // — an impossible identity mismatch; must fail closed.
+  const typeMismatch = await createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: baseLifecycle, documentRepository: mismatchedTypeDocument })
+    .confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1", exactReplay: true });
+  assert.equal(typeMismatch.ok, false, "a document_type mismatch must fail closed even when exactReplay is true");
+
+  // Exact replay proven AND the re-read version/type exactly match the
+  // original command — this is genuinely the same already-applied
+  // transition being safely re-observed.
+  const genuineReplay = await createKadiV1GenerationRuntimeAdapter({ generationLifecycleService: baseLifecycle, documentRepository: matchingDocument })
+    .confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1", exactReplay: true });
+  assert.equal(genuineReplay.ok, true, genuineReplay.error);
+  assert.equal(genuineReplay.value.recharge_required, true);
+  assert.equal(genuineReplay.value.next_flow_key, "RECHARGE");
+  assert.equal(genuineReplay.duplicate, true);
+});
+
+test("R2-MEDIUM: INSUFFICIENT_CREDITS (genuine first time) needs no exactReplay signal — only the re-read RECHARGE_REQUIRED status", async () => {
+  const adapter = createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: { confirmOrRetryGeneration: async () => ({ ok: false, error: "INSUFFICIENT_CREDITS" }), retryDelivery: async () => ({ ok: true, value: {} }) },
+    documentRepository: { getDocumentById: async () => ({ ok: true, value: { document_id: "document:1", version: 8, document_type: "FACTURE", status: "RECHARGE_REQUIRED" } }) },
+  });
+  const result = await adapter.confirm({ ownerWaId: OWNER, documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1" });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.recharge_required, true);
+  assert.equal(result.value.next_flow_key, "RECHARGE");
+  assert.notEqual(result.duplicate, true, "the genuine first-time INSUFFICIENT_CREDITS path is not itself a replay");
+});
+
+test("R2-MEDIUM: an owner mismatch fails closed — getDocumentById itself is owner-scoped, so a replay/insufficient-credits translation can never leak across owners", async () => {
+  const documents = { getDocumentById: async ({ ownerWaId }) => (ownerWaId === OWNER ? { ok: true, value: { document_id: "document:1", version: 8, document_type: "FACTURE", status: "RECHARGE_REQUIRED" } } : { ok: false, error: "DOCUMENT_OWNER_MISMATCH" }) };
+  const insufficient = await createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: { confirmOrRetryGeneration: async () => ({ ok: false, error: "INSUFFICIENT_CREDITS" }), retryDelivery: async () => ({ ok: true, value: {} }) },
+    documentRepository: documents,
+  }).confirm({ ownerWaId: "22679999999", documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1" });
+  assert.equal(insufficient.ok, false, "a mismatched owner must never receive a translated RECHARGE_REQUIRED success");
+
+  const replay = await createKadiV1GenerationRuntimeAdapter({
+    generationLifecycleService: { confirmOrRetryGeneration: async () => ({ ok: false, error: "GENERATION_CONFIRMATION_STATE_INVALID" }), retryDelivery: async () => ({ ok: true, value: {} }) },
+    documentRepository: documents,
+  }).confirm({ ownerWaId: "22679999999", documentId: "document:1", expectedVersion: 8, documentType: "FACTURE", quoteId: "quote:1", idempotencyKey: "flow_command:generation:1", exactReplay: true });
+  assert.equal(replay.ok, false, "a mismatched owner must never receive a translated replay success either");
+});
+
 test("interpretation adapter maps the real brain contract without exposing providers", async () => {
   let request;
   const resultValue = brainResult("RECU", { amount: confirmed(10000) });
