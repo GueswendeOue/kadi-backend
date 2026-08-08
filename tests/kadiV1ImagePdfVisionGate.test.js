@@ -63,11 +63,15 @@ async function pdf(pageCount = 1) {
 // A minimal, valid FACTURE-shaped Gemini structured-extraction response:
 // a real client name and two confirmed line items (quantity/unit price),
 // plus a visible ("read") total that must never become backend authority.
+// includeTotalRead:false omits the field entirely (T12 R1 scenario A/G —
+// proves behavior independent of total_read's own presence).
 function structuredInvoiceResponse({
   documentType = "FACTURE",
   clientName = "Client Kadi Test",
   items = [{ description: "Sacs de ciment", quantity: 2, unit: "sac", unit_price: 5000, confidence: 0.94, status: "CONFIRMED", source_reference: "page:1:row1" }],
   totalRead = 999999,
+  includeTotalRead = true,
+  confidence = 0.93,
   extraFields = {},
   extraTopLevel = {},
 } = {}) {
@@ -76,12 +80,12 @@ function structuredInvoiceResponse({
     fields: {
       client: { value: { name: clientName }, confidence: 0.95, source_reference: "page:1:header" },
       items: { value: items, confidence: 0.94, source_reference: "page:1:table" },
-      total_read: { value: totalRead, confidence: 0.9, source_reference: "page:1:total" },
+      ...(includeTotalRead ? { total_read: { value: totalRead, confidence: 0.9, source_reference: "page:1:total" } } : {}),
       ...extraFields,
     },
     missing_fields: [],
     uncertainties: [],
-    confidence: 0.93,
+    confidence,
     ...extraTopLevel,
   };
 }
@@ -621,4 +625,150 @@ test("T11 non-regression: transcription=true, voice=false still works unaffected
   const h = buildHarness({ config: buildConfig({ KADI_V1_TRANSCRIPTION_ENABLED: "true", KADI_V1_VOICE_ENABLED: "false", KADI_V1_VISION_ENABLED: "false" }) });
   const result = await send(h, { id: "wamid.text.smoke", from: OWNER, type: "text", text: { body: "Solde" } });
   assert.equal(result.results[0].handled, true);
+});
+
+// =====================================================================
+// T12 R1 (independent review, MEDIUM/P1): forward-progress. Gemini's
+// total_read (and date_read/document_number_read) are RESERVED_BRAIN_FIELDS
+// — observational OCR evidence only, never backend authority — but they
+// must not create an impossible, permanently-blocked business state
+// merely because the backend deliberately never confirms them. A
+// photographed FACTURE/DEVIS with a confirmed client and confirmed items
+// must reach normal review progression (READY_FOR_REVIEW) regardless of
+// whether total_read is present, matches, or mismatches the backend's
+// own recalculated total.
+// =====================================================================
+
+test("R1-A. IMAGE FACTURE with client/items confirmed and NO total_read reaches normal review progression", async () => {
+  const h = buildHarness({
+    mediaBuffer: await png(),
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({ includeTotalRead: false }) }),
+  });
+  const result = await send(h, imageMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  const created = await h.getDocument(OWNER);
+  assert.equal(created.status, "READY_FOR_REVIEW", "confirmed client + confirmed items, nothing else outstanding: must advance, not stay COLLECTING");
+  assert.deepEqual(created.missing_fields, []);
+  assert.deepEqual(created.uncertainties, []);
+  assert.equal(created.subtotal, 10000);
+  assert.equal(created.total, 10000);
+});
+
+test("R1-B. IMAGE FACTURE with matching total_read: backend total correct, total_read never blocks, reaches normal review progression", async () => {
+  const h = buildHarness({
+    mediaBuffer: await png(),
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({ totalRead: 10000 }) }), // 2 * 5000 = 10000, matches backend
+  });
+  const result = await send(h, imageMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  const created = await h.getDocument(OWNER);
+  assert.equal(created.status, "READY_FOR_REVIEW");
+  assert.ok(!created.missing_fields.includes("total_read"), "total_read must never remain a permanently blocking missing field");
+  assert.ok(!created.uncertainties.some((entry) => entry.field === "total_read"), "total_read must never remain a permanently blocking uncertainty");
+  assert.equal(created.subtotal, 10000);
+  assert.equal(created.total, 10000);
+  assert.equal(created.total_read, undefined, "total_read is never copied into an authoritative document field");
+});
+
+test("R1-C. IMAGE FACTURE with WRONG total_read: backend total still wins, never writes the provider's total, no impossible permanent state", async () => {
+  const h = buildHarness({
+    mediaBuffer: await png(),
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({ totalRead: 999999 }) }), // mismatches 10000
+  });
+  const result = await send(h, imageMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  const created = await h.getDocument(OWNER);
+  assert.equal(created.status, "READY_FOR_REVIEW", "a mismatching non-authoritative total_read must never create a permanently blocked document");
+  assert.equal(created.subtotal, 10000);
+  assert.equal(created.total, 10000);
+  assert.notEqual(created.total, 999999);
+  assert.ok(!created.missing_fields.includes("total_read"));
+});
+
+test("R1-D. PDF DEVIS with matching total_read reaches normal review progression, same as IMAGE", async () => {
+  const h = buildHarness({
+    mediaBuffer: await pdf(2), mediaMimeType: "application/pdf",
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({
+      documentType: "DEVIS", totalRead: 77000,
+      items: [
+        { description: "Table", quantity: 1, unit_price: 45000, confidence: 0.92, status: "CONFIRMED", source_reference: "page:1:row1" },
+        { description: "Chaise", quantity: 4, unit_price: 8000, confidence: 0.92, status: "CONFIRMED", source_reference: "page:2:row1" },
+      ],
+    }) }),
+  });
+  const result = await send(h, pdfMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  const created = await h.getDocument(OWNER);
+  assert.equal(created.document_type, "DEVIS");
+  assert.equal(created.status, "READY_FOR_REVIEW");
+  assert.equal(created.total, 77000);
+});
+
+for (const [label, buildOptions] of [
+  ["no total_read", { includeTotalRead: false }],
+  ["matching total_read", { totalRead: 10000 }],
+  ["mismatching total_read", { totalRead: 999999 }],
+]) {
+  test(`R1-temp-media. ${label}: temporary media still expires after a successful, review-ready analysis`, async () => {
+    const h = buildHarness({
+      mediaBuffer: await png(),
+      geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse(buildOptions) }),
+    });
+    const result = await send(h, imageMessage());
+    assert.equal(result.results[0].accepted, true, result.results[0].reason);
+    const leaked = await h.temporaryMediaStore.getTemporaryMedia({ mediaId: "media_test_1", ownerRef: OWNER });
+    assert.equal(leaked.ok, false, "temporary media must be expired after analysis regardless of the total_read reconciliation outcome");
+  });
+}
+
+// =====================================================================
+// T12 R1 (independent review, MEDIUM/P1): unknown document type must
+// surface Brain's own validated targeted question, never the generic
+// MENU dead end — and must never create a document or mutate anything.
+// =====================================================================
+
+test("R1-E. IMAGE with unknown document type: zero document created, no guessed type, the validated targeted question is shown — not generic MENU", async () => {
+  const h = buildHarness({
+    mediaBuffer: await png(),
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({ documentType: null, includeTotalRead: false }) }),
+  });
+  const result = await send(h, imageMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  assert.equal(h.presenterCalls[0][1].response.business_action, "PREPARE_DOCUMENT_TYPE_UNKNOWN");
+  assert.equal(h.presenterCalls[0][1].response.canonical_text, "Quel document voulez-vous préparer ?");
+  assert.notEqual(h.presenterCalls[0][1].response.business_action, "SHOW_MENU", "the validated question must never be silently discarded into the generic menu");
+  const created = await h.getDocument(OWNER);
+  assert.equal(created, null, "zero document created for an unresolved document type — no guessed type, no financial mutation");
+  const leaked = await h.temporaryMediaStore.getTemporaryMedia({ mediaId: "media_test_1", ownerRef: OWNER });
+  assert.equal(leaked.ok, false, "temporary media still expires even when no document is created");
+});
+
+// =====================================================================
+// T12 R1: low overall confidence WITHOUT total_read. Determined genuine
+// behavior (documented, not weakened): with nothing individually flagged
+// missing/uncertain but overall confidence below the threshold,
+// normalizeStructuredExtraction's own validateBrainResult call already
+// throws BRAIN_CONFIRMATION_REQUIRED (the general, modality-agnostic
+// Brain contract in kadiV1BrainContracts.js — never touched by T12, and
+// never weakened here to keep TEXT/TRANSCRIPTION's identical guarantee
+// intact). This already satisfies every required outcome: the result is
+// never silently trusted, no low-confidence data is ever persisted as
+// confirmed business data (interpretation fails closed before any
+// document mutation is attempted), and the user gets the existing safe,
+// generic retry copy — the same "please retry" recoverable path every
+// other interpretation failure already uses.
+// =====================================================================
+
+test("R1-F. low overall confidence WITHOUT total_read fails closed as a safe recoverable retry — never silently trusted, zero document mutation", async () => {
+  const h = buildHarness({
+    mediaBuffer: await png(),
+    geminiClient: buildGeminiClient({ respond: () => structuredInvoiceResponse({ includeTotalRead: false, confidence: 0.1 }) }),
+  });
+  const result = await send(h, imageMessage());
+  assert.equal(result.results[0].accepted, true, result.results[0].reason);
+  assert.equal(h.presenterCalls[0][1].response.business_action, "INTERPRETATION_RECOVERABLE_FAILURE");
+  const created = await h.getDocument(OWNER);
+  assert.equal(created, null, "no low-confidence data is ever persisted as confirmed business data");
+  const leaked = await h.temporaryMediaStore.getTemporaryMedia({ mediaId: "media_test_1", ownerRef: OWNER });
+  assert.equal(leaked.ok, false, "temporary media still expires after a rejected low-confidence analysis");
 });
